@@ -18,5 +18,15 @@ cargo test
 cargo run --release -- path/to/game.md --frames 1 --dump frame.ppm
 ```
 
-The core is intentionally dependency-free so it can build offline and stay portable.
+UI:
 
+```sh
+npm install
+npm run dev
+npm run tauri dev
+```
+
+`npm run dev` starts the TypeScript WebView as a browser app. `npm run tauri dev`
+starts the same UI inside Tauri 2 with native Rust emulator commands.
+
+The core is intentionally dependency-free so it can build offline and stay portable.
