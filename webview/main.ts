@@ -191,6 +191,7 @@ let romDisplayName = "reaction.argon";
 let romHash = 0xC0FFEE;
 let webStateSlots: Array<WebStateSnapshot | null> = [null, null, null];
 let stepping = false;
+let nativeStatusPolling = false;
 let videoCanvas: HTMLCanvasElement;
 let videoContext: CanvasRenderingContext2D;
 let lastInputJson = JSON.stringify(inputState);
@@ -392,11 +393,18 @@ romDrop.addEventListener("drop", async (event) => {
   }
 });
 
-playToggle.addEventListener("click", () => {
+playToggle.addEventListener("click", async () => {
   ui.playing = !ui.playing;
   playToggle.textContent = ui.playing ? "Pause" : "Play";
   ui.status = ui.playing ? "RUNNING" : "PAUSED";
   renderUi();
+  if (isTauri && ui.runtime === "tauri" && ui.loaded) {
+    await invoke("set_native_running", { running: ui.playing });
+    if (ui.playing) {
+      void nativeStatusLoop();
+    }
+    return;
+  }
   if (ui.playing) {
     nextFrameDue = performance.now();
     void ensureAudio();
@@ -405,12 +413,20 @@ playToggle.addEventListener("click", () => {
 });
 
 stepFrame.addEventListener("click", async () => {
+  if (isTauri && ui.runtime === "tauri") {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    await invoke("set_native_running", { running: false });
+  }
   await advanceFrame();
 });
 
 resetCore.addEventListener("click", async () => {
   let drewCoreFrame = false;
   if (isTauri && ui.runtime === "tauri" && ui.loaded) {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    await invoke("set_native_running", { running: false });
     await invoke("reset_emulator");
   } else if (ui.runtime === "bridge" && ui.loaded) {
     const result = await bridgeJson<BridgeStatusResult>("/reset", {
@@ -930,6 +946,10 @@ async function tauriNativeFrame(): Promise<NativeFrameResult> {
   return await invoke<NativeFrameResult>("run_native_frame");
 }
 
+async function tauriNativeStatus(): Promise<NativeFrameResult | null> {
+  return await invoke<NativeFrameResult | null>("native_frame_status");
+}
+
 async function tauriFrameAudio(): Promise<FrameAudioResult> {
   try {
     const packet = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer> | number[]>(
@@ -1112,6 +1132,48 @@ async function animationLoop(): Promise<void> {
   window.requestAnimationFrame(() => void animationLoop());
 }
 
+function applyNativeFrameStatus(frame: NativeFrameResult, transportMs: number): void {
+  ui.transportMs = transportMs;
+  ui.drawMs = 0;
+  ui.audioLeadMs = frame.audioLeadMs;
+  ui.transportMode = frame.audioActive ? "TAURI RUST LOOP" : "TAURI RUST VIDEO";
+  ui.frame = frame.frame;
+  ui.width = frame.width;
+  ui.height = frame.height;
+  ui.cpuCycles = frame.cpuCycles;
+  ui.cpuSteps = frame.cpuSteps;
+  ui.frameMs = frame.frameMs;
+  ui.status = frame.stopped ? "STOPPED" : ui.playing ? "RUNNING" : "STEPPED";
+  ui.lastError = frame.lastError ?? "";
+  if (frame.stopped) {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    void invoke("set_native_running", { running: false });
+    pushTrace("CPU reached unsupported reaction");
+  }
+}
+
+async function nativeStatusLoop(): Promise<void> {
+  if (nativeStatusPolling) {
+    return;
+  }
+  nativeStatusPolling = true;
+  try {
+    while (ui.playing && isTauri && ui.runtime === "tauri" && ui.loaded) {
+      const started = performance.now();
+      const frame = await tauriNativeStatus();
+      const done = performance.now();
+      if (frame) {
+        applyNativeFrameStatus(frame, done - started);
+        renderUi();
+      }
+      await sleep(80);
+    }
+  } finally {
+    nativeStatusPolling = false;
+  }
+}
+
 async function advanceFrame(): Promise<void> {
   if (stepping) {
     return;
@@ -1122,23 +1184,7 @@ async function advanceFrame(): Promise<void> {
       const fetchStart = performance.now();
       const frame = await tauriNativeFrame();
       const fetchDone = performance.now();
-      ui.transportMs = fetchDone - fetchStart;
-      ui.drawMs = 0;
-      ui.audioLeadMs = frame.audioLeadMs;
-      ui.transportMode = frame.audioActive ? "TAURI NATIVE AUDIO" : "TAURI NATIVE VIDEO";
-      ui.frame = frame.frame;
-      ui.width = frame.width;
-      ui.height = frame.height;
-      ui.cpuCycles = frame.cpuCycles;
-      ui.cpuSteps = frame.cpuSteps;
-      ui.frameMs = frame.frameMs;
-      ui.status = frame.stopped ? "STOPPED" : ui.playing ? "RUNNING" : "STEPPED";
-      ui.lastError = frame.lastError ?? "";
-      if (frame.stopped) {
-        ui.playing = false;
-        playToggle.textContent = "Play";
-        pushTrace("CPU reached unsupported reaction");
-      }
+      applyNativeFrameStatus(frame, fetchDone - fetchStart);
     } else if (ui.runtime === "bridge") {
       const fetchStart = performance.now();
       const frameAudio =

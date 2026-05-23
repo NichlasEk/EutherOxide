@@ -1,9 +1,10 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use std::env;
@@ -21,6 +22,8 @@ struct AppState {
     bridge_url: Arc<Mutex<String>>,
     native_surface_rect: Arc<Mutex<Option<NativeSurfaceRect>>>,
     native_frame: Arc<Mutex<Option<NativeFrameImage>>>,
+    native_status: Arc<Mutex<Option<NativeFrameResult>>>,
+    native_running: Arc<AtomicBool>,
     native_audio: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
 }
 
@@ -65,7 +68,7 @@ struct NativeAudioResult {
     queued_ms: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeFrameResult {
     frame: u64,
@@ -161,7 +164,10 @@ fn load_rom_bytes(state: State<'_, AppState>, bytes: Vec<u8>) -> Result<LoadResu
     emulator.load_rom_bytes(&bytes);
     let result = load_result(&emulator);
 
+    state.native_running.store(false, Ordering::Release);
     *state.emulator.lock().map_err(|err| err.to_string())? = Some(emulator);
+    *state.native_status.lock().map_err(|err| err.to_string())? = None;
+    *state.native_frame.lock().map_err(|err| err.to_string())? = None;
     Ok(result)
 }
 
@@ -173,7 +179,10 @@ fn load_rom_path(state: State<'_, AppState>, path: String) -> Result<LoadResult,
         .map_err(|err| format!("Could not load ROM: {err}"))?;
     let result = load_result(&emulator);
 
+    state.native_running.store(false, Ordering::Release);
     *state.emulator.lock().map_err(|err| err.to_string())? = Some(emulator);
+    *state.native_status.lock().map_err(|err| err.to_string())? = None;
+    *state.native_frame.lock().map_err(|err| err.to_string())? = None;
     Ok(result)
 }
 
@@ -195,6 +204,25 @@ fn run_frame_audio_packet(state: State<'_, AppState>) -> Result<Response, String
 
 #[tauri::command]
 fn run_native_frame(state: State<'_, AppState>) -> Result<NativeFrameResult, String> {
+    tick_native_frame(&state)
+}
+
+#[tauri::command]
+fn set_native_running(state: State<'_, AppState>, running: bool) -> Result<(), String> {
+    state.native_running.store(running, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
+fn native_frame_status(state: State<'_, AppState>) -> Result<Option<NativeFrameResult>, String> {
+    Ok(state
+        .native_status
+        .lock()
+        .map_err(|err| err.to_string())?
+        .clone())
+}
+
+fn tick_native_frame(state: &AppState) -> Result<NativeFrameResult, String> {
     let (mut result, samples, image) = {
         let mut guard = state.emulator.lock().map_err(|err| err.to_string())?;
         let emulator = guard.as_mut().ok_or_else(|| "No ROM loaded".to_string())?;
@@ -207,6 +235,9 @@ fn run_native_frame(state: State<'_, AppState>) -> Result<NativeFrameResult, Str
     *state.native_frame.lock().map_err(|err| err.to_string())? = Some(image);
     result.audio_active = queue_native_audio_async(&state, samples, 44_100);
     result.audio_lead_ms = 0.0;
+    if let Ok(mut status) = state.native_status.lock() {
+        *status = Some(result.clone());
+    }
     Ok(result)
 }
 
@@ -365,9 +396,12 @@ fn queue_native_audio_async(state: &AppState, samples: Vec<i16>, sample_rate: u3
 
 #[tauri::command]
 fn reset_emulator(state: State<'_, AppState>) -> Result<(), String> {
+    state.native_running.store(false, Ordering::Release);
     let mut guard = state.emulator.lock().map_err(|err| err.to_string())?;
     let emulator = guard.as_mut().ok_or_else(|| "No ROM loaded".to_string())?;
     emulator.reset();
+    *state.native_status.lock().map_err(|err| err.to_string())? = None;
+    *state.native_frame.lock().map_err(|err| err.to_string())? = None;
     Ok(())
 }
 
@@ -547,6 +581,39 @@ fn start_native_bridge(state: AppState) -> Result<String, String> {
         })
         .map_err(|err| format!("bridge thread failed: {err}"))?;
     Ok(url)
+}
+
+fn start_native_runner(state: AppState) {
+    let _ = thread::Builder::new()
+        .name("euther-oxide-native-runner".to_string())
+        .spawn(move || {
+            loop {
+                if !state.native_running.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(8));
+                    continue;
+                }
+
+                let started = Instant::now();
+                match tick_native_frame(&state) {
+                    Ok(result) => {
+                        if result.stopped {
+                            state.native_running.store(false, Ordering::Release);
+                        }
+                    }
+                    Err(_) => {
+                        state.native_running.store(false, Ordering::Release);
+                    }
+                }
+
+                let frame_time = Duration::from_secs_f64(1.0 / 60.0);
+                let elapsed = started.elapsed();
+                if elapsed < frame_time {
+                    thread::sleep(frame_time - elapsed);
+                } else {
+                    thread::yield_now();
+                }
+            }
+        });
 }
 
 fn handle_native_bridge_client(mut stream: TcpStream, state: AppState) {
@@ -1109,6 +1176,7 @@ fn main() {
         }
         Err(err) => eprintln!("failed to start native bridge: {err}"),
     }
+    start_native_runner(state.clone());
 
     let native_surface_state = state.clone();
     tauri::Builder::default()
@@ -1130,6 +1198,8 @@ fn main() {
             native_bridge_url,
             render_audio_frame,
             run_native_frame,
+            set_native_running,
+            native_frame_status,
             set_native_surface_rect,
             play_native_audio,
             reset_emulator,
