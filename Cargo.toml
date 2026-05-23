@@ -1,0 +1,20 @@
+[package]
+name = "euther_oxide"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Fast headless Rust Mega Drive emulator core inspired by EutherDrive and EutherMaster"
+
+[lib]
+name = "euther_oxide"
+path = "src/lib.rs"
+
+[[bin]]
+name = "euther-oxide"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+

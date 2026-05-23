@@ -1,0 +1,502 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemoryTarget {
+    Vram,
+    Cram,
+    Vsram,
+    Invalid,
+}
+
+#[derive(Clone, Copy)]
+struct PlaneParams {
+    name_base: usize,
+    width_cells: usize,
+    map_width: usize,
+    map_height: usize,
+    hscroll: usize,
+    vscroll: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct Vdp {
+    pub registers: [u8; Self::NUM_REGISTERS],
+    pub vram: Vec<u8>,
+    pub cram: [u16; Self::CRAM_SIZE],
+    pub vsram: [u16; Self::VSRAM_SIZE],
+    pub framebuffer: Vec<u32>,
+    pub screen_width: usize,
+    pub screen_height: usize,
+    pub irq_level: u8,
+    pub frame_cycle: u64,
+    control_pending: bool,
+    control_latch: u16,
+    address: u32,
+    mode_write: bool,
+    location_bits: u8,
+    dma_active: bool,
+    status: u16,
+    h_interrupt_pending: bool,
+    v_interrupt_pending: bool,
+    h_interrupt_counter: i16,
+    render_version: u64,
+    video_dirty: bool,
+    vblank_counter_pending: bool,
+    interlace_field: u8,
+}
+
+impl Default for Vdp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Vdp {
+    pub const DEFAULT_WIDTH: usize = 256;
+    pub const H40_WIDTH: usize = 320;
+    pub const DEFAULT_HEIGHT: usize = 224;
+    pub const VRAM_SIZE: usize = 0x1_0000;
+    pub const CRAM_SIZE: usize = 0x40;
+    pub const VSRAM_SIZE: usize = 0x40;
+    pub const NUM_REGISTERS: usize = 0x20;
+    pub const LINE_CYCLES: u64 = 228;
+    pub const VISIBLE_LINES: u64 = 224;
+    pub const TOTAL_LINES: u64 = 262;
+    pub const FRAME_CYCLES: u64 = Self::LINE_CYCLES * Self::TOTAL_LINES;
+    pub const VBLANK_START_CYCLE: u64 = Self::LINE_CYCLES * Self::VISIBLE_LINES;
+
+    pub fn new() -> Self {
+        let mut vdp = Self {
+            registers: [0; Self::NUM_REGISTERS],
+            vram: vec![0; Self::VRAM_SIZE],
+            cram: [0; Self::CRAM_SIZE],
+            vsram: [0; Self::VSRAM_SIZE],
+            framebuffer: vec![0; Self::DEFAULT_WIDTH * Self::DEFAULT_HEIGHT],
+            screen_width: Self::DEFAULT_WIDTH,
+            screen_height: Self::DEFAULT_HEIGHT,
+            irq_level: 0,
+            frame_cycle: 0,
+            control_pending: false,
+            control_latch: 0,
+            address: 0,
+            mode_write: false,
+            location_bits: 0,
+            dma_active: false,
+            status: 0x3400,
+            h_interrupt_pending: false,
+            v_interrupt_pending: false,
+            h_interrupt_counter: -1,
+            render_version: 0,
+            video_dirty: true,
+            vblank_counter_pending: false,
+            interlace_field: 0,
+        };
+        vdp.reset();
+        vdp
+    }
+
+    pub fn reset(&mut self) {
+        self.registers = [0; Self::NUM_REGISTERS];
+        self.vram.fill(0);
+        self.cram = [0; Self::CRAM_SIZE];
+        self.vsram = [0; Self::VSRAM_SIZE];
+        self.screen_width = Self::DEFAULT_WIDTH;
+        self.screen_height = Self::DEFAULT_HEIGHT;
+        self.framebuffer
+            .resize(self.screen_width * self.screen_height, 0);
+        self.framebuffer.fill(0);
+        self.frame_cycle = 0;
+        self.control_pending = false;
+        self.control_latch = 0;
+        self.address = 0;
+        self.mode_write = false;
+        self.location_bits = 0;
+        self.dma_active = false;
+        self.status = 0x3400;
+        self.h_interrupt_pending = false;
+        self.v_interrupt_pending = false;
+        self.h_interrupt_counter = -1;
+        self.irq_level = 0;
+        self.render_version = 0;
+        self.video_dirty = true;
+        self.vblank_counter_pending = false;
+        self.interlace_field = 0;
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.frame_cycle = 0;
+        self.h_interrupt_counter = self.registers[10] as i16;
+        self.h_interrupt_pending = false;
+        self.update_irq_level();
+    }
+
+    pub fn tick_line_interrupt(&mut self, line: u64) {
+        if line >= Self::VISIBLE_LINES {
+            return;
+        }
+        if line == 0 || self.h_interrupt_counter < 0 {
+            self.h_interrupt_counter = self.registers[10] as i16;
+        }
+        self.h_interrupt_counter -= 1;
+        if self.h_interrupt_counter < 0 {
+            if (self.registers[0] & 0x10) != 0 {
+                self.h_interrupt_pending = true;
+            }
+            self.h_interrupt_counter = self.registers[10] as i16;
+            self.update_irq_level();
+        }
+    }
+
+    pub fn read_data(&mut self) -> u16 {
+        self.control_pending = false;
+        let word = match self.memory_target() {
+            MemoryTarget::Cram => self.cram[((self.address >> 1) as usize) & (Self::CRAM_SIZE - 1)],
+            MemoryTarget::Vsram => {
+                self.vsram[((self.address >> 1) as usize) & (Self::VSRAM_SIZE - 1)]
+            }
+            _ => self.read_vram_word(self.address),
+        };
+        self.increment_address();
+        word
+    }
+
+    pub fn read_control(&mut self) -> u16 {
+        self.control_pending = false;
+        let mut status = self.status;
+        if self.interlace_mode_2() {
+            if self.interlace_field == 0 {
+                status &= !0x0010;
+            } else {
+                status |= 0x0010;
+            }
+        }
+        if self.vblank() {
+            status |= 0x0008;
+        } else {
+            status &= !0x0008;
+        }
+        if self.hblank() || self.vblank() {
+            status |= 0x0004;
+        } else {
+            status &= !0x0004;
+        }
+        status
+    }
+
+    pub fn read_hv_counter(&mut self) -> u16 {
+        let mut v = self.v_counter();
+        if self.vblank_counter_pending {
+            v = 0xe0;
+            self.vblank_counter_pending = false;
+        }
+        ((v as u16) << 8) | self.h_counter() as u16
+    }
+
+    pub fn write_data(&mut self, value: u16) {
+        self.control_pending = false;
+        self.write_data_direct(value);
+    }
+
+    pub fn write_data_byte(&mut self, _address: u32, value: u8) {
+        self.write_data((value as u16) * 0x0101);
+    }
+
+    pub fn write_control(&mut self, value: u16) {
+        if self.control_pending {
+            self.address = (self.control_latch as u32 & 0x3fff) | (((value & 0x0007) as u32) << 14);
+            self.location_bits = (self.location_bits & 0x01) | (((value >> 3) as u8) & 0x06);
+            self.dma_active = self.dma_enabled() && (value & 0x0080) != 0;
+            self.control_pending = false;
+            if self.dma_active {
+                self.dma_active = false;
+            }
+        } else {
+            self.control_latch = value;
+            self.address = (self.address & 0x1c000) | (value as u32 & 0x3fff);
+
+            if (value & 0xc000) == 0x8000 {
+                let register = ((value >> 8) & 0x1f) as usize;
+                let data = (value & 0xff) as u8;
+                if self.registers[register] != data {
+                    self.video_dirty = true;
+                }
+                self.registers[register] = data;
+                self.update_screen_size();
+                if register == 0 || register == 1 {
+                    self.update_irq_level();
+                }
+                self.control_pending = false;
+            } else {
+                self.mode_write = (value & 0x4000) != 0;
+                self.location_bits = (self.location_bits & 0x06) | (((value >> 15) as u8) & 0x01);
+                self.control_pending = true;
+            }
+        }
+    }
+
+    pub fn write_control_byte(&mut self, _address: u32, value: u8) {
+        self.write_control((value as u16) * 0x0101);
+    }
+
+    pub fn request_vblank(&mut self) {
+        self.status |= 0x0080;
+        self.vblank_counter_pending = true;
+        self.v_interrupt_pending = true;
+        self.update_irq_level();
+    }
+
+    pub fn end_vblank(&mut self) {
+        self.status &= !0x0080;
+        self.vblank_counter_pending = false;
+        self.v_interrupt_pending = false;
+        self.update_irq_level();
+    }
+
+    pub fn acknowledge_interrupt(&mut self, level: u8) {
+        if level >= 6 {
+            self.v_interrupt_pending = false;
+        }
+        if level >= 4 {
+            self.h_interrupt_pending = false;
+        }
+        self.update_irq_level();
+    }
+
+    pub fn render_frame(&mut self) {
+        self.interlace_field ^= 1;
+        self.update_screen_size();
+        self.ensure_framebuffer_size();
+
+        let backdrop = self.palette_color((self.registers[7] & 0x3f) as usize);
+        self.framebuffer.fill(backdrop);
+        if !self.display_enabled() {
+            self.render_version += 1;
+            self.video_dirty = false;
+            return;
+        }
+
+        self.draw_scroll_planes();
+        self.render_version += 1;
+        self.video_dirty = false;
+    }
+
+    pub fn palette_color(&self, index: usize) -> u32 {
+        let raw = self.cram[index & (Self::CRAM_SIZE - 1)];
+        let levels = [0u32, 52, 87, 116, 144, 172, 206, 255];
+        let r = levels[((raw >> 1) & 0x07) as usize];
+        let g = levels[((raw >> 5) & 0x07) as usize];
+        let b = levels[((raw >> 9) & 0x07) as usize];
+        (r << 16) | (g << 8) | b
+    }
+
+    fn write_data_direct(&mut self, value: u16) {
+        match self.memory_target() {
+            MemoryTarget::Cram => {
+                let index = ((self.address >> 1) as usize) & (Self::CRAM_SIZE - 1);
+                self.cram[index] = value & 0x0fff;
+                self.video_dirty = true;
+            }
+            MemoryTarget::Vsram => {
+                let index = ((self.address >> 1) as usize) & (Self::VSRAM_SIZE - 1);
+                self.vsram[index] = value & 0x07ff;
+                self.video_dirty = true;
+            }
+            MemoryTarget::Vram | MemoryTarget::Invalid => self.write_vram_word(self.address, value),
+        }
+        self.increment_address();
+    }
+
+    fn read_vram_word(&self, address: u32) -> u16 {
+        let address = address as usize & 0xffff;
+        let high = self.vram[address] as u16;
+        let low = self.vram[(address ^ 1) & 0xffff] as u16;
+        (high << 8) | low
+    }
+
+    fn write_vram_word(&mut self, address: u32, value: u16) {
+        let address = address as usize & 0xffff;
+        self.vram[address] = (value >> 8) as u8;
+        self.vram[(address ^ 1) & 0xffff] = value as u8;
+        self.video_dirty = true;
+    }
+
+    fn increment_address(&mut self) {
+        let increment = if self.registers[15] == 0 {
+            2
+        } else {
+            self.registers[15] as u32
+        };
+        self.address = (self.address + increment) & 0xffff;
+    }
+
+    fn memory_target(&self) -> MemoryTarget {
+        match (self.location_bits & 0x07, self.mode_write) {
+            (0x00, _) | (0x06, false) => MemoryTarget::Vram,
+            (0x01, true) | (0x04, false) => MemoryTarget::Cram,
+            (0x02, _) => MemoryTarget::Vsram,
+            _ => MemoryTarget::Invalid,
+        }
+    }
+
+    fn update_irq_level(&mut self) {
+        self.irq_level = if self.v_interrupt_pending && (self.registers[1] & 0x20) != 0 {
+            6
+        } else if self.h_interrupt_pending && (self.registers[0] & 0x10) != 0 {
+            4
+        } else {
+            0
+        };
+    }
+
+    fn update_screen_size(&mut self) {
+        self.screen_width = if (self.registers[12] & 0x01) != 0 {
+            Self::H40_WIDTH
+        } else {
+            Self::DEFAULT_WIDTH
+        };
+        self.screen_height = Self::DEFAULT_HEIGHT;
+    }
+
+    fn ensure_framebuffer_size(&mut self) {
+        let required = self.screen_width * self.screen_height;
+        if self.framebuffer.len() != required {
+            self.framebuffer.resize(required, 0);
+        }
+    }
+
+    fn display_enabled(&self) -> bool {
+        (self.registers[1] & 0x40) != 0
+    }
+
+    fn hblank(&self) -> bool {
+        (self.frame_cycle % Self::LINE_CYCLES) >= 170
+    }
+
+    fn vblank(&self) -> bool {
+        self.frame_cycle >= Self::VBLANK_START_CYCLE
+    }
+
+    fn v_counter(&self) -> u8 {
+        ((self.frame_cycle / Self::LINE_CYCLES).min(Self::TOTAL_LINES - 1) & 0xff) as u8
+    }
+
+    fn h_counter(&self) -> u8 {
+        (((self.frame_cycle % Self::LINE_CYCLES) * 342 / Self::LINE_CYCLES).min(0xff)) as u8
+    }
+
+    fn dma_enabled(&self) -> bool {
+        (self.registers[1] & 0x10) != 0
+    }
+
+    fn interlace_mode_2(&self) -> bool {
+        (self.registers[12] & 0x06) == 0x06
+    }
+
+    fn draw_scroll_planes(&mut self) {
+        let width = self.screen_width;
+        let height = self.screen_height;
+        let (plane_width_cells, plane_height_cells) = self.plane_dimensions();
+        let map_width = plane_width_cells * 8;
+        let map_height = plane_height_cells * 8;
+        let plane_a = self.plane_a_base();
+        let plane_b = self.plane_b_base();
+        let hscroll_base = self.hscroll_base();
+        let backdrop = self.palette_color((self.registers[7] & 0x3f) as usize);
+
+        for y in 0..height {
+            let hscroll_a = self.read_vram_word((hscroll_base + (y * 4)) as u32) as usize & 0x03ff;
+            let hscroll_b =
+                self.read_vram_word((hscroll_base + (y * 4) + 2) as u32) as usize & 0x03ff;
+            let vscroll_a = self.vsram[0] as usize & 0x03ff;
+            let vscroll_b = self.vsram[1] as usize & 0x03ff;
+
+            for x in 0..width {
+                let b = self.plane_pixel(
+                    PlaneParams {
+                        name_base: plane_b,
+                        width_cells: plane_width_cells,
+                        map_width,
+                        map_height,
+                        hscroll: hscroll_b,
+                        vscroll: vscroll_b,
+                    },
+                    x,
+                    y,
+                );
+                let a = self.plane_pixel(
+                    PlaneParams {
+                        name_base: plane_a,
+                        width_cells: plane_width_cells,
+                        map_width,
+                        map_height,
+                        hscroll: hscroll_a,
+                        vscroll: vscroll_a,
+                    },
+                    x,
+                    y,
+                );
+                let color_index = match (a, b) {
+                    (Some(pa), Some(pb)) if (pa & 0x100) == 0 && (pb & 0x100) != 0 => pb & 0x3f,
+                    (Some(pa), _) => pa & 0x3f,
+                    (None, Some(pb)) => pb & 0x3f,
+                    _ => {
+                        self.framebuffer[y * width + x] = backdrop;
+                        continue;
+                    }
+                };
+                self.framebuffer[y * width + x] = self.palette_color(color_index);
+            }
+        }
+    }
+
+    fn plane_pixel(&self, plane: PlaneParams, screen_x: usize, screen_y: usize) -> Option<usize> {
+        let source_x = (screen_x + plane.map_width - (plane.hscroll & (plane.map_width - 1)))
+            & (plane.map_width - 1);
+        let source_y = (screen_y + plane.vscroll) & (plane.map_height - 1);
+        let cell_x = source_x >> 3;
+        let cell_y = source_y >> 3;
+        let entry_address = (plane.name_base + 2 * (cell_y * plane.width_cells + cell_x)) & 0xffff;
+        let entry = self.read_vram_word(entry_address as u32);
+        let mut row = source_y & 7;
+        let mut col = source_x & 7;
+        if (entry & 0x1000) != 0 {
+            row = 7 - row;
+        }
+        if (entry & 0x0800) != 0 {
+            col = 7 - col;
+        }
+        let pattern = entry as usize & 0x07ff;
+        let tile_address = (pattern * 32 + row * 4) & 0xffff;
+        let packed = ((self.vram[tile_address] as u32) << 24)
+            | ((self.vram[(tile_address + 1) & 0xffff] as u32) << 16)
+            | ((self.vram[(tile_address + 2) & 0xffff] as u32) << 8)
+            | self.vram[(tile_address + 3) & 0xffff] as u32;
+        let color = ((packed >> ((7 - col) * 4)) & 0x0f) as usize;
+        if color == 0 {
+            None
+        } else {
+            let palette = ((entry >> 9) as usize) & 0x30;
+            let priority = if (entry & 0x8000) != 0 { 0x100 } else { 0 };
+            Some(priority | palette | color)
+        }
+    }
+
+    fn plane_dimensions(&self) -> (usize, usize) {
+        match self.registers[16] & 0x03 {
+            0 => (32, 32),
+            1 => (64, 32),
+            2 => (32, 64),
+            _ => (128, 32),
+        }
+    }
+
+    fn plane_a_base(&self) -> usize {
+        ((self.registers[2] as usize & 0x38) << 10) & 0xffff
+    }
+
+    fn plane_b_base(&self) -> usize {
+        ((self.registers[4] as usize & 0x07) << 13) & 0xffff
+    }
+
+    fn hscroll_base(&self) -> usize {
+        ((self.registers[13] as usize & 0x3f) << 10) & 0xffff
+    }
+}
