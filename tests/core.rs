@@ -1,6 +1,7 @@
 use euther_oxide::audio::Ym2612;
 use euther_oxide::rom::{SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
 use euther_oxide::savestate::{argon_path_for_rom, load_slot_for_emulator, save_slot_for_emulator};
+use euther_oxide::z80::Z80;
 use euther_oxide::{Emulator, M68k, M68kBus};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -289,6 +290,53 @@ fn bus_routes_ym_and_psg_writes() {
 }
 
 #[test]
+fn z80_bus_routes_ram_ym_psg_and_banked_68k() {
+    let mut bus = M68kBus::new();
+
+    bus.z80_write_byte(0x0000, 0x12);
+    bus.z80_write_byte(0x2000, 0x34);
+    assert_eq!(bus.z80_read_byte(0x0000), 0x34);
+
+    bus.z80_write_byte(0x4000, 0x22);
+    bus.z80_write_byte(0x4001, 0x35);
+    assert_eq!(bus.ym2612.registers[0][0x22], 0x35);
+
+    bus.z80_write_byte(0x7f11, 0x9f);
+    assert_eq!(bus.psg.writes, 1);
+
+    bus.load(0x8000, &[0xab]);
+    bus.z80_write_byte(0x6000, 1);
+    for _ in 0..8 {
+        bus.z80_write_byte(0x6000, 0);
+    }
+    assert_eq!(bus.z80_read_byte(0x8000), 0xab);
+}
+
+#[test]
+fn z80_program_can_drive_ym2612_ports() {
+    let mut bus = M68kBus::new();
+    let mut z80 = Z80::new();
+    let program = [
+        0x3e, 0x22, // ld a,$22
+        0x32, 0x00, 0x40, // ld ($4000),a
+        0x3e, 0x34, // ld a,$34
+        0x32, 0x01, 0x40, // ld ($4001),a
+        0x76, // halt
+    ];
+
+    for (offset, byte) in program.iter().copied().enumerate() {
+        bus.z80_write_byte(offset as u16, byte);
+    }
+    bus.write_byte(0x00a1_1200, 0x01);
+    bus.write_byte(0x00a1_1100, 0x00);
+
+    z80.run_cycles(&mut bus, 96.0);
+
+    assert!(z80.halted);
+    assert_eq!(bus.ym2612.registers[0][0x22], 0x34);
+}
+
+#[test]
 fn vdp_renders_plane_a_tile() {
     let mut bus = M68kBus::new();
     bus.vdp.registers[1] = 0x40;
@@ -415,21 +463,23 @@ fn vdp_full_screen_hscroll_is_reused_on_every_line() {
 }
 
 #[test]
-fn vdp_offscreen_sprites_consume_scanline_sprite_pixel_budget() {
+fn vdp_offscreen_sprites_consume_scanline_sprite_cell_budget() {
     let mut bus = M68kBus::new();
     bus.vdp.registers[1] = 0x40;
-    bus.vdp.registers[5] = 0x00;
+    bus.vdp.registers[5] = 0x40;
     bus.vdp.registers[12] = 0x01;
     bus.vdp.cram[2] = 0x0e0;
+    bus.vdp.cram[3] = 0x00e;
+    let sprite_base = 0x8000;
 
     for index in 0..10 {
-        let entry = index * 8;
+        let entry = sprite_base + index * 8;
         write_vram_word_direct(&mut bus, entry, 0x0080);
         write_vram_word_direct(&mut bus, entry + 2, 0x0f00 | (index as u16 + 1));
         write_vram_word_direct(&mut bus, entry + 4, 0x0001);
         write_vram_word_direct(&mut bus, entry + 6, 0x0050);
     }
-    let visible = 10 * 8;
+    let visible = sprite_base + 10 * 8;
     write_vram_word_direct(&mut bus, visible, 0x0080);
     write_vram_word_direct(&mut bus, visible + 2, 0x0000);
     write_vram_word_direct(&mut bus, visible + 4, 0x0002);
@@ -440,6 +490,51 @@ fn vdp_offscreen_sprites_consume_scanline_sprite_pixel_budget() {
 
     assert_eq!(bus.vdp.screen_width, 320);
     assert_ne!(bus.vdp.framebuffer[0], bus.vdp.palette_color(2));
+}
+
+#[test]
+fn vdp_sprite_cell_limit_renders_overflowing_sprite_then_stops() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[5] = 0x40;
+    bus.vdp.registers[12] = 0x01;
+    bus.vdp.cram[2] = 0x0e0;
+    bus.vdp.cram[3] = 0x00e;
+    let sprite_base = 0x8000;
+
+    for index in 0..9 {
+        let entry = sprite_base + index * 8;
+        write_vram_word_direct(&mut bus, entry, 0x0080);
+        write_vram_word_direct(&mut bus, entry + 2, 0x0c00 | (index as u16 + 1));
+        write_vram_word_direct(&mut bus, entry + 4, 0x0001);
+        write_vram_word_direct(&mut bus, entry + 6, 0x0050);
+    }
+    let partial = sprite_base + 9 * 8;
+    write_vram_word_direct(&mut bus, partial, 0x0080);
+    write_vram_word_direct(&mut bus, partial + 2, 0x0400 | 10);
+    write_vram_word_direct(&mut bus, partial + 4, 0x0001);
+    write_vram_word_direct(&mut bus, partial + 6, 0x0068);
+
+    let visible = sprite_base + 10 * 8;
+    write_vram_word_direct(&mut bus, visible, 0x0080);
+    write_vram_word_direct(&mut bus, visible + 2, 0x0c00 | 11);
+    write_vram_word_direct(&mut bus, visible + 4, 0x0002);
+    write_vram_word_direct(&mut bus, visible + 6, 0x0080);
+    let blocked = sprite_base + 11 * 8;
+    write_vram_word_direct(&mut bus, blocked, 0x0080);
+    write_vram_word_direct(&mut bus, blocked + 2, 0x0000);
+    write_vram_word_direct(&mut bus, blocked + 4, 0x0006);
+    write_vram_word_direct(&mut bus, blocked + 6, 0x00a8);
+    for pattern in 2..=5 {
+        fill_pattern(&mut bus, pattern, 2);
+    }
+    fill_pattern(&mut bus, 6, 3);
+
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.framebuffer[0], bus.vdp.palette_color(2));
+    assert_eq!(bus.vdp.framebuffer[31], bus.vdp.palette_color(2));
+    assert_ne!(bus.vdp.framebuffer[40], bus.vdp.palette_color(3));
 }
 
 fn write_vram_word_direct(bus: &mut M68kBus, address: usize, value: u16) {

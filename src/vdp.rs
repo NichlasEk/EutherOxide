@@ -786,14 +786,14 @@ impl Vdp {
         } else {
             16
         };
-        let max_line_sprite_pixels = if self.screen_width == Self::H40_WIDTH {
-            320
+        let max_line_sprite_cells = if self.screen_width == Self::H40_WIDTH {
+            40
         } else {
-            256
+            32
         };
         let mut occupied = vec![false; self.screen_width * self.screen_height];
         let mut line_sprite_counts = vec![0usize; self.screen_height];
-        let mut line_sprite_pixels = vec![0usize; self.screen_height];
+        let mut line_sprite_cells = vec![0usize; self.screen_height];
 
         for _ in 0..max_sprites {
             let entry = (sprite_base + sprite_index * 8) & 0xffff;
@@ -817,13 +817,13 @@ impl Vdp {
                     pixels,
                     &mut occupied,
                     &mut line_sprite_counts,
-                    &mut line_sprite_pixels,
+                    &mut line_sprite_cells,
                     x,
                     y,
                     width_cells,
                     height_cells,
                     max_line_sprites,
-                    max_line_sprite_pixels,
+                    max_line_sprite_cells,
                     pattern,
                     palette,
                     priority,
@@ -845,13 +845,13 @@ impl Vdp {
         pixels: &mut [usize],
         occupied: &mut [bool],
         line_sprite_counts: &mut [usize],
-        line_sprite_pixels: &mut [usize],
+        line_sprite_cells: &mut [usize],
         x: i32,
         y: i32,
         width_cells: usize,
         height_cells: usize,
         max_line_sprites: usize,
-        max_line_sprite_pixels: usize,
+        max_line_sprite_cells: usize,
         pattern: usize,
         palette: usize,
         priority: bool,
@@ -874,13 +874,12 @@ impl Vdp {
             }
             let line = screen_y as usize;
             if line_sprite_counts[line] >= max_line_sprites
-                || line_sprite_pixels[line].saturating_add(sprite_width) > max_line_sprite_pixels
+                || line_sprite_cells[line] >= max_line_sprite_cells
             {
-                line_sprite_pixels[line] = max_line_sprite_pixels;
                 continue;
             }
             line_sprite_counts[line] += 1;
-            line_sprite_pixels[line] += sprite_width;
+            line_sprite_cells[line] = line_sprite_cells[line].saturating_add(width_cells);
 
             for local_x in 0..sprite_width {
                 let source_x = if h_flip {

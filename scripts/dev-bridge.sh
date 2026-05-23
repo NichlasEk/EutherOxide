@@ -22,7 +22,11 @@ cleanup() {
 }
 
 source_stamp() {
-  find Cargo.toml Cargo.lock src -type f -printf '%T@ %p\n' | sort | sha256sum | awk '{print $1}'
+  find Cargo.toml Cargo.lock src -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum \
+    | sha256sum \
+    | awk '{print $1}'
 }
 
 requested_profile() {

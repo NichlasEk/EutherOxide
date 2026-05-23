@@ -24,6 +24,10 @@ body {
     linear-gradient(135deg, #060706 0%, #15120d 48%, #08120e 100%);
 }
 
+.is-tauri-shell body {
+  background: transparent;
+}
+
 button,
 input {
   font: inherit;
@@ -535,6 +539,33 @@ h2 {
 
 .screen-glass.is-native-frame .oxidation-ring {
   opacity: 0.45;
+}
+
+.is-tauri-shell .screen-vessel,
+.is-tauri-shell .screen-glass {
+  background: transparent;
+}
+
+.is-tauri-shell .reactor-stage {
+  background: transparent;
+  box-shadow: none;
+}
+
+.is-tauri-shell .screen-vessel {
+  border-color: transparent;
+}
+
+.is-tauri-shell .screen-glass {
+  box-shadow: none;
+}
+
+.is-tauri-shell .screen-glass .scanlines,
+.is-tauri-shell .screen-glass .oxidation-ring {
+  opacity: 0;
+}
+
+.is-tauri-shell #video {
+  opacity: 0;
 }
 
 .oxidation-ring {

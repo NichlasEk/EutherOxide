@@ -20,6 +20,7 @@ pub struct M68kBus {
     pub version_register: u8,
     z80_bus_requested: bool,
     z80_reset_asserted: bool,
+    z80_bank_register: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +38,8 @@ pub struct M68kBusSnapshot {
     pub version_register: u8,
     z80_bus_requested: bool,
     z80_reset_asserted: bool,
+    #[serde(default)]
+    z80_bank_register: u16,
 }
 
 impl Default for M68kBus {
@@ -87,6 +90,7 @@ impl M68kBus {
             version_register: 0xa0,
             z80_bus_requested: false,
             z80_reset_asserted: true,
+            z80_bank_register: 0,
         }
     }
 
@@ -102,6 +106,7 @@ impl M68kBus {
         self.ym_frame_cycle = 0;
         self.z80_bus_requested = false;
         self.z80_reset_asserted = true;
+        self.z80_bank_register = 0;
     }
 
     pub fn load_rom(&mut self, rom: Vec<u8>) {
@@ -135,6 +140,7 @@ impl M68kBus {
             version_register: self.version_register,
             z80_bus_requested: self.z80_bus_requested,
             z80_reset_asserted: self.z80_reset_asserted,
+            z80_bank_register: self.z80_bank_register,
         }
     }
 
@@ -163,6 +169,7 @@ impl M68kBus {
         self.version_register = snapshot.version_register;
         self.z80_bus_requested = snapshot.z80_bus_requested;
         self.z80_reset_asserted = snapshot.z80_reset_asserted;
+        self.z80_bank_register = snapshot.z80_bank_register & 0x01ff;
     }
 
     pub fn load(&mut self, address: u32, bytes: &[u8]) {
@@ -341,7 +348,7 @@ impl M68kBus {
                 self.z80_ram[(address as usize) & 0x1fff] = value;
             }
         } else if self.z80_bank_register_address(address) {
-            // Bank register is accepted; full Z80 bus banking is outside this first Rust core.
+            self.write_z80_bank_register(value);
         } else if self.psg_address(address) {
             self.psg
                 .write(value, Some((address & 0x1f) as u8), Some(self.frame_cycle));
@@ -387,6 +394,47 @@ impl M68kBus {
         self.write_word(address + 2, value as u16);
     }
 
+    pub fn z80_running(&self) -> bool {
+        !self.z80_reset_asserted && !self.z80_bus_requested
+    }
+
+    pub fn z80_read_byte(&mut self, address: u16) -> u8 {
+        match address {
+            0x0000..=0x3fff => self.z80_ram[address as usize & 0x1fff],
+            0x4000..=0x5fff => {
+                self.ym2612.sync_to_cycle(self.ym_frame_cycle);
+                self.ym2612.read_register(address as u32)
+            }
+            0x6000..=0x7fff => 0xff,
+            0x8000..=0xffff => {
+                let m68k_address = self.z80_banked_m68k_address(address);
+                self.read_byte(m68k_address)
+            }
+        }
+    }
+
+    pub fn z80_write_byte(&mut self, address: u16, value: u8) {
+        match address {
+            0x0000..=0x3fff => self.z80_ram[address as usize & 0x1fff] = value,
+            0x4000..=0x5fff => {
+                self.ym2612.sync_to_cycle(self.ym_frame_cycle);
+                self.ym2612
+                    .write_port(address as u32 & 0x03, value, Some(self.ym_frame_cycle));
+            }
+            0x6000..=0x60ff => self.write_z80_bank_register(value),
+            0x6100..=0x7eff => {}
+            0x7f00..=0x7f1f => {
+                self.psg
+                    .write(value, Some((address & 0xff) as u8), Some(self.frame_cycle));
+            }
+            0x7f20..=0x7fff => {}
+            0x8000..=0xffff => {
+                let m68k_address = self.z80_banked_m68k_address(address);
+                self.write_byte(m68k_address, value);
+            }
+        }
+    }
+
     fn read_rom_byte(&self, address: u32) -> u8 {
         if self.rom.is_empty() {
             return self
@@ -401,6 +449,15 @@ impl M68kBus {
             address as usize % self.rom.len()
         };
         self.rom[index]
+    }
+
+    fn write_z80_bank_register(&mut self, value: u8) {
+        self.z80_bank_register =
+            ((self.z80_bank_register >> 1) | (u16::from(value & 1) << 8)) & 0x01ff;
+    }
+
+    fn z80_banked_m68k_address(&self, address: u16) -> u32 {
+        ((u32::from(self.z80_bank_register) << 15) | u32::from(address & 0x7fff)) & 0x003f_ffff
     }
 
     fn finish_vdp_dma(&mut self) {

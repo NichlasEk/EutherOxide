@@ -331,6 +331,30 @@ fn print_vdp_summary(emulator: &Emulator) {
         vdp.dma_pattern_transfers, vdp.dma_pattern_nonzero_words, vdp.dma_pattern_last_source
     );
     println!(
+        "Audio: Z80 pc=${:04X} cycles={} halted={} | YM writes {} | PSG writes {}",
+        emulator.z80.pc,
+        emulator.z80.total_cycles,
+        emulator.z80.halted,
+        emulator.bus.ym2612.writes,
+        emulator.bus.psg.writes
+    );
+    print!("YM recent:");
+    for write in emulator.bus.ym2612.write_log.iter().rev().take(8).rev() {
+        print!(
+            " p{}:${:02X}=${:02X}@{}",
+            write.port,
+            write.reg,
+            write.value,
+            write.cycle.unwrap_or(0)
+        );
+    }
+    println!();
+    print!("PSG recent:");
+    for write in emulator.bus.psg.write_log.iter().rev().take(8).rev() {
+        print!(" ${:02X}@{}", write.value, write.cycle.unwrap_or(0));
+    }
+    println!();
+    println!(
         "Sonic RAM: f600=${:02X} f62a=${:02X} f644=${:02X}{:02X} f64e=${:02X} fe10=${:02X}",
         emulator.bus.peek_byte(0xffff_f600),
         emulator.bus.peek_byte(0xffff_f62a),
@@ -501,6 +525,29 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
                 200,
                 "application/octet-stream",
                 &bridge_frame_bytes(emulator, &run),
+            )
+        }
+        ("GET", "/frame-audio.bin") | ("POST", "/frame-audio.bin") => {
+            if emulator.bus.rom.is_empty() {
+                return send_error(stream, 409, "no ROM loaded");
+            }
+            let run = emulator.run_frame();
+            send_response(
+                stream,
+                200,
+                "application/octet-stream",
+                &bridge_frame_audio_bytes(emulator, &run, 44_100),
+            )
+        }
+        ("GET", "/audio.bin") | ("POST", "/audio.bin") => {
+            if emulator.bus.rom.is_empty() {
+                return send_error(stream, 409, "no ROM loaded");
+            }
+            send_response(
+                stream,
+                200,
+                "application/octet-stream",
+                &bridge_audio_bytes(emulator, 44_100),
             )
         }
         ("POST", "/reset") => {
@@ -740,6 +787,48 @@ fn bridge_frame_bytes(emulator: &Emulator, run: &FrameRun) -> Vec<u8> {
     bytes
 }
 
+fn bridge_audio_bytes(emulator: &mut Emulator, sample_rate: usize) -> Vec<u8> {
+    let samples = emulator.render_audio_frame_i16(sample_rate);
+    let mut bytes = Vec::with_capacity(16 + samples.len() * 2);
+    bytes.extend_from_slice(b"EOXA");
+    bytes.extend_from_slice(&(emulator.frame_count.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate as u32).to_le_bytes());
+    bytes.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    bytes
+}
+
+fn bridge_frame_audio_bytes(
+    emulator: &mut Emulator,
+    run: &FrameRun,
+    sample_rate: usize,
+) -> Vec<u8> {
+    let frame = bridge_frame(emulator, run);
+    let samples = emulator.render_audio_frame_i16(sample_rate);
+    let rgba_len = frame.rgba.len();
+    let pcm_len = samples.len() * 2;
+    let mut bytes = Vec::with_capacity(48 + rgba_len + pcm_len);
+    bytes.extend_from_slice(b"EOXB");
+    bytes.extend_from_slice(&(frame.frame.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.width as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.height as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.cpu_cycles.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.cpu_steps.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&((frame.frame_ms * 1000.0).max(0.0) as u32).to_le_bytes());
+    bytes.extend_from_slice(&u32::from(frame.stopped).to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate as u32).to_le_bytes());
+    bytes.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(rgba_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&(pcm_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&frame.rgba);
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    bytes
+}
+
 fn bridge_frame_without_run(emulator: &Emulator) -> BridgeFrame {
     let (width, height) = emulator.frame_size();
     let mut rgba = Vec::with_capacity(width * height * 4);
@@ -873,7 +962,12 @@ fn normalize_bridge_profile(profile: &str) -> String {
 fn read_build_status_file() -> (String, String, u64) {
     let Some(content) = fs::read_to_string(build_status_path()).ok() else {
         return (
-            if release_binary_ready() { "ready" } else { "missing" }.to_string(),
+            if release_binary_ready() {
+                "ready"
+            } else {
+                "missing"
+            }
+            .to_string(),
             if release_binary_ready() {
                 "Release binary ready"
             } else {

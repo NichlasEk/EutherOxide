@@ -6,6 +6,7 @@ pub mod m68k;
 pub mod rom;
 pub mod savestate;
 pub mod vdp;
+pub mod z80;
 
 pub use bus::M68kBus;
 pub use emulator::{Emulator, EmulatorSnapshot, FrameRun};

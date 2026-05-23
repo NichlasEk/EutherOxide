@@ -8,8 +8,10 @@
     "dev:bridge": "bash scripts/dev-bridge.sh",
     "dev:bridge:release": "EUTHER_BRIDGE_RELEASE=1 bash scripts/dev-bridge.sh",
     "build:release": "bash scripts/build-release.sh",
-    "build": "tsc && vite build",
+    "build:all": "bash scripts/build-all.sh",
+    "build": "node scripts/write-build-info.mjs && tsc && vite build",
     "preview": "vite preview",
+    "tauri:run": "bash scripts/run-tauri-release.sh",
     "tauri": "tauri"
   },
   "dependencies": {

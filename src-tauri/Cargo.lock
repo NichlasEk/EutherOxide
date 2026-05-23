@@ -731,11 +731,16 @@ dependencies = [
 name = "euther_oxide_app"
 version = "0.1.0"
 dependencies = [
+ "cairo-rs",
  "euther_oxide",
+ "gdk",
+ "gtk",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "webkit2gtk",
 ]
 
 [[package]]

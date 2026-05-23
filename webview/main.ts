@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { WEB_BUILD_ID } from "./build-info";
 import "./styles.css";
 
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
+    webkitAudioContext?: typeof AudioContext;
   }
 }
 
@@ -45,6 +47,18 @@ type FrameResult = {
   frameMs: number;
   stopped: boolean;
   lastError?: string | null;
+};
+
+type AudioResult = {
+  frame: number;
+  sampleRate: number;
+  samples: number[] | Int16Array<ArrayBuffer>;
+};
+
+type FrameAudioResult = {
+  frame: FrameResult;
+  audio: AudioResult;
+  transport: string;
 };
 
 type InputState = {
@@ -100,6 +114,10 @@ type UiState = LoadResult & {
   cpuCycles: number;
   cpuSteps: number;
   frameMs: number;
+  transportMs: number;
+  drawMs: number;
+  audioLeadMs: number;
+  transportMode: string;
   status: string;
   lastError: string;
   stateSlots: StateSlot[];
@@ -108,6 +126,7 @@ type UiState = LoadResult & {
 };
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
+document.documentElement.classList.toggle("is-tauri-shell", isTauri);
 const bridgeBase =
   new URLSearchParams(window.location.search).get("bridge") ?? "http://127.0.0.1:32161";
 const romCacheDb = "eutheroxide-rom-cache";
@@ -137,6 +156,10 @@ const ui: UiState = {
   cpuCycles: 0,
   cpuSteps: 0,
   frameMs: 0,
+  transportMs: 0,
+  drawMs: 0,
+  audioLeadMs: 0,
+  transportMode: isTauri ? "TAURI INIT" : "WEB INIT",
   status: "IDLE",
   lastError: "",
   statePath: null,
@@ -156,7 +179,12 @@ let lastInputJson = JSON.stringify(inputState);
 let lastBrowserFile: File | null = null;
 let bridgeRetryTimer: number | null = null;
 let buildPollTimer: number | null = null;
+let nativeBridgeBase: string | null = null;
 let desiredBuildProfile: "debug" | "release" = "debug";
+let audioContext: AudioContext | null = null;
+let audioCursor = 0;
+let nextFrameDue = performance.now();
+let nativeSurfaceRectTimer: number | null = null;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="oxide-shell">
@@ -274,6 +302,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="metric"><span>Steps</span><strong id="step-count">0</strong></div>
         <div class="metric"><span>Frame ms</span><strong id="frame-ms">0.00</strong></div>
         <div class="metric"><span>Bridge</span><strong id="bridge-mode">WEB</strong></div>
+        <div class="metric"><span>Fetch ms</span><strong id="fetch-ms">0.00</strong></div>
+        <div class="metric"><span>Draw ms</span><strong id="draw-ms">0.00</strong></div>
+        <div class="metric"><span>Audio lead</span><strong id="audio-lead-ms">0</strong></div>
+        <div class="metric"><span>Transport</span><strong id="transport-mode">INIT</strong></div>
+        <div class="metric"><span>Build</span><strong id="build-id">dev</strong></div>
       </div>
       <div class="reaction-log">
         <p class="section-label">Oxidative Trace</p>
@@ -347,6 +380,8 @@ playToggle.addEventListener("click", () => {
   ui.status = ui.playing ? "RUNNING" : "PAUSED";
   renderUi();
   if (ui.playing) {
+    nextFrameDue = performance.now();
+    void ensureAudio();
     void animationLoop();
   }
 });
@@ -824,6 +859,161 @@ async function bridgeFrame(timeoutMs = 0): Promise<FrameResult> {
   return decodeBridgeFrame(buffer);
 }
 
+async function bridgeAudio(timeoutMs = 0): Promise<AudioResult> {
+  const response = await bridgeRequest("/audio.bin", { method: "POST" }, timeoutMs);
+  const buffer = await response.arrayBuffer();
+  return decodeBridgeAudio(buffer);
+}
+
+async function bridgeFrameAudio(timeoutMs = 0): Promise<FrameAudioResult> {
+  const response = await bridgeRequest("/frame-audio.bin", { method: "POST" }, timeoutMs);
+  const buffer = await response.arrayBuffer();
+  return decodeBridgeFrameAudio(buffer);
+}
+
+async function nativeBridgeRequest(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 0,
+): Promise<Response> {
+  if (!nativeBridgeBase) {
+    nativeBridgeBase = await invoke<string>("native_bridge_url");
+    if (!nativeBridgeBase) {
+      throw new Error("Tauri native bridge is not armed");
+    }
+    pushTrace("Tauri localhost transport armed");
+  }
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeout =
+    controller && window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${nativeBridgeBase}${path}`, {
+      ...init,
+      signal: controller?.signal,
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return response;
+  } finally {
+    if (timeout) {
+      window.clearTimeout(timeout);
+    }
+  }
+}
+
+async function tauriLocalFrameAudio(): Promise<FrameAudioResult> {
+  const response = await nativeBridgeRequest("/frame-audio.bin");
+  const buffer = await response.arrayBuffer();
+  return { ...decodeBridgeFrameAudio(buffer), transport: "TAURI LOCALHOST AUDIO" };
+}
+
+async function tauriFrameAudio(): Promise<FrameAudioResult> {
+  try {
+    const packet = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer> | number[]>(
+      "run_frame_audio_packet",
+    );
+    const transport =
+      packet instanceof ArrayBuffer
+        ? "TAURI RAW BUFFER"
+        : packet instanceof Uint8Array
+          ? "TAURI RAW UINT8"
+          : "TAURI RAW ARRAY";
+    const buffer =
+      packet instanceof ArrayBuffer
+        ? packet
+        : packet instanceof Uint8Array
+          ? packet.buffer.slice(packet.byteOffset, packet.byteOffset + packet.byteLength)
+          : new Uint8Array(packet).buffer;
+    return { ...decodeBridgeFrameAudio(buffer), transport };
+  } catch (error) {
+    pushTrace(`Tauri IPC missed: ${String(error)}`);
+  }
+
+  try {
+    return await tauriLocalFrameAudio();
+  } catch (error) {
+    nativeBridgeBase = null;
+    pushTrace(`Tauri localhost missed: ${String(error)}`);
+    throw error;
+  }
+}
+
+function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
+  const bytes = new Uint8Array(buffer);
+  if (
+    bytes.length < 48 ||
+    bytes[0] !== 0x45 ||
+    bytes[1] !== 0x4f ||
+    bytes[2] !== 0x58 ||
+    bytes[3] !== 0x42
+  ) {
+    throw new Error("Bad EutherOxide frame/audio packet");
+  }
+  const view = new DataView(buffer);
+  const frame = view.getUint32(4, true);
+  const width = view.getUint32(8, true);
+  const height = view.getUint32(12, true);
+  const cpuCycles = view.getUint32(16, true);
+  const cpuSteps = view.getUint32(20, true);
+  const frameMs = view.getUint32(24, true) / 1000;
+  const stopped = view.getUint32(28, true) !== 0;
+  const sampleRate = view.getUint32(32, true);
+  const sampleCount = view.getUint32(36, true);
+  const rgbaLength = view.getUint32(40, true);
+  const pcmLength = view.getUint32(44, true);
+  const rgbaOffset = 48;
+  const pcmOffset = rgbaOffset + rgbaLength;
+  if (
+    rgbaLength !== width * height * 4 ||
+    pcmLength !== sampleCount * 2 ||
+    bytes.byteLength !== pcmOffset + pcmLength
+  ) {
+    throw new Error("EutherOxide frame/audio packet size mismatch");
+  }
+  return {
+    frame: {
+      frame,
+      width,
+      height,
+      rgba: bytes.subarray(rgbaOffset, pcmOffset),
+      cpuCycles,
+      cpuSteps,
+      frameMs,
+      stopped,
+      lastError: null,
+    },
+    audio: {
+      frame,
+      sampleRate,
+      samples: new Int16Array(buffer, pcmOffset, sampleCount) as Int16Array<ArrayBuffer>,
+    },
+    transport: "BRIDGE PACKET",
+  };
+}
+
+function decodeBridgeAudio(buffer: ArrayBuffer): AudioResult {
+  const bytes = new Uint8Array(buffer);
+  if (
+    bytes.length < 16 ||
+    bytes[0] !== 0x45 ||
+    bytes[1] !== 0x4f ||
+    bytes[2] !== 0x58 ||
+    bytes[3] !== 0x41
+  ) {
+    throw new Error("Bad EutherOxide audio packet");
+  }
+  const view = new DataView(buffer);
+  const frame = view.getUint32(4, true);
+  const sampleRate = view.getUint32(8, true);
+  const count = view.getUint32(12, true);
+  if (bytes.byteLength !== 16 + count * 2) {
+    throw new Error("EutherOxide audio packet size mismatch");
+  }
+  const samples = new Int16Array(buffer, 16, count) as Int16Array<ArrayBuffer>;
+  return { frame, sampleRate, samples };
+}
+
 function decodeBridgeFrame(buffer: ArrayBuffer): FrameResult {
   const bytes = new Uint8Array(buffer);
   if (
@@ -888,7 +1078,15 @@ async function animationLoop(): Promise<void> {
   if (!ui.playing) {
     return;
   }
-  await advanceFrame();
+  const now = performance.now();
+  if (now >= nextFrameDue - 1) {
+    await advanceFrame();
+    const frameMs = 1000 / (ui.timing === "PAL" ? 50 : 60);
+    nextFrameDue += frameMs;
+    if (nextFrameDue < performance.now() - frameMs) {
+      nextFrameDue = performance.now();
+    }
+  }
   window.requestAnimationFrame(() => void animationLoop());
 }
 
@@ -899,11 +1097,28 @@ async function advanceFrame(): Promise<void> {
   stepping = true;
   try {
     if ((isTauri && ui.runtime === "tauri" && ui.loaded) || ui.runtime === "bridge") {
-      const frame =
+      const fetchStart = performance.now();
+      const frameAudio =
         ui.runtime === "bridge"
-          ? await bridgeFrame()
-          : await invoke<FrameResult>("run_frame");
-      drawNativeFrame(frame);
+          ? await bridgeFrameAudio()
+          : isTauri && ui.runtime === "tauri"
+            ? await tauriFrameAudio()
+            : null;
+      const frame = frameAudio?.frame ?? await invoke<FrameResult>("run_frame");
+      const fetchDone = performance.now();
+      if (!(isTauri && ui.runtime === "tauri")) {
+        drawNativeFrame(frame);
+      }
+      const drawDone = performance.now();
+      if (frameAudio) {
+        ui.audioLeadMs = await scheduleAudio(frameAudio.audio);
+        ui.transportMode = frameAudio.transport;
+      } else {
+        ui.transportMode = ui.runtime === "tauri" ? "TAURI JSON" : "FRAME JSON";
+        void queueNativeAudio();
+      }
+      ui.transportMs = fetchDone - fetchStart;
+      ui.drawMs = drawDone - fetchDone;
       ui.frame = frame.frame;
       ui.cpuCycles = frame.cpuCycles;
       ui.cpuSteps = frame.cpuSteps;
@@ -920,6 +1135,10 @@ async function advanceFrame(): Promise<void> {
       ui.cpuCycles = 488 * 262;
       ui.cpuSteps = Math.max(1, Math.floor(420 + ((romHash ^ ui.frame) & 0xff)));
       ui.frameMs = 16.67;
+      ui.transportMs = 0;
+      ui.drawMs = 0;
+      ui.audioLeadMs = 0;
+      ui.transportMode = "WEB SYNTH";
       ui.status = ui.playing ? "WEB RUN" : "WEB STEP";
       drawSyntheticFrame();
     }
@@ -927,6 +1146,68 @@ async function advanceFrame(): Promise<void> {
     renderUi();
     stepping = false;
   }
+}
+
+async function queueNativeAudio(): Promise<void> {
+  if (!ui.playing || !ui.loaded) {
+    return;
+  }
+  try {
+    const audio =
+      ui.runtime === "bridge"
+        ? await bridgeAudio()
+        : isTauri && ui.runtime === "tauri"
+          ? await invoke<AudioResult>("render_audio_frame")
+          : null;
+    if (audio) {
+      ui.audioLeadMs = await scheduleAudio(audio);
+    }
+  } catch {
+    pushTrace("Audio bridge warming");
+  }
+}
+
+async function ensureAudio(): Promise<AudioContext | null> {
+  const AudioCtor = window.AudioContext ?? window.webkitAudioContext;
+  if (!AudioCtor) {
+    return null;
+  }
+  if (!audioContext) {
+    audioContext = new AudioCtor();
+    audioCursor = audioContext.currentTime;
+  }
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
+  return audioContext;
+}
+
+async function scheduleAudio(audio: AudioResult): Promise<number> {
+  const context = await ensureAudio();
+  if (!context || audio.samples.length === 0) {
+    return 0;
+  }
+  const samples =
+    audio.samples instanceof Int16Array
+      ? audio.samples
+      : Int16Array.from(audio.samples);
+  const buffer = context.createBuffer(1, samples.length, audio.sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let index = 0; index < samples.length; index += 1) {
+    channel[index] = samples[index] / 32768;
+  }
+
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(context.destination);
+  const now = context.currentTime;
+  if (audioCursor < now + 0.02 || audioCursor > now + 0.18) {
+    audioCursor = now + 0.035;
+  }
+  source.start(audioCursor);
+  const leadMs = Math.max(0, (audioCursor - now) * 1000);
+  audioCursor += buffer.duration;
+  return leadMs;
 }
 
 function drawNativeFrame(frame: FrameResult): void {
@@ -1340,6 +1621,11 @@ function renderUi(): void {
   document.querySelector("#step-count")!.textContent = String(ui.cpuSteps);
   document.querySelector("#frame-ms")!.textContent = ui.frameMs.toFixed(2);
   document.querySelector("#bridge-mode")!.textContent = ui.runtime.toUpperCase();
+  document.querySelector("#fetch-ms")!.textContent = ui.transportMs.toFixed(2);
+  document.querySelector("#draw-ms")!.textContent = ui.drawMs.toFixed(2);
+  document.querySelector("#audio-lead-ms")!.textContent = ui.audioLeadMs.toFixed(0);
+  document.querySelector("#transport-mode")!.textContent = ui.transportMode;
+  document.querySelector("#build-id")!.textContent = WEB_BUILD_ID;
   document.querySelector("#runtime-chip")!.textContent =
     ui.runtime === "tauri"
       ? "TAURI 2 CORE"
@@ -1352,6 +1638,7 @@ function renderUi(): void {
   screenGlass.classList.toggle("is-native-frame", ui.loaded && ui.runtime !== "web");
   renderBuildControls();
   renderStateSlots();
+  scheduleNativeSurfaceRectSync();
 }
 
 function renderBuildControls(): void {
@@ -1379,6 +1666,36 @@ function renderBuildControls(): void {
       : ui.build.releaseReady
         ? "Release binary ready"
         : "Release binary not ready";
+}
+
+function scheduleNativeSurfaceRectSync(): void {
+  if (!isTauri) {
+    return;
+  }
+  if (nativeSurfaceRectTimer !== null) {
+    window.clearTimeout(nativeSurfaceRectTimer);
+  }
+  nativeSurfaceRectTimer = window.setTimeout(() => {
+    nativeSurfaceRectTimer = null;
+    void syncNativeSurfaceRect();
+  }, 0);
+}
+
+async function syncNativeSurfaceRect(): Promise<void> {
+  if (!isTauri) {
+    return;
+  }
+  const rect = screenGlass.getBoundingClientRect();
+  try {
+    await invoke("set_native_surface_rect", {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+    });
+  } catch {
+    // The native surface is Linux/Tauri specific and may not be present in all dev modes.
+  }
 }
 
 function pushTrace(message: string): void {
@@ -1478,6 +1795,7 @@ function startMoleculeField(): void {
     canvas.style.width = `${window.innerWidth}px`;
     canvas.style.height = `${window.innerHeight}px`;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    scheduleNativeSurfaceRectSync();
   };
   window.addEventListener("resize", resize);
   resize();
