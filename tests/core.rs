@@ -281,6 +281,50 @@ fn vdp_renders_plane_a_tile() {
 }
 
 #[test]
+fn vdp_sprites_use_column_major_tile_order() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[5] = 0x00;
+    for index in 1..=4 {
+        bus.vdp.cram[index] = (index as u16) << 1;
+    }
+
+    write_vram_word_direct(&mut bus, 0x0000, 0x0080);
+    write_vram_word_direct(&mut bus, 0x0002, 0x0500);
+    write_vram_word_direct(&mut bus, 0x0004, 0x0001);
+    write_vram_word_direct(&mut bus, 0x0006, 0x0080);
+    for tile in 1..=4 {
+        fill_pattern(&mut bus, tile, tile as u8);
+    }
+
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.framebuffer[0], bus.vdp.palette_color(1));
+    assert_eq!(bus.vdp.framebuffer[8], bus.vdp.palette_color(3));
+    assert_eq!(
+        bus.vdp.framebuffer[8 * bus.vdp.screen_width],
+        bus.vdp.palette_color(2)
+    );
+    assert_eq!(
+        bus.vdp.framebuffer[8 * bus.vdp.screen_width + 8],
+        bus.vdp.palette_color(4)
+    );
+}
+
+fn write_vram_word_direct(bus: &mut M68kBus, address: usize, value: u16) {
+    bus.vdp.vram[address & 0xffff] = (value >> 8) as u8;
+    bus.vdp.vram[(address ^ 1) & 0xffff] = value as u8;
+}
+
+fn fill_pattern(bus: &mut M68kBus, pattern: usize, color: u8) {
+    let packed = (color & 0x0f) * 0x11;
+    let base = pattern * 32;
+    for offset in 0..32 {
+        bus.vdp.vram[(base + offset) & 0xffff] = packed;
+    }
+}
+
+#[test]
 fn ym2612_timer_busy_and_pitch_paths_work() {
     let mut ym = Ym2612::new();
     ym.write_address_1(0xa0);

@@ -783,8 +783,8 @@ impl Vdp {
             let attr = self.read_vram_word((entry + 4) as u32);
             let x_raw = self.read_vram_word((entry + 6) as u32) & 0x01ff;
             let link = (size_link & 0x7f) as usize;
-            let width_cells = (((size_link >> 8) & 0x03) + 1) as usize;
-            let height_cells = (((size_link >> 10) & 0x03) + 1) as usize;
+            let width_cells = (((size_link >> 10) & 0x03) + 1) as usize;
+            let height_cells = (((size_link >> 8) & 0x03) + 1) as usize;
             let x = x_raw as i32 - 128;
             let y = y_raw as i32 - 128;
             let h_flip = (attr & 0x0800) != 0;
@@ -856,7 +856,7 @@ impl Vdp {
                     continue;
                 }
 
-                let tile = pattern + tile_y * width_cells + tile_x;
+                let tile = (pattern + tile_x * height_cells + tile_y) & 0x07ff;
                 let color = self.pattern_color(tile, row, col);
                 if color == 0 {
                     continue;
