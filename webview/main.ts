@@ -27,7 +27,7 @@ type FrameResult = {
   frame: number;
   width: number;
   height: number;
-  rgba: number[];
+  rgba: number[] | Uint8Array<ArrayBuffer>;
   cpuCycles: number;
   cpuSteps: number;
   frameMs: number;
@@ -72,6 +72,14 @@ type WebStateSnapshot = {
   status: string;
 };
 
+type CachedRomRecord = {
+  key: "last";
+  name: string;
+  bytes: ArrayBuffer;
+  hash: number;
+  savedUnixMs: number;
+};
+
 type UiState = LoadResult & {
   loaded: boolean;
   playing: boolean;
@@ -89,6 +97,8 @@ type UiState = LoadResult & {
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 const bridgeBase =
   new URLSearchParams(window.location.search).get("bridge") ?? "http://127.0.0.1:32161";
+const romCacheDb = "eutheroxide-rom-cache";
+const romCacheStore = "roms";
 const inputState: InputState = {
   up: false,
   down: false,
@@ -121,7 +131,7 @@ const ui: UiState = {
   nativeStates: false,
 };
 
-let romBytes = new Uint8Array();
+let romBytes = new Uint8Array(0) as Uint8Array<ArrayBuffer>;
 let romDisplayName = "reaction.argon";
 let romHash = 0xC0FFEE;
 let webStateSlots: Array<WebStateSnapshot | null> = [null, null, null];
@@ -322,7 +332,7 @@ resetCore.addEventListener("click", async () => {
       method: "POST",
     });
     Object.assign(ui, result);
-    const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" });
+    const frame = await bridgeFrame();
     drawNativeFrame(frame);
     ui.frame = frame.frame;
     ui.cpuCycles = frame.cpuCycles;
@@ -445,6 +455,7 @@ async function loadFile(file: File): Promise<void> {
   romDisplayName = file.name;
   romHash = hashBytes(romBytes);
   const webInfo = parseWebHeader(romBytes, file.name);
+  await persistCachedRom(file.name, romBytes);
 
   if (isTauri) {
     try {
@@ -470,7 +481,7 @@ async function loadFile(file: File): Promise<void> {
       pushTrace("Web bridge took over");
     }
   } else {
-    if (await loadFileThroughBridge(file, buffer)) {
+    if (await loadBytesThroughBridge(file.name, romBytes)) {
       return;
     }
     Object.assign(ui, webInfo);
@@ -489,7 +500,7 @@ async function loadFile(file: File): Promise<void> {
   renderUi();
 }
 
-async function loadFileThroughBridge(file: File, buffer: ArrayBuffer): Promise<boolean> {
+async function loadBytesThroughBridge(fileName: string, bytes: Uint8Array): Promise<boolean> {
   try {
     const result = await bridgeJson<BridgeStatusResult>(
       "/load",
@@ -497,9 +508,9 @@ async function loadFileThroughBridge(file: File, buffer: ArrayBuffer): Promise<b
         method: "POST",
         headers: {
           "Content-Type": "application/octet-stream",
-          "X-Rom-Name": encodeURIComponent(file.name),
+          "X-Rom-Name": encodeURIComponent(fileName),
         },
-        body: new Blob([buffer]),
+        body: copyArrayBuffer(bytes),
       },
       5000,
     );
@@ -510,9 +521,9 @@ async function loadFileThroughBridge(file: File, buffer: ArrayBuffer): Promise<b
     ui.nativeStates = Boolean(result.statePath);
     ui.status = "BRIDGE LOADED";
     ui.lastError = "";
-    document.querySelector("#rom-name")!.textContent = file.name;
+    document.querySelector("#rom-name")!.textContent = fileName;
     await refreshStateSlots();
-    const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" }, 5000);
+    const frame = await bridgeFrame(5000);
     drawNativeFrame(frame);
     ui.frame = frame.frame;
     ui.cpuCycles = frame.cpuCycles;
@@ -555,7 +566,7 @@ async function connectBridge(announce = true): Promise<boolean> {
       return true;
     }
     await refreshStateSlots();
-    const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" });
+    const frame = await bridgeFrame();
     drawNativeFrame(frame);
     ui.frame = frame.frame;
     ui.cpuCycles = frame.cpuCycles;
@@ -596,8 +607,16 @@ async function retryBridgeConnection(): Promise<void> {
     return;
   }
   if (lastBrowserFile && ui.loaded) {
-    const buffer = await lastBrowserFile.arrayBuffer();
-    if (await loadFileThroughBridge(lastBrowserFile, buffer)) {
+    if (romBytes.length === 0) {
+      romBytes = new Uint8Array(await lastBrowserFile.arrayBuffer());
+    }
+    if (await loadBytesThroughBridge(lastBrowserFile.name, romBytes)) {
+      stopBridgeRetry();
+    }
+    return;
+  }
+  if (romBytes.length > 0 && ui.loaded) {
+    if (await loadBytesThroughBridge(romDisplayName, romBytes)) {
       stopBridgeRetry();
     }
     return;
@@ -614,6 +633,43 @@ async function bridgeJson<T>(
 ): Promise<T> {
   const response = await bridgeRequest(path, init, timeoutMs);
   return (await response.json()) as T;
+}
+
+async function bridgeFrame(timeoutMs = 0): Promise<FrameResult> {
+  const response = await bridgeRequest("/frame.bin", { method: "POST" }, timeoutMs);
+  const buffer = await response.arrayBuffer();
+  return decodeBridgeFrame(buffer);
+}
+
+function decodeBridgeFrame(buffer: ArrayBuffer): FrameResult {
+  const bytes = new Uint8Array(buffer);
+  if (
+    bytes.length < 32 ||
+    bytes[0] !== 0x45 ||
+    bytes[1] !== 0x4f ||
+    bytes[2] !== 0x58 ||
+    bytes[3] !== 0x46
+  ) {
+    throw new Error("Bad EutherOxide frame packet");
+  }
+  const view = new DataView(buffer);
+  const width = view.getUint32(8, true);
+  const height = view.getUint32(12, true);
+  const rgba = bytes.subarray(32);
+  if (rgba.byteLength !== width * height * 4) {
+    throw new Error("EutherOxide frame packet size mismatch");
+  }
+  return {
+    frame: view.getUint32(4, true),
+    width,
+    height,
+    rgba,
+    cpuCycles: view.getUint32(16, true),
+    cpuSteps: view.getUint32(20, true),
+    frameMs: view.getUint32(24, true) / 1000,
+    stopped: view.getUint32(28, true) !== 0,
+    lastError: null,
+  };
 }
 
 async function bridgeRequest(
@@ -662,7 +718,7 @@ async function advanceFrame(): Promise<void> {
     if ((isTauri && ui.runtime === "tauri" && ui.loaded) || ui.runtime === "bridge") {
       const frame =
         ui.runtime === "bridge"
-          ? await bridgeJson<FrameResult>("/frame", { method: "POST" })
+          ? await bridgeFrame()
           : await invoke<FrameResult>("run_frame");
       drawNativeFrame(frame);
       ui.frame = frame.frame;
@@ -696,11 +752,18 @@ function drawNativeFrame(frame: FrameResult): void {
     videoCanvas.height = frame.height;
   }
   const image = new ImageData(
-    new Uint8ClampedArray(frame.rgba),
+    framePixels(frame.rgba),
     frame.width,
     frame.height,
   );
   videoContext.putImageData(image, 0, 0);
+}
+
+function framePixels(rgba: number[] | Uint8Array<ArrayBufferLike>): Uint8ClampedArray<ArrayBuffer> {
+  const bytes = rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba);
+  const pixels = new Uint8ClampedArray(bytes.byteLength) as Uint8ClampedArray<ArrayBuffer>;
+  pixels.set(bytes);
+  return pixels;
 }
 
 async function refreshStateSlots(): Promise<void> {
@@ -926,6 +989,120 @@ function persistWebSlots(): void {
   );
 }
 
+async function restoreCachedRom(): Promise<void> {
+  if (isTauri || ui.loaded) {
+    return;
+  }
+  const cached = await readCachedRom();
+  if (!cached) {
+    return;
+  }
+
+  romBytes = cached.bytes;
+  romDisplayName = cached.name;
+  romHash = cached.hash || hashBytes(cached.bytes);
+  Object.assign(ui, parseWebHeader(romBytes, romDisplayName));
+  ui.loaded = true;
+  ui.runtime = "web";
+  ui.nativeStates = false;
+  ui.status = "ROM CACHE";
+  ui.lastError = "";
+  document.querySelector("#rom-name")!.textContent = romDisplayName;
+  loadWebSlots();
+  drawSyntheticFrame();
+  pushTrace("Browser ROM cache restored");
+  renderUi();
+
+  if (!(await loadBytesThroughBridge(romDisplayName, romBytes))) {
+    scheduleBridgeRetry();
+  }
+}
+
+async function persistCachedRom(name: string, bytes: Uint8Array): Promise<void> {
+  if (isTauri || !window.indexedDB) {
+    return;
+  }
+  await withRomStore<IDBValidKey>("readwrite", (store) =>
+    store.put({
+      key: "last",
+      name,
+      bytes: copyArrayBuffer(bytes),
+      hash: hashBytes(bytes),
+      savedUnixMs: Date.now(),
+    } satisfies CachedRomRecord),
+  ).catch(() => undefined);
+}
+
+async function readCachedRom(): Promise<{
+  name: string;
+  bytes: Uint8Array<ArrayBuffer>;
+  hash: number;
+} | null> {
+  if (!window.indexedDB) {
+    return null;
+  }
+  const record = await withRomStore<CachedRomRecord | undefined>("readonly", (store) =>
+    store.get("last") as IDBRequest<CachedRomRecord | undefined>,
+  ).catch(() => undefined);
+  if (!record?.bytes || typeof record.name !== "string") {
+    return null;
+  }
+  const bytes = new Uint8Array(record.bytes.slice(0)) as Uint8Array<ArrayBuffer>;
+  if (bytes.length === 0) {
+    return null;
+  }
+  return {
+    name: record.name,
+    bytes,
+    hash: record.hash >>> 0,
+  };
+}
+
+function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
+function openRomCacheDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(romCacheDb, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(romCacheStore)) {
+        db.createObjectStore(romCacheStore, { keyPath: "key" });
+      }
+    };
+    request.onerror = () => reject(request.error ?? new Error("Could not open ROM cache"));
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+async function withRomStore<T>(
+  mode: IDBTransactionMode,
+  action: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  const db = await openRomCacheDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(romCacheStore, mode);
+    const request = action(transaction.objectStore(romCacheStore));
+    let result: T;
+    request.onsuccess = () => {
+      result = request.result;
+    };
+    const fail = () => {
+      db.close();
+      reject(transaction.error ?? request.error ?? new Error("ROM cache request failed"));
+    };
+    transaction.onerror = fail;
+    transaction.onabort = fail;
+    transaction.oncomplete = () => {
+      db.close();
+      resolve(result);
+    };
+  });
+}
+
 function webSlotSummaries(): StateSlot[] {
   return webStateSlots.map((slot, index) => ({
     slot: index + 1,
@@ -1134,4 +1311,7 @@ function startMoleculeField(): void {
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
-void connectBridge();
+void (async () => {
+  await connectBridge();
+  await restoreCachedRom();
+})();

@@ -454,6 +454,18 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
             let run = emulator.run_frame();
             send_json(stream, &bridge_frame(emulator, &run))
         }
+        ("GET", "/frame.bin") | ("POST", "/frame.bin") => {
+            if emulator.bus.rom.is_empty() {
+                return send_error(stream, 409, "no ROM loaded");
+            }
+            let run = emulator.run_frame();
+            send_response(
+                stream,
+                200,
+                "application/octet-stream",
+                &bridge_frame_bytes(emulator, &run),
+            )
+        }
         ("POST", "/reset") => {
             emulator.reset();
             send_json(stream, &bridge_status(emulator))
@@ -593,6 +605,7 @@ fn send_response(
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
@@ -673,6 +686,21 @@ fn bridge_frame(emulator: &Emulator, run: &FrameRun) -> BridgeFrame {
     frame.frame_ms = run.elapsed.as_secs_f64() * 1000.0;
     frame.stopped = run.hit_unsupported_opcode;
     frame
+}
+
+fn bridge_frame_bytes(emulator: &Emulator, run: &FrameRun) -> Vec<u8> {
+    let frame = bridge_frame(emulator, run);
+    let mut bytes = Vec::with_capacity(32 + frame.rgba.len());
+    bytes.extend_from_slice(b"EOXF");
+    bytes.extend_from_slice(&(frame.frame.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.width as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.height as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.cpu_cycles.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(frame.cpu_steps.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&((frame.frame_ms * 1000.0).max(0.0) as u32).to_le_bytes());
+    bytes.extend_from_slice(&u32::from(frame.stopped).to_le_bytes());
+    bytes.extend_from_slice(&frame.rgba);
+    bytes
 }
 
 fn bridge_frame_without_run(emulator: &Emulator) -> BridgeFrame {

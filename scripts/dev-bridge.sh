@@ -27,8 +27,14 @@ start_bridge() {
     kill "$bridge_pid" 2>/dev/null || true
     wait "$bridge_pid" 2>/dev/null || true
   fi
-  echo "[dev-bridge] starting Rust core bridge on http://127.0.0.1:32161"
-  cargo run -- --web-bridge &
+  local cargo_profile=()
+  local profile_label="debug"
+  if [[ "${EUTHER_BRIDGE_RELEASE:-0}" == "1" ]]; then
+    cargo_profile=(--release)
+    profile_label="release"
+  fi
+  echo "[dev-bridge] starting Rust core bridge ($profile_label) on http://127.0.0.1:32161"
+  cargo run "${cargo_profile[@]}" -- --web-bridge &
   bridge_pid="$!"
 }
 
