@@ -1,10 +1,11 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process;
-use std::time::Duration;
+use std::process::{self, Command};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
@@ -406,6 +407,20 @@ struct BridgeInput {
     start: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeBuildStatus {
+    active_profile: String,
+    requested_profile: String,
+    building: bool,
+    release_ready: bool,
+    armed: bool,
+    last_status: String,
+    last_message: String,
+    release_path: String,
+    updated_unix_ms: u64,
+}
+
 struct HttpRequest {
     method: String,
     path: String,
@@ -440,6 +455,28 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
     let path = request.path.split('?').next().unwrap_or(&request.path);
     match (request.method.as_str(), path) {
         ("GET", "/status") => send_json(stream, &bridge_status(emulator)),
+        ("GET", "/build/status") => send_json(stream, &bridge_build_status()),
+        ("POST", "/build/release") => {
+            start_release_build()?;
+            send_json(stream, &bridge_build_status())
+        }
+        ("POST", "/build/profile") => {
+            let profile = query_profile(&request.path)?;
+            if profile == "release" && !release_binary_ready() {
+                return send_error(stream, 409, "release binary is not ready");
+            }
+            set_requested_bridge_profile(profile)?;
+            let status = bridge_build_status();
+            let should_restart = status.active_profile != status.requested_profile;
+            send_json(stream, &status)?;
+            if should_restart {
+                thread::spawn(|| {
+                    thread::sleep(Duration::from_millis(120));
+                    process::exit(0);
+                });
+            }
+            Ok(())
+        }
         ("POST", "/load") => {
             if request.body.is_empty() {
                 return send_error(stream, 400, "empty ROM upload");
@@ -758,6 +795,147 @@ fn empty_bridge_slots() -> BridgeSlots {
     }
 }
 
+fn bridge_build_status() -> BridgeBuildStatus {
+    let active_profile = active_bridge_profile();
+    let requested_profile = requested_bridge_profile();
+    let (last_status, last_message, updated_unix_ms) = read_build_status_file();
+    let release_path = release_binary_path();
+    let release_ready = release_binary_ready();
+    let building = last_status == "building";
+    let armed = active_profile == "release" && requested_profile == "release" && release_ready;
+
+    BridgeBuildStatus {
+        active_profile,
+        requested_profile,
+        building,
+        release_ready,
+        armed,
+        last_status,
+        last_message,
+        release_path: release_path.display().to_string(),
+        updated_unix_ms,
+    }
+}
+
+fn start_release_build() -> io::Result<()> {
+    if bridge_build_status().building {
+        return Ok(());
+    }
+    ensure_bridge_control_dir()?;
+    let status_path = build_status_path();
+    fs::write(
+        &status_path,
+        format!(
+            "state=building\nmessage=Building release binary\nupdated_unix_ms={}\nrelease_path={}\n",
+            unix_ms_now(),
+            release_binary_path().display()
+        ),
+    )?;
+    Command::new("bash")
+        .arg("scripts/build-release.sh")
+        .spawn()
+        .map(|_| ())
+}
+
+fn active_bridge_profile() -> String {
+    env::var("EUTHER_BRIDGE_PROFILE").unwrap_or_else(|_| {
+        env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.components()
+                    .any(|component| component.as_os_str() == "release")
+                    .then_some("release".to_string())
+            })
+            .unwrap_or_else(|| "debug".to_string())
+    })
+}
+
+fn requested_bridge_profile() -> String {
+    fs::read_to_string(profile_path())
+        .ok()
+        .map(|profile| normalize_bridge_profile(profile.trim()))
+        .unwrap_or_else(active_bridge_profile)
+}
+
+fn set_requested_bridge_profile(profile: &str) -> io::Result<()> {
+    ensure_bridge_control_dir()?;
+    fs::write(profile_path(), normalize_bridge_profile(profile))
+}
+
+fn normalize_bridge_profile(profile: &str) -> String {
+    if profile == "release" {
+        "release".to_string()
+    } else {
+        "debug".to_string()
+    }
+}
+
+fn read_build_status_file() -> (String, String, u64) {
+    let Some(content) = fs::read_to_string(build_status_path()).ok() else {
+        return (
+            if release_binary_ready() { "ready" } else { "missing" }.to_string(),
+            if release_binary_ready() {
+                "Release binary ready"
+            } else {
+                "No release binary built yet"
+            }
+            .to_string(),
+            0,
+        );
+    };
+    let mut state = "missing".to_string();
+    let mut message = String::new();
+    let mut updated_unix_ms = 0;
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            match key {
+                "state" => state = value.trim().to_string(),
+                "message" => message = value.trim().to_string(),
+                "updated_unix_ms" => updated_unix_ms = value.trim().parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    if message.is_empty() {
+        message = state.clone();
+    }
+    (state, message, updated_unix_ms)
+}
+
+fn release_binary_ready() -> bool {
+    release_binary_path()
+        .metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false)
+}
+
+fn ensure_bridge_control_dir() -> io::Result<()> {
+    fs::create_dir_all(bridge_control_dir())
+}
+
+fn bridge_control_dir() -> PathBuf {
+    PathBuf::from(".euther-bridge")
+}
+
+fn profile_path() -> PathBuf {
+    bridge_control_dir().join("profile")
+}
+
+fn build_status_path() -> PathBuf {
+    bridge_control_dir().join("build-status")
+}
+
+fn release_binary_path() -> PathBuf {
+    PathBuf::from("target/release/euther-oxide")
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
 fn apply_bridge_input(emulator: &mut Emulator, input: BridgeInput) {
     let pad = &mut emulator.bus.controller_a;
     pad.set_pressed(euther_oxide::controller::Controller::UP, input.up);
@@ -812,6 +990,23 @@ fn query_slot(path: &str) -> io::Result<usize> {
             })
         })
         .ok_or_else(|| invalid_request("missing slot query"))
+}
+
+fn query_profile(path: &str) -> io::Result<&'static str> {
+    let profile = path
+        .split_once('?')
+        .and_then(|(_, query)| {
+            query.split('&').find_map(|pair| {
+                let (name, value) = pair.split_once('=')?;
+                (name == "profile").then_some(value)
+            })
+        })
+        .ok_or_else(|| invalid_request("missing profile query"))?;
+    match profile {
+        "debug" => Ok("debug"),
+        "release" => Ok("release"),
+        _ => Err(invalid_request("profile must be debug or release")),
+    }
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

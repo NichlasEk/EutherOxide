@@ -23,6 +23,18 @@ type BridgeStatusResult = LoadResult & {
   frame: number;
 };
 
+type BridgeBuildStatus = {
+  activeProfile: "debug" | "release" | string;
+  requestedProfile: "debug" | "release" | string;
+  building: boolean;
+  releaseReady: boolean;
+  armed: boolean;
+  lastStatus: string;
+  lastMessage: string;
+  releasePath: string;
+  updatedUnixMs: number;
+};
+
 type FrameResult = {
   frame: number;
   width: number;
@@ -92,6 +104,7 @@ type UiState = LoadResult & {
   lastError: string;
   stateSlots: StateSlot[];
   nativeStates: boolean;
+  build: BridgeBuildStatus;
 };
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
@@ -129,6 +142,7 @@ const ui: UiState = {
   statePath: null,
   stateSlots: emptySlots(),
   nativeStates: false,
+  build: emptyBuildStatus(),
 };
 
 let romBytes = new Uint8Array(0) as Uint8Array<ArrayBuffer>;
@@ -141,6 +155,8 @@ let videoContext: CanvasRenderingContext2D;
 let lastInputJson = JSON.stringify(inputState);
 let lastBrowserFile: File | null = null;
 let bridgeRetryTimer: number | null = null;
+let buildPollTimer: number | null = null;
+let desiredBuildProfile: "debug" | "release" = "debug";
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="oxide-shell">
@@ -214,11 +230,21 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <p class="eyebrow">Alkene Chamber</p>
           <h2 id="game-title">No ROM</h2>
         </div>
-        <div class="runtime-chip" id="runtime-chip">WEB VIEW</div>
+        <div class="stage-tools">
+          <div class="build-console" id="build-console">
+            <div class="build-slider" aria-label="bridge build profile">
+              <button data-build-profile="debug" type="button">Debug</button>
+              <button data-build-profile="release" type="button">Bin</button>
+            </div>
+            <button id="release-build" class="build-button" type="button">Build</button>
+            <span id="build-lamp" class="build-lamp is-cold" title="Release binary not armed"></span>
+          </div>
+          <div class="runtime-chip" id="runtime-chip">WEB VIEW</div>
+        </div>
       </header>
 
       <div class="screen-vessel">
-        <div class="screen-glass">
+        <div class="screen-glass" id="screen-glass">
           <canvas id="video" width="320" height="224"></canvas>
           <div class="scanlines"></div>
           <div class="oxidation-ring"></div>
@@ -270,6 +296,12 @@ const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
+const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
+const releaseBuild = document.querySelector<HTMLButtonElement>("#release-build")!;
+const buildLamp = document.querySelector<HTMLSpanElement>("#build-lamp")!;
+const buildProfileButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-build-profile]"),
+);
 
 romDrop.addEventListener("click", async (event) => {
   if (!isTauri) {
@@ -349,6 +381,17 @@ resetCore.addEventListener("click", async () => {
   ui.status = ui.loaded ? "RESET" : "IDLE";
   pushTrace("Reset vector reloaded");
   renderUi();
+});
+
+releaseBuild.addEventListener("click", async () => {
+  await buildReleaseBinary();
+});
+
+buildProfileButtons.forEach((button) => {
+  button.addEventListener("click", async () => {
+    const profile = button.dataset.buildProfile === "release" ? "release" : "debug";
+    await setBridgeBuildProfile(profile);
+  });
 });
 
 stateGrid.addEventListener("click", async (event) => {
@@ -522,6 +565,7 @@ async function loadBytesThroughBridge(fileName: string, bytes: Uint8Array): Prom
     ui.status = "BRIDGE LOADED";
     ui.lastError = "";
     document.querySelector("#rom-name")!.textContent = fileName;
+    await refreshBuildStatus(false);
     await refreshStateSlots();
     const frame = await bridgeFrame(5000);
     drawNativeFrame(frame);
@@ -554,6 +598,7 @@ async function connectBridge(announce = true): Promise<boolean> {
     ui.frame = result.frame;
     ui.status = ui.loaded ? "BRIDGE READY" : "BRIDGE IDLE";
     ui.lastError = "";
+    await refreshBuildStatus(false);
     document.querySelector("#rom-name")!.textContent = ui.loaded
       ? result.title
       : "Load Mega Drive";
@@ -585,6 +630,144 @@ async function connectBridge(announce = true): Promise<boolean> {
     renderUi();
     return false;
   }
+}
+
+async function buildReleaseBinary(): Promise<void> {
+  if (isTauri || ui.runtime !== "bridge") {
+    if (!(await connectBridge(false))) {
+      pushTrace("Bridge offline");
+      return;
+    }
+  }
+  desiredBuildProfile = "release";
+  try {
+    applyBuildStatus(
+      await bridgeJson<BridgeBuildStatus>("/build/release", { method: "POST" }, 1000),
+    );
+    pushTrace("Release build started");
+    renderUi();
+    pollBuildStatus();
+  } catch (error) {
+    ui.lastError = String(error);
+    pushTrace("Release build refused");
+    renderUi();
+  }
+}
+
+async function setBridgeBuildProfile(profile: "debug" | "release"): Promise<void> {
+  desiredBuildProfile = profile;
+  if (isTauri || ui.runtime !== "bridge") {
+    if (!(await connectBridge(false))) {
+      pushTrace("Bridge offline");
+      return;
+    }
+  }
+  await refreshBuildStatus(false);
+  if (profile === "release" && !ui.build.releaseReady) {
+    pushTrace("Build latest bin first");
+    renderUi();
+    return;
+  }
+  try {
+    const status = await bridgeJson<BridgeBuildStatus>(
+      `/build/profile?profile=${profile}`,
+      { method: "POST" },
+      1000,
+    );
+    applyBuildStatus(status);
+    pushTrace(profile === "release" ? "Release bin arming" : "Debug bridge arming");
+    renderUi();
+    await reconnectAfterBridgeRestart();
+  } catch (error) {
+    ui.lastError = String(error);
+    pushTrace("Bridge profile switch failed");
+    renderUi();
+  }
+}
+
+async function refreshBuildStatus(announce = false): Promise<void> {
+  if (isTauri) {
+    return;
+  }
+  try {
+    applyBuildStatus(await bridgeJson<BridgeBuildStatus>("/build/status", {}, 700));
+    if (announce && ui.build.armed) {
+      pushTrace("Release bin armed");
+    }
+  } catch {
+    ui.build = {
+      ...ui.build,
+      building: false,
+      armed: false,
+      lastStatus: "offline",
+      lastMessage: "Bridge offline",
+    };
+  } finally {
+    renderUi();
+  }
+}
+
+function pollBuildStatus(): void {
+  if (buildPollTimer !== null) {
+    window.clearInterval(buildPollTimer);
+  }
+  buildPollTimer = window.setInterval(async () => {
+    await refreshBuildStatus(false);
+    if (!ui.build.building) {
+      if (buildPollTimer !== null) {
+        window.clearInterval(buildPollTimer);
+        buildPollTimer = null;
+      }
+      if (ui.build.releaseReady && desiredBuildProfile === "release") {
+        await setBridgeBuildProfile("release");
+      }
+    }
+  }, 1000);
+}
+
+function applyBuildStatus(status: BridgeBuildStatus): void {
+  ui.build = status;
+  desiredBuildProfile =
+    status.requestedProfile === "release" || status.activeProfile === "release"
+      ? "release"
+      : desiredBuildProfile;
+}
+
+async function reconnectAfterBridgeRestart(): Promise<void> {
+  ui.status = "REARMING";
+  renderUi();
+  await sleep(700);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (romBytes.length > 0) {
+      if (await loadBytesThroughBridge(romDisplayName, romBytes)) {
+        await refreshBuildStatus(true);
+        return;
+      }
+    } else if (await connectBridge(false)) {
+      await refreshBuildStatus(true);
+      return;
+    }
+    await sleep(350);
+  }
+  scheduleBridgeRetry();
+}
+
+function emptyBuildStatus(): BridgeBuildStatus {
+  return {
+    activeProfile: "debug",
+    requestedProfile: "debug",
+    building: false,
+    releaseReady: false,
+    armed: false,
+    lastStatus: "cold",
+    lastMessage: "Bridge build status cold",
+    releasePath: "target/release/euther-oxide",
+    updatedUnixMs: 0,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function scheduleBridgeRetry(): void {
@@ -1166,7 +1349,36 @@ function renderUi(): void {
   playToggle.disabled = !ui.loaded;
   stepFrame.disabled = !ui.loaded;
   resetCore.disabled = !ui.loaded;
+  screenGlass.classList.toggle("is-native-frame", ui.loaded && ui.runtime !== "web");
+  renderBuildControls();
   renderStateSlots();
+}
+
+function renderBuildControls(): void {
+  const bridgeOnline = ui.runtime === "bridge" && !isTauri;
+  releaseBuild.disabled = !bridgeOnline || ui.build.building;
+  releaseBuild.textContent = ui.build.building ? "Building" : "Build";
+  const selectedProfile =
+    desiredBuildProfile === "release" || ui.build.activeProfile === "release"
+      ? "release"
+      : "debug";
+  buildProfileButtons.forEach((button) => {
+    const profile = button.dataset.buildProfile === "release" ? "release" : "debug";
+    button.classList.toggle("is-selected", profile === selectedProfile);
+    button.disabled = !bridgeOnline || ui.build.building;
+  });
+  buildLamp.className = "build-lamp";
+  buildLamp.classList.add(ui.build.armed ? "is-armed" : "is-cold");
+  if (ui.build.building) {
+    buildLamp.classList.add("is-building");
+  }
+  buildLamp.title = ui.build.armed
+    ? "Release binary ready and armed"
+    : ui.build.building
+      ? "Release build running"
+      : ui.build.releaseReady
+        ? "Release binary ready"
+        : "Release binary not ready";
 }
 
 function pushTrace(message: string): void {

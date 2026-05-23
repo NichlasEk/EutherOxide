@@ -560,10 +560,15 @@ impl Vdp {
             return;
         }
 
-        let mut pixels = vec![backdrop; self.screen_width * self.screen_height];
-        self.draw_scroll_planes(&mut pixels);
-        self.draw_sprites(&mut pixels);
-        for (index, pixel) in pixels.into_iter().enumerate() {
+        let pixel_count = self.screen_width * self.screen_height;
+        let mut scroll_pixels = vec![0; pixel_count];
+        let mut sprite_pixels = vec![0; pixel_count];
+        self.draw_scroll_planes(&mut scroll_pixels);
+        self.draw_sprites(&mut sprite_pixels);
+        for index in 0..pixel_count {
+            let pixel =
+                Self::resolve_sprite_scroll_pixel(sprite_pixels[index], scroll_pixels[index])
+                    .unwrap_or(backdrop);
             let color = self.palette_color(pixel & 0x3f);
             self.framebuffer[index] = color;
         }
@@ -716,7 +721,7 @@ impl Vdp {
         (self.registers[12] & 0x06) == 0x06
     }
 
-    fn draw_scroll_planes(&mut self, pixels: &mut [usize]) {
+    fn draw_scroll_planes(&self, pixels: &mut [usize]) {
         let width = self.screen_width;
         let height = self.screen_height;
         let (plane_width_cells, plane_height_cells) = self.plane_dimensions();
@@ -724,17 +729,16 @@ impl Vdp {
         let map_height = plane_height_cells * 8;
         let plane_a = self.plane_a_base();
         let plane_b = self.plane_b_base();
-        let hscroll_base = self.hscroll_base();
-        let backdrop = (self.registers[7] & 0x3f) as usize;
 
         for y in 0..height {
-            let hscroll_a = self.read_vram_word((hscroll_base + (y * 4)) as u32) as usize & 0x03ff;
-            let hscroll_b =
-                self.read_vram_word((hscroll_base + (y * 4) + 2) as u32) as usize & 0x03ff;
-            let vscroll_a = self.vsram[0] as usize & 0x03ff;
-            let vscroll_b = self.vsram[1] as usize & 0x03ff;
+            let hscroll_a = self.h_scroll_value(true, y);
+            let hscroll_b = self.h_scroll_value(false, y);
 
             for x in 0..width {
+                let column = x / 16;
+                let vscroll_a = self.v_scroll_value_for_column(true, column);
+                let vscroll_b = self.v_scroll_value_for_column(false, column);
+                let index = y * width + x;
                 let b = self.plane_pixel(
                     PlaneParams {
                         name_base: plane_b,
@@ -747,33 +751,29 @@ impl Vdp {
                     x,
                     y,
                 );
-                let a = self.plane_pixel(
-                    PlaneParams {
-                        name_base: plane_a,
-                        width_cells: plane_width_cells,
-                        map_width,
-                        map_height,
-                        hscroll: hscroll_a,
-                        vscroll: vscroll_a,
-                    },
-                    x,
-                    y,
-                );
-                let color_index = match (a, b) {
-                    (Some(pa), Some(pb)) if (pa & 0x100) == 0 && (pb & 0x100) != 0 => pb,
-                    (Some(pa), _) => pa,
-                    (None, Some(pb)) => pb,
-                    _ => {
-                        pixels[y * width + x] = backdrop;
-                        continue;
-                    }
+                let a = if self.window_active(x, y) {
+                    self.window_pixel(x, y)
+                } else {
+                    self.plane_pixel(
+                        PlaneParams {
+                            name_base: plane_a,
+                            width_cells: plane_width_cells,
+                            map_width,
+                            map_height,
+                            hscroll: hscroll_a,
+                            vscroll: vscroll_a,
+                        },
+                        x,
+                        y,
+                    )
                 };
-                pixels[y * width + x] = color_index;
+                pixels[index] =
+                    Self::resolve_scroll_pixel(a.unwrap_or(0), b.unwrap_or(0)).unwrap_or(0);
             }
         }
     }
 
-    fn draw_sprites(&mut self, pixels: &mut [usize]) {
+    fn draw_sprites(&self, pixels: &mut [usize]) {
         let sprite_base = self.sprite_table_base();
         let mut sprite_index = 0usize;
         let max_sprites = if self.screen_width == Self::H40_WIDTH {
@@ -781,7 +781,19 @@ impl Vdp {
         } else {
             64
         };
+        let max_line_sprites = if self.screen_width == Self::H40_WIDTH {
+            20
+        } else {
+            16
+        };
+        let max_line_sprite_pixels = if self.screen_width == Self::H40_WIDTH {
+            320
+        } else {
+            256
+        };
         let mut occupied = vec![false; self.screen_width * self.screen_height];
+        let mut line_sprite_counts = vec![0usize; self.screen_height];
+        let mut line_sprite_pixels = vec![0usize; self.screen_height];
 
         for _ in 0..max_sprites {
             let entry = (sprite_base + sprite_index * 8) & 0xffff;
@@ -800,18 +812,18 @@ impl Vdp {
             let pattern = attr as usize & 0x07ff;
             let priority = (attr & 0x8000) != 0;
 
-            if x > -(width_cells as i32 * 8)
-                && y > -(height_cells as i32 * 8)
-                && x < self.screen_width as i32
-                && y < self.screen_height as i32
-            {
+            if y > -(height_cells as i32 * 8) && y < self.screen_height as i32 {
                 self.draw_sprite_tiles(
                     pixels,
                     &mut occupied,
+                    &mut line_sprite_counts,
+                    &mut line_sprite_pixels,
                     x,
                     y,
                     width_cells,
                     height_cells,
+                    max_line_sprites,
+                    max_line_sprite_pixels,
                     pattern,
                     palette,
                     priority,
@@ -829,13 +841,17 @@ impl Vdp {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_sprite_tiles(
-        &mut self,
+        &self,
         pixels: &mut [usize],
         occupied: &mut [bool],
+        line_sprite_counts: &mut [usize],
+        line_sprite_pixels: &mut [usize],
         x: i32,
         y: i32,
         width_cells: usize,
         height_cells: usize,
+        max_line_sprites: usize,
+        max_line_sprite_pixels: usize,
         pattern: usize,
         palette: usize,
         priority: bool,
@@ -856,6 +872,15 @@ impl Vdp {
             if !(0..self.screen_height as i32).contains(&screen_y) {
                 continue;
             }
+            let line = screen_y as usize;
+            if line_sprite_counts[line] >= max_line_sprites
+                || line_sprite_pixels[line].saturating_add(sprite_width) > max_line_sprite_pixels
+            {
+                line_sprite_pixels[line] = max_line_sprite_pixels;
+                continue;
+            }
+            line_sprite_counts[line] += 1;
+            line_sprite_pixels[line] += sprite_width;
 
             for local_x in 0..sprite_width {
                 let source_x = if h_flip {
@@ -879,13 +904,42 @@ impl Vdp {
                 if occupied[index] {
                     continue;
                 }
-                let current_priority = (pixels[index] & 0x100) != 0;
-                if priority || !current_priority {
-                    pixels[index] = (if priority { 0x100 } else { 0 }) | palette | color;
-                }
+                pixels[index] = (if priority { 0x100 } else { 0 }) | palette | color;
                 occupied[index] = true;
             }
         }
+    }
+
+    fn resolve_scroll_pixel(scroll_a: usize, scroll_b: usize) -> Option<usize> {
+        let a_visible = Self::raw_pixel_visible(scroll_a);
+        let b_visible = Self::raw_pixel_visible(scroll_b);
+        let b_priority = b_visible && (scroll_b & 0x100) != 0;
+
+        if a_visible && ((scroll_a & 0x100) != 0 || !b_priority) {
+            return Some(scroll_a);
+        }
+        if b_visible {
+            return Some(scroll_b);
+        }
+        a_visible.then_some(scroll_a)
+    }
+
+    fn resolve_sprite_scroll_pixel(sprite: usize, scroll: usize) -> Option<usize> {
+        let sprite_visible = Self::raw_pixel_visible(sprite);
+        let scroll_visible = Self::raw_pixel_visible(scroll);
+        let scroll_priority = scroll_visible && (scroll & 0x100) != 0;
+
+        if sprite_visible && ((sprite & 0x100) != 0 || !scroll_priority) {
+            return Some(sprite);
+        }
+        if scroll_visible {
+            return Some(scroll);
+        }
+        sprite_visible.then_some(sprite)
+    }
+
+    fn raw_pixel_visible(pixel: usize) -> bool {
+        (pixel & 0x0f) != 0
     }
 
     fn plane_pixel(&self, plane: PlaneParams, screen_x: usize, screen_y: usize) -> Option<usize> {
@@ -915,17 +969,120 @@ impl Vdp {
         }
     }
 
+    fn window_pixel(&self, screen_x: usize, screen_y: usize) -> Option<usize> {
+        let cell_x = screen_x >> 3;
+        let cell_y = screen_y >> 3;
+        let entry_address =
+            (self.window_base() + 2 * (cell_y * self.window_width_cells() + cell_x)) & 0xffff;
+        let entry = self.read_vram_word(entry_address as u32);
+        let mut row = screen_y & 7;
+        let mut col = screen_x & 7;
+        if (entry & 0x1000) != 0 {
+            row = 7 - row;
+        }
+        if (entry & 0x0800) != 0 {
+            col = 7 - col;
+        }
+        let pattern = entry as usize & 0x07ff;
+        let color = self.pattern_color(pattern, row, col);
+        if color == 0 {
+            None
+        } else {
+            let palette = ((entry >> 9) as usize) & 0x30;
+            let priority = if (entry & 0x8000) != 0 { 0x100 } else { 0 };
+            Some(priority | palette | color)
+        }
+    }
+
+    fn window_active(&self, screen_x: usize, screen_y: usize) -> bool {
+        let (start, end) = self.window_range(screen_y);
+        screen_x >= start && screen_x < end
+    }
+
+    fn window_range(&self, screen_y: usize) -> (usize, usize) {
+        let width = self.screen_width;
+        let x = ((self.registers[17] & 0x1f) as usize * 16).min(width);
+        let y = (self.registers[18] & 0x1f) as usize;
+        let in_vertical = if (self.registers[18] & 0x80) != 0 {
+            (screen_y >> 3) >= y
+        } else {
+            (screen_y >> 3) < y
+        };
+        if in_vertical {
+            return (0, width);
+        }
+        if (self.registers[17] & 0x80) != 0 {
+            (x, width)
+        } else {
+            (0, x)
+        }
+    }
+
+    fn h_scroll_value(&self, plane_a: bool, screen_y: usize) -> usize {
+        let line = if self.interlace_mode_2() {
+            screen_y >> 1
+        } else {
+            screen_y
+        } & 0xff;
+        let offset = match self.registers[11] & 0x03 {
+            0 => 0,
+            1 => 4 * (line & 0x07),
+            2 => 32 * (line / 8),
+            _ => 4 * line,
+        };
+        let plane_offset = if plane_a { 0 } else { 2 };
+        self.read_vram_word((self.hscroll_base() + offset + plane_offset) as u32) as usize & 0x03ff
+    }
+
+    fn v_scroll_value_for_column(&self, plane_a: bool, column: usize) -> usize {
+        if (self.registers[11] & 0x04) == 0 {
+            return self.vsram[if plane_a { 0 } else { 1 }] as usize & 0x03ff;
+        }
+        let index = column * 2 + usize::from(!plane_a);
+        self.vsram[index & (Self::VSRAM_SIZE - 1)] as usize & 0x03ff
+    }
+
     fn plane_dimensions(&self) -> (usize, usize) {
-        match self.registers[16] & 0x03 {
-            0 => (32, 32),
-            1 => (64, 32),
-            2 => (32, 64),
-            _ => (128, 32),
+        match self.registers[16] & 0x33 {
+            0x00 => (32, 32),
+            0x01 => (64, 32),
+            0x02 => (32, 64),
+            0x03 => (128, 32),
+            0x10 => (32, 64),
+            0x11 => (64, 64),
+            0x12 => (32, 64),
+            0x13 => (128, 64),
+            0x20 => (32, 32),
+            0x21 => (64, 32),
+            0x22 => (32, 64),
+            0x23 => (128, 32),
+            0x30 => (32, 128),
+            0x31 => (64, 128),
+            0x32 => (64, 1),
+            0x33 => (128, 128),
+            _ => (32, 32),
         }
     }
 
     fn plane_a_base(&self) -> usize {
         ((self.registers[2] as usize & 0x38) << 10) & 0xffff
+    }
+
+    fn window_base(&self) -> usize {
+        let base = ((self.registers[3] as usize & 0x3e) << 10) & 0xffff;
+        if self.screen_width == Self::H40_WIDTH {
+            base & 0xf000
+        } else {
+            base & 0xf800
+        }
+    }
+
+    fn window_width_cells(&self) -> usize {
+        if self.screen_width == Self::H40_WIDTH {
+            64
+        } else {
+            32
+        }
     }
 
     fn plane_b_base(&self) -> usize {

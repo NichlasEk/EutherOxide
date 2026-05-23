@@ -176,6 +176,125 @@ h2 {
   white-space: nowrap;
 }
 
+.stage-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stage-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.build-console {
+  display: flex;
+  align-items: center;
+  flex: none;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid rgba(98, 218, 168, 0.18);
+  border-radius: 999px;
+  background: rgba(7, 18, 14, 0.72);
+}
+
+.build-slider {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  flex: none;
+  width: 116px;
+  min-width: 116px;
+  padding: 3px;
+  border: 1px solid rgba(207, 240, 178, 0.13);
+  border-radius: 999px;
+  background: rgba(4, 9, 7, 0.86);
+}
+
+.build-slider::before {
+  content: "";
+  position: absolute;
+  inset: 3px auto 3px 3px;
+  width: calc(50% - 3px);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(98, 218, 168, 0.3), rgba(245, 215, 125, 0.18));
+  transition: transform 180ms ease;
+}
+
+.build-slider:has([data-build-profile="release"].is-selected)::before {
+  transform: translateX(100%);
+}
+
+.build-slider button {
+  position: relative;
+  min-height: 28px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #a9c99c;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.build-slider button:hover:not(:disabled),
+.build-slider button:active:not(:disabled),
+.build-slider button.is-selected {
+  transform: none;
+  background: transparent;
+  box-shadow: none;
+  color: #f3ffdd;
+}
+
+.build-button {
+  flex: none;
+  min-height: 32px;
+  padding: 0 11px;
+  border-radius: 999px;
+  color: #f4ffde;
+  font-size: 0.73rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.build-lamp {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-right: 5px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #9c2f24;
+  box-shadow:
+    0 0 0 3px rgba(156, 47, 36, 0.18),
+    0 0 16px rgba(247, 101, 82, 0.45);
+}
+
+.build-lamp.is-armed {
+  background: #72e46e;
+  box-shadow:
+    0 0 0 3px rgba(114, 228, 110, 0.16),
+    0 0 18px rgba(114, 228, 110, 0.58);
+}
+
+.build-lamp.is-building {
+  animation: lamp-pulse 760ms ease-in-out infinite alternate;
+}
+
+@keyframes lamp-pulse {
+  from {
+    filter: saturate(0.8) brightness(0.82);
+  }
+  to {
+    filter: saturate(1.25) brightness(1.25);
+  }
+}
+
 .rom-drop {
   position: relative;
   display: grid;
@@ -407,6 +526,15 @@ h2 {
     transparent 4px
   );
   mix-blend-mode: screen;
+}
+
+.screen-glass.is-native-frame .scanlines {
+  opacity: 0.22;
+  mix-blend-mode: normal;
+}
+
+.screen-glass.is-native-frame .oxidation-ring {
+  opacity: 0.45;
 }
 
 .oxidation-ring {
