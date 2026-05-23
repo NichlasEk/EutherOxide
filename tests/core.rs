@@ -311,6 +311,30 @@ fn vdp_sprites_use_column_major_tile_order() {
     );
 }
 
+#[test]
+fn vdp_low_priority_sprites_stay_behind_high_priority_plane_pixels() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[2] = 0x38;
+    bus.vdp.registers[5] = 0x00;
+    bus.vdp.registers[13] = 0x3f;
+    bus.vdp.cram[1] = 0x00e;
+    bus.vdp.cram[2] = 0x0e0;
+
+    let plane_a = ((bus.vdp.registers[2] as usize & 0x38) << 10) & 0xffff;
+    write_vram_word_direct(&mut bus, plane_a, 0x8002);
+    write_vram_word_direct(&mut bus, 0x0000, 0x0080);
+    write_vram_word_direct(&mut bus, 0x0002, 0x0000);
+    write_vram_word_direct(&mut bus, 0x0004, 0x0001);
+    write_vram_word_direct(&mut bus, 0x0006, 0x0080);
+    fill_pattern(&mut bus, 1, 1);
+    fill_pattern(&mut bus, 2, 2);
+
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.framebuffer[0], bus.vdp.palette_color(2));
+}
+
 fn write_vram_word_direct(bus: &mut M68kBus, address: usize, value: u16) {
     bus.vdp.vram[address & 0xffff] = (value >> 8) as u8;
     bus.vdp.vram[(address ^ 1) & 0xffff] = value as u8;

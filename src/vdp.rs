@@ -551,16 +551,22 @@ impl Vdp {
         self.update_screen_size();
         self.ensure_framebuffer_size();
 
-        let backdrop = self.palette_color((self.registers[7] & 0x3f) as usize);
-        self.framebuffer.fill(backdrop);
+        let backdrop = (self.registers[7] & 0x3f) as usize;
         if !self.display_enabled() {
+            let backdrop_color = self.palette_color(backdrop);
+            self.framebuffer.fill(backdrop_color);
             self.render_version += 1;
             self.video_dirty = false;
             return;
         }
 
-        self.draw_scroll_planes();
-        self.draw_sprites();
+        let mut pixels = vec![backdrop; self.screen_width * self.screen_height];
+        self.draw_scroll_planes(&mut pixels);
+        self.draw_sprites(&mut pixels);
+        for (index, pixel) in pixels.into_iter().enumerate() {
+            let color = self.palette_color(pixel & 0x3f);
+            self.framebuffer[index] = color;
+        }
         self.render_version += 1;
         self.video_dirty = false;
     }
@@ -710,7 +716,7 @@ impl Vdp {
         (self.registers[12] & 0x06) == 0x06
     }
 
-    fn draw_scroll_planes(&mut self) {
+    fn draw_scroll_planes(&mut self, pixels: &mut [usize]) {
         let width = self.screen_width;
         let height = self.screen_height;
         let (plane_width_cells, plane_height_cells) = self.plane_dimensions();
@@ -719,7 +725,7 @@ impl Vdp {
         let plane_a = self.plane_a_base();
         let plane_b = self.plane_b_base();
         let hscroll_base = self.hscroll_base();
-        let backdrop = self.palette_color((self.registers[7] & 0x3f) as usize);
+        let backdrop = (self.registers[7] & 0x3f) as usize;
 
         for y in 0..height {
             let hscroll_a = self.read_vram_word((hscroll_base + (y * 4)) as u32) as usize & 0x03ff;
@@ -754,20 +760,20 @@ impl Vdp {
                     y,
                 );
                 let color_index = match (a, b) {
-                    (Some(pa), Some(pb)) if (pa & 0x100) == 0 && (pb & 0x100) != 0 => pb & 0x3f,
-                    (Some(pa), _) => pa & 0x3f,
-                    (None, Some(pb)) => pb & 0x3f,
+                    (Some(pa), Some(pb)) if (pa & 0x100) == 0 && (pb & 0x100) != 0 => pb,
+                    (Some(pa), _) => pa,
+                    (None, Some(pb)) => pb,
                     _ => {
-                        self.framebuffer[y * width + x] = backdrop;
+                        pixels[y * width + x] = backdrop;
                         continue;
                     }
                 };
-                self.framebuffer[y * width + x] = self.palette_color(color_index);
+                pixels[y * width + x] = color_index;
             }
         }
     }
 
-    fn draw_sprites(&mut self) {
+    fn draw_sprites(&mut self, pixels: &mut [usize]) {
         let sprite_base = self.sprite_table_base();
         let mut sprite_index = 0usize;
         let max_sprites = if self.screen_width == Self::H40_WIDTH {
@@ -775,6 +781,7 @@ impl Vdp {
         } else {
             64
         };
+        let mut occupied = vec![false; self.screen_width * self.screen_height];
 
         for _ in 0..max_sprites {
             let entry = (sprite_base + sprite_index * 8) & 0xffff;
@@ -791,6 +798,7 @@ impl Vdp {
             let v_flip = (attr & 0x1000) != 0;
             let palette = ((attr >> 9) as usize) & 0x30;
             let pattern = attr as usize & 0x07ff;
+            let priority = (attr & 0x8000) != 0;
 
             if x > -(width_cells as i32 * 8)
                 && y > -(height_cells as i32 * 8)
@@ -798,12 +806,15 @@ impl Vdp {
                 && y < self.screen_height as i32
             {
                 self.draw_sprite_tiles(
+                    pixels,
+                    &mut occupied,
                     x,
                     y,
                     width_cells,
                     height_cells,
                     pattern,
                     palette,
+                    priority,
                     h_flip,
                     v_flip,
                 );
@@ -819,12 +830,15 @@ impl Vdp {
     #[allow(clippy::too_many_arguments)]
     fn draw_sprite_tiles(
         &mut self,
+        pixels: &mut [usize],
+        occupied: &mut [bool],
         x: i32,
         y: i32,
         width_cells: usize,
         height_cells: usize,
         pattern: usize,
         palette: usize,
+        priority: bool,
         h_flip: bool,
         v_flip: bool,
     ) {
@@ -862,7 +876,14 @@ impl Vdp {
                     continue;
                 }
                 let index = screen_y as usize * self.screen_width + screen_x as usize;
-                self.framebuffer[index] = self.palette_color(palette | color);
+                if occupied[index] {
+                    continue;
+                }
+                let current_priority = (pixels[index] & 0x100) != 0;
+                if priority || !current_priority {
+                    pixels[index] = (if priority { 0x100 } else { 0 }) | palette | color;
+                }
+                occupied[index] = true;
             }
         }
     }
