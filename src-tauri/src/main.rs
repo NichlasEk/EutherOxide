@@ -35,6 +35,7 @@ struct NativeAudio {
     queue: Arc<Mutex<VecDeque<f32>>>,
     _stream: cpal::Stream,
     sample_rate: u32,
+    primed: bool,
 }
 
 enum AudioCommand {
@@ -50,6 +51,21 @@ enum AudioCommand {
 struct NativeAudioResult {
     active: bool,
     queued_ms: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeFrameResult {
+    frame: u64,
+    width: usize,
+    height: usize,
+    cpu_cycles: u64,
+    cpu_steps: u64,
+    frame_ms: f64,
+    stopped: bool,
+    last_error: Option<String>,
+    audio_active: bool,
+    audio_lead_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -166,6 +182,22 @@ fn run_frame_audio_packet(state: State<'_, AppState>) -> Result<Response, String
 }
 
 #[tauri::command]
+fn run_native_frame(state: State<'_, AppState>) -> Result<NativeFrameResult, String> {
+    let (mut result, samples) = {
+        let mut guard = state.emulator.lock().map_err(|err| err.to_string())?;
+        let emulator = guard.as_mut().ok_or_else(|| "No ROM loaded".to_string())?;
+        let run = emulator.run_frame();
+        let result = native_frame_result(emulator, &run);
+        let samples = emulator.render_audio_frame_i16(44_100);
+        (result, samples)
+    };
+    let audio = queue_native_audio(&state, samples, 44_100);
+    result.audio_active = audio.active;
+    result.audio_lead_ms = audio.queued_ms;
+    Ok(result)
+}
+
+#[tauri::command]
 fn native_bridge_url(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state
         .bridge_url
@@ -212,8 +244,24 @@ fn play_native_audio(
     samples: Vec<i16>,
     sample_rate: usize,
 ) -> Result<NativeAudioResult, String> {
+    Ok(queue_native_audio(
+        &state,
+        samples,
+        sample_rate.max(1) as u32,
+    ))
+}
+
+fn queue_native_audio(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> NativeAudioResult {
     let sender = {
-        let mut guard = state.native_audio.lock().map_err(|err| err.to_string())?;
+        let mut guard = match state.native_audio.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return NativeAudioResult {
+                    active: false,
+                    queued_ms: 0.0,
+                };
+            }
+        };
         match guard.as_ref() {
             Some(sender) => sender.clone(),
             None => {
@@ -227,13 +275,15 @@ fn play_native_audio(
     let (response, receiver) = mpsc::channel();
     let command = AudioCommand::Push {
         samples,
-        sample_rate: sample_rate.max(1) as u32,
+        sample_rate: sample_rate.max(1),
         response,
     };
 
     if let Err(err) = sender.send(command) {
         let sender = start_native_audio_thread();
-        *state.native_audio.lock().map_err(|err| err.to_string())? = Some(sender.clone());
+        if let Ok(mut guard) = state.native_audio.lock() {
+            *guard = Some(sender.clone());
+        }
         let (response, receiver) = mpsc::channel();
         let AudioCommand::Push {
             samples,
@@ -246,15 +296,21 @@ fn play_native_audio(
                 sample_rate,
                 response,
             })
-            .map_err(|err| err.to_string())?;
+            .ok();
         return receiver
-            .recv_timeout(Duration::from_millis(20))
-            .map_err(|err| err.to_string());
+            .recv_timeout(Duration::from_millis(80))
+            .unwrap_or(NativeAudioResult {
+                active: false,
+                queued_ms: 0.0,
+            });
     }
 
     receiver
-        .recv_timeout(Duration::from_millis(20))
-        .map_err(|err| err.to_string())
+        .recv_timeout(Duration::from_millis(80))
+        .unwrap_or(NativeAudioResult {
+            active: false,
+            queued_ms: 0.0,
+        })
 }
 
 #[tauri::command]
@@ -341,6 +397,23 @@ fn frame_result(emulator: &Emulator, run: Option<&FrameRun>) -> FrameResult {
         frame_ms: run.map_or(0.0, |run| run.elapsed.as_secs_f64() * 1000.0),
         stopped: run.is_some_and(|run| run.hit_unsupported_opcode),
         last_error: emulator.last_error.as_ref().map(|err| format!("{err:?}")),
+    }
+}
+
+fn native_frame_result(emulator: &Emulator, run: &FrameRun) -> NativeFrameResult {
+    let (width, height) = emulator.frame_size();
+
+    NativeFrameResult {
+        frame: emulator.frame_count,
+        width,
+        height,
+        cpu_cycles: run.cpu_cycles,
+        cpu_steps: run.cpu_steps,
+        frame_ms: run.elapsed.as_secs_f64() * 1000.0,
+        stopped: run.hit_unsupported_opcode,
+        last_error: emulator.last_error.as_ref().map(|err| format!("{err:?}")),
+        audio_active: false,
+        audio_lead_ms: 0.0,
     }
 }
 
@@ -587,6 +660,7 @@ impl NativeAudio {
             queue,
             _stream: stream,
             sample_rate,
+            primed: false,
         })
     }
 
@@ -599,6 +673,13 @@ impl NativeAudio {
         if queue.len() > max_len {
             let overflow = queue.len() - max_len;
             queue.drain(..overflow);
+        }
+        let target_len = ((self.sample_rate as usize) * 45) / 1000;
+        let low_water = ((self.sample_rate as usize) * 8) / 1000;
+        if !self.primed || queue.len() < low_water {
+            let pad = target_len.saturating_sub(queue.len());
+            queue.extend(std::iter::repeat(0.0).take(pad));
+            self.primed = true;
         }
         if sample_rate == self.sample_rate {
             queue.extend(samples.iter().map(|sample| f32::from(*sample) / 32768.0));
@@ -983,6 +1064,7 @@ fn main() {
             run_frame_audio_packet,
             native_bridge_url,
             render_audio_frame,
+            run_native_frame,
             set_native_surface_rect,
             play_native_audio,
             reset_emulator,

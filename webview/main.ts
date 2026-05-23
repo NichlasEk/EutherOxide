@@ -66,6 +66,19 @@ type NativeAudioResult = {
   queuedMs: number;
 };
 
+type NativeFrameResult = {
+  frame: number;
+  width: number;
+  height: number;
+  cpuCycles: number;
+  cpuSteps: number;
+  frameMs: number;
+  stopped: boolean;
+  lastError?: string | null;
+  audioActive: boolean;
+  audioLeadMs: number;
+};
+
 type InputState = {
   up: boolean;
   down: boolean;
@@ -913,6 +926,10 @@ async function tauriLocalFrameAudio(): Promise<FrameAudioResult> {
   return { ...decodeBridgeFrameAudio(buffer), transport: "TAURI LOCALHOST AUDIO" };
 }
 
+async function tauriNativeFrame(): Promise<NativeFrameResult> {
+  return await invoke<NativeFrameResult>("run_native_frame");
+}
+
 async function tauriFrameAudio(): Promise<FrameAudioResult> {
   try {
     const packet = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer> | number[]>(
@@ -1101,25 +1118,42 @@ async function advanceFrame(): Promise<void> {
   }
   stepping = true;
   try {
-    if ((isTauri && ui.runtime === "tauri" && ui.loaded) || ui.runtime === "bridge") {
+    if (isTauri && ui.runtime === "tauri" && ui.loaded) {
+      const fetchStart = performance.now();
+      const frame = await tauriNativeFrame();
+      const fetchDone = performance.now();
+      ui.transportMs = fetchDone - fetchStart;
+      ui.drawMs = 0;
+      ui.audioLeadMs = frame.audioLeadMs;
+      ui.transportMode = frame.audioActive ? "TAURI NATIVE AUDIO" : "TAURI NATIVE VIDEO";
+      ui.frame = frame.frame;
+      ui.width = frame.width;
+      ui.height = frame.height;
+      ui.cpuCycles = frame.cpuCycles;
+      ui.cpuSteps = frame.cpuSteps;
+      ui.frameMs = frame.frameMs;
+      ui.status = frame.stopped ? "STOPPED" : ui.playing ? "RUNNING" : "STEPPED";
+      ui.lastError = frame.lastError ?? "";
+      if (frame.stopped) {
+        ui.playing = false;
+        playToggle.textContent = "Play";
+        pushTrace("CPU reached unsupported reaction");
+      }
+    } else if (ui.runtime === "bridge") {
       const fetchStart = performance.now();
       const frameAudio =
         ui.runtime === "bridge"
           ? await bridgeFrameAudio()
-          : isTauri && ui.runtime === "tauri"
-            ? await tauriFrameAudio()
-            : null;
+          : null;
       const frame = frameAudio?.frame ?? await invoke<FrameResult>("run_frame");
       const fetchDone = performance.now();
-      if (!(isTauri && ui.runtime === "tauri")) {
-        drawNativeFrame(frame);
-      }
+      drawNativeFrame(frame);
       const drawDone = performance.now();
       if (frameAudio) {
         ui.audioLeadMs = await scheduleAudio(frameAudio.audio);
         ui.transportMode = frameAudio.transport;
       } else {
-        ui.transportMode = ui.runtime === "tauri" ? "TAURI JSON" : "FRAME JSON";
+        ui.transportMode = "FRAME JSON";
         void queueNativeAudio();
       }
       ui.transportMs = fetchDone - fetchStart;
