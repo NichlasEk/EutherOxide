@@ -20,6 +20,7 @@ struct AppState {
     emulator: Arc<Mutex<Option<Emulator>>>,
     bridge_url: Arc<Mutex<String>>,
     native_surface_rect: Arc<Mutex<Option<NativeSurfaceRect>>>,
+    native_frame: Arc<Mutex<Option<NativeFrameImage>>>,
     native_audio: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
 }
 
@@ -29,6 +30,13 @@ struct NativeSurfaceRect {
     y: i32,
     width: i32,
     height: i32,
+}
+
+#[derive(Clone)]
+struct NativeFrameImage {
+    width: usize,
+    height: usize,
+    bgra: Vec<u8>,
 }
 
 struct NativeAudio {
@@ -43,6 +51,10 @@ enum AudioCommand {
         samples: Vec<i16>,
         sample_rate: u32,
         response: mpsc::Sender<NativeAudioResult>,
+    },
+    PushAsync {
+        samples: Vec<i16>,
+        sample_rate: u32,
     },
 }
 
@@ -183,17 +195,18 @@ fn run_frame_audio_packet(state: State<'_, AppState>) -> Result<Response, String
 
 #[tauri::command]
 fn run_native_frame(state: State<'_, AppState>) -> Result<NativeFrameResult, String> {
-    let (mut result, samples) = {
+    let (mut result, samples, image) = {
         let mut guard = state.emulator.lock().map_err(|err| err.to_string())?;
         let emulator = guard.as_mut().ok_or_else(|| "No ROM loaded".to_string())?;
         let run = emulator.run_frame();
         let result = native_frame_result(emulator, &run);
         let samples = emulator.render_audio_frame_i16(44_100);
-        (result, samples)
+        let image = native_frame_image(emulator);
+        (result, samples, image)
     };
-    let audio = queue_native_audio(&state, samples, 44_100);
-    result.audio_active = audio.active;
-    result.audio_lead_ms = audio.queued_ms;
+    *state.native_frame.lock().map_err(|err| err.to_string())? = Some(image);
+    result.audio_active = queue_native_audio_async(&state, samples, 44_100);
+    result.audio_lead_ms = 0.0;
     Ok(result)
 }
 
@@ -285,11 +298,17 @@ fn queue_native_audio(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> 
             *guard = Some(sender.clone());
         }
         let (response, receiver) = mpsc::channel();
-        let AudioCommand::Push {
-            samples,
-            sample_rate,
-            ..
-        } = err.0;
+        let (samples, sample_rate) = match err.0 {
+            AudioCommand::Push {
+                samples,
+                sample_rate,
+                ..
+            } => (samples, sample_rate),
+            AudioCommand::PushAsync {
+                samples,
+                sample_rate,
+            } => (samples, sample_rate),
+        };
         sender
             .send(AudioCommand::Push {
                 samples,
@@ -311,6 +330,37 @@ fn queue_native_audio(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> 
             active: false,
             queued_ms: 0.0,
         })
+}
+
+fn native_audio_sender(state: &AppState) -> Option<mpsc::Sender<AudioCommand>> {
+    let mut guard = state.native_audio.lock().ok()?;
+    Some(match guard.as_ref() {
+        Some(sender) => sender.clone(),
+        None => {
+            let sender = start_native_audio_thread();
+            *guard = Some(sender.clone());
+            sender
+        }
+    })
+}
+
+fn queue_native_audio_async(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> bool {
+    let Some(sender) = native_audio_sender(state) else {
+        return false;
+    };
+    let command = AudioCommand::PushAsync {
+        samples,
+        sample_rate: sample_rate.max(1),
+    };
+    let Err(err) = sender.send(command) else {
+        return true;
+    };
+
+    let sender = start_native_audio_thread();
+    if let Ok(mut guard) = state.native_audio.lock() {
+        *guard = Some(sender.clone());
+    }
+    sender.send(err.0).is_ok()
 }
 
 #[tauri::command]
@@ -414,6 +464,22 @@ fn native_frame_result(emulator: &Emulator, run: &FrameRun) -> NativeFrameResult
         last_error: emulator.last_error.as_ref().map(|err| format!("{err:?}")),
         audio_active: false,
         audio_lead_ms: 0.0,
+    }
+}
+
+fn native_frame_image(emulator: &Emulator) -> NativeFrameImage {
+    let (width, height) = emulator.frame_size();
+    let mut bgra = Vec::with_capacity(width * height * 4);
+    for &pixel in emulator.framebuffer().iter().take(width * height) {
+        bgra.push((pixel & 0xff) as u8);
+        bgra.push(((pixel >> 8) & 0xff) as u8);
+        bgra.push(((pixel >> 16) & 0xff) as u8);
+        bgra.push(0xff);
+    }
+    NativeFrameImage {
+        width,
+        height,
+        bgra,
     }
 }
 
@@ -611,6 +677,17 @@ fn start_native_audio_thread() -> mpsc::Sender<AudioCommand> {
                         };
                         let _ = response.send(result);
                     }
+                    AudioCommand::PushAsync {
+                        samples,
+                        sample_rate,
+                    } => {
+                        if audio.is_none() {
+                            audio = NativeAudio::new();
+                        }
+                        if let Some(audio) = audio.as_mut() {
+                            audio.push_i16(&samples, sample_rate);
+                        }
+                    }
                 }
             }
         });
@@ -781,22 +858,22 @@ fn install_embedded_native_surface(app: &tauri::AppHandle, state: AppState) -> R
                 let _ = cr.paint();
                 cr.set_operator(cairo::Operator::Over);
 
-                let frame = draw_state.emulator.lock().ok().and_then(|guard| {
-                    let emulator = guard.as_ref()?;
-                    let (frame_width, frame_height) = emulator.frame_size();
-                    Some((frame_width, frame_height, emulator.frame_rgba()))
-                });
+                let frame = draw_state
+                    .native_frame
+                    .lock()
+                    .ok()
+                    .and_then(|frame| frame.clone());
 
-                if let Some((frame_width, frame_height, rgba)) = frame {
+                if let Some(frame) = frame {
                     draw_native_frame(
                         cr,
                         0.0,
                         0.0,
                         width,
                         height,
-                        frame_width,
-                        frame_height,
-                        &rgba,
+                        frame.width,
+                        frame.height,
+                        frame.bgra,
                     );
                 } else {
                     let gradient = cairo::LinearGradient::new(0.0, 0.0, width, height);
@@ -913,26 +990,14 @@ fn draw_native_frame(
     screen_h: f64,
     frame_width: usize,
     frame_height: usize,
-    rgba: &[u8],
+    bgra: Vec<u8>,
 ) {
-    if frame_width == 0 || frame_height == 0 || rgba.len() < frame_width * frame_height * 4 {
+    if frame_width == 0 || frame_height == 0 || bgra.len() < frame_width * frame_height * 4 {
         return;
     }
 
-    let mut pixels = vec![0u8; frame_width * frame_height * 4];
-    for (source, target) in rgba
-        .chunks_exact(4)
-        .zip(pixels.chunks_exact_mut(4))
-        .take(frame_width * frame_height)
-    {
-        target[0] = source[2];
-        target[1] = source[1];
-        target[2] = source[0];
-        target[3] = source[3];
-    }
-
     let Ok(surface) = cairo::ImageSurface::create_for_data(
-        pixels,
+        bgra,
         cairo::Format::ARgb32,
         frame_width as i32,
         frame_height as i32,

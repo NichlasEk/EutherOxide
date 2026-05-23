@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{self, Command};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
@@ -26,6 +26,7 @@ fn run() -> io::Result<()> {
     let mut list_states = false;
     let mut vdp_summary = false;
     let mut web_bridge = false;
+    let mut perf = false;
     let mut frames_was_set = false;
     let mut rom_path: Option<String> = None;
     let mut args = env::args().skip(1);
@@ -79,6 +80,9 @@ fn run() -> io::Result<()> {
             }
             "--web-bridge" => {
                 web_bridge = true;
+            }
+            "--perf" => {
+                perf = true;
             }
             "--help" | "-h" => {
                 print_usage();
@@ -151,9 +155,25 @@ fn run() -> io::Result<()> {
     }
 
     let mut last = None;
+    let perf_started = Instant::now();
+    let mut core_total = Duration::ZERO;
+    let mut audio_total = Duration::ZERO;
+    let mut rgba_total = Duration::ZERO;
     for _ in 0..frames {
-        last = Some(emulator.run_frame());
+        let run = emulator.run_frame();
+        core_total += run.elapsed;
+        last = Some(run);
+        if perf {
+            let audio_started = Instant::now();
+            let _audio = emulator.render_audio_frame_i16(44_100);
+            audio_total += audio_started.elapsed();
+
+            let rgba_started = Instant::now();
+            let _rgba = emulator.frame_rgba();
+            rgba_total += rgba_started.elapsed();
+        }
     }
+    let perf_total = perf_started.elapsed();
 
     if let Some(run) = last {
         println!(
@@ -170,6 +190,21 @@ fn run() -> io::Result<()> {
         );
         if let Some(err) = &emulator.last_error {
             println!("Last CPU error: {err:?}");
+        }
+        if perf {
+            let frame_count = frames.max(1) as f64;
+            let core_avg = core_total.as_secs_f64() * 1000.0 / frame_count;
+            let audio_avg = audio_total.as_secs_f64() * 1000.0 / frame_count;
+            let rgba_avg = rgba_total.as_secs_f64() * 1000.0 / frame_count;
+            let total_avg = perf_total.as_secs_f64() * 1000.0 / frame_count;
+            println!(
+                "Perf avg/frame: total {:.3} ms | core {:.3} ms | audio {:.3} ms | rgba {:.3} ms | {:.1} fps",
+                total_avg,
+                core_avg,
+                audio_avg,
+                rgba_avg,
+                1000.0 / total_avg.max(0.001),
+            );
         }
     }
 
@@ -200,7 +235,7 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge]"
     );
 }
 
