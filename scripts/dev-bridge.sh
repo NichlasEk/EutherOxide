@@ -29,6 +29,14 @@ source_stamp() {
     | awk '{print $1}'
 }
 
+release_stamp() {
+  if [[ -f "$release_bin" ]]; then
+    stat -c '%Y:%s' "$release_bin"
+  else
+    printf 'missing'
+  fi
+}
+
 requested_profile() {
   local profile="debug"
   if [[ -f "$profile_file" ]]; then
@@ -82,17 +90,25 @@ fi
 
 start_bridge
 last_stamp="$(source_stamp)"
+last_release_stamp="$(release_stamp)"
 last_profile="$(requested_profile)"
 
 echo "[dev-bridge] open http://127.0.0.1:5173/?bridge=http://127.0.0.1:32161"
 
 while sleep 1; do
   next_stamp="$(source_stamp)"
+  next_release_stamp="$(release_stamp)"
   next_profile="$(requested_profile)"
   if [[ "$next_profile" != "$last_profile" ]]; then
     last_profile="$next_profile"
     last_stamp="$next_stamp"
+    last_release_stamp="$next_release_stamp"
     echo "[dev-bridge] bridge profile changed; restarting bridge"
+    start_bridge
+  elif [[ "$next_profile" == "release" && "$next_release_stamp" != "$last_release_stamp" ]]; then
+    last_release_stamp="$next_release_stamp"
+    last_stamp="$next_stamp"
+    echo "[dev-bridge] release binary changed; restarting bridge"
     start_bridge
   elif [[ "$next_profile" == "debug" && "$next_stamp" != "$last_stamp" ]]; then
     last_stamp="$next_stamp"
