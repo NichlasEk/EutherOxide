@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 euther_oxide = { path = ".." }
 cairo-rs = "0.18"
+cpal = "0.15"
 gdk = "0.18"
 gtk = "0.18"
 serde = { version = "1", features = ["derive"] }

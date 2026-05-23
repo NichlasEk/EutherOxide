@@ -61,6 +61,11 @@ type FrameAudioResult = {
   transport: string;
 };
 
+type NativeAudioResult = {
+  active: boolean;
+  queuedMs: number;
+};
+
 type InputState = {
   up: boolean;
   down: boolean;
@@ -1183,14 +1188,31 @@ async function ensureAudio(): Promise<AudioContext | null> {
 }
 
 async function scheduleAudio(audio: AudioResult): Promise<number> {
-  const context = await ensureAudio();
-  if (!context || audio.samples.length === 0) {
-    return 0;
-  }
   const samples =
     audio.samples instanceof Int16Array
       ? audio.samples
       : Int16Array.from(audio.samples);
+  if (samples.length === 0) {
+    return 0;
+  }
+  if (isTauri && ui.runtime === "tauri") {
+    try {
+      const result = await invoke<NativeAudioResult>("play_native_audio", {
+        samples: Array.from(samples),
+        sampleRate: audio.sampleRate,
+      });
+      if (result.active) {
+        return result.queuedMs;
+      }
+    } catch {
+      pushTrace("Native audio warming");
+    }
+  }
+
+  const context = await ensureAudio();
+  if (!context) {
+    return 0;
+  }
   const buffer = context.createBuffer(1, samples.length, audio.sampleRate);
   const channel = buffer.getChannelData(0);
   for (let index = 0; index < samples.length; index += 1) {

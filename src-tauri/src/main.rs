@@ -1,7 +1,9 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use std::env;
@@ -9,13 +11,16 @@ use std::env;
 use euther_oxide::savestate::{ArgonSummary, SlotSummary};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use serde::Serialize;
-use tauri::{ipc::Response, Manager, State};
+use tauri::{Manager, State, ipc::Response};
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 #[derive(Clone, Default)]
 struct AppState {
     emulator: Arc<Mutex<Option<Emulator>>>,
     bridge_url: Arc<Mutex<String>>,
     native_surface_rect: Arc<Mutex<Option<NativeSurfaceRect>>>,
+    native_audio: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -24,6 +29,27 @@ struct NativeSurfaceRect {
     y: i32,
     width: i32,
     height: i32,
+}
+
+struct NativeAudio {
+    queue: Arc<Mutex<VecDeque<f32>>>,
+    _stream: cpal::Stream,
+    sample_rate: u32,
+}
+
+enum AudioCommand {
+    Push {
+        samples: Vec<i16>,
+        sample_rate: u32,
+        response: mpsc::Sender<NativeAudioResult>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAudioResult {
+    active: bool,
+    queued_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -141,7 +167,11 @@ fn run_frame_audio_packet(state: State<'_, AppState>) -> Result<Response, String
 
 #[tauri::command]
 fn native_bridge_url(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.bridge_url.lock().map_err(|err| err.to_string())?.clone())
+    Ok(state
+        .bridge_url
+        .lock()
+        .map_err(|err| err.to_string())?
+        .clone())
 }
 
 #[tauri::command]
@@ -174,6 +204,57 @@ fn set_native_surface_rect(
         .lock()
         .map_err(|err| err.to_string())? = Some(rect);
     Ok(())
+}
+
+#[tauri::command]
+fn play_native_audio(
+    state: State<'_, AppState>,
+    samples: Vec<i16>,
+    sample_rate: usize,
+) -> Result<NativeAudioResult, String> {
+    let sender = {
+        let mut guard = state.native_audio.lock().map_err(|err| err.to_string())?;
+        match guard.as_ref() {
+            Some(sender) => sender.clone(),
+            None => {
+                let sender = start_native_audio_thread();
+                *guard = Some(sender.clone());
+                sender
+            }
+        }
+    };
+
+    let (response, receiver) = mpsc::channel();
+    let command = AudioCommand::Push {
+        samples,
+        sample_rate: sample_rate.max(1) as u32,
+        response,
+    };
+
+    if let Err(err) = sender.send(command) {
+        let sender = start_native_audio_thread();
+        *state.native_audio.lock().map_err(|err| err.to_string())? = Some(sender.clone());
+        let (response, receiver) = mpsc::channel();
+        let AudioCommand::Push {
+            samples,
+            sample_rate,
+            ..
+        } = err.0;
+        sender
+            .send(AudioCommand::Push {
+                samples,
+                sample_rate,
+                response,
+            })
+            .map_err(|err| err.to_string())?;
+        return receiver
+            .recv_timeout(Duration::from_millis(20))
+            .map_err(|err| err.to_string());
+    }
+
+    receiver
+        .recv_timeout(Duration::from_millis(20))
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -340,7 +421,11 @@ fn handle_native_bridge_client(mut stream: TcpStream, state: AppState) {
         return;
     }
     let request = String::from_utf8_lossy(&request[..read]);
-    let mut parts = request.lines().next().unwrap_or_default().split_whitespace();
+    let mut parts = request
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
 
@@ -361,18 +446,18 @@ fn handle_native_bridge_client(mut stream: TcpStream, state: AppState) {
                     }
                 };
                 let Some(emulator) = guard.as_mut() else {
-                    write_http_response(&mut stream, "409 Conflict", "text/plain", b"No ROM loaded");
+                    write_http_response(
+                        &mut stream,
+                        "409 Conflict",
+                        "text/plain",
+                        b"No ROM loaded",
+                    );
                     return;
                 };
                 let run = emulator.run_frame();
                 frame_packet(emulator, &run)
             };
-            write_http_response(
-                &mut stream,
-                "200 OK",
-                "application/octet-stream",
-                &packet,
-            );
+            write_http_response(&mut stream, "200 OK", "application/octet-stream", &packet);
         }
         ("GET" | "POST", "/frame-audio.bin") => {
             let packet = {
@@ -389,18 +474,18 @@ fn handle_native_bridge_client(mut stream: TcpStream, state: AppState) {
                     }
                 };
                 let Some(emulator) = guard.as_mut() else {
-                    write_http_response(&mut stream, "409 Conflict", "text/plain", b"No ROM loaded");
+                    write_http_response(
+                        &mut stream,
+                        "409 Conflict",
+                        "text/plain",
+                        b"No ROM loaded",
+                    );
                     return;
                 };
                 let run = emulator.run_frame();
                 frame_audio_packet(emulator, &run, 44_100)
             };
-            write_http_response(
-                &mut stream,
-                "200 OK",
-                "application/octet-stream",
-                &packet,
-            );
+            write_http_response(&mut stream, "200 OK", "application/octet-stream", &packet);
         }
         _ => write_http_response(&mut stream, "404 Not Found", "text/plain", b"Not found"),
     }
@@ -425,11 +510,143 @@ Connection: close\r\n\
     let _ = stream.write_all(&response);
 }
 
+fn start_native_audio_thread() -> mpsc::Sender<AudioCommand> {
+    let (sender, receiver) = mpsc::channel::<AudioCommand>();
+    let _ = thread::Builder::new()
+        .name("euther-oxide-native-audio".to_string())
+        .spawn(move || {
+            let mut audio = None::<NativeAudio>;
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    AudioCommand::Push {
+                        samples,
+                        sample_rate,
+                        response,
+                    } => {
+                        if audio.is_none() {
+                            audio = NativeAudio::new();
+                        }
+                        let result = match audio.as_mut() {
+                            Some(audio) => NativeAudioResult {
+                                active: true,
+                                queued_ms: audio.push_i16(&samples, sample_rate),
+                            },
+                            None => NativeAudioResult {
+                                active: false,
+                                queued_ms: 0.0,
+                            },
+                        };
+                        let _ = response.send(result);
+                    }
+                }
+            }
+        });
+    sender
+}
+
+impl NativeAudio {
+    fn new() -> Option<Self> {
+        let host = cpal::default_host();
+        let device = host.default_output_device()?;
+        let config = device.default_output_config().ok()?;
+        let sample_format = config.sample_format();
+        let stream_config: cpal::StreamConfig = config.into();
+        let sample_rate = stream_config.sample_rate.0;
+        let channels = usize::from(stream_config.channels).max(1);
+        let queue = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(
+            sample_rate as usize,
+        )));
+        let err_fn = |err| eprintln!("native audio stream error: {err}");
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => build_native_audio_stream::<f32>(
+                &device,
+                &stream_config,
+                queue.clone(),
+                channels,
+                err_fn,
+            ),
+            cpal::SampleFormat::I16 => build_native_audio_stream::<i16>(
+                &device,
+                &stream_config,
+                queue.clone(),
+                channels,
+                err_fn,
+            ),
+            cpal::SampleFormat::U16 => build_native_audio_stream::<u16>(
+                &device,
+                &stream_config,
+                queue.clone(),
+                channels,
+                err_fn,
+            ),
+            _ => return None,
+        }
+        .ok()?;
+        stream.play().ok()?;
+        Some(Self {
+            queue,
+            _stream: stream,
+            sample_rate,
+        })
+    }
+
+    fn push_i16(&mut self, samples: &[i16], sample_rate: u32) -> f64 {
+        let mut queue = match self.queue.lock() {
+            Ok(queue) => queue,
+            Err(_) => return 0.0,
+        };
+        let max_len = (self.sample_rate as usize).saturating_mul(2);
+        if queue.len() > max_len {
+            let overflow = queue.len() - max_len;
+            queue.drain(..overflow);
+        }
+        if sample_rate == self.sample_rate {
+            queue.extend(samples.iter().map(|sample| f32::from(*sample) / 32768.0));
+        } else {
+            let ratio = f64::from(sample_rate) / f64::from(self.sample_rate);
+            let out_len = ((samples.len() as f64) / ratio).ceil().max(0.0) as usize;
+            for index in 0..out_len {
+                let source_index = ((index as f64) * ratio).floor() as usize;
+                let sample = samples.get(source_index).copied().unwrap_or(0);
+                queue.push_back(f32::from(sample) / 32768.0);
+            }
+        }
+        (queue.len() as f64 / f64::from(self.sample_rate)) * 1000.0
+    }
+}
+
+fn build_native_audio_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    queue: Arc<Mutex<VecDeque<f32>>>,
+    channels: usize,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream, cpal::BuildStreamError>
+where
+    T: cpal::Sample + cpal::FromSample<f32> + cpal::SizedSample,
+{
+    device.build_output_stream(
+        config,
+        move |data: &mut [T], _| {
+            let mut queue = queue.lock().ok();
+            for frame in data.chunks_mut(channels) {
+                let sample = queue
+                    .as_mut()
+                    .and_then(|queue| queue.pop_front())
+                    .unwrap_or(0.0);
+                let output = T::from_sample(sample);
+                for channel in frame {
+                    *channel = output;
+                }
+            }
+        },
+        err_fn,
+        None,
+    )
+}
+
 #[cfg(target_os = "linux")]
-fn install_embedded_native_surface(
-    app: &tauri::AppHandle,
-    state: AppState,
-) -> Result<(), String> {
+fn install_embedded_native_surface(app: &tauri::AppHandle, state: AppState) -> Result<(), String> {
     let Some(webview) = app.get_webview_window("main") else {
         return Err("main webview missing".to_string());
     };
@@ -483,15 +700,11 @@ fn install_embedded_native_surface(
                 let _ = cr.paint();
                 cr.set_operator(cairo::Operator::Over);
 
-                let frame = draw_state
-                    .emulator
-                    .lock()
-                    .ok()
-                    .and_then(|guard| {
-                        let emulator = guard.as_ref()?;
-                        let (frame_width, frame_height) = emulator.frame_size();
-                        Some((frame_width, frame_height, emulator.frame_rgba()))
-                    });
+                let frame = draw_state.emulator.lock().ok().and_then(|guard| {
+                    let emulator = guard.as_ref()?;
+                    let (frame_width, frame_height) = emulator.frame_size();
+                    Some((frame_width, frame_height, emulator.frame_rgba()))
+                });
 
                 if let Some((frame_width, frame_height, rgba)) = frame {
                     draw_native_frame(
@@ -533,7 +746,9 @@ fn install_embedded_native_surface(
                     .ok()
                     .and_then(|rect| *rect)
                     .map(|rect| (rect.x, rect.y, rect.width, rect.height))
-                    .unwrap_or_else(|| native_surface_rect(allocation.width(), allocation.height()));
+                    .unwrap_or_else(|| {
+                        native_surface_rect(allocation.width(), allocation.height())
+                    });
                 surface_layout.set_margin_start(x);
                 surface_layout.set_margin_top(y);
                 surface_layout.set_size_request(width, height);
@@ -586,13 +801,9 @@ fn native_surface_rect(window_width: i32, window_height: i32) -> (i32, i32, i32,
     let vessel_x = stage_x + stage_padding;
     let vessel_y = shell_padding + stage_padding + header_h + stage_gap;
     let vessel_w = (stage_w - stage_padding * 2.0).max(320.0);
-    let vessel_h = (height
-        - shell_padding * 2.0
-        - stage_padding * 2.0
-        - header_h
-        - strip_h
-        - stage_gap * 2.0)
-        .max(224.0);
+    let vessel_h =
+        (height - shell_padding * 2.0 - stage_padding * 2.0 - header_h - strip_h - stage_gap * 2.0)
+            .max(224.0);
     let max_screen_w = (vessel_w - vessel_padding * 2.0).max(320.0);
     let max_screen_h = (vessel_h - vessel_padding * 2.0).max(224.0);
     let screen_w = max_screen_w.min(max_screen_h * (10.0 / 7.0));
@@ -773,6 +984,7 @@ fn main() {
             native_bridge_url,
             render_audio_frame,
             set_native_surface_rect,
+            play_native_audio,
             reset_emulator,
             set_input,
             list_state_slots,
