@@ -129,6 +129,8 @@ let stepping = false;
 let videoCanvas: HTMLCanvasElement;
 let videoContext: CanvasRenderingContext2D;
 let lastInputJson = JSON.stringify(inputState);
+let lastBrowserFile: File | null = null;
+let bridgeRetryTimer: number | null = null;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="oxide-shell">
@@ -437,6 +439,7 @@ async function loadRomPath(path: string): Promise<void> {
 }
 
 async function loadFile(file: File): Promise<void> {
+  lastBrowserFile = file;
   const buffer = await file.arrayBuffer();
   romBytes = new Uint8Array(buffer);
   romDisplayName = file.name;
@@ -478,6 +481,7 @@ async function loadFile(file: File): Promise<void> {
     ui.lastError = "";
     loadWebSlots();
     pushTrace("Browser substrate loaded");
+    scheduleBridgeRetry();
   }
 
   document.querySelector("#rom-name")!.textContent = file.name;
@@ -499,6 +503,7 @@ async function loadFileThroughBridge(file: File, buffer: ArrayBuffer): Promise<b
       },
       5000,
     );
+    stopBridgeRetry();
     Object.assign(ui, result);
     ui.runtime = "bridge";
     ui.loaded = result.loaded ?? true;
@@ -519,16 +524,18 @@ async function loadFileThroughBridge(file: File, buffer: ArrayBuffer): Promise<b
     renderUi();
     return true;
   } catch {
+    scheduleBridgeRetry();
     return false;
   }
 }
 
-async function connectBridge(): Promise<void> {
+async function connectBridge(announce = true): Promise<boolean> {
   if (isTauri) {
-    return;
+    return false;
   }
   try {
     const result = await bridgeJson<BridgeStatusResult>("/status", {}, 700);
+    stopBridgeRetry();
     Object.assign(ui, result);
     ui.runtime = "bridge";
     ui.loaded = result.loaded ?? true;
@@ -541,9 +548,11 @@ async function connectBridge(): Promise<void> {
       : "Load Mega Drive";
     if (!ui.loaded) {
       ui.stateSlots = emptySlots();
-      pushTrace("Rust core bridge waiting");
+      if (announce) {
+        pushTrace("Rust core bridge waiting");
+      }
       renderUi();
-      return;
+      return true;
     }
     await refreshStateSlots();
     const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" });
@@ -553,10 +562,48 @@ async function connectBridge(): Promise<void> {
     ui.cpuSteps = frame.cpuSteps;
     ui.frameMs = frame.frameMs;
     ui.lastError = frame.lastError ?? "";
-    pushTrace("Headless core bridge online");
+    if (announce) {
+      pushTrace("Headless core bridge online");
+    }
     renderUi();
+    return true;
   } catch {
+    if (announce) {
+      scheduleBridgeRetry();
+    }
     renderUi();
+    return false;
+  }
+}
+
+function scheduleBridgeRetry(): void {
+  if (isTauri || bridgeRetryTimer !== null || ui.runtime === "bridge") {
+    return;
+  }
+  bridgeRetryTimer = window.setInterval(() => void retryBridgeConnection(), 1500);
+}
+
+function stopBridgeRetry(): void {
+  if (bridgeRetryTimer !== null) {
+    window.clearInterval(bridgeRetryTimer);
+    bridgeRetryTimer = null;
+  }
+}
+
+async function retryBridgeConnection(): Promise<void> {
+  if (ui.runtime === "bridge") {
+    stopBridgeRetry();
+    return;
+  }
+  if (lastBrowserFile && ui.loaded) {
+    const buffer = await lastBrowserFile.arrayBuffer();
+    if (await loadFileThroughBridge(lastBrowserFile, buffer)) {
+      stopBridgeRetry();
+    }
+    return;
+  }
+  if (await connectBridge(false)) {
+    stopBridgeRetry();
   }
 }
 

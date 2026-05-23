@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:bridge": "bash scripts/dev-bridge.sh",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

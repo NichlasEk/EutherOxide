@@ -412,12 +412,18 @@ impl M68kBus {
                 let mut source = self.vdp.dma_source_address();
                 let length = self.vdp.dma_length_words();
                 let target = self.vdp.dma_target_address();
-                self.vdp.record_dma_transfer(source, target, length);
+                let start_source = source;
+                let mut nonzero_words = 0;
                 for _ in 0..length {
                     let value = self.read_word(source);
+                    if target < 0xc000 && value != 0 {
+                        nonzero_words += 1;
+                    }
                     self.vdp.write_dma_word(value);
                     source = source.wrapping_add(2) & Self::ADDRESS_MASK;
                 }
+                self.vdp
+                    .record_dma_transfer(start_source, target, length, nonzero_words);
             }
             VdpDmaMode::Fill => self.vdp.arm_dma_fill(),
             VdpDmaMode::Copy => self.vdp.perform_vram_copy_dma(),

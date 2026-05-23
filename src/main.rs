@@ -242,6 +242,28 @@ fn print_vdp_summary(emulator: &Emulator) {
         emulator.cpu.a()[0]
     );
     println!(
+        "CPU D: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+        emulator.cpu.d[0],
+        emulator.cpu.d[1],
+        emulator.cpu.d[2],
+        emulator.cpu.d[3],
+        emulator.cpu.d[4],
+        emulator.cpu.d[5],
+        emulator.cpu.d[6],
+        emulator.cpu.d[7]
+    );
+    println!(
+        "CPU A: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+        emulator.cpu.a()[0],
+        emulator.cpu.a()[1],
+        emulator.cpu.a()[2],
+        emulator.cpu.a()[3],
+        emulator.cpu.a()[4],
+        emulator.cpu.a()[5],
+        emulator.cpu.a()[6],
+        emulator.cpu.a()[7]
+    );
+    println!(
         "VDP regs: r0=${:02X} r1=${:02X} r2=${:02X} r4=${:02X} r5=${:02X} r7=${:02X} r12=${:02X} r13=${:02X} r16=${:02X}",
         vdp.registers[0],
         vdp.registers[1],
@@ -263,9 +285,32 @@ fn print_vdp_summary(emulator: &Emulator) {
         vdp.vsram.len()
     );
     println!("VDP VRAM nonzero range: ${first_vram:04X}-${last_vram:04X}");
+    print!("VDP VRAM buckets:");
+    for chunk in 0..16 {
+        let start = chunk * 0x1000;
+        let count = vdp.vram[start..start + 0x1000]
+            .iter()
+            .filter(|&&byte| byte != 0)
+            .count();
+        if count != 0 {
+            print!(" ${start:04X}:{count}");
+        }
+    }
+    println!();
+    print!("VDP CRAM first 16:");
+    for value in vdp.cram.iter().take(16) {
+        print!(" ${value:03X}");
+    }
+    println!();
     println!(
-        "VDP writes: VRAM {} | CRAM {} (nonzero {}) | VSRAM {}",
-        vdp.vram_writes, vdp.cram_writes, vdp.cram_nonzero_writes, vdp.vsram_writes
+        "VDP writes: VRAM {} (nonzero {}, pattern {} / nonzero {}) | CRAM {} (nonzero {}) | VSRAM {}",
+        vdp.vram_writes,
+        vdp.vram_nonzero_writes,
+        vdp.vram_pattern_writes,
+        vdp.vram_pattern_nonzero_writes,
+        vdp.cram_writes,
+        vdp.cram_nonzero_writes,
+        vdp.vsram_writes
     );
     println!(
         "VDP DMA: transfers {} | target range ${:05X}-${:05X} | last source ${:06X} target ${:05X} length {} words",
@@ -281,6 +326,10 @@ fn print_vdp_summary(emulator: &Emulator) {
         vdp.dma_last_length
     );
     println!(
+        "VDP DMA pattern: transfers {} | nonzero words {} | last source ${:06X}",
+        vdp.dma_pattern_transfers, vdp.dma_pattern_nonzero_words, vdp.dma_pattern_last_source
+    );
+    println!(
         "Sonic RAM: f600=${:02X} f62a=${:02X} f644=${:02X}{:02X} f64e=${:02X} fe10=${:02X}",
         emulator.bus.peek_byte(0xffff_f600),
         emulator.bus.peek_byte(0xffff_f62a),
@@ -289,6 +338,14 @@ fn print_vdp_summary(emulator: &Emulator) {
         emulator.bus.peek_byte(0xffff_f64e),
         emulator.bus.peek_byte(0xffff_fe10)
     );
+    let aa00_nonzero = (0..0x400)
+        .filter(|offset| emulator.bus.peek_byte(0xffff_aa00 + offset) != 0)
+        .count();
+    print!("Sonic RAM aa00 nonzero {aa00_nonzero}/1024 first:");
+    for offset in 0..16 {
+        print!(" {:02X}", emulator.bus.peek_byte(0xffff_aa00 + offset));
+    }
+    println!();
 }
 
 #[derive(Serialize)]

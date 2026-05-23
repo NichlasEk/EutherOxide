@@ -53,6 +53,9 @@ pub struct Vdp {
     dma_pending: Option<VdpDmaMode>,
     dma_fill_pending: bool,
     pub vram_writes: u64,
+    pub vram_nonzero_writes: u64,
+    pub vram_pattern_writes: u64,
+    pub vram_pattern_nonzero_writes: u64,
     pub cram_writes: u64,
     pub cram_nonzero_writes: u64,
     pub vsram_writes: u64,
@@ -62,6 +65,9 @@ pub struct Vdp {
     pub dma_last_length: usize,
     pub dma_min_target: u32,
     pub dma_max_target: u32,
+    pub dma_pattern_transfers: u64,
+    pub dma_pattern_nonzero_words: u64,
+    pub dma_pattern_last_source: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +98,12 @@ pub struct VdpSnapshot {
     dma_pending: Option<VdpDmaMode>,
     dma_fill_pending: bool,
     vram_writes: u64,
+    #[serde(default)]
+    vram_nonzero_writes: u64,
+    #[serde(default)]
+    vram_pattern_writes: u64,
+    #[serde(default)]
+    vram_pattern_nonzero_writes: u64,
     cram_writes: u64,
     cram_nonzero_writes: u64,
     vsram_writes: u64,
@@ -101,6 +113,12 @@ pub struct VdpSnapshot {
     dma_last_length: usize,
     dma_min_target: u32,
     dma_max_target: u32,
+    #[serde(default)]
+    dma_pattern_transfers: u64,
+    #[serde(default)]
+    dma_pattern_nonzero_words: u64,
+    #[serde(default)]
+    dma_pattern_last_source: u32,
 }
 
 impl Default for Vdp {
@@ -151,6 +169,9 @@ impl Vdp {
             dma_pending: None,
             dma_fill_pending: false,
             vram_writes: 0,
+            vram_nonzero_writes: 0,
+            vram_pattern_writes: 0,
+            vram_pattern_nonzero_writes: 0,
             cram_writes: 0,
             cram_nonzero_writes: 0,
             vsram_writes: 0,
@@ -160,6 +181,9 @@ impl Vdp {
             dma_last_length: 0,
             dma_min_target: u32::MAX,
             dma_max_target: 0,
+            dma_pattern_transfers: 0,
+            dma_pattern_nonzero_words: 0,
+            dma_pattern_last_source: 0,
         };
         vdp.reset();
         vdp
@@ -194,6 +218,9 @@ impl Vdp {
         self.dma_pending = None;
         self.dma_fill_pending = false;
         self.vram_writes = 0;
+        self.vram_nonzero_writes = 0;
+        self.vram_pattern_writes = 0;
+        self.vram_pattern_nonzero_writes = 0;
         self.cram_writes = 0;
         self.cram_nonzero_writes = 0;
         self.vsram_writes = 0;
@@ -203,6 +230,9 @@ impl Vdp {
         self.dma_last_length = 0;
         self.dma_min_target = u32::MAX;
         self.dma_max_target = 0;
+        self.dma_pattern_transfers = 0;
+        self.dma_pattern_nonzero_words = 0;
+        self.dma_pattern_last_source = 0;
     }
 
     pub fn snapshot(&self) -> VdpSnapshot {
@@ -233,6 +263,9 @@ impl Vdp {
             dma_pending: self.dma_pending,
             dma_fill_pending: self.dma_fill_pending,
             vram_writes: self.vram_writes,
+            vram_nonzero_writes: self.vram_nonzero_writes,
+            vram_pattern_writes: self.vram_pattern_writes,
+            vram_pattern_nonzero_writes: self.vram_pattern_nonzero_writes,
             cram_writes: self.cram_writes,
             cram_nonzero_writes: self.cram_nonzero_writes,
             vsram_writes: self.vsram_writes,
@@ -242,6 +275,9 @@ impl Vdp {
             dma_last_length: self.dma_last_length,
             dma_min_target: self.dma_min_target,
             dma_max_target: self.dma_max_target,
+            dma_pattern_transfers: self.dma_pattern_transfers,
+            dma_pattern_nonzero_words: self.dma_pattern_nonzero_words,
+            dma_pattern_last_source: self.dma_pattern_last_source,
         }
     }
 
@@ -284,6 +320,9 @@ impl Vdp {
         self.dma_pending = snapshot.dma_pending;
         self.dma_fill_pending = snapshot.dma_fill_pending;
         self.vram_writes = snapshot.vram_writes;
+        self.vram_nonzero_writes = snapshot.vram_nonzero_writes;
+        self.vram_pattern_writes = snapshot.vram_pattern_writes;
+        self.vram_pattern_nonzero_writes = snapshot.vram_pattern_nonzero_writes;
         self.cram_writes = snapshot.cram_writes;
         self.cram_nonzero_writes = snapshot.cram_nonzero_writes;
         self.vsram_writes = snapshot.vsram_writes;
@@ -293,6 +332,9 @@ impl Vdp {
         self.dma_last_length = snapshot.dma_last_length;
         self.dma_min_target = snapshot.dma_min_target;
         self.dma_max_target = snapshot.dma_max_target;
+        self.dma_pattern_transfers = snapshot.dma_pattern_transfers;
+        self.dma_pattern_nonzero_words = snapshot.dma_pattern_nonzero_words;
+        self.dma_pattern_last_source = snapshot.dma_pattern_last_source;
         self.ensure_framebuffer_size();
     }
 
@@ -463,7 +505,13 @@ impl Vdp {
         self.address
     }
 
-    pub fn record_dma_transfer(&mut self, source: u32, target: u32, length: usize) {
+    pub fn record_dma_transfer(
+        &mut self,
+        source: u32,
+        target: u32,
+        length: usize,
+        nonzero_words: usize,
+    ) {
         self.dma_transfers += 1;
         self.dma_last_source = source;
         self.dma_last_target = target;
@@ -472,6 +520,11 @@ impl Vdp {
         self.dma_max_target = self
             .dma_max_target
             .max(target.wrapping_add(length as u32 * 2));
+        if target < 0xc000 {
+            self.dma_pattern_transfers += 1;
+            self.dma_pattern_nonzero_words += nonzero_words as u64;
+            self.dma_pattern_last_source = source;
+        }
     }
 
     pub fn write_dma_word(&mut self, value: u16) {
@@ -556,6 +609,15 @@ impl Vdp {
         self.vram[(address ^ 1) & 0xffff] = value as u8;
         self.video_dirty = true;
         self.vram_writes += 1;
+        if value != 0 {
+            self.vram_nonzero_writes += 1;
+        }
+        if address < 0xc000 {
+            self.vram_pattern_writes += 1;
+            if value != 0 {
+                self.vram_pattern_nonzero_writes += 1;
+            }
+        }
     }
 
     fn increment_address(&mut self) {

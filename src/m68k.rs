@@ -280,11 +280,20 @@ impl M68k {
         {
             return self.immediate_operation(bus, opcode);
         }
+        if (opcode & 0xf100) == 0xd100 && ((opcode >> 3) & 0x07) <= 1 {
+            return self.addx_subx(bus, opcode, false);
+        }
+        if (opcode & 0xf100) == 0x9100 && ((opcode >> 3) & 0x07) <= 1 {
+            return self.addx_subx(bus, opcode, true);
+        }
         if (opcode & 0xf000) == 0xd000 {
             return self.add_sub(bus, opcode, false);
         }
         if (opcode & 0xf000) == 0x9000 {
             return self.add_sub(bus, opcode, true);
+        }
+        if (opcode & 0xf100) == 0xb100 {
+            return self.eor_register(bus, opcode);
         }
         if (opcode & 0xf000) == 0xb000 {
             return self.cmp(bus, opcode);
@@ -545,6 +554,65 @@ impl M68k {
         Ok(self.finish(8))
     }
 
+    fn addx_subx(
+        &mut self,
+        bus: &mut M68kBus,
+        opcode: u16,
+        subtract: bool,
+    ) -> Result<u32, CpuError> {
+        let dest = ((opcode >> 9) & 0x07) as usize;
+        let source = (opcode & 0x07) as usize;
+        let mode = ((opcode >> 3) & 0x07) as u8;
+        let size = size_from_bits((opcode >> 6) & 0x03).ok_or(CpuError::UnsupportedOpcode {
+            opcode,
+            pc: self.pc.wrapping_sub(2) & Self::ADDRESS_MASK,
+        })?;
+
+        let (left, right, write_address) = if mode == 0 {
+            (
+                self.d[dest] & size.mask(),
+                self.d[source] & size.mask(),
+                None,
+            )
+        } else {
+            let source_address = self
+                .read_address_register(source)
+                .wrapping_sub(size.address_increment(source == 7))
+                & Self::ADDRESS_MASK;
+            let dest_address = self
+                .read_address_register(dest)
+                .wrapping_sub(size.address_increment(dest == 7))
+                & Self::ADDRESS_MASK;
+            self.write_address_register(source, source_address);
+            self.write_address_register(dest, dest_address);
+            (
+                self.read_memory(bus, dest_address, size),
+                self.read_memory(bus, source_address, size),
+                Some(dest_address),
+            )
+        };
+
+        let extend = u32::from((self.ccr & Self::FLAG_X) != 0);
+        let result = if subtract {
+            left.wrapping_sub(right).wrapping_sub(extend)
+        } else {
+            left.wrapping_add(right).wrapping_add(extend)
+        };
+        if let Some(address) = write_address {
+            self.write_memory(bus, address, size, result);
+        } else {
+            self.write_data_register(dest, size, result);
+        }
+        self.set_addx_subx_flags(left, right, result, size, subtract, extend);
+        Ok(self.finish(if mode == 0 {
+            if size == Size::Long { 8 } else { 4 }
+        } else if size == Size::Long {
+            30
+        } else {
+            18
+        }))
+    }
+
     fn add_sub(&mut self, bus: &mut M68kBus, opcode: u16, subtract: bool) -> Result<u32, CpuError> {
         let reg = ((opcode >> 9) & 0x07) as usize;
         let mode = ((opcode >> 3) & 0x07) as u8;
@@ -692,6 +760,25 @@ impl M68k {
             self.set_nz_flags(result, size, true);
         }
         Ok(self.finish(4))
+    }
+
+    fn eor_register(&mut self, bus: &mut M68kBus, opcode: u16) -> Result<u32, CpuError> {
+        let reg = ((opcode >> 9) & 0x07) as usize;
+        let size = size_from_bits((opcode >> 6) & 0x03).ok_or(CpuError::UnsupportedOpcode {
+            opcode,
+            pc: self.pc.wrapping_sub(2) & Self::ADDRESS_MASK,
+        })?;
+        let target = self.resolve_ea(
+            bus,
+            ((opcode >> 3) & 0x07) as u8,
+            (opcode & 0x07) as u8,
+            size,
+            true,
+        )?;
+        let result = self.read_target(bus, target, size) ^ (self.d[reg] & size.mask());
+        self.write_target(bus, target, size, result);
+        self.set_nz_flags(result, size, true);
+        Ok(self.finish(8))
     }
 
     fn multiply(&mut self, bus: &mut M68kBus, opcode: u16, signed: bool) -> Result<u32, CpuError> {
@@ -1110,44 +1197,72 @@ impl M68k {
         size: Size,
         count: u16,
         mode: u16,
-        memory: bool,
+        _memory: bool,
     ) -> u32 {
         let bits = size.bits();
         let mask = size.mask();
+        let sign_bit = size.sign_bit();
         let mut result = value & mask;
         let mut carry = false;
-        let left = (mode & 1) != 0;
-        let rotate = (mode & 0x06) >= 0x04;
-        let with_extend = !memory && (mode & 0x06) == 0x04;
+        let mut overflow = false;
+        let mut extend = (self.ccr & Self::FLAG_X) != 0;
+        if count == 0 {
+            return result;
+        }
 
         for _ in 0..count {
-            if rotate {
-                if left {
-                    carry = (result & (1 << (bits - 1))) != 0;
-                    result = ((result << 1) | u32::from(carry)) & mask;
-                } else if with_extend {
+            match mode & 0x07 {
+                0 => {
                     carry = (result & 1) != 0;
-                    result =
-                        (result >> 1) | (u32::from((self.ccr & Self::FLAG_X) != 0) << (bits - 1));
-                } else {
+                    result = (result >> 1) | (result & sign_bit);
+                    extend = carry;
+                }
+                1 => {
+                    let before = result & sign_bit;
+                    carry = (result & sign_bit) != 0;
+                    result = (result << 1) & mask;
+                    overflow |= before != (result & sign_bit);
+                    extend = carry;
+                }
+                2 => {
+                    carry = (result & 1) != 0;
+                    result >>= 1;
+                    extend = carry;
+                }
+                3 => {
+                    carry = (result & sign_bit) != 0;
+                    result = (result << 1) & mask;
+                    extend = carry;
+                }
+                4 => {
+                    carry = (result & 1) != 0;
+                    result = (result >> 1) | (u32::from(extend) << (bits - 1));
+                    extend = carry;
+                }
+                5 => {
+                    carry = (result & sign_bit) != 0;
+                    result = ((result << 1) | u32::from(extend)) & mask;
+                    extend = carry;
+                }
+                6 => {
                     carry = (result & 1) != 0;
                     result = (result >> 1) | (u32::from(carry) << (bits - 1));
                 }
-            } else if left {
-                carry = (result & (1 << (bits - 1))) != 0;
-                result = (result << 1) & mask;
-            } else {
-                carry = (result & 1) != 0;
-                result >>= 1;
-            }
-            if with_extend {
-                self.set_flag(Self::FLAG_X, carry);
+                _ => {
+                    carry = (result & sign_bit) != 0;
+                    result = ((result << 1) | u32::from(carry)) & mask;
+                }
             }
         }
 
-        let x = self.ccr & Self::FLAG_X;
-        self.ccr = x;
-        self.set_flag(Self::FLAG_C, carry);
+        let old_x = self.ccr & Self::FLAG_X;
+        self.ccr = if matches!(mode & 0x07, 0..=5) {
+            if extend { Self::FLAG_X } else { 0 }
+        } else {
+            old_x
+        };
+        self.set_flag(Self::FLAG_C, count != 0 && carry);
+        self.set_flag(Self::FLAG_V, overflow);
         self.set_flag(Self::FLAG_N, (result & size.sign_bit()) != 0);
         self.set_flag(Self::FLAG_Z, (result & mask) == 0);
         result
@@ -1451,6 +1566,40 @@ impl M68k {
         if !compare {
             self.set_flag(Self::FLAG_X, carry);
         }
+    }
+
+    fn set_addx_subx_flags(
+        &mut self,
+        left: u32,
+        right: u32,
+        result: u32,
+        size: Size,
+        subtract: bool,
+        extend: u32,
+    ) {
+        let mask = size.mask();
+        let sign = size.sign_bit();
+        let left = left & mask;
+        let right = right & mask;
+        let operand = right.wrapping_add(extend) & mask;
+        let result = result & mask;
+        let carry = if subtract {
+            (right as u64 + extend as u64) > left as u64
+        } else {
+            (left as u64 + right as u64 + extend as u64) > mask as u64
+        };
+        let overflow = if subtract {
+            ((left ^ operand) & (left ^ result) & sign) != 0
+        } else {
+            (!(left ^ operand) & (left ^ result) & sign) != 0
+        };
+        let keep_zero = (self.ccr & Self::FLAG_Z) != 0 && result == 0;
+        self.ccr = 0;
+        self.set_flag(Self::FLAG_N, (result & sign) != 0);
+        self.set_flag(Self::FLAG_Z, keep_zero);
+        self.set_flag(Self::FLAG_V, overflow);
+        self.set_flag(Self::FLAG_C, carry);
+        self.set_flag(Self::FLAG_X, carry);
     }
 
     fn set_flag(&mut self, flag: u8, enabled: bool) {

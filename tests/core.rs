@@ -110,6 +110,114 @@ fn cpu_trap_and_rte_restore_status_and_return_pc() {
 }
 
 #[test]
+fn cpu_roxl_uses_extend_and_shifts_update_extend() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x003c, 0x0010, // ori #$10,ccr
+            0x7000, // moveq #0,d0
+            0xe350, // roxl.w #1,d0
+            0x303c, 0x8001, // move.w #$8001,d0
+            0xe240, // asr.w #1,d0
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.d[0] & 0xffff, 0x0001);
+    assert_eq!(cpu.sr() & 0x11, 0x00);
+
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.d[0] & 0xffff, 0xc000);
+    assert_eq!(cpu.sr() & 0x19, 0x19);
+}
+
+#[test]
+fn cpu_addx_uses_extend_and_preserves_zero_for_multiprecision() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x7001, // moveq #1,d0
+            0x7201, // moveq #1,d1
+            0x003c, 0x0010, // ori #$10,ccr
+            0xd300, // addx.b d0,d1
+            0x70ff, // moveq #-1,d0
+            0x7200, // moveq #0,d1
+            0x003c, 0x0010, // ori #$10,ccr
+            0xd300, // addx.b d0,d1
+        ],
+    );
+
+    for _ in 0..4 {
+        cpu.step(&mut bus).unwrap();
+    }
+    assert_eq!(cpu.d[1] & 0xff, 3);
+    assert_eq!(cpu.sr() & 0x15, 0);
+
+    for _ in 0..4 {
+        cpu.step(&mut bus).unwrap();
+    }
+    assert_eq!(cpu.d[1] & 0xff, 0);
+    assert_eq!(cpu.sr() & 0x15, 0x15);
+}
+
+#[test]
+fn cpu_dynamic_shift_count_zero_preserves_flags() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x70ff, // moveq #-1,d0
+            0x7200, // moveq #0,d1
+            0xe0a9, // lsr.l d0,d1, count comes from d0 & 63
+            0xe2a9, // lsr.l d1,d1, zero count preserves CCR
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    let flags_after_nonzero_shift = cpu.sr() & 0x1f;
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.sr() & 0x1f, flags_after_nonzero_shift);
+}
+
+#[test]
+fn cpu_eor_register_writes_destination_instead_of_comparing() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x283c, 0x1111, 0x2222, // move.l #$11112222,d4
+            0x243c, 0x3333, 0x0000, // move.l #$33330000,d2
+            0xb982, // eor.l d4,d2
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.d[2], 0x2222_2222);
+    assert_eq!(cpu.sr() & 0x04, 0);
+}
+
+#[test]
 fn bus_routes_ym_and_psg_writes() {
     let mut bus = M68kBus::new();
     bus.write_word(0x00a0_4000, 0xa034);
