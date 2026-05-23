@@ -1,16 +1,29 @@
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::bus::M68kBus;
+use crate::bus::{M68kBus, M68kBusSnapshot};
 use crate::m68k::{CpuError, M68k};
 use crate::rom::{RomHeader, SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct Emulator {
     pub cpu: M68k,
     pub bus: M68kBus,
+    pub rom_path: Option<PathBuf>,
+    pub frame_count: u64,
+    pub rom_header: Option<RomHeader>,
+    pub timing: TimingMode,
+    pub region: SystemRegion,
+    pub last_error: Option<CpuError>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EmulatorSnapshot {
+    pub cpu: M68k,
+    pub bus: M68kBusSnapshot,
     pub frame_count: u64,
     pub rom_header: Option<RomHeader>,
     pub timing: TimingMode,
@@ -44,6 +57,7 @@ impl Emulator {
         Self {
             cpu: M68k::new(),
             bus: M68kBus::new(),
+            rom_path: None,
             frame_count: 0,
             rom_header: None,
             timing: TimingMode::Ntsc,
@@ -53,12 +67,21 @@ impl Emulator {
     }
 
     pub fn load_rom_file<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
+        let path = path.as_ref();
         let bytes = fs::read(path)?;
-        self.load_rom_bytes(&bytes);
+        self.load_rom_bytes_with_path(&bytes, Some(path.to_path_buf()));
         Ok(())
     }
 
     pub fn load_rom_bytes(&mut self, data: &[u8]) {
+        self.load_rom_bytes_with_path(data, None);
+    }
+
+    pub fn load_rom_bytes_with_path_hint<P: AsRef<Path>>(&mut self, data: &[u8], path: P) {
+        self.load_rom_bytes_with_path(data, Some(path.as_ref().to_path_buf()));
+    }
+
+    fn load_rom_bytes_with_path(&mut self, data: &[u8], path: Option<PathBuf>) {
         let rom = normalize_rom_bytes(data);
         self.rom_header = parse_header(&rom);
         if let Some(header) = &self.rom_header {
@@ -70,6 +93,7 @@ impl Emulator {
         self.bus.load_rom(rom);
         self.cpu = M68k::new();
         self.cpu.reset(&mut self.bus);
+        self.rom_path = path;
         self.frame_count = 0;
         self.last_error = None;
     }
@@ -154,6 +178,28 @@ impl Emulator {
         } else {
             60.0
         }
+    }
+
+    pub fn snapshot(&self) -> EmulatorSnapshot {
+        EmulatorSnapshot {
+            cpu: self.cpu.clone(),
+            bus: self.bus.snapshot(),
+            frame_count: self.frame_count,
+            rom_header: self.rom_header.clone(),
+            timing: self.timing,
+            region: self.region,
+            last_error: self.last_error.clone(),
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: EmulatorSnapshot) {
+        self.cpu = snapshot.cpu;
+        self.bus.restore_snapshot(snapshot.bus);
+        self.frame_count = snapshot.frame_count;
+        self.rom_header = snapshot.rom_header;
+        self.timing = snapshot.timing;
+        self.region = snapshot.region;
+        self.last_error = snapshot.last_error;
     }
 
     fn configure_region_register(&mut self) {

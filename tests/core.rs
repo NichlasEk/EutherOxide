@@ -1,6 +1,9 @@
 use euther_oxide::audio::Ym2612;
 use euther_oxide::rom::{SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
+use euther_oxide::savestate::{argon_path_for_rom, load_slot_for_emulator, save_slot_for_emulator};
 use euther_oxide::{Emulator, M68k, M68kBus};
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn reset_to(cpu: &mut M68k, bus: &mut M68kBus, address: u32) {
     bus.write_long(0, 0x00ff_0000);
@@ -86,6 +89,27 @@ fn cpu_branches_calls_and_returns_on_supervisor_stack() {
 }
 
 #[test]
+fn cpu_trap_and_rte_restore_status_and_return_pc() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    bus.write_long(0x80, 0x200);
+    load_program(&mut bus, 0x100, &[0x4e40, 0x7007]);
+    load_program(&mut bus, 0x200, &[0x4e73]);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.pc, 0x200);
+    assert_eq!(cpu.ssp, 0x00fe_fffa);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.pc, 0x102);
+    assert_eq!(cpu.ssp, 0x00ff_0000);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.d[0], 7);
+}
+
+#[test]
 fn bus_routes_ym_and_psg_writes() {
     let mut bus = M68kBus::new();
     bus.write_word(0x00a0_4000, 0xa034);
@@ -142,4 +166,46 @@ fn emulator_loads_tiny_rom_and_sets_reset_pc() {
     assert_eq!(emulator.cpu.pc, 0x120);
     emulator.cpu.step(&mut emulator.bus).unwrap();
     assert_eq!(emulator.cpu.d[0], 1);
+}
+
+#[test]
+fn argon_savestate_round_trips_emulator_state() {
+    let mut rom = vec![0; 0x200];
+    rom[0x000..0x004].copy_from_slice(&0x00ff_0000u32.to_be_bytes());
+    rom[0x004..0x008].copy_from_slice(&0x0000_0120u32.to_be_bytes());
+    rom[0x100..0x104].copy_from_slice(b"SEGA");
+    rom[0x120] = 0x70;
+    rom[0x121] = 0x01;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let rom_path = std::env::temp_dir().join(format!(
+        "euther_oxide_savestate_{}_{}.md",
+        std::process::id(),
+        suffix
+    ));
+    let argon_path = argon_path_for_rom(&rom_path);
+    let _ = fs::remove_file(&argon_path);
+    fs::write(&rom_path, rom).unwrap();
+
+    let mut emulator = Emulator::new();
+    emulator.load_rom_file(&rom_path).unwrap();
+    emulator.cpu.step(&mut emulator.bus).unwrap();
+    emulator.frame_count = 7;
+
+    let summary = save_slot_for_emulator(&emulator, 1).unwrap();
+    assert!(summary.slots[0].occupied);
+    assert!(!summary.slots[1].occupied);
+
+    emulator.cpu.d[0] = 0xfeed_beef;
+    emulator.frame_count = 99;
+    load_slot_for_emulator(&mut emulator, 1).unwrap();
+
+    assert_eq!(emulator.cpu.d[0], 1);
+    assert_eq!(emulator.frame_count, 7);
+
+    let _ = fs::remove_file(argon_path);
+    let _ = fs::remove_file(rom_path);
 }

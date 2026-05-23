@@ -3,6 +3,5 @@
   "identifier": "default",
   "description": "Main EutherOxide desktop window permissions",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }
-

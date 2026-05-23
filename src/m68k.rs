@@ -1,6 +1,7 @@
 use crate::bus::M68kBus;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct M68k {
     pub d: [u32; 8],
     a: [u32; 7],
@@ -16,7 +17,7 @@ pub struct M68k {
     pub total_cycles: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CpuError {
     UnsupportedOpcode { opcode: u16, pc: u32 },
     IllegalAddressingMode { mode: u8, reg: u8, pc: u32 },
@@ -963,8 +964,8 @@ impl M68k {
     }
 
     fn trap(&mut self, bus: &mut M68kBus, vector: u8) -> u32 {
-        self.push_word(bus, self.sr());
         self.push_long(bus, self.pc);
+        self.push_word(bus, self.sr());
         self.supervisor = true;
         self.pc = bus.read_long(0x80 + vector as u32 * 4) & Self::ADDRESS_MASK;
         self.finish(34)
@@ -1154,8 +1155,8 @@ impl M68k {
 
     fn service_interrupt(&mut self, bus: &mut M68kBus, level: u8) -> u32 {
         self.stopped = false;
-        self.push_word(bus, self.sr());
         self.push_long(bus, self.pc);
+        self.push_word(bus, self.sr());
         self.supervisor = true;
         self.interrupt_priority_mask = level & 0x07;
         bus.acknowledge_interrupt(level);

@@ -1,9 +1,18 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemoryTarget {
     Vram,
     Cram,
     Vsram,
     Invalid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VdpDmaMode {
+    MemoryToVdp,
+    Fill,
+    Copy,
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +50,57 @@ pub struct Vdp {
     video_dirty: bool,
     vblank_counter_pending: bool,
     interlace_field: u8,
+    dma_pending: Option<VdpDmaMode>,
+    dma_fill_pending: bool,
+    pub vram_writes: u64,
+    pub cram_writes: u64,
+    pub cram_nonzero_writes: u64,
+    pub vsram_writes: u64,
+    pub dma_transfers: u64,
+    pub dma_last_source: u32,
+    pub dma_last_target: u32,
+    pub dma_last_length: usize,
+    pub dma_min_target: u32,
+    pub dma_max_target: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VdpSnapshot {
+    registers: Vec<u8>,
+    vram: Vec<u8>,
+    cram: Vec<u16>,
+    vsram: Vec<u16>,
+    framebuffer: Vec<u32>,
+    screen_width: usize,
+    screen_height: usize,
+    irq_level: u8,
+    frame_cycle: u64,
+    control_pending: bool,
+    control_latch: u16,
+    address: u32,
+    mode_write: bool,
+    location_bits: u8,
+    dma_active: bool,
+    status: u16,
+    h_interrupt_pending: bool,
+    v_interrupt_pending: bool,
+    h_interrupt_counter: i16,
+    render_version: u64,
+    video_dirty: bool,
+    vblank_counter_pending: bool,
+    interlace_field: u8,
+    dma_pending: Option<VdpDmaMode>,
+    dma_fill_pending: bool,
+    vram_writes: u64,
+    cram_writes: u64,
+    cram_nonzero_writes: u64,
+    vsram_writes: u64,
+    dma_transfers: u64,
+    dma_last_source: u32,
+    dma_last_target: u32,
+    dma_last_length: usize,
+    dma_min_target: u32,
+    dma_max_target: u32,
 }
 
 impl Default for Vdp {
@@ -88,6 +148,18 @@ impl Vdp {
             video_dirty: true,
             vblank_counter_pending: false,
             interlace_field: 0,
+            dma_pending: None,
+            dma_fill_pending: false,
+            vram_writes: 0,
+            cram_writes: 0,
+            cram_nonzero_writes: 0,
+            vsram_writes: 0,
+            dma_transfers: 0,
+            dma_last_source: 0,
+            dma_last_target: 0,
+            dma_last_length: 0,
+            dma_min_target: u32::MAX,
+            dma_max_target: 0,
         };
         vdp.reset();
         vdp
@@ -119,6 +191,109 @@ impl Vdp {
         self.video_dirty = true;
         self.vblank_counter_pending = false;
         self.interlace_field = 0;
+        self.dma_pending = None;
+        self.dma_fill_pending = false;
+        self.vram_writes = 0;
+        self.cram_writes = 0;
+        self.cram_nonzero_writes = 0;
+        self.vsram_writes = 0;
+        self.dma_transfers = 0;
+        self.dma_last_source = 0;
+        self.dma_last_target = 0;
+        self.dma_last_length = 0;
+        self.dma_min_target = u32::MAX;
+        self.dma_max_target = 0;
+    }
+
+    pub fn snapshot(&self) -> VdpSnapshot {
+        VdpSnapshot {
+            registers: self.registers.to_vec(),
+            vram: self.vram.clone(),
+            cram: self.cram.to_vec(),
+            vsram: self.vsram.to_vec(),
+            framebuffer: self.framebuffer.clone(),
+            screen_width: self.screen_width,
+            screen_height: self.screen_height,
+            irq_level: self.irq_level,
+            frame_cycle: self.frame_cycle,
+            control_pending: self.control_pending,
+            control_latch: self.control_latch,
+            address: self.address,
+            mode_write: self.mode_write,
+            location_bits: self.location_bits,
+            dma_active: self.dma_active,
+            status: self.status,
+            h_interrupt_pending: self.h_interrupt_pending,
+            v_interrupt_pending: self.v_interrupt_pending,
+            h_interrupt_counter: self.h_interrupt_counter,
+            render_version: self.render_version,
+            video_dirty: self.video_dirty,
+            vblank_counter_pending: self.vblank_counter_pending,
+            interlace_field: self.interlace_field,
+            dma_pending: self.dma_pending,
+            dma_fill_pending: self.dma_fill_pending,
+            vram_writes: self.vram_writes,
+            cram_writes: self.cram_writes,
+            cram_nonzero_writes: self.cram_nonzero_writes,
+            vsram_writes: self.vsram_writes,
+            dma_transfers: self.dma_transfers,
+            dma_last_source: self.dma_last_source,
+            dma_last_target: self.dma_last_target,
+            dma_last_length: self.dma_last_length,
+            dma_min_target: self.dma_min_target,
+            dma_max_target: self.dma_max_target,
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: VdpSnapshot) {
+        self.registers = [0; Self::NUM_REGISTERS];
+        for (slot, value) in self.registers.iter_mut().zip(snapshot.registers) {
+            *slot = value;
+        }
+        self.vram = snapshot.vram;
+        if self.vram.len() != Self::VRAM_SIZE {
+            self.vram.resize(Self::VRAM_SIZE, 0);
+        }
+        self.cram = [0; Self::CRAM_SIZE];
+        for (slot, value) in self.cram.iter_mut().zip(snapshot.cram) {
+            *slot = value;
+        }
+        self.vsram = [0; Self::VSRAM_SIZE];
+        for (slot, value) in self.vsram.iter_mut().zip(snapshot.vsram) {
+            *slot = value;
+        }
+        self.framebuffer = snapshot.framebuffer;
+        self.screen_width = snapshot.screen_width;
+        self.screen_height = snapshot.screen_height;
+        self.irq_level = snapshot.irq_level;
+        self.frame_cycle = snapshot.frame_cycle;
+        self.control_pending = snapshot.control_pending;
+        self.control_latch = snapshot.control_latch;
+        self.address = snapshot.address;
+        self.mode_write = snapshot.mode_write;
+        self.location_bits = snapshot.location_bits;
+        self.dma_active = snapshot.dma_active;
+        self.status = snapshot.status;
+        self.h_interrupt_pending = snapshot.h_interrupt_pending;
+        self.v_interrupt_pending = snapshot.v_interrupt_pending;
+        self.h_interrupt_counter = snapshot.h_interrupt_counter;
+        self.render_version = snapshot.render_version;
+        self.video_dirty = snapshot.video_dirty;
+        self.vblank_counter_pending = snapshot.vblank_counter_pending;
+        self.interlace_field = snapshot.interlace_field;
+        self.dma_pending = snapshot.dma_pending;
+        self.dma_fill_pending = snapshot.dma_fill_pending;
+        self.vram_writes = snapshot.vram_writes;
+        self.cram_writes = snapshot.cram_writes;
+        self.cram_nonzero_writes = snapshot.cram_nonzero_writes;
+        self.vsram_writes = snapshot.vsram_writes;
+        self.dma_transfers = snapshot.dma_transfers;
+        self.dma_last_source = snapshot.dma_last_source;
+        self.dma_last_target = snapshot.dma_last_target;
+        self.dma_last_length = snapshot.dma_last_length;
+        self.dma_min_target = snapshot.dma_min_target;
+        self.dma_max_target = snapshot.dma_max_target;
+        self.ensure_framebuffer_size();
     }
 
     pub fn begin_frame(&mut self) {
@@ -191,6 +366,10 @@ impl Vdp {
     }
 
     pub fn write_data(&mut self, value: u16) {
+        if self.dma_fill_pending {
+            self.perform_dma_fill(value);
+            return;
+        }
         self.control_pending = false;
         self.write_data_direct(value);
     }
@@ -206,6 +385,7 @@ impl Vdp {
             self.dma_active = self.dma_enabled() && (value & 0x0080) != 0;
             self.control_pending = false;
             if self.dma_active {
+                self.dma_pending = Some(self.dma_mode());
                 self.dma_active = false;
             }
         } else {
@@ -260,6 +440,59 @@ impl Vdp {
         self.update_irq_level();
     }
 
+    pub fn take_dma_request(&mut self) -> Option<VdpDmaMode> {
+        self.dma_pending.take()
+    }
+
+    pub fn dma_length_words(&self) -> usize {
+        let length = u16::from(self.registers[19]) | (u16::from(self.registers[20]) << 8);
+        if length == 0 {
+            0x1_0000
+        } else {
+            length as usize
+        }
+    }
+
+    pub fn dma_source_address(&self) -> u32 {
+        ((u32::from(self.registers[23] & 0x7f)) << 17)
+            | (u32::from(self.registers[22]) << 9)
+            | (u32::from(self.registers[21]) << 1)
+    }
+
+    pub fn dma_target_address(&self) -> u32 {
+        self.address
+    }
+
+    pub fn record_dma_transfer(&mut self, source: u32, target: u32, length: usize) {
+        self.dma_transfers += 1;
+        self.dma_last_source = source;
+        self.dma_last_target = target;
+        self.dma_last_length = length;
+        self.dma_min_target = self.dma_min_target.min(target);
+        self.dma_max_target = self
+            .dma_max_target
+            .max(target.wrapping_add(length as u32 * 2));
+    }
+
+    pub fn write_dma_word(&mut self, value: u16) {
+        self.control_pending = false;
+        self.write_data_direct(value);
+    }
+
+    pub fn arm_dma_fill(&mut self) {
+        self.dma_fill_pending = true;
+    }
+
+    pub fn perform_vram_copy_dma(&mut self) {
+        let mut source = (u32::from(self.registers[22]) << 8) | u32::from(self.registers[21]);
+        let length = self.dma_length_words();
+        for _ in 0..length {
+            let value = self.read_vram_word(source);
+            self.write_data_direct(value);
+            source = source.wrapping_add(2) & 0xffff;
+        }
+    }
+
     pub fn render_frame(&mut self) {
         self.interlace_field ^= 1;
         self.update_screen_size();
@@ -274,6 +507,7 @@ impl Vdp {
         }
 
         self.draw_scroll_planes();
+        self.draw_sprites();
         self.render_version += 1;
         self.video_dirty = false;
     }
@@ -293,11 +527,16 @@ impl Vdp {
                 let index = ((self.address >> 1) as usize) & (Self::CRAM_SIZE - 1);
                 self.cram[index] = value & 0x0fff;
                 self.video_dirty = true;
+                self.cram_writes += 1;
+                if (value & 0x0fff) != 0 {
+                    self.cram_nonzero_writes += 1;
+                }
             }
             MemoryTarget::Vsram => {
                 let index = ((self.address >> 1) as usize) & (Self::VSRAM_SIZE - 1);
                 self.vsram[index] = value & 0x07ff;
                 self.video_dirty = true;
+                self.vsram_writes += 1;
             }
             MemoryTarget::Vram | MemoryTarget::Invalid => self.write_vram_word(self.address, value),
         }
@@ -316,6 +555,7 @@ impl Vdp {
         self.vram[address] = (value >> 8) as u8;
         self.vram[(address ^ 1) & 0xffff] = value as u8;
         self.video_dirty = true;
+        self.vram_writes += 1;
     }
 
     fn increment_address(&mut self) {
@@ -386,6 +626,24 @@ impl Vdp {
         (self.registers[1] & 0x10) != 0
     }
 
+    fn dma_mode(&self) -> VdpDmaMode {
+        match self.registers[23] & 0xc0 {
+            0x80 => VdpDmaMode::Fill,
+            0xc0 => VdpDmaMode::Copy,
+            _ => VdpDmaMode::MemoryToVdp,
+        }
+    }
+
+    fn perform_dma_fill(&mut self, value: u16) {
+        self.control_pending = false;
+        self.dma_fill_pending = false;
+        let fill = (value & 0x00ff) * 0x0101;
+        let length = self.dma_length_words();
+        for _ in 0..length {
+            self.write_data_direct(fill);
+        }
+    }
+
     fn interlace_mode_2(&self) -> bool {
         (self.registers[12] & 0x06) == 0x06
     }
@@ -447,6 +705,106 @@ impl Vdp {
         }
     }
 
+    fn draw_sprites(&mut self) {
+        let sprite_base = self.sprite_table_base();
+        let mut sprite_index = 0usize;
+        let max_sprites = if self.screen_width == Self::H40_WIDTH {
+            80
+        } else {
+            64
+        };
+
+        for _ in 0..max_sprites {
+            let entry = (sprite_base + sprite_index * 8) & 0xffff;
+            let y_raw = self.read_vram_word(entry as u32) & 0x03ff;
+            let size_link = self.read_vram_word((entry + 2) as u32);
+            let attr = self.read_vram_word((entry + 4) as u32);
+            let x_raw = self.read_vram_word((entry + 6) as u32) & 0x01ff;
+            let link = (size_link & 0x7f) as usize;
+            let width_cells = (((size_link >> 8) & 0x03) + 1) as usize;
+            let height_cells = (((size_link >> 10) & 0x03) + 1) as usize;
+            let x = x_raw as i32 - 128;
+            let y = y_raw as i32 - 128;
+            let h_flip = (attr & 0x0800) != 0;
+            let v_flip = (attr & 0x1000) != 0;
+            let palette = ((attr >> 9) as usize) & 0x30;
+            let pattern = attr as usize & 0x07ff;
+
+            if x > -(width_cells as i32 * 8)
+                && y > -(height_cells as i32 * 8)
+                && x < self.screen_width as i32
+                && y < self.screen_height as i32
+            {
+                self.draw_sprite_tiles(
+                    x,
+                    y,
+                    width_cells,
+                    height_cells,
+                    pattern,
+                    palette,
+                    h_flip,
+                    v_flip,
+                );
+            }
+
+            if link == 0 || link == sprite_index {
+                break;
+            }
+            sprite_index = link;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_sprite_tiles(
+        &mut self,
+        x: i32,
+        y: i32,
+        width_cells: usize,
+        height_cells: usize,
+        pattern: usize,
+        palette: usize,
+        h_flip: bool,
+        v_flip: bool,
+    ) {
+        let sprite_width = width_cells * 8;
+        let sprite_height = height_cells * 8;
+        for local_y in 0..sprite_height {
+            let source_y = if v_flip {
+                sprite_height - 1 - local_y
+            } else {
+                local_y
+            };
+            let tile_y = source_y / 8;
+            let row = source_y & 7;
+            let screen_y = y + local_y as i32;
+            if !(0..self.screen_height as i32).contains(&screen_y) {
+                continue;
+            }
+
+            for local_x in 0..sprite_width {
+                let source_x = if h_flip {
+                    sprite_width - 1 - local_x
+                } else {
+                    local_x
+                };
+                let tile_x = source_x / 8;
+                let col = source_x & 7;
+                let screen_x = x + local_x as i32;
+                if !(0..self.screen_width as i32).contains(&screen_x) {
+                    continue;
+                }
+
+                let tile = pattern + tile_y * width_cells + tile_x;
+                let color = self.pattern_color(tile, row, col);
+                if color == 0 {
+                    continue;
+                }
+                let index = screen_y as usize * self.screen_width + screen_x as usize;
+                self.framebuffer[index] = self.palette_color(palette | color);
+            }
+        }
+    }
+
     fn plane_pixel(&self, plane: PlaneParams, screen_x: usize, screen_y: usize) -> Option<usize> {
         let source_x = (screen_x + plane.map_width - (plane.hscroll & (plane.map_width - 1)))
             & (plane.map_width - 1);
@@ -464,12 +822,7 @@ impl Vdp {
             col = 7 - col;
         }
         let pattern = entry as usize & 0x07ff;
-        let tile_address = (pattern * 32 + row * 4) & 0xffff;
-        let packed = ((self.vram[tile_address] as u32) << 24)
-            | ((self.vram[(tile_address + 1) & 0xffff] as u32) << 16)
-            | ((self.vram[(tile_address + 2) & 0xffff] as u32) << 8)
-            | self.vram[(tile_address + 3) & 0xffff] as u32;
-        let color = ((packed >> ((7 - col) * 4)) & 0x0f) as usize;
+        let color = self.pattern_color(pattern, row, col);
         if color == 0 {
             None
         } else {
@@ -498,5 +851,22 @@ impl Vdp {
 
     fn hscroll_base(&self) -> usize {
         ((self.registers[13] as usize & 0x3f) << 10) & 0xffff
+    }
+
+    fn sprite_table_base(&self) -> usize {
+        if self.screen_width == Self::H40_WIDTH {
+            ((self.registers[5] as usize & 0x7e) << 9) & 0xffff
+        } else {
+            ((self.registers[5] as usize & 0x7f) << 9) & 0xffff
+        }
+    }
+
+    fn pattern_color(&self, pattern: usize, row: usize, col: usize) -> usize {
+        let tile_address = (pattern * 32 + row * 4) & 0xffff;
+        let packed = ((self.vram[tile_address] as u32) << 24)
+            | ((self.vram[(tile_address + 1) & 0xffff] as u32) << 16)
+            | ((self.vram[(tile_address + 2) & 0xffff] as u32) << 8)
+            | self.vram[(tile_address + 3) & 0xffff] as u32;
+        ((packed >> ((7 - col) * 4)) & 0x0f) as usize
     }
 }

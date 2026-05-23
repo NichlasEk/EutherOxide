@@ -1,6 +1,8 @@
 use std::f64::consts::TAU;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum EnvelopeStage {
     Off,
     Attack,
@@ -48,7 +50,7 @@ struct RenderState {
     last_status_read: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct YmWrite {
     pub index: u64,
     pub port: usize,
@@ -102,6 +104,92 @@ pub struct Ym2612 {
     last_sync_cycle: u64,
     frame_start_state: RenderState,
     frame_writes: Vec<(u64, usize, u8, u8)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Ym2612Snapshot {
+    registers: Vec<Vec<u8>>,
+    pub status: u8,
+    pub writes: u64,
+    pub write_log: Vec<YmWrite>,
+    address: [u8; 2],
+    busy_cycles: i64,
+    timer_a_latch: u16,
+    timer_b_latch: u8,
+    timer_a_counter: i64,
+    timer_b_counter: i64,
+    timer_control: u8,
+    timer_a_enabled: bool,
+    timer_b_enabled: bool,
+    last_status_read: u8,
+    key_mask: [u8; Ym2612::CHANNELS],
+    fnum: [u16; Ym2612::CHANNELS],
+    block: [u8; Ym2612::CHANNELS],
+    channel_frequency: [f64; Ym2612::CHANNELS],
+    operator_fnum: [u16; Ym2612::OPERATORS_TOTAL],
+    operator_block: [u8; Ym2612::OPERATORS_TOTAL],
+    operator_frequency: [f64; Ym2612::OPERATORS_TOTAL],
+    algorithm: [u8; Ym2612::CHANNELS],
+    feedback: [u8; Ym2612::CHANNELS],
+    pan_l: [bool; Ym2612::CHANNELS],
+    pan_r: [bool; Ym2612::CHANNELS],
+    total_level: [u8; Ym2612::OPERATORS_TOTAL],
+    multiple_ratio: [f64; Ym2612::OPERATORS_TOTAL],
+    attack_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    decay_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    sustain_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    sustain_level: [u8; Ym2612::OPERATORS_TOTAL],
+    release_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    phase: [f64; Ym2612::OPERATORS_TOTAL],
+    envelope: [f64; Ym2612::OPERATORS_TOTAL],
+    envelope_stage: [EnvelopeStage; Ym2612::OPERATORS_TOTAL],
+    operator_output: [f64; Ym2612::OPERATORS_TOTAL],
+    operator_last_output: [f64; Ym2612::OPERATORS_TOTAL],
+    dac_enabled: bool,
+    dac_sample: f64,
+    dac_output: f64,
+    last_sync_cycle: u64,
+    frame_start_state: RenderStateSnapshot,
+    frame_writes: Vec<(u64, usize, u8, u8)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RenderStateSnapshot {
+    registers: Vec<Vec<u8>>,
+    key_mask: [u8; Ym2612::CHANNELS],
+    fnum: [u16; Ym2612::CHANNELS],
+    block: [u8; Ym2612::CHANNELS],
+    channel_frequency: [f64; Ym2612::CHANNELS],
+    operator_fnum: [u16; Ym2612::OPERATORS_TOTAL],
+    operator_block: [u8; Ym2612::OPERATORS_TOTAL],
+    operator_frequency: [f64; Ym2612::OPERATORS_TOTAL],
+    algorithm: [u8; Ym2612::CHANNELS],
+    feedback: [u8; Ym2612::CHANNELS],
+    pan_l: [bool; Ym2612::CHANNELS],
+    pan_r: [bool; Ym2612::CHANNELS],
+    total_level: [u8; Ym2612::OPERATORS_TOTAL],
+    multiple_ratio: [f64; Ym2612::OPERATORS_TOTAL],
+    attack_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    decay_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    sustain_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    sustain_level: [u8; Ym2612::OPERATORS_TOTAL],
+    release_rate: [u8; Ym2612::OPERATORS_TOTAL],
+    phase: [f64; Ym2612::OPERATORS_TOTAL],
+    envelope: [f64; Ym2612::OPERATORS_TOTAL],
+    envelope_stage: [EnvelopeStage; Ym2612::OPERATORS_TOTAL],
+    operator_output: [f64; Ym2612::OPERATORS_TOTAL],
+    operator_last_output: [f64; Ym2612::OPERATORS_TOTAL],
+    dac_enabled: bool,
+    dac_sample: f64,
+    dac_output: f64,
+    timer_a_counter: i64,
+    timer_b_counter: i64,
+    timer_control: u8,
+    timer_a_enabled: bool,
+    timer_b_enabled: bool,
+    status: u8,
+    busy_cycles: i64,
+    last_status_read: u8,
 }
 
 impl Default for Ym2612 {
@@ -220,6 +308,100 @@ impl Ym2612 {
         self.last_sync_cycle = 0;
         self.frame_start_state = self.capture_render_state();
         self.frame_writes.clear();
+    }
+
+    pub fn snapshot(&self) -> Ym2612Snapshot {
+        Ym2612Snapshot {
+            registers: registers_to_vec(&self.registers),
+            status: self.status,
+            writes: self.writes,
+            write_log: self.write_log.clone(),
+            address: self.address,
+            busy_cycles: self.busy_cycles,
+            timer_a_latch: self.timer_a_latch,
+            timer_b_latch: self.timer_b_latch,
+            timer_a_counter: self.timer_a_counter,
+            timer_b_counter: self.timer_b_counter,
+            timer_control: self.timer_control,
+            timer_a_enabled: self.timer_a_enabled,
+            timer_b_enabled: self.timer_b_enabled,
+            last_status_read: self.last_status_read,
+            key_mask: self.key_mask,
+            fnum: self.fnum,
+            block: self.block,
+            channel_frequency: self.channel_frequency,
+            operator_fnum: self.operator_fnum,
+            operator_block: self.operator_block,
+            operator_frequency: self.operator_frequency,
+            algorithm: self.algorithm,
+            feedback: self.feedback,
+            pan_l: self.pan_l,
+            pan_r: self.pan_r,
+            total_level: self.total_level,
+            multiple_ratio: self.multiple_ratio,
+            attack_rate: self.attack_rate,
+            decay_rate: self.decay_rate,
+            sustain_rate: self.sustain_rate,
+            sustain_level: self.sustain_level,
+            release_rate: self.release_rate,
+            phase: self.phase,
+            envelope: self.envelope,
+            envelope_stage: self.envelope_stage,
+            operator_output: self.operator_output,
+            operator_last_output: self.operator_last_output,
+            dac_enabled: self.dac_enabled,
+            dac_sample: self.dac_sample,
+            dac_output: self.dac_output,
+            last_sync_cycle: self.last_sync_cycle,
+            frame_start_state: self.frame_start_state.snapshot(),
+            frame_writes: self.frame_writes.clone(),
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: Ym2612Snapshot) {
+        self.registers = registers_from_vec(&snapshot.registers);
+        self.status = snapshot.status;
+        self.writes = snapshot.writes;
+        self.write_log = snapshot.write_log;
+        self.address = snapshot.address;
+        self.busy_cycles = snapshot.busy_cycles;
+        self.timer_a_latch = snapshot.timer_a_latch;
+        self.timer_b_latch = snapshot.timer_b_latch;
+        self.timer_a_counter = snapshot.timer_a_counter;
+        self.timer_b_counter = snapshot.timer_b_counter;
+        self.timer_control = snapshot.timer_control;
+        self.timer_a_enabled = snapshot.timer_a_enabled;
+        self.timer_b_enabled = snapshot.timer_b_enabled;
+        self.last_status_read = snapshot.last_status_read;
+        self.key_mask = snapshot.key_mask;
+        self.fnum = snapshot.fnum;
+        self.block = snapshot.block;
+        self.channel_frequency = snapshot.channel_frequency;
+        self.operator_fnum = snapshot.operator_fnum;
+        self.operator_block = snapshot.operator_block;
+        self.operator_frequency = snapshot.operator_frequency;
+        self.algorithm = snapshot.algorithm;
+        self.feedback = snapshot.feedback;
+        self.pan_l = snapshot.pan_l;
+        self.pan_r = snapshot.pan_r;
+        self.total_level = snapshot.total_level;
+        self.multiple_ratio = snapshot.multiple_ratio;
+        self.attack_rate = snapshot.attack_rate;
+        self.decay_rate = snapshot.decay_rate;
+        self.sustain_rate = snapshot.sustain_rate;
+        self.sustain_level = snapshot.sustain_level;
+        self.release_rate = snapshot.release_rate;
+        self.phase = snapshot.phase;
+        self.envelope = snapshot.envelope;
+        self.envelope_stage = snapshot.envelope_stage;
+        self.operator_output = snapshot.operator_output;
+        self.operator_last_output = snapshot.operator_last_output;
+        self.dac_enabled = snapshot.dac_enabled;
+        self.dac_sample = snapshot.dac_sample;
+        self.dac_output = snapshot.dac_output;
+        self.last_sync_cycle = snapshot.last_sync_cycle;
+        self.frame_start_state = RenderState::from_snapshot(snapshot.frame_start_state);
+        self.frame_writes = snapshot.frame_writes;
     }
 
     pub fn begin_frame(&mut self) {
@@ -790,6 +972,86 @@ impl Ym2612 {
 }
 
 impl RenderState {
+    fn snapshot(&self) -> RenderStateSnapshot {
+        RenderStateSnapshot {
+            registers: registers_to_vec(&self.registers),
+            key_mask: self.key_mask,
+            fnum: self.fnum,
+            block: self.block,
+            channel_frequency: self.channel_frequency,
+            operator_fnum: self.operator_fnum,
+            operator_block: self.operator_block,
+            operator_frequency: self.operator_frequency,
+            algorithm: self.algorithm,
+            feedback: self.feedback,
+            pan_l: self.pan_l,
+            pan_r: self.pan_r,
+            total_level: self.total_level,
+            multiple_ratio: self.multiple_ratio,
+            attack_rate: self.attack_rate,
+            decay_rate: self.decay_rate,
+            sustain_rate: self.sustain_rate,
+            sustain_level: self.sustain_level,
+            release_rate: self.release_rate,
+            phase: self.phase,
+            envelope: self.envelope,
+            envelope_stage: self.envelope_stage,
+            operator_output: self.operator_output,
+            operator_last_output: self.operator_last_output,
+            dac_enabled: self.dac_enabled,
+            dac_sample: self.dac_sample,
+            dac_output: self.dac_output,
+            timer_a_counter: self.timer_a_counter,
+            timer_b_counter: self.timer_b_counter,
+            timer_control: self.timer_control,
+            timer_a_enabled: self.timer_a_enabled,
+            timer_b_enabled: self.timer_b_enabled,
+            status: self.status,
+            busy_cycles: self.busy_cycles,
+            last_status_read: self.last_status_read,
+        }
+    }
+
+    fn from_snapshot(snapshot: RenderStateSnapshot) -> Self {
+        Self {
+            registers: registers_from_vec(&snapshot.registers),
+            key_mask: snapshot.key_mask,
+            fnum: snapshot.fnum,
+            block: snapshot.block,
+            channel_frequency: snapshot.channel_frequency,
+            operator_fnum: snapshot.operator_fnum,
+            operator_block: snapshot.operator_block,
+            operator_frequency: snapshot.operator_frequency,
+            algorithm: snapshot.algorithm,
+            feedback: snapshot.feedback,
+            pan_l: snapshot.pan_l,
+            pan_r: snapshot.pan_r,
+            total_level: snapshot.total_level,
+            multiple_ratio: snapshot.multiple_ratio,
+            attack_rate: snapshot.attack_rate,
+            decay_rate: snapshot.decay_rate,
+            sustain_rate: snapshot.sustain_rate,
+            sustain_level: snapshot.sustain_level,
+            release_rate: snapshot.release_rate,
+            phase: snapshot.phase,
+            envelope: snapshot.envelope,
+            envelope_stage: snapshot.envelope_stage,
+            operator_output: snapshot.operator_output,
+            operator_last_output: snapshot.operator_last_output,
+            dac_enabled: snapshot.dac_enabled,
+            dac_sample: snapshot.dac_sample,
+            dac_output: snapshot.dac_output,
+            timer_a_counter: snapshot.timer_a_counter,
+            timer_b_counter: snapshot.timer_b_counter,
+            timer_control: snapshot.timer_control,
+            timer_a_enabled: snapshot.timer_a_enabled,
+            timer_b_enabled: snapshot.timer_b_enabled,
+            status: snapshot.status,
+            busy_cycles: snapshot.busy_cycles,
+            last_status_read: snapshot.last_status_read,
+        }
+    }
+
     fn blank() -> Self {
         Self {
             registers: [[0; 0x100]; 2],
@@ -829,6 +1091,20 @@ impl RenderState {
             last_status_read: 0,
         }
     }
+}
+
+fn registers_to_vec(registers: &[[u8; 0x100]; 2]) -> Vec<Vec<u8>> {
+    registers.iter().map(|page| page.to_vec()).collect()
+}
+
+fn registers_from_vec(pages: &[Vec<u8>]) -> [[u8; 0x100]; 2] {
+    let mut registers = [[0; 0x100]; 2];
+    for (target, source) in registers.iter_mut().zip(pages) {
+        for (slot, value) in target.iter_mut().zip(source) {
+            *slot = *value;
+        }
+    }
+    registers
 }
 
 fn operator_index(reg: u8) -> usize {

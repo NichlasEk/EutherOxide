@@ -1,6 +1,7 @@
-use crate::audio::{Psg, Ym2612};
+use crate::audio::{Psg, Ym2612, Ym2612Snapshot};
 use crate::controller::Controller;
-use crate::vdp::Vdp;
+use crate::vdp::{Vdp, VdpDmaMode, VdpSnapshot};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct M68kBus {
@@ -12,6 +13,23 @@ pub struct M68kBus {
     pub psg: Psg,
     pub ym2612: Ym2612,
     pub vdp: Vdp,
+    pub controller_a: Controller,
+    pub controller_b: Controller,
+    pub frame_cycle: u64,
+    pub ym_frame_cycle: u64,
+    pub version_register: u8,
+    z80_bus_requested: bool,
+    z80_reset_asserted: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct M68kBusSnapshot {
+    low_memory_patches: Vec<(usize, u8)>,
+    work_ram: Vec<u8>,
+    z80_ram: Vec<u8>,
+    pub psg: Psg,
+    pub ym2612: Ym2612Snapshot,
+    pub vdp: VdpSnapshot,
     pub controller_a: Controller,
     pub controller_b: Controller,
     pub frame_cycle: u64,
@@ -93,6 +111,58 @@ impl M68kBus {
         } else {
             None
         };
+    }
+
+    pub fn snapshot(&self) -> M68kBusSnapshot {
+        let low_memory_patches = self
+            .low_memory
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &value)| (value != 0).then_some((index, value)))
+            .collect();
+
+        M68kBusSnapshot {
+            low_memory_patches,
+            work_ram: self.work_ram.as_ref().to_vec(),
+            z80_ram: self.z80_ram.as_ref().to_vec(),
+            psg: self.psg.clone(),
+            ym2612: self.ym2612.snapshot(),
+            vdp: self.vdp.snapshot(),
+            controller_a: self.controller_a.clone(),
+            controller_b: self.controller_b.clone(),
+            frame_cycle: self.frame_cycle,
+            ym_frame_cycle: self.ym_frame_cycle,
+            version_register: self.version_register,
+            z80_bus_requested: self.z80_bus_requested,
+            z80_reset_asserted: self.z80_reset_asserted,
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: M68kBusSnapshot) {
+        self.low_memory.fill(0);
+        for (index, value) in snapshot.low_memory_patches {
+            if let Some(slot) = self.low_memory.get_mut(index) {
+                *slot = value;
+            }
+        }
+        self.work_ram.fill(0);
+        for (slot, value) in self.work_ram.iter_mut().zip(snapshot.work_ram) {
+            *slot = value;
+        }
+        self.z80_ram.fill(0);
+        for (slot, value) in self.z80_ram.iter_mut().zip(snapshot.z80_ram) {
+            *slot = value;
+        }
+        self.psg = snapshot.psg;
+        self.ym2612.restore_snapshot(snapshot.ym2612);
+        self.vdp.restore_snapshot(snapshot.vdp);
+        self.controller_a = snapshot.controller_a;
+        self.controller_b = snapshot.controller_b;
+        self.frame_cycle = snapshot.frame_cycle;
+        self.ym_frame_cycle = snapshot.ym_frame_cycle;
+        self.version_register = snapshot.version_register;
+        self.z80_bus_requested = snapshot.z80_bus_requested;
+        self.z80_reset_asserted = snapshot.z80_reset_asserted;
     }
 
     pub fn load(&mut self, address: u32, bytes: &[u8]) {
@@ -226,6 +296,23 @@ impl M68kBus {
         self.read_long(address)
     }
 
+    pub fn peek_byte(&self, address: u32) -> u8 {
+        let address = address & Self::ADDRESS_MASK;
+        if self.work_ram_address(address) {
+            return self.work_ram[(address & Self::WORK_RAM_MASK) as usize];
+        }
+        if self.cartridge_rom_address(address) {
+            return self.read_rom_byte(address);
+        }
+        if self.z80_ram_mirror_address(address) {
+            return self.z80_ram[(address as usize) & 0x1fff];
+        }
+        self.low_memory
+            .get(address as usize)
+            .copied()
+            .unwrap_or(0xff)
+    }
+
     pub fn write_byte(&mut self, address: u32, value: u8) {
         let address = address & Self::ADDRESS_MASK;
         if self.ym2612_address(address) {
@@ -236,6 +323,7 @@ impl M68kBus {
             self.vdp.write_data_byte(address, value);
         } else if self.vdp_control_address(address) {
             self.vdp.write_control_byte(address, value);
+            self.finish_vdp_dma();
         } else if address == (Self::IO_PORT_1_DATA_BASE | 1) {
             self.controller_a.write_data(value);
         } else if address == (Self::IO_PORT_2_DATA_BASE | 1) {
@@ -274,6 +362,7 @@ impl M68kBus {
         }
         if self.vdp_control_address(address) {
             self.vdp.write_control(value);
+            self.finish_vdp_dma();
             return;
         }
         if self.z80_ram_mirror_address(address) {
@@ -312,6 +401,27 @@ impl M68kBus {
             address as usize % self.rom.len()
         };
         self.rom[index]
+    }
+
+    fn finish_vdp_dma(&mut self) {
+        let Some(mode) = self.vdp.take_dma_request() else {
+            return;
+        };
+        match mode {
+            VdpDmaMode::MemoryToVdp => {
+                let mut source = self.vdp.dma_source_address();
+                let length = self.vdp.dma_length_words();
+                let target = self.vdp.dma_target_address();
+                self.vdp.record_dma_transfer(source, target, length);
+                for _ in 0..length {
+                    let value = self.read_word(source);
+                    self.vdp.write_dma_word(value);
+                    source = source.wrapping_add(2) & Self::ADDRESS_MASK;
+                }
+            }
+            VdpDmaMode::Fill => self.vdp.arm_dma_fill(),
+            VdpDmaMode::Copy => self.vdp.perform_vram_copy_dma(),
+        }
     }
 
     fn cartridge_rom_address(&self, address: u32) -> bool {

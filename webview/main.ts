@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
 declare global {
@@ -14,6 +15,12 @@ type LoadResult = {
   resetPc: number;
   width: number;
   height: number;
+  statePath?: string | null;
+};
+
+type BridgeStatusResult = LoadResult & {
+  loaded?: boolean;
+  frame: number;
 };
 
 type FrameResult = {
@@ -39,19 +46,49 @@ type InputState = {
   start: boolean;
 };
 
+type StateSlot = {
+  slot: number;
+  occupied: boolean;
+  createdUnixMs?: number | null;
+  frameCount?: number | null;
+  label?: string | null;
+};
+
+type StateSlotsResult = {
+  path?: string | null;
+  slots: StateSlot[];
+};
+
+type LoadStateResult = {
+  frame: FrameResult;
+  states: StateSlotsResult;
+};
+
+type WebStateSnapshot = {
+  frame: number;
+  cpuCycles: number;
+  cpuSteps: number;
+  frameMs: number;
+  status: string;
+};
+
 type UiState = LoadResult & {
   loaded: boolean;
   playing: boolean;
-  runtime: "tauri" | "web";
+  runtime: "tauri" | "web" | "bridge";
   frame: number;
   cpuCycles: number;
   cpuSteps: number;
   frameMs: number;
   status: string;
   lastError: string;
+  stateSlots: StateSlot[];
+  nativeStates: boolean;
 };
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
+const bridgeBase =
+  new URLSearchParams(window.location.search).get("bridge") ?? "http://127.0.0.1:32161";
 const inputState: InputState = {
   up: false,
   down: false,
@@ -79,10 +116,15 @@ const ui: UiState = {
   frameMs: 0,
   status: "IDLE",
   lastError: "",
+  statePath: null,
+  stateSlots: emptySlots(),
+  nativeStates: false,
 };
 
 let romBytes = new Uint8Array();
+let romDisplayName = "reaction.argon";
 let romHash = 0xC0FFEE;
+let webStateSlots: Array<WebStateSnapshot | null> = [null, null, null];
 let stepping = false;
 let videoCanvas: HTMLCanvasElement;
 let videoContext: CanvasRenderingContext2D;
@@ -109,11 +151,34 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <strong id="rom-name">Load Mega Drive</strong>
       </label>
 
-      <div class="rail-section">
+      <div class="rail-section transport-section">
         <p class="section-label">Transport</p>
-        <button id="play-toggle" class="primary-action" type="button">Play</button>
-        <button id="step-frame" type="button">Step Frame</button>
-        <button id="reset-core" type="button">Reset</button>
+        <div class="transport-grid">
+          <button id="play-toggle" class="primary-action" type="button">Play</button>
+          <button id="step-frame" type="button">Step</button>
+          <button id="reset-core" type="button">Reset</button>
+        </div>
+      </div>
+
+      <div class="rail-section state-section">
+        <p class="section-label">Argon States</p>
+        <div class="state-grid" id="state-grid">
+          <div class="state-slot" data-slot-row="1">
+            <span>1</span><strong>Empty</strong>
+            <button data-state-action="save" data-slot="1" type="button">Save</button>
+            <button data-state-action="load" data-slot="1" type="button">Load</button>
+          </div>
+          <div class="state-slot" data-slot-row="2">
+            <span>2</span><strong>Empty</strong>
+            <button data-state-action="save" data-slot="2" type="button">Save</button>
+            <button data-state-action="load" data-slot="2" type="button">Load</button>
+          </div>
+          <div class="state-slot" data-slot-row="3">
+            <span>3</span><strong>Empty</strong>
+            <button data-state-action="save" data-slot="3" type="button">Save</button>
+            <button data-state-action="load" data-slot="3" type="button">Load</button>
+          </div>
+        </div>
       </div>
 
       <div class="rail-section">
@@ -192,6 +257,15 @@ const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
+const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
+
+romDrop.addEventListener("click", async (event) => {
+  if (!isTauri) {
+    return;
+  }
+  event.preventDefault();
+  await chooseDesktopRom();
+});
 
 romInput.addEventListener("change", async () => {
   const file = romInput.files?.[0];
@@ -214,7 +288,12 @@ romDrop.addEventListener("drop", async (event) => {
   romDrop.classList.remove("is-dragging");
   const file = event.dataTransfer?.files?.[0];
   if (file) {
-    await loadFile(file);
+    const filePath = tauriFilePath(file);
+    if (isTauri && filePath) {
+      await loadRomPath(filePath);
+    } else {
+      await loadFile(file);
+    }
   }
 });
 
@@ -233,16 +312,46 @@ stepFrame.addEventListener("click", async () => {
 });
 
 resetCore.addEventListener("click", async () => {
-  if (isTauri && ui.loaded) {
+  let drewCoreFrame = false;
+  if (isTauri && ui.runtime === "tauri" && ui.loaded) {
     await invoke("reset_emulator");
+  } else if (ui.runtime === "bridge" && ui.loaded) {
+    const result = await bridgeJson<BridgeStatusResult>("/reset", {
+      method: "POST",
+    });
+    Object.assign(ui, result);
+    const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" });
+    drawNativeFrame(frame);
+    ui.frame = frame.frame;
+    ui.cpuCycles = frame.cpuCycles;
+    ui.cpuSteps = frame.cpuSteps;
+    ui.frameMs = frame.frameMs;
+    drewCoreFrame = true;
   }
-  ui.frame = 0;
-  ui.cpuCycles = 0;
-  ui.cpuSteps = 0;
+  if (!drewCoreFrame) {
+    ui.frame = 0;
+    ui.cpuCycles = 0;
+    ui.cpuSteps = 0;
+    drawSyntheticFrame();
+  }
   ui.status = ui.loaded ? "RESET" : "IDLE";
-  drawSyntheticFrame();
   pushTrace("Reset vector reloaded");
   renderUi();
+});
+
+stateGrid.addEventListener("click", async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
+    "[data-state-action]",
+  );
+  if (!button) {
+    return;
+  }
+  const slot = Number(button.dataset.slot ?? 0);
+  if (button.dataset.stateAction === "save") {
+    await saveStateSlot(slot);
+  } else {
+    await loadStateSlot(slot);
+  }
 });
 
 document.querySelectorAll<HTMLButtonElement>("[data-pad]").forEach((button) => {
@@ -295,9 +404,42 @@ window.addEventListener("keyup", (event) => {
   void syncInput();
 });
 
+async function chooseDesktopRom(): Promise<void> {
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: "Mega Drive ROM",
+        extensions: ["bin", "gen", "md", "smd", "rom"],
+      },
+    ],
+  });
+  if (typeof selected === "string") {
+    await loadRomPath(selected);
+  }
+}
+
+async function loadRomPath(path: string): Promise<void> {
+  romDisplayName = basename(path);
+  romHash = hashText(path);
+  const result = await invoke<LoadResult>("load_rom_path", { path });
+  Object.assign(ui, result);
+  ui.runtime = "tauri";
+  ui.loaded = true;
+  ui.nativeStates = Boolean(result.statePath);
+  ui.status = "LOADED";
+  ui.lastError = "";
+  document.querySelector("#rom-name")!.textContent = romDisplayName;
+  await refreshStateSlots();
+  drawSyntheticFrame();
+  pushTrace(".argon path bonded");
+  renderUi();
+}
+
 async function loadFile(file: File): Promise<void> {
   const buffer = await file.arrayBuffer();
   romBytes = new Uint8Array(buffer);
+  romDisplayName = file.name;
   romHash = hashBytes(romBytes);
   const webInfo = parseWebHeader(romBytes, file.name);
 
@@ -309,29 +451,151 @@ async function loadFile(file: File): Promise<void> {
       Object.assign(ui, result);
       ui.runtime = "tauri";
       ui.loaded = true;
+      ui.nativeStates = Boolean(result.statePath);
       ui.status = "LOADED";
       ui.lastError = "";
+      await refreshStateSlots();
       pushTrace("Native core bonded");
     } catch (error) {
       Object.assign(ui, webInfo);
       ui.runtime = "web";
       ui.loaded = true;
+      ui.nativeStates = false;
       ui.status = "WEB FALLBACK";
       ui.lastError = String(error);
+      loadWebSlots();
       pushTrace("Web bridge took over");
     }
   } else {
+    if (await loadFileThroughBridge(file, buffer)) {
+      return;
+    }
     Object.assign(ui, webInfo);
     ui.runtime = "web";
     ui.loaded = true;
+    ui.nativeStates = false;
     ui.status = "WEB PREVIEW";
     ui.lastError = "";
+    loadWebSlots();
     pushTrace("Browser substrate loaded");
   }
 
   document.querySelector("#rom-name")!.textContent = file.name;
   drawSyntheticFrame();
   renderUi();
+}
+
+async function loadFileThroughBridge(file: File, buffer: ArrayBuffer): Promise<boolean> {
+  try {
+    const result = await bridgeJson<BridgeStatusResult>(
+      "/load",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Rom-Name": encodeURIComponent(file.name),
+        },
+        body: new Blob([buffer]),
+      },
+      5000,
+    );
+    Object.assign(ui, result);
+    ui.runtime = "bridge";
+    ui.loaded = result.loaded ?? true;
+    ui.nativeStates = Boolean(result.statePath);
+    ui.status = "BRIDGE LOADED";
+    ui.lastError = "";
+    document.querySelector("#rom-name")!.textContent = file.name;
+    await refreshStateSlots();
+    const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" }, 5000);
+    drawNativeFrame(frame);
+    ui.frame = frame.frame;
+    ui.cpuCycles = frame.cpuCycles;
+    ui.cpuSteps = frame.cpuSteps;
+    ui.frameMs = frame.frameMs;
+    ui.status = frame.stopped ? "STOPPED" : "BRIDGE RUN";
+    ui.lastError = frame.lastError ?? "";
+    pushTrace("Browser ROM bonded to Rust core");
+    renderUi();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function connectBridge(): Promise<void> {
+  if (isTauri) {
+    return;
+  }
+  try {
+    const result = await bridgeJson<BridgeStatusResult>("/status", {}, 700);
+    Object.assign(ui, result);
+    ui.runtime = "bridge";
+    ui.loaded = result.loaded ?? true;
+    ui.nativeStates = ui.loaded && Boolean(result.statePath);
+    ui.frame = result.frame;
+    ui.status = ui.loaded ? "BRIDGE READY" : "BRIDGE IDLE";
+    ui.lastError = "";
+    document.querySelector("#rom-name")!.textContent = ui.loaded
+      ? result.title
+      : "Load Mega Drive";
+    if (!ui.loaded) {
+      ui.stateSlots = emptySlots();
+      pushTrace("Rust core bridge waiting");
+      renderUi();
+      return;
+    }
+    await refreshStateSlots();
+    const frame = await bridgeJson<FrameResult>("/frame", { method: "POST" });
+    drawNativeFrame(frame);
+    ui.frame = frame.frame;
+    ui.cpuCycles = frame.cpuCycles;
+    ui.cpuSteps = frame.cpuSteps;
+    ui.frameMs = frame.frameMs;
+    ui.lastError = frame.lastError ?? "";
+    pushTrace("Headless core bridge online");
+    renderUi();
+  } catch {
+    renderUi();
+  }
+}
+
+async function bridgeJson<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 0,
+): Promise<T> {
+  const response = await bridgeRequest(path, init, timeoutMs);
+  return (await response.json()) as T;
+}
+
+async function bridgeRequest(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 0,
+): Promise<Response> {
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeout =
+    controller && window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = new Headers(init.headers);
+    if (init.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    const response = await fetch(`${bridgeBase}${path}`, {
+      ...init,
+      headers,
+      signal: controller?.signal,
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return response;
+  } finally {
+    if (timeout) {
+      window.clearTimeout(timeout);
+    }
+  }
 }
 
 async function animationLoop(): Promise<void> {
@@ -348,8 +612,11 @@ async function advanceFrame(): Promise<void> {
   }
   stepping = true;
   try {
-    if (isTauri && ui.runtime === "tauri" && ui.loaded) {
-      const frame = await invoke<FrameResult>("run_frame");
+    if ((isTauri && ui.runtime === "tauri" && ui.loaded) || ui.runtime === "bridge") {
+      const frame =
+        ui.runtime === "bridge"
+          ? await bridgeJson<FrameResult>("/frame", { method: "POST" })
+          : await invoke<FrameResult>("run_frame");
       drawNativeFrame(frame);
       ui.frame = frame.frame;
       ui.cpuCycles = frame.cpuCycles;
@@ -387,6 +654,127 @@ function drawNativeFrame(frame: FrameResult): void {
     frame.height,
   );
   videoContext.putImageData(image, 0, 0);
+}
+
+async function refreshStateSlots(): Promise<void> {
+  if (isTauri && ui.runtime === "tauri" && ui.nativeStates) {
+    try {
+      applyStateSlots(await invoke<StateSlotsResult>("list_state_slots"));
+      return;
+    } catch (error) {
+      ui.lastError = String(error);
+    }
+  } else if (ui.runtime === "bridge" && ui.nativeStates) {
+    try {
+      applyStateSlots(await bridgeJson<StateSlotsResult>("/states"));
+      return;
+    } catch (error) {
+      ui.lastError = String(error);
+    }
+  }
+  loadWebSlots();
+}
+
+async function saveStateSlot(slot: number): Promise<void> {
+  if (!ui.loaded) {
+    return;
+  }
+  if (isTauri && ui.runtime === "tauri" && ui.nativeStates) {
+    try {
+      applyStateSlots(await invoke<StateSlotsResult>("save_state_slot", { slot }));
+      pushTrace(`Argon slot ${slot} sealed`);
+      renderUi();
+      return;
+    } catch (error) {
+      ui.lastError = String(error);
+      pushTrace("Native argon save rejected");
+    }
+  } else if (ui.runtime === "bridge" && ui.nativeStates) {
+    try {
+      applyStateSlots(
+        await bridgeJson<StateSlotsResult>(`/state/save?slot=${slot}`, {
+          method: "POST",
+        }),
+      );
+      pushTrace(`Argon slot ${slot} sealed`);
+      renderUi();
+      return;
+    } catch (error) {
+      ui.lastError = String(error);
+      pushTrace("Bridge argon save rejected");
+    }
+  }
+
+  const index = slot - 1;
+  webStateSlots[index] = {
+    frame: ui.frame,
+    cpuCycles: ui.cpuCycles,
+    cpuSteps: ui.cpuSteps,
+    frameMs: ui.frameMs,
+    status: ui.status,
+  };
+  persistWebSlots();
+  ui.stateSlots = webSlotSummaries();
+  pushTrace(`Web argon slot ${slot} held`);
+  renderUi();
+}
+
+async function loadStateSlot(slot: number): Promise<void> {
+  if (!ui.loaded) {
+    return;
+  }
+  if (isTauri && ui.runtime === "tauri" && ui.nativeStates) {
+    try {
+      const result = await invoke<LoadStateResult>("load_state_slot", { slot });
+      drawNativeFrame(result.frame);
+      ui.frame = result.frame.frame;
+      ui.cpuCycles = result.frame.cpuCycles;
+      ui.cpuSteps = result.frame.cpuSteps;
+      ui.frameMs = result.frame.frameMs;
+      ui.lastError = result.frame.lastError ?? "";
+      ui.status = `ARGON ${slot}`;
+      applyStateSlots(result.states);
+      pushTrace(`Argon slot ${slot} reduced`);
+      renderUi();
+      return;
+    } catch (error) {
+      ui.lastError = String(error);
+      pushTrace("Native argon load rejected");
+    }
+  } else if (ui.runtime === "bridge" && ui.nativeStates) {
+    try {
+      const result = await bridgeJson<LoadStateResult>(`/state/load?slot=${slot}`, {
+        method: "POST",
+      });
+      drawNativeFrame(result.frame);
+      ui.frame = result.frame.frame;
+      ui.cpuCycles = result.frame.cpuCycles;
+      ui.cpuSteps = result.frame.cpuSteps;
+      ui.frameMs = result.frame.frameMs;
+      ui.lastError = result.frame.lastError ?? "";
+      ui.status = `ARGON ${slot}`;
+      applyStateSlots(result.states);
+      pushTrace(`Argon slot ${slot} reduced`);
+      renderUi();
+      return;
+    } catch (error) {
+      ui.lastError = String(error);
+      pushTrace("Bridge argon load rejected");
+    }
+  }
+
+  const snapshot = webStateSlots[slot - 1];
+  if (!snapshot) {
+    return;
+  }
+  ui.frame = snapshot.frame;
+  ui.cpuCycles = snapshot.cpuCycles;
+  ui.cpuSteps = snapshot.cpuSteps;
+  ui.frameMs = snapshot.frameMs;
+  ui.status = `ARGON ${slot}`;
+  drawSyntheticFrame();
+  pushTrace(`Web argon slot ${slot} restored`);
+  renderUi();
 }
 
 function drawSyntheticFrame(): void {
@@ -439,6 +827,15 @@ async function syncInput(): Promise<void> {
       ui.runtime = "web";
       pushTrace("Input bridge fallback");
     }
+  } else if (ui.runtime === "bridge" && ui.loaded) {
+    try {
+      await bridgeRequest("/input", {
+        method: "POST",
+        body: JSON.stringify(inputState),
+      });
+    } catch {
+      pushTrace("Core bridge input missed");
+    }
   }
 }
 
@@ -446,6 +843,82 @@ function updatePadButtons(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-pad]").forEach((button) => {
     const name = button.dataset.pad as keyof InputState;
     button.classList.toggle("is-active", inputState[name]);
+  });
+}
+
+function applyStateSlots(result: StateSlotsResult): void {
+  ui.statePath = result.path ?? ui.statePath ?? null;
+  ui.stateSlots = normalizeStateSlots(result.slots);
+  ui.nativeStates = Boolean(result.path);
+}
+
+function loadWebSlots(): void {
+  ui.nativeStates = false;
+  ui.statePath = `${stemName(romDisplayName)}.argon`;
+  try {
+    const raw = window.localStorage.getItem(webStateKey());
+    const parsed = raw
+      ? (JSON.parse(raw) as { slots?: Array<WebStateSnapshot | null> })
+      : null;
+    webStateSlots = normalizeWebSlots(parsed?.slots ?? []);
+  } catch {
+    webStateSlots = [null, null, null];
+  }
+  ui.stateSlots = webSlotSummaries();
+}
+
+function persistWebSlots(): void {
+  window.localStorage.setItem(
+    webStateKey(),
+    JSON.stringify({
+      magic: "EUTHEROXIDE_WEB_ARGON",
+      version: 1,
+      romHash,
+      slots: webStateSlots,
+    }),
+  );
+}
+
+function webSlotSummaries(): StateSlot[] {
+  return webStateSlots.map((slot, index) => ({
+    slot: index + 1,
+    occupied: Boolean(slot),
+    createdUnixMs: slot ? Date.now() : null,
+    frameCount: slot?.frame ?? null,
+    label: slot ? `Frame ${slot.frame}` : null,
+  }));
+}
+
+function normalizeWebSlots(slots: Array<WebStateSnapshot | null>): Array<WebStateSnapshot | null> {
+  return Array.from({ length: 3 }, (_, index) => slots[index] ?? null);
+}
+
+function emptySlots(): StateSlot[] {
+  return Array.from({ length: 3 }, (_, index) => ({
+    slot: index + 1,
+    occupied: false,
+    createdUnixMs: null,
+    frameCount: null,
+    label: null,
+  }));
+}
+
+function normalizeStateSlots(slots: StateSlot[]): StateSlot[] {
+  const bySlot = new Map(slots.map((slot) => [slot.slot, slot]));
+  return emptySlots().map((slot) => bySlot.get(slot.slot) ?? slot);
+}
+
+function renderStateSlots(): void {
+  const bySlot = new Map(ui.stateSlots.map((slot) => [slot.slot, slot]));
+  stateGrid.querySelectorAll<HTMLElement>("[data-slot-row]").forEach((row) => {
+    const slotNumber = Number(row.dataset.slotRow ?? 0);
+    const slot = bySlot.get(slotNumber);
+    const label = row.querySelector("strong")!;
+    const save = row.querySelector<HTMLButtonElement>('[data-state-action="save"]')!;
+    const load = row.querySelector<HTMLButtonElement>('[data-state-action="load"]')!;
+    label.textContent = slot?.occupied ? slot.label ?? `Frame ${slot.frameCount ?? "?"}` : "Empty";
+    save.disabled = !ui.loaded;
+    load.disabled = !ui.loaded || !Boolean(slot?.occupied);
   });
 }
 
@@ -461,10 +934,15 @@ function renderUi(): void {
   document.querySelector("#frame-ms")!.textContent = ui.frameMs.toFixed(2);
   document.querySelector("#bridge-mode")!.textContent = ui.runtime.toUpperCase();
   document.querySelector("#runtime-chip")!.textContent =
-    ui.runtime === "tauri" ? "TAURI 2 CORE" : "WEB VIEW";
+    ui.runtime === "tauri"
+      ? "TAURI 2 CORE"
+      : ui.runtime === "bridge"
+        ? "CORE BRIDGE"
+        : "WEB VIEW";
   playToggle.disabled = !ui.loaded;
   stepFrame.disabled = !ui.loaded;
   resetCore.disabled = !ui.loaded;
+  renderStateSlots();
 }
 
 function pushTrace(message: string): void {
@@ -513,6 +991,25 @@ function readU32(bytes: Uint8Array, offset: number): number {
   ) >>> 0;
 }
 
+function tauriFilePath(file: File): string | null {
+  const withPath = file as File & { path?: unknown };
+  return typeof withPath.path === "string" ? withPath.path : null;
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function stemName(name: string): string {
+  const base = basename(name);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+function webStateKey(): string {
+  return `eutheroxide.argon.${romHash.toString(16)}`;
+}
+
 function hashBytes(bytes: Uint8Array): number {
   let hash = 2166136261;
   const stride = Math.max(1, Math.floor(bytes.length / 4096));
@@ -521,6 +1018,10 @@ function hashBytes(bytes: Uint8Array): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function hashText(value: string): number {
+  return hashBytes(new TextEncoder().encode(value));
 }
 
 function startMoleculeField(): void {
@@ -586,4 +1087,4 @@ function startMoleculeField(): void {
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
-
+void connectBridge();

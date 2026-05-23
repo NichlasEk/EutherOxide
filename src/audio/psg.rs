@@ -1,4 +1,6 @@
-#[derive(Clone, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PsgState {
     tone_periods: [u16; Psg::TONE_CHANNELS],
     volumes: [u8; Psg::CHANNELS],
@@ -13,7 +15,7 @@ struct PsgState {
     noise_output: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Psg {
     pub tone_periods: [u16; Self::TONE_CHANNELS],
     pub volumes: [u8; Self::CHANNELS],
@@ -32,7 +34,7 @@ pub struct Psg {
     frame_writes: Vec<(u64, u8)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PsgWrite {
     pub index: u64,
     pub port: Option<u8>,

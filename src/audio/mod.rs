@@ -2,7 +2,7 @@ pub mod psg;
 pub mod ym2612;
 
 pub use psg::Psg;
-pub use ym2612::Ym2612;
+pub use ym2612::{Ym2612, Ym2612Snapshot};
 
 #[derive(Clone, Debug)]
 pub struct Audio {
