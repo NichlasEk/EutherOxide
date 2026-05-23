@@ -172,6 +172,32 @@ fn cpu_addx_uses_extend_and_preserves_zero_for_multiprecision() {
 }
 
 #[test]
+fn cpu_adda_suba_are_not_misdecoded_as_addx_subx() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    cpu.d[2] = 0x0000_0010;
+    cpu.set_address_register(1, 0x0000_2000);
+    cpu.set_sr(0x231f);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0xd3c2, // adda.l d2,a1
+            0x93c2, // suba.l d2,a1
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.a()[1], 0x0000_2010);
+    assert_eq!(cpu.sr(), 0x231f);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.a()[1], 0x0000_2000);
+    assert_eq!(cpu.sr(), 0x231f);
+}
+
+#[test]
 fn cpu_dynamic_shift_count_zero_preserves_flags() {
     let mut bus = M68kBus::new();
     let mut cpu = M68k::new();

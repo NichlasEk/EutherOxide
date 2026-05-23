@@ -280,10 +280,16 @@ impl M68k {
         {
             return self.immediate_operation(bus, opcode);
         }
-        if (opcode & 0xf100) == 0xd100 && ((opcode >> 3) & 0x07) <= 1 {
+        if (opcode & 0xf100) == 0xd100
+            && ((opcode >> 6) & 0x03) != 0x03
+            && ((opcode >> 3) & 0x07) <= 1
+        {
             return self.addx_subx(bus, opcode, false);
         }
-        if (opcode & 0xf100) == 0x9100 && ((opcode >> 3) & 0x07) <= 1 {
+        if (opcode & 0xf100) == 0x9100
+            && ((opcode >> 6) & 0x03) != 0x03
+            && ((opcode >> 3) & 0x07) <= 1
+        {
             return self.addx_subx(bus, opcode, true);
         }
         if (opcode & 0xf000) == 0xd000 {
