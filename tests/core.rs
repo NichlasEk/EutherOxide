@@ -218,6 +218,39 @@ fn cpu_eor_register_writes_destination_instead_of_comparing() {
 }
 
 #[test]
+fn cpu_movem_predecrement_uses_reversed_register_mask() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    cpu.set_address_register(7, 0x00ff_0100);
+    for index in 0..8 {
+        cpu.d[index] = 0xd000_0000 | index as u32;
+    }
+    for index in 1..=5 {
+        cpu.set_address_register(index, 0xa000_0000 | index as u32);
+    }
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x48e7, 0xff7c, // movem.l d0-d7/a1-a5,-(sp)
+            0x7800, // moveq #0,d4
+            0x4cdf, 0x3eff, // movem.l (sp)+,d0-d7/a1-a5
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.d[4], 0);
+    cpu.step(&mut bus).unwrap();
+
+    assert_eq!(cpu.d[4], 0xd000_0004);
+    assert_eq!(cpu.a()[1], 0x0000_0001);
+    assert_eq!(cpu.a()[5], 0x0000_0005);
+    assert_eq!(cpu.a()[7], 0x00ff_0100);
+}
+
+#[test]
 fn bus_routes_ym_and_psg_writes() {
     let mut bus = M68kBus::new();
     bus.write_word(0x00a0_4000, 0xa034);

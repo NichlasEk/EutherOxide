@@ -1100,15 +1100,15 @@ impl M68k {
         } else if mode == 4 {
             let mut address = self.read_address_register(reg as usize);
             for index in 0..16 {
-                let bit = 15 - index;
-                if (mask & (1 << bit)) == 0 {
+                if (mask & (1 << index)) == 0 {
                     continue;
                 }
+                let target = 15 - index;
                 address = address.wrapping_sub(size.bytes() as u32) & Self::ADDRESS_MASK;
-                let value = if bit < 8 {
-                    self.d[bit]
+                let value = if target < 8 {
+                    self.d[target]
                 } else {
-                    self.read_address_register(bit - 8)
+                    self.read_address_register(target - 8)
                 };
                 self.write_memory(bus, address, size, value);
             }
