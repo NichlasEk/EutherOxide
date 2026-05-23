@@ -4,6 +4,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{self, Command};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -487,16 +488,27 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-fn serve_web_bridge(mut emulator: Emulator, addr: &str) -> io::Result<()> {
+#[derive(Clone)]
+struct BridgeState {
+    emulator: Arc<Mutex<Emulator>>,
+}
+
+fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
+    let state = BridgeState {
+        emulator: Arc::new(Mutex::new(emulator)),
+    };
     println!("EutherOxide web bridge listening on http://{addr}");
     println!("Open http://127.0.0.1:5173/?bridge=http://{addr}");
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                if let Err(err) = handle_bridge_request(&mut stream, &mut emulator) {
-                    let _ = send_error(&mut stream, 500, &err.to_string());
-                }
+                let state = state.clone();
+                thread::spawn(move || {
+                    if let Err(err) = handle_bridge_request(&mut stream, &state) {
+                        let _ = send_error(&mut stream, 500, &err.to_string());
+                    }
+                });
             }
             Err(err) => eprintln!("bridge accept error: {err}"),
         }
@@ -504,7 +516,7 @@ fn serve_web_bridge(mut emulator: Emulator, addr: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io::Result<()> {
+fn handle_bridge_request(stream: &mut TcpStream, state: &BridgeState) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     let request = read_http_request(stream)?;
     if request.method == "OPTIONS" {
@@ -513,7 +525,10 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
 
     let path = request.path.split('?').next().unwrap_or(&request.path);
     match (request.method.as_str(), path) {
-        ("GET", "/status") => send_json(stream, &bridge_status(emulator)),
+        ("GET", "/status") => {
+            let emulator = lock_bridge_emulator(state)?;
+            send_json(stream, &bridge_status(&emulator))
+        }
         ("GET", "/build/status") => send_json(stream, &bridge_build_status()),
         ("POST", "/build/release") => {
             start_release_build()?;
@@ -540,17 +555,20 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
             if request.body.is_empty() {
                 return send_error(stream, 400, "empty ROM upload");
             }
+            let mut emulator = lock_bridge_emulator(state)?;
             emulator.load_rom_bytes_with_path_hint(&request.body, upload_rom_name(&request));
-            send_json(stream, &bridge_status(emulator))
+            send_json(stream, &bridge_status(&emulator))
         }
         ("GET", "/frame") | ("POST", "/frame") => {
+            let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 return send_error(stream, 409, "no ROM loaded");
             }
             let run = emulator.run_frame();
-            send_json(stream, &bridge_frame(emulator, &run))
+            send_json(stream, &bridge_frame(&emulator, &run))
         }
         ("GET", "/frame.bin") | ("POST", "/frame.bin") => {
+            let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 return send_error(stream, 409, "no ROM loaded");
             }
@@ -559,10 +577,11 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
                 stream,
                 200,
                 "application/octet-stream",
-                &bridge_frame_bytes(emulator, &run),
+                &bridge_frame_bytes(&emulator, &run),
             )
         }
         ("GET", "/frame-audio.bin") | ("POST", "/frame-audio.bin") => {
+            let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 return send_error(stream, 409, "no ROM loaded");
             }
@@ -571,10 +590,12 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
                 stream,
                 200,
                 "application/octet-stream",
-                &bridge_frame_audio_bytes(emulator, &run, 44_100),
+                &bridge_frame_audio_bytes(&mut emulator, &run, 44_100),
             )
         }
+        ("GET", "/stream-frame-audio.bin") => bridge_stream_frame_audio(stream, state),
         ("GET", "/audio.bin") | ("POST", "/audio.bin") => {
+            let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 return send_error(stream, 409, "no ROM loaded");
             }
@@ -582,50 +603,62 @@ fn handle_bridge_request(stream: &mut TcpStream, emulator: &mut Emulator) -> io:
                 stream,
                 200,
                 "application/octet-stream",
-                &bridge_audio_bytes(emulator, 44_100),
+                &bridge_audio_bytes(&mut emulator, 44_100),
             )
         }
         ("POST", "/reset") => {
+            let mut emulator = lock_bridge_emulator(state)?;
             emulator.reset();
-            send_json(stream, &bridge_status(emulator))
+            send_json(stream, &bridge_status(&emulator))
         }
         ("POST", "/input") => {
             let input: BridgeInput = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
-            apply_bridge_input(emulator, input);
+            let mut emulator = lock_bridge_emulator(state)?;
+            apply_bridge_input(&mut emulator, input);
             send_empty(stream, 204)
         }
         ("GET", "/states") => {
+            let emulator = lock_bridge_emulator(state)?;
             if emulator.rom_path.is_none() {
                 return send_json(stream, &empty_bridge_slots());
             }
-            let summary = euther_oxide::savestate::list_slots_for_emulator(emulator)?;
+            let summary = euther_oxide::savestate::list_slots_for_emulator(&emulator)?;
             send_json(stream, &bridge_slots(summary))
         }
         ("POST", "/state/save") => {
+            let emulator = lock_bridge_emulator(state)?;
             if emulator.rom_path.is_none() {
                 return send_error(stream, 409, ".argon path unavailable for uploaded ROM");
             }
             let slot = query_slot(&request.path)?;
-            let summary = euther_oxide::savestate::save_slot_for_emulator(emulator, slot)?;
+            let summary = euther_oxide::savestate::save_slot_for_emulator(&emulator, slot)?;
             send_json(stream, &bridge_slots(summary))
         }
         ("POST", "/state/load") => {
+            let mut emulator = lock_bridge_emulator(state)?;
             if emulator.rom_path.is_none() {
                 return send_error(stream, 409, ".argon path unavailable for uploaded ROM");
             }
             let slot = query_slot(&request.path)?;
-            let summary = euther_oxide::savestate::load_slot_for_emulator(emulator, slot)?;
+            let summary = euther_oxide::savestate::load_slot_for_emulator(&mut emulator, slot)?;
             send_json(
                 stream,
                 &serde_json::json!({
-                    "frame": bridge_frame_without_run(emulator),
+                    "frame": bridge_frame_without_run(&emulator),
                     "states": bridge_slots(summary),
                 }),
             )
         }
         _ => send_error(stream, 404, "not found"),
     }
+}
+
+fn lock_bridge_emulator(state: &BridgeState) -> io::Result<std::sync::MutexGuard<'_, Emulator>> {
+    state
+        .emulator
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))
 }
 
 fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
@@ -732,6 +765,59 @@ fn send_response(
         body.len()
     )?;
     stream.write_all(body)
+}
+
+fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Expose-Headers: Content-Type\r\n\
+         Cache-Control: no-store\r\n\
+         Content-Type: {content_type}\r\n\
+         Connection: close\r\n\r\n",
+    )
+}
+
+fn bridge_stream_frame_audio(stream: &mut TcpStream, state: &BridgeState) -> io::Result<()> {
+    {
+        let emulator = lock_bridge_emulator(state)?;
+        if emulator.bus.rom.is_empty() {
+            return send_error(stream, 409, "no ROM loaded");
+        }
+    }
+
+    stream.set_nodelay(true)?;
+    send_stream_header(stream, "application/octet-stream")?;
+    loop {
+        let started = Instant::now();
+        let (packet, stopped, frame_rate) = {
+            let mut emulator = lock_bridge_emulator(state)?;
+            if emulator.bus.rom.is_empty() {
+                return Ok(());
+            }
+            let run = emulator.run_frame();
+            let stopped = run.hit_unsupported_opcode;
+            let frame_rate = emulator.frame_rate();
+            let packet = bridge_frame_audio_bytes(&mut emulator, &run, 44_100);
+            (packet, stopped, frame_rate)
+        };
+        stream.write_all(&(packet.len() as u32).to_le_bytes())?;
+        stream.write_all(&packet)?;
+        stream.flush()?;
+        if stopped {
+            return Ok(());
+        }
+        let frame_time = Duration::from_secs_f64(1.0 / frame_rate);
+        let elapsed = started.elapsed();
+        if elapsed < frame_time {
+            thread::sleep(frame_time - elapsed);
+        } else {
+            thread::yield_now();
+        }
+    }
 }
 
 fn bridge_status(emulator: &Emulator) -> BridgeStatus {

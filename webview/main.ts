@@ -198,6 +198,8 @@ let lastInputJson = JSON.stringify(inputState);
 let lastBrowserFile: File | null = null;
 let bridgeRetryTimer: number | null = null;
 let buildPollTimer: number | null = null;
+let bridgeStreamAbort: AbortController | null = null;
+let bridgeStreamActive = false;
 let nativeBridgeBase: string | null = null;
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
@@ -405,6 +407,15 @@ playToggle.addEventListener("click", async () => {
     }
     return;
   }
+  if (ui.runtime === "bridge" && ui.loaded) {
+    if (ui.playing) {
+      void ensureAudio();
+      void bridgeStreamLoop();
+    } else {
+      stopBridgeStream();
+    }
+    return;
+  }
   if (ui.playing) {
     nextFrameDue = performance.now();
     void ensureAudio();
@@ -417,6 +428,10 @@ stepFrame.addEventListener("click", async () => {
     ui.playing = false;
     playToggle.textContent = "Play";
     await invoke("set_native_running", { running: false });
+  } else if (ui.runtime === "bridge") {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    stopBridgeStream();
   }
   await advanceFrame();
 });
@@ -429,6 +444,9 @@ resetCore.addEventListener("click", async () => {
     await invoke("set_native_running", { running: false });
     await invoke("reset_emulator");
   } else if (ui.runtime === "bridge" && ui.loaded) {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    stopBridgeStream();
     const result = await bridgeJson<BridgeStatusResult>("/reset", {
       method: "POST",
     });
@@ -905,6 +923,17 @@ async function bridgeFrameAudio(timeoutMs = 0): Promise<FrameAudioResult> {
   return decodeBridgeFrameAudio(buffer);
 }
 
+async function bridgeStreamRequest(signal: AbortSignal): Promise<Response> {
+  const response = await fetch(`${bridgeBase}/stream-frame-audio.bin`, {
+    method: "GET",
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response;
+}
+
 async function nativeBridgeRequest(
   path: string,
   init: RequestInit = {},
@@ -1130,6 +1159,101 @@ async function animationLoop(): Promise<void> {
     }
   }
   window.requestAnimationFrame(() => void animationLoop());
+}
+
+function stopBridgeStream(): void {
+  bridgeStreamAbort?.abort();
+  bridgeStreamAbort = null;
+  bridgeStreamActive = false;
+}
+
+async function bridgeStreamLoop(): Promise<void> {
+  if (bridgeStreamActive) {
+    return;
+  }
+  bridgeStreamActive = true;
+  bridgeStreamAbort = new AbortController();
+  const started = performance.now();
+  let received = 0;
+  let pending = new Uint8Array(0) as Uint8Array<ArrayBufferLike>;
+  try {
+    const response = await bridgeStreamRequest(bridgeStreamAbort.signal);
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("Bridge stream body unavailable");
+    }
+    pushTrace("Bridge stream bonded");
+    while (ui.playing && ui.runtime === "bridge") {
+      const read = await reader.read();
+      if (read.done) {
+        break;
+      }
+      if (!read.value) {
+        continue;
+      }
+      pending = appendBytes(pending, read.value);
+      while (pending.byteLength >= 4) {
+        const view = new DataView(pending.buffer, pending.byteOffset, pending.byteLength);
+        const packetLength = view.getUint32(0, true);
+        if (pending.byteLength < 4 + packetLength) {
+          break;
+        }
+        const packet = pending.slice(4, 4 + packetLength);
+        pending = pending.slice(4 + packetLength);
+        const before = performance.now();
+        const frameAudio = decodeBridgeFrameAudio(packet.buffer);
+        const decoded = performance.now();
+        drawNativeFrame(frameAudio.frame);
+        const drawn = performance.now();
+        ui.audioLeadMs = await scheduleAudio(frameAudio.audio);
+        ui.transportMode = "BRIDGE STREAM";
+        ui.transportMs = received === 0 ? decoded - started : decoded - before;
+        ui.drawMs = drawn - decoded;
+        applyBridgeFrame(frameAudio.frame);
+        renderUi();
+        received += 1;
+        if (frameAudio.frame.stopped) {
+          ui.playing = false;
+          playToggle.textContent = "Play";
+          pushTrace("CPU reached unsupported reaction");
+          stopBridgeStream();
+          return;
+        }
+      }
+    }
+  } catch (error) {
+    if (ui.playing && ui.runtime === "bridge") {
+      ui.lastError = String(error);
+      pushTrace("Bridge stream fell back");
+      nextFrameDue = performance.now();
+      void animationLoop();
+    }
+  } finally {
+    bridgeStreamActive = false;
+    bridgeStreamAbort = null;
+  }
+}
+
+function appendBytes(
+  left: Uint8Array<ArrayBufferLike>,
+  right: Uint8Array<ArrayBufferLike>,
+): Uint8Array<ArrayBufferLike> {
+  if (left.byteLength === 0) {
+    return right;
+  }
+  const out = new Uint8Array(left.byteLength + right.byteLength);
+  out.set(left, 0);
+  out.set(right, left.byteLength);
+  return out;
+}
+
+function applyBridgeFrame(frame: FrameResult): void {
+  ui.frame = frame.frame;
+  ui.cpuCycles = frame.cpuCycles;
+  ui.cpuSteps = frame.cpuSteps;
+  ui.frameMs = frame.frameMs;
+  ui.status = frame.stopped ? "STOPPED" : ui.playing ? "RUNNING" : "STEPPED";
+  ui.lastError = frame.lastError ?? "";
 }
 
 function applyNativeFrameStatus(frame: NativeFrameResult, transportMs: number): void {
