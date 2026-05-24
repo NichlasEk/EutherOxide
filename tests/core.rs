@@ -245,6 +245,30 @@ fn cpu_eor_register_writes_destination_instead_of_comparing() {
 }
 
 #[test]
+fn cpu_cmpa_long_address_register_direct_is_not_eor() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x200);
+    load_program(
+        &mut bus,
+        0x200,
+        &[
+            0xb5c9, // cmpa.l a1,a2
+            0x4e71, // nop
+        ],
+    );
+
+    cpu.set_address_register(1, 0x0000_2000);
+    cpu.set_address_register(2, 0x0000_1000);
+    cpu.step(&mut bus).unwrap();
+
+    assert_eq!(cpu.pc, 0x202);
+    assert_eq!(cpu.a()[1], 0x0000_2000);
+    assert_eq!(cpu.a()[2], 0x0000_1000);
+    assert_ne!(cpu.sr() & 0x08, 0);
+}
+
+#[test]
 fn cpu_movem_predecrement_uses_reversed_register_mask() {
     let mut bus = M68kBus::new();
     let mut cpu = M68k::new();
@@ -313,6 +337,50 @@ fn z80_bus_routes_ram_ym_psg_and_banked_68k() {
 }
 
 #[test]
+fn z80_ram_word_and_long_writes_use_uds_byte_lanes() {
+    let mut bus = M68kBus::new();
+
+    bus.write_byte(0x00a1_1100, 0x01);
+    bus.write_word(0x00a0_0001, 0x3ea0);
+    bus.write_long(0x00a0_0010, 0x1234_5678);
+
+    assert_eq!(bus.read_byte(0x00a0_0000), 0x3e);
+    assert_eq!(bus.read_byte(0x00a0_0001), 0x00);
+    assert_eq!(bus.read_word(0x00a0_0001), 0x0000);
+    assert_eq!(bus.read_byte(0x00a0_0010), 0x12);
+    assert_eq!(bus.read_byte(0x00a0_0011), 0x00);
+    assert_eq!(bus.read_byte(0x00a0_0012), 0x56);
+    assert_eq!(bus.read_byte(0x00a0_0013), 0x00);
+}
+
+#[test]
+fn z80_ram_window_is_inaccessible_without_bus_grant() {
+    let mut bus = M68kBus::new();
+
+    bus.write_byte(0x00a0_0000, 0x3e);
+
+    assert_eq!(bus.read_byte(0x00a0_0000), 0xff);
+    bus.write_byte(0x00a1_1100, 0x01);
+    assert_eq!(bus.read_byte(0x00a0_0000), 0x00);
+    bus.write_byte(0x00a0_0000, 0x3e);
+    assert_eq!(bus.read_byte(0x00a0_0000), 0x3e);
+}
+
+#[test]
+fn cpu_tas_memory_target_does_not_write_back_on_mega_drive() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(&mut bus, 0x100, &[0x4af9, 0xffff, 0x006c]);
+    bus.write_byte(0x00ff_006c, 0x01);
+
+    cpu.step(&mut bus).unwrap();
+
+    assert_eq!(bus.read_byte(0x00ff_006c), 0x01);
+    assert_eq!(cpu.pc, 0x106);
+}
+
+#[test]
 fn z80_program_can_drive_ym2612_ports() {
     let mut bus = M68kBus::new();
     let mut z80 = Z80::new();
@@ -352,6 +420,26 @@ fn vdp_renders_plane_a_tile() {
     bus.vdp.vram[35] = 0x11;
     bus.vdp.render_frame();
     assert_ne!(bus.vdp.framebuffer[0], 0);
+}
+
+#[test]
+fn vdp_skips_clean_redraws() {
+    let mut bus = M68kBus::new();
+
+    bus.vdp.render_frame();
+    bus.vdp.framebuffer[0] = 0x1234_5678;
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.framebuffer[0], 0x1234_5678);
+}
+
+#[test]
+fn vdp_reports_hblank_status_while_vblank_interrupt_is_pending() {
+    let mut bus = M68kBus::new();
+
+    bus.vdp.request_vblank();
+
+    assert_eq!(bus.vdp.read_control() & 0x0008, 0x0008);
 }
 
 #[test]
@@ -537,6 +625,142 @@ fn vdp_sprite_cell_limit_renders_overflowing_sprite_then_stops() {
     assert_ne!(bus.vdp.framebuffer[40], bus.vdp.palette_color(3));
 }
 
+#[test]
+fn vdp_non_interlace_sprites_wrap_y_with_nine_bits() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[5] = 0x00;
+    bus.vdp.cram[2] = 0x0e0;
+
+    write_vram_word_direct(&mut bus, 0x0000, 0x0280);
+    write_vram_word_direct(&mut bus, 0x0002, 0x0000);
+    write_vram_word_direct(&mut bus, 0x0004, 0x0002);
+    write_vram_word_direct(&mut bus, 0x0006, 0x0080);
+    fill_pattern(&mut bus, 2, 2);
+
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.framebuffer[0], bus.vdp.palette_color(2));
+}
+
+#[test]
+fn vdp_dma_fill_writes_high_byte_to_vram_bytes() {
+    let mut bus = M68kBus::new();
+    const VDP_DATA: u32 = 0x00c0_0000;
+    const VDP_CONTROL: u32 = 0x00c0_0004;
+
+    bus.write_word(VDP_CONTROL, 0x8110);
+    bus.write_word(VDP_CONTROL, 0x9302);
+    bus.write_word(VDP_CONTROL, 0x9400);
+    bus.write_word(VDP_CONTROL, 0x9780);
+    bus.write_word(VDP_CONTROL, 0x4000);
+    bus.write_word(VDP_CONTROL, 0x0080);
+    bus.write_word(VDP_DATA, 0xabcd);
+
+    assert_eq!(bus.vdp.vram[0], 0x00);
+    assert_eq!(bus.vdp.vram[1], 0xab);
+    assert_eq!(bus.vdp.vram[2], 0x00);
+    assert_eq!(bus.vdp.vram[3], 0xab);
+}
+
+#[test]
+fn vdp_vram_copy_dma_uses_raw_byte_source_and_updates_registers() {
+    let mut bus = M68kBus::new();
+    const VDP_CONTROL: u32 = 0x00c0_0004;
+
+    bus.vdp.vram[0x0100] = 0x11;
+    bus.vdp.vram[0x0101] = 0x22;
+    bus.vdp.vram[0x0200] = 0x33;
+    bus.vdp.vram[0x0201] = 0x44;
+
+    bus.write_word(VDP_CONTROL, 0x8110);
+    bus.write_word(VDP_CONTROL, 0x9301);
+    bus.write_word(VDP_CONTROL, 0x9400);
+    bus.write_word(VDP_CONTROL, 0x9500);
+    bus.write_word(VDP_CONTROL, 0x9601);
+    bus.write_word(VDP_CONTROL, 0x97c0);
+    bus.write_word(VDP_CONTROL, 0x4004);
+    bus.write_word(VDP_CONTROL, 0x0080);
+
+    assert_eq!(bus.vdp.vram[4], 0x11);
+    assert_eq!(bus.vdp.vram[5], 0x22);
+    assert_eq!(bus.vdp.registers[19], 0);
+    assert_eq!(bus.vdp.registers[20], 0);
+    assert_eq!(bus.vdp.registers[21], 0x02);
+    assert_eq!(bus.vdp.registers[22], 0x01);
+}
+
+#[test]
+fn vdp_memory_dma_updates_source_and_length_registers() {
+    let mut bus = M68kBus::new();
+    const VDP_CONTROL: u32 = 0x00c0_0004;
+
+    bus.write_word(0x0200, 0x000e);
+    bus.write_word(0x0202, 0x00e0);
+    bus.write_word(VDP_CONTROL, 0x8110);
+    bus.write_word(VDP_CONTROL, 0x9302);
+    bus.write_word(VDP_CONTROL, 0x9400);
+    bus.write_word(VDP_CONTROL, 0x9500);
+    bus.write_word(VDP_CONTROL, 0x9601);
+    bus.write_word(VDP_CONTROL, 0x9700);
+    bus.write_word(VDP_CONTROL, 0xc000);
+    bus.write_word(VDP_CONTROL, 0x0080);
+
+    assert_eq!(bus.vdp.cram[0], 0x000e);
+    assert_eq!(bus.vdp.cram[1], 0x00e0);
+    assert_eq!(bus.vdp.registers[19], 0);
+    assert_eq!(bus.vdp.registers[20], 0);
+    assert_eq!(bus.vdp.registers[21], 0x02);
+    assert_eq!(bus.vdp.registers[22], 0x01);
+}
+
+#[test]
+fn vdp_prohibited_plane_size_uses_single_cell_vertical_wrap() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[2] = 0x38;
+    bus.vdp.registers[4] = 0x00;
+    bus.vdp.registers[16] = 0x02;
+    bus.vdp.cram[1] = 0x00e;
+    bus.vdp.cram[2] = 0x0e0;
+
+    let plane_a = ((bus.vdp.registers[2] as usize & 0x38) << 10) & 0xffff;
+    write_vram_word_direct(&mut bus, plane_a, 0x0001);
+    write_vram_word_direct(&mut bus, plane_a + 64 * 2, 0x0002);
+    fill_pattern(&mut bus, 1, 1);
+    fill_pattern(&mut bus, 2, 2);
+
+    bus.vdp.render_frame();
+
+    assert_eq!(
+        bus.vdp.framebuffer[8 * bus.vdp.screen_width],
+        bus.vdp.palette_color(1)
+    );
+}
+
+#[test]
+fn vdp_interlace_mode_2_scroll_tiles_use_sixteen_pixel_rows() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[2] = 0x30;
+    bus.vdp.registers[4] = 0x00;
+    bus.vdp.registers[12] = 0x87;
+    bus.vdp.cram[2] = 0x0e0;
+
+    let plane_a = ((bus.vdp.registers[2] as usize & 0x38) << 10) & 0xffff;
+    write_vram_word_direct(&mut bus, plane_a, 0x0001);
+    bus.vdp.vram[0x0060] = 0x22;
+    bus.vdp.vram[0x0061] = 0x22;
+    bus.vdp.vram[0x0062] = 0x22;
+    bus.vdp.vram[0x0063] = 0x22;
+
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.screen_width, 320);
+    assert_eq!(bus.vdp.screen_height, 448);
+    assert_eq!(bus.vdp.framebuffer[8 * 320], bus.vdp.palette_color(2));
+}
+
 fn write_vram_word_direct(bus: &mut M68kBus, address: usize, value: u16) {
     bus.vdp.vram[address & 0xffff] = (value >> 8) as u8;
     bus.vdp.vram[(address ^ 1) & 0xffff] = value as u8;
@@ -564,6 +788,40 @@ fn ym2612_timer_busy_and_pitch_paths_work() {
 }
 
 #[test]
+fn ym2612_timers_use_144_cycle_tick_and_gate_status_flags() {
+    let mut ym = Ym2612::new();
+    ym.write_address_1(0x24);
+    ym.write_data(0xff, 0, None);
+    ym.write_address_1(0x25);
+    ym.write_data(0x03, 0, None);
+    ym.write_address_1(0x27);
+    ym.write_data(0x01, 0, None);
+
+    ym.tick(Ym2612::TIMER_TICK_CYCLES);
+    assert_eq!(ym.read_register(0) & 0x01, 0);
+
+    ym.write_address_1(0x27);
+    ym.write_data(0x05, 0, None);
+    ym.tick(Ym2612::TIMER_TICK_CYCLES - 1);
+    assert_eq!(ym.read_register(0) & 0x01, 0);
+    ym.tick(1);
+    assert_eq!(ym.read_register(0) & 0x01, 0x01);
+}
+
+#[test]
+fn ym2612_audio_render_does_not_roll_back_live_busy_state() {
+    let mut ym = Ym2612::new();
+    ym.begin_frame();
+    ym.write_address_1(0xa0);
+    ym.write_data(0x34, 0, None);
+    ym.tick(Ym2612::WRITE_BUSY_CYCLES);
+
+    let _ = ym.render_frame_mono_samples(64, 1_000.0, 44_100);
+
+    assert_eq!(ym.read_register(0) & 0x80, 0);
+}
+
+#[test]
 fn emulator_loads_tiny_rom_and_sets_reset_pc() {
     let mut rom = vec![0; 0x200];
     rom[0x000..0x004].copy_from_slice(&0x00ff_0000u32.to_be_bytes());
@@ -577,6 +835,133 @@ fn emulator_loads_tiny_rom_and_sets_reset_pc() {
     assert_eq!(emulator.cpu.pc, 0x120);
     emulator.cpu.step(&mut emulator.bus).unwrap();
     assert_eq!(emulator.cpu.d[0], 1);
+}
+
+#[test]
+fn mega_drive_sram_header_maps_and_persists_beside_rom() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let rom_path = std::env::temp_dir().join(format!(
+        "euther_oxide_sram_{}_{}.md",
+        std::process::id(),
+        suffix
+    ));
+    let srm_path = rom_path.with_extension("srm");
+    let _ = fs::remove_file(&srm_path);
+
+    let mut rom = vec![0; 0x200];
+    rom[0x000..0x004].copy_from_slice(&0x00ff_0000u32.to_be_bytes());
+    rom[0x004..0x008].copy_from_slice(&0x0000_0100u32.to_be_bytes());
+    rom[0x100..0x104].copy_from_slice(b"SEGA");
+    rom[0x1b0..0x1bc].copy_from_slice(&[
+        b'R', b'A', 0xf8, 0x20, 0x00, 0x20, 0x00, 0x01, 0x00, 0x20, 0x00, 0x0f,
+    ]);
+    fs::write(&rom_path, &rom).unwrap();
+
+    let mut emulator = Emulator::new();
+    emulator.load_rom_file(&rom_path).unwrap();
+    assert_eq!(emulator.bus.sram_path(), Some(srm_path.as_path()));
+    assert_eq!(emulator.bus.read_byte(0x0020_0001), 0xff);
+    emulator.bus.write_byte(0x00a1_30f1, 0x01);
+    emulator.bus.write_byte(0x0020_0001, 0x42);
+    emulator.bus.write_byte(0x0020_0002, 0x24);
+    emulator.bus.flush_sram().unwrap();
+
+    assert_eq!(fs::read(&srm_path).unwrap()[0], 0x42);
+
+    let mut reloaded = Emulator::new();
+    reloaded.load_rom_file(&rom_path).unwrap();
+    reloaded.bus.write_byte(0x00a1_30f1, 0x01);
+    assert_eq!(reloaded.bus.read_byte(0x0020_0001), 0x42);
+    assert_eq!(reloaded.bus.read_byte(0x0020_0002), 0xff);
+
+    let _ = fs::remove_file(&srm_path);
+    let _ = fs::remove_file(&rom_path);
+}
+
+#[test]
+fn mega_drive_sram_latch_accepts_word_and_long_accesses() {
+    let mut bus = M68kBus::new();
+    bus.load_rom(vec![0; 0x200]);
+    bus.write_byte(0x00a1_30f1, 0x00);
+
+    assert_eq!(bus.read_word(0x00a1_30f0), 0x0000);
+    bus.write_word(0x00a1_30f0, 0x0001);
+    assert_eq!(bus.read_byte(0x00a1_30f1), 0x01);
+    assert_eq!(bus.read_word(0x00a1_30f0), 0x0101);
+    assert_eq!(bus.read_long(0x00a1_30ee), 0x0101_0101);
+
+    bus.write_long(0x00a1_30ee, 0x0000_0000);
+    assert_eq!(bus.read_word(0x00a1_30f0), 0x0000);
+}
+
+fn paprium_test_rom() -> Vec<u8> {
+    let mut rom = vec![0; 0x1_0000];
+    rom[0x100..0x104].copy_from_slice(b"SEGA");
+    rom[0x183..0x183 + b"T-574120-00".len()].copy_from_slice(b"T-574120-00");
+    rom[0xc000] = 0xab;
+    rom[0xc001] = 0xcd;
+    rom
+}
+
+#[test]
+fn paprium_override_maps_registers_before_plain_rom() {
+    let mut bus = M68kBus::new();
+    bus.load_rom(paprium_test_rom());
+
+    assert_eq!(bus.read_word(0x0000_c000), 0xabcd);
+    assert_eq!(bus.read_word(0x0000_1fe4), 0xffbb);
+    assert_eq!(bus.read_word(0x0000_1fe6), 0xbcff);
+    assert_eq!(bus.read_word(0x0000_1fea), 0x7fff);
+
+    bus.write_word(0x0000_0100, 0x1234);
+    assert_eq!(bus.read_word(0x0000_0100), 0x1234);
+    bus.write_byte(0x0000_0101, 0xab);
+    assert_eq!(bus.read_word(0x0000_0100), 0x12ab);
+
+    bus.write_word(0x0000_1fea, 0x8100);
+    assert_eq!(bus.read_word(0x0000_c000), 0x0000);
+    bus.write_word(0x0000_1fea, 0x8400);
+    assert_eq!(bus.read_word(0x0000_c000), 0xabcd);
+}
+
+#[test]
+fn paprium_override_persists_nvram_beside_rom() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let rom_path = std::env::temp_dir().join(format!(
+        "euther_oxide_paprium_{}_{}.md",
+        std::process::id(),
+        suffix
+    ));
+    let srm_path = rom_path.with_file_name(format!(
+        "{}.paprium.srm",
+        rom_path.file_stem().unwrap().to_string_lossy()
+    ));
+    let _ = fs::remove_file(&srm_path);
+    fs::write(&rom_path, paprium_test_rom()).unwrap();
+
+    let mut bus = M68kBus::new();
+    bus.load_rom_with_path(fs::read(&rom_path).unwrap(), Some(rom_path.clone()));
+    assert_eq!(bus.paprium_save_path(), Some(srm_path.as_path()));
+    bus.write_word(0x0000_0400, 0xbeef);
+    bus.write_word(0x0000_1e12, 0x0400);
+    bus.write_word(0x0000_1fea, 0xe004);
+    bus.flush_cartridge_override().unwrap();
+    assert_eq!(&fs::read(&srm_path).unwrap()[0..2], &[0xbe, 0xef]);
+
+    let mut reloaded = M68kBus::new();
+    reloaded.load_rom_with_path(fs::read(&rom_path).unwrap(), Some(rom_path.clone()));
+    reloaded.write_word(0x0000_1e10, 0x0500);
+    reloaded.write_word(0x0000_1fea, 0xdf04);
+    assert_eq!(reloaded.read_word(0x0000_0500), 0xbeef);
+
+    let _ = fs::remove_file(&srm_path);
+    let _ = fs::remove_file(&rom_path);
 }
 
 #[test]

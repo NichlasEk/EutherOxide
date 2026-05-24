@@ -100,7 +100,7 @@ impl Emulator {
         }
         self.bus = M68kBus::new();
         self.configure_region_register();
-        self.bus.load_rom(rom);
+        self.bus.load_rom_with_path(rom, path.clone());
         self.cpu = M68k::new();
         self.z80 = Z80::new();
         self.cpu.reset(&mut self.bus);
@@ -111,9 +111,7 @@ impl Emulator {
     }
 
     pub fn reset(&mut self) {
-        let rom = self.bus.rom.clone();
         self.bus.reset();
-        self.bus.load_rom(rom);
         self.configure_region_register();
         self.cpu.reset(&mut self.bus);
         self.z80.reset();

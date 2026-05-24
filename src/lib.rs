@@ -3,6 +3,7 @@ pub mod bus;
 pub mod controller;
 pub mod emulator;
 pub mod m68k;
+pub mod paprium;
 pub mod rom;
 pub mod savestate;
 pub mod vdp;

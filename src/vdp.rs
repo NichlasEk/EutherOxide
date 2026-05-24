@@ -385,7 +385,7 @@ impl Vdp {
                 status |= 0x0010;
             }
         }
-        if self.vblank() {
+        if self.hblank() || (self.status & 0x0080) != 0 {
             status |= 0x0008;
         } else {
             status &= !0x0008;
@@ -532,24 +532,54 @@ impl Vdp {
         self.write_data_direct(value);
     }
 
+    pub fn advance_memory_dma_word(&mut self) {
+        self.increment_dma_source_address();
+        self.decrement_dma_length();
+    }
+
     pub fn arm_dma_fill(&mut self) {
         self.dma_fill_pending = true;
     }
 
     pub fn perform_vram_copy_dma(&mut self) {
-        let mut source = (u32::from(self.registers[22]) << 8) | u32::from(self.registers[21]);
+        let mut source = self.dma_vram_copy_source_address();
         let length = self.dma_length_words();
         for _ in 0..length {
-            let value = self.read_vram_word(source);
+            let address = source as usize & 0xffff;
+            let value =
+                ((self.vram[address] as u16) << 8) | self.vram[(address + 1) & 0xffff] as u16;
             self.write_data_direct(value);
+            self.decrement_dma_length();
             source = source.wrapping_add(2) & 0xffff;
         }
+        self.write_dma_vram_copy_source_address(source);
+    }
+
+    fn dma_vram_copy_source_address(&self) -> u32 {
+        (u32::from(self.registers[21])
+            | (u32::from(self.registers[22]) << 8)
+            | (u32::from(self.registers[23] & 0x3f) << 16))
+            & 0xffff
+    }
+
+    fn write_dma_vram_copy_source_address(&mut self, source: u32) {
+        let source = source & 0xffff;
+        self.registers[21] = source as u8;
+        self.registers[22] = (source >> 8) as u8;
+        self.registers[23] = (self.registers[23] & 0xc0) | ((source >> 16) as u8 & 0x3f);
     }
 
     pub fn render_frame(&mut self) {
         self.interlace_field ^= 1;
         self.update_screen_size();
+        let framebuffer_len = self.framebuffer.len();
         self.ensure_framebuffer_size();
+        if self.framebuffer.len() != framebuffer_len {
+            self.video_dirty = true;
+        }
+        if !self.video_dirty {
+            return;
+        }
 
         let backdrop = (self.registers[7] & 0x3f) as usize;
         if !self.display_enabled() {
@@ -631,6 +661,52 @@ impl Vdp {
         }
     }
 
+    fn write_memory_byte(&mut self, address: u32, value: u8) {
+        let address = address as usize & 0xffff;
+        match self.memory_target() {
+            MemoryTarget::Cram => {
+                let index = (address >> 1) & (Self::CRAM_SIZE - 1);
+                let old = self.cram[index];
+                let next = if (address & 1) == 0 {
+                    (u16::from(value) << 8) | (old & 0x00ff)
+                } else {
+                    (old & 0xff00) | u16::from(value)
+                } & 0x0fff;
+                self.cram[index] = next;
+                self.video_dirty = true;
+                self.cram_writes += 1;
+                if next != 0 {
+                    self.cram_nonzero_writes += 1;
+                }
+            }
+            MemoryTarget::Vsram => {
+                let index = (address >> 1) & (Self::VSRAM_SIZE - 1);
+                let old = self.vsram[index];
+                self.vsram[index] = if (address & 1) == 0 {
+                    (u16::from(value) << 8) | (old & 0x00ff)
+                } else {
+                    (old & 0xff00) | u16::from(value)
+                } & 0x07ff;
+                self.video_dirty = true;
+                self.vsram_writes += 1;
+            }
+            MemoryTarget::Vram | MemoryTarget::Invalid => {
+                self.vram[address] = value;
+                self.video_dirty = true;
+                self.vram_writes += 1;
+                if value != 0 {
+                    self.vram_nonzero_writes += 1;
+                }
+                if address < 0xc000 {
+                    self.vram_pattern_writes += 1;
+                    if value != 0 {
+                        self.vram_pattern_nonzero_writes += 1;
+                    }
+                }
+            }
+        }
+    }
+
     fn increment_address(&mut self) {
         let increment = if self.registers[15] == 0 {
             2
@@ -665,7 +741,11 @@ impl Vdp {
         } else {
             Self::DEFAULT_WIDTH
         };
-        self.screen_height = Self::DEFAULT_HEIGHT;
+        self.screen_height = if self.interlace_mode_2() {
+            Self::DEFAULT_HEIGHT * 2
+        } else {
+            Self::DEFAULT_HEIGHT
+        };
     }
 
     fn ensure_framebuffer_size(&mut self) {
@@ -710,10 +790,13 @@ impl Vdp {
     fn perform_dma_fill(&mut self, value: u16) {
         self.control_pending = false;
         self.dma_fill_pending = false;
-        let fill = (value & 0x00ff) * 0x0101;
+        let fill = (value >> 8) as u8;
         let length = self.dma_length_words();
         for _ in 0..length {
-            self.write_data_direct(fill);
+            self.write_memory_byte(self.address ^ 1, fill);
+            self.increment_dma_source_address();
+            self.decrement_dma_length();
+            self.increment_address();
         }
     }
 
@@ -725,8 +808,9 @@ impl Vdp {
         let width = self.screen_width;
         let height = self.screen_height;
         let (plane_width_cells, plane_height_cells) = self.plane_dimensions();
+        let cell_height = self.tile_cell_height();
         let map_width = plane_width_cells * 8;
-        let map_height = plane_height_cells * 8;
+        let map_height = plane_height_cells * cell_height;
         let plane_a = self.plane_a_base();
         let plane_b = self.plane_b_base();
 
@@ -797,7 +881,12 @@ impl Vdp {
 
         for _ in 0..max_sprites {
             let entry = (sprite_base + sprite_index * 8) & 0xffff;
-            let y_raw = self.read_vram_word(entry as u32) & 0x03ff;
+            let y_mask = if self.interlace_mode_2() {
+                0x03ff
+            } else {
+                0x01ff
+            };
+            let y_raw = self.read_vram_word(entry as u32) & y_mask;
             let size_link = self.read_vram_word((entry + 2) as u32);
             let attr = self.read_vram_word((entry + 4) as u32);
             let x_raw = self.read_vram_word((entry + 6) as u32) & 0x01ff;
@@ -859,15 +948,17 @@ impl Vdp {
         v_flip: bool,
     ) {
         let sprite_width = width_cells * 8;
-        let sprite_height = height_cells * 8;
+        let cell_height = self.tile_cell_height();
+        let row_mask = cell_height - 1;
+        let sprite_height = height_cells * cell_height;
         for local_y in 0..sprite_height {
             let source_y = if v_flip {
                 sprite_height - 1 - local_y
             } else {
                 local_y
             };
-            let tile_y = source_y / 8;
-            let row = source_y & 7;
+            let tile_y = source_y / cell_height;
+            let row = source_y & row_mask;
             let screen_y = y + local_y as i32;
             if !(0..self.screen_height as i32).contains(&screen_y) {
                 continue;
@@ -946,13 +1037,15 @@ impl Vdp {
             & (plane.map_width - 1);
         let source_y = (screen_y + plane.vscroll) & (plane.map_height - 1);
         let cell_x = source_x >> 3;
-        let cell_y = source_y >> 3;
+        let cell_height = self.tile_cell_height();
+        let row_mask = cell_height - 1;
+        let cell_y = source_y / cell_height;
         let entry_address = (plane.name_base + 2 * (cell_y * plane.width_cells + cell_x)) & 0xffff;
         let entry = self.read_vram_word(entry_address as u32);
-        let mut row = source_y & 7;
+        let mut row = source_y & row_mask;
         let mut col = source_x & 7;
         if (entry & 0x1000) != 0 {
-            row = 7 - row;
+            row = row_mask - row;
         }
         if (entry & 0x0800) != 0 {
             col = 7 - col;
@@ -970,14 +1063,16 @@ impl Vdp {
 
     fn window_pixel(&self, screen_x: usize, screen_y: usize) -> Option<usize> {
         let cell_x = screen_x >> 3;
-        let cell_y = screen_y >> 3;
+        let cell_height = self.tile_cell_height();
+        let row_mask = cell_height - 1;
+        let cell_y = screen_y / cell_height;
         let entry_address =
             (self.window_base() + 2 * (cell_y * self.window_width_cells() + cell_x)) & 0xffff;
         let entry = self.read_vram_word(entry_address as u32);
-        let mut row = screen_y & 7;
+        let mut row = screen_y & row_mask;
         let mut col = screen_x & 7;
         if (entry & 0x1000) != 0 {
-            row = 7 - row;
+            row = row_mask - row;
         }
         if (entry & 0x0800) != 0 {
             col = 7 - col;
@@ -1002,10 +1097,11 @@ impl Vdp {
         let width = self.screen_width;
         let x = ((self.registers[17] & 0x1f) as usize * 16).min(width);
         let y = (self.registers[18] & 0x1f) as usize;
+        let cell_height = self.tile_cell_height();
         let in_vertical = if (self.registers[18] & 0x80) != 0 {
-            (screen_y >> 3) >= y
+            (screen_y / cell_height) >= y
         } else {
-            (screen_y >> 3) < y
+            (screen_y / cell_height) < y
         };
         if in_vertical {
             return (0, width);
@@ -1045,18 +1141,18 @@ impl Vdp {
         match self.registers[16] & 0x33 {
             0x00 => (32, 32),
             0x01 => (64, 32),
-            0x02 => (32, 64),
+            0x02 => (64, 1),
             0x03 => (128, 32),
             0x10 => (32, 64),
             0x11 => (64, 64),
-            0x12 => (32, 64),
+            0x12 => (64, 1),
             0x13 => (128, 64),
             0x20 => (32, 32),
-            0x21 => (64, 32),
-            0x22 => (32, 64),
-            0x23 => (128, 32),
+            0x21 => (64, 64),
+            0x22 => (64, 1),
+            0x23 => (128, 64),
             0x30 => (32, 128),
-            0x31 => (64, 128),
+            0x31 => (64, 64),
             0x32 => (64, 1),
             0x33 => (128, 128),
             _ => (32, 32),
@@ -1101,11 +1197,48 @@ impl Vdp {
     }
 
     fn pattern_color(&self, pattern: usize, row: usize, col: usize) -> usize {
-        let tile_address = (pattern * 32 + row * 4) & 0xffff;
+        let tile_address = ((pattern & self.pattern_address_mask()) * self.pattern_byte_size()
+            + (row & self.tile_row_mask()) * 4)
+            & 0xffff;
         let packed = ((self.vram[tile_address] as u32) << 24)
             | ((self.vram[(tile_address + 1) & 0xffff] as u32) << 16)
             | ((self.vram[(tile_address + 2) & 0xffff] as u32) << 8)
             | self.vram[(tile_address + 3) & 0xffff] as u32;
         ((packed >> ((7 - col) * 4)) & 0x0f) as usize
+    }
+
+    fn tile_cell_height(&self) -> usize {
+        if self.interlace_mode_2() { 16 } else { 8 }
+    }
+
+    fn tile_row_mask(&self) -> usize {
+        self.tile_cell_height() - 1
+    }
+
+    fn pattern_address_mask(&self) -> usize {
+        if self.interlace_mode_2() {
+            0x03ff
+        } else {
+            0x07ff
+        }
+    }
+
+    fn pattern_byte_size(&self) -> usize {
+        if self.interlace_mode_2() { 64 } else { 32 }
+    }
+
+    fn increment_dma_source_address(&mut self) {
+        let source = self.dma_source_address();
+        let source = (source & !0x1ffff) | ((source + 2) & 0x1ffff);
+        self.registers[21] = ((source >> 1) & 0xff) as u8;
+        self.registers[22] = ((source >> 9) & 0xff) as u8;
+        self.registers[23] = (self.registers[23] & 0xc0) | (((source >> 17) & 0x3f) as u8);
+    }
+
+    fn decrement_dma_length(&mut self) {
+        let length =
+            (u16::from(self.registers[19]) | (u16::from(self.registers[20]) << 8)).wrapping_sub(1);
+        self.registers[19] = length as u8;
+        self.registers[20] = (length >> 8) as u8;
     }
 }

@@ -298,7 +298,7 @@ impl M68k {
         if (opcode & 0xf000) == 0x9000 {
             return self.add_sub(bus, opcode, true);
         }
-        if (opcode & 0xf100) == 0xb100 {
+        if (opcode & 0xf100) == 0xb100 && ((opcode >> 6) & 0x03) != 0x03 {
             return self.eor_register(bus, opcode);
         }
         if (opcode & 0xf000) == 0xb000 {
@@ -682,7 +682,7 @@ impl M68k {
         let ea_reg = (opcode & 0x07) as u8;
         let opmode = (opcode >> 6) & 0x07;
 
-        if (opcode & 0xf138) == 0xb108 {
+        if (opcode & 0xf138) == 0xb108 && ((opcode >> 6) & 0x03) != 0x03 {
             let size = match (opcode >> 6) & 0x03 {
                 0 => Size::Byte,
                 1 => Size::Word,
@@ -978,7 +978,9 @@ impl M68k {
         )?;
         let value = self.read_target(bus, target, Size::Byte);
         self.set_nz_flags(value, Size::Byte, true);
-        self.write_target(bus, target, Size::Byte, value | 0x80);
+        if matches!(target, EaTarget::Data(_)) {
+            self.write_target(bus, target, Size::Byte, value | 0x80);
+        }
         Ok(self.finish(10))
     }
 
@@ -1429,9 +1431,9 @@ impl M68k {
 
     fn read_memory(&mut self, bus: &mut M68kBus, address: u32, size: Size) -> u32 {
         match size {
-            Size::Byte => bus.read_byte(address) as u32,
-            Size::Word => bus.read_word(address) as u32,
-            Size::Long => bus.read_long(address),
+            Size::Byte => bus.read_byte_fast(address) as u32,
+            Size::Word => bus.read_word_fast(address) as u32,
+            Size::Long => bus.read_long_fast(address),
         }
     }
 
@@ -1452,7 +1454,7 @@ impl M68k {
     }
 
     fn fetch_word(&mut self, bus: &mut M68kBus) -> u16 {
-        let value = bus.read_word(self.pc);
+        let value = bus.read_word_fast(self.pc);
         self.pc = self.pc.wrapping_add(2) & Self::ADDRESS_MASK;
         value
     }

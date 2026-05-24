@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,8 +18,18 @@ function gitShortSha() {
   }
 }
 
+function gitDirtySuffix() {
+  try {
+    execFileSync("git", ["diff", "--quiet"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["diff", "--cached", "--quiet"], { cwd: root, stdio: "ignore" });
+    return "";
+  } catch {
+    return "-dirty";
+  }
+}
+
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "Z");
-const id = `${stamp}-${gitShortSha()}`;
+const id = `${stamp}-${gitShortSha()}${gitDirtySuffix()}`;
 
 writeFileSync(
   new URL("../webview/build-info.ts", import.meta.url),

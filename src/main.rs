@@ -399,6 +399,27 @@ fn print_vdp_summary(emulator: &Emulator) {
         emulator.bus.peek_byte(0xffff_f64e),
         emulator.bus.peek_byte(0xffff_fe10)
     );
+    let sonic_obj = 0xffff_d000;
+    let sonic_word = |offset| {
+        (u16::from(emulator.bus.peek_byte(sonic_obj + offset)) << 8)
+            | u16::from(emulator.bus.peek_byte(sonic_obj + offset + 1))
+    };
+    let signed = |value: u16| value as i16;
+    println!(
+        "Sonic object: id=${:02X} routine=${:02X} x={}.{:04X} y={}.{:04X} xvel={} yvel={} inertia={} status=${:02X} anim=${:02X} angle=${:02X}",
+        emulator.bus.peek_byte(sonic_obj),
+        emulator.bus.peek_byte(sonic_obj + 1),
+        sonic_word(0x08),
+        sonic_word(0x0a),
+        sonic_word(0x0c),
+        sonic_word(0x0e),
+        signed(sonic_word(0x10)),
+        signed(sonic_word(0x12)),
+        signed(sonic_word(0x14)),
+        emulator.bus.peek_byte(sonic_obj + 0x22),
+        emulator.bus.peek_byte(sonic_obj + 0x1c),
+        emulator.bus.peek_byte(sonic_obj + 0x26)
+    );
     let aa00_nonzero = (0..0x400)
         .filter(|offset| emulator.bus.peek_byte(0xffff_aa00 + offset) != 0)
         .count();

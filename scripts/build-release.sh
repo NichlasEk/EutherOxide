@@ -28,6 +28,7 @@ write_status() {
 }
 
 write_status "building" "Building release binary"
+node scripts/write-build-info.mjs
 
 if cargo build --release; then
   write_status "ready" "Release binary ready"

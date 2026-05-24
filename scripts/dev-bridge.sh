@@ -6,9 +6,11 @@ cd "$ROOT"
 
 bridge_pid=""
 vite_pid=""
+bridge_started_at=0
 control_dir=".euther-bridge"
 profile_file="$control_dir/profile"
 release_bin="target/release/euther-oxide"
+bridge_port="32161"
 
 cleanup() {
   if [[ -n "$bridge_pid" ]] && kill -0 "$bridge_pid" 2>/dev/null; then
@@ -55,6 +57,9 @@ start_bridge() {
     kill "$bridge_pid" 2>/dev/null || true
     wait "$bridge_pid" 2>/dev/null || true
   fi
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -n tcp "$bridge_port" >/dev/null 2>&1 || true
+  fi
 
   local profile
   profile="$(requested_profile)"
@@ -63,13 +68,24 @@ start_bridge() {
       echo "[dev-bridge] release binary missing; building it first"
       bash scripts/build-release.sh
     fi
-    echo "[dev-bridge] starting Rust core bridge (release bin) on http://127.0.0.1:32161"
+    echo "[dev-bridge] starting Rust core bridge (release bin) on http://127.0.0.1:${bridge_port}"
     EUTHER_BRIDGE_PROFILE=release "$release_bin" --web-bridge &
   else
-    echo "[dev-bridge] starting Rust core bridge (debug) on http://127.0.0.1:32161"
-    EUTHER_BRIDGE_PROFILE=debug cargo run -- --web-bridge &
+    echo "[dev-bridge] starting Rust core bridge (debug) on http://127.0.0.1:${bridge_port}"
+    EUTHER_BRIDGE_PROFILE=debug cargo run --bin euther-oxide -- --web-bridge &
   fi
   bridge_pid="$!"
+  bridge_started_at="$(date +%s)"
+}
+
+bridge_healthy() {
+  curl -fsS --max-time 1 "http://127.0.0.1:${bridge_port}/status" >/dev/null 2>&1
+}
+
+bridge_startup_grace_active() {
+  local now
+  now="$(date +%s)"
+  (( now - bridge_started_at < 8 ))
 }
 
 trap cleanup EXIT INT TERM
@@ -93,7 +109,7 @@ last_stamp="$(source_stamp)"
 last_release_stamp="$(release_stamp)"
 last_profile="$(requested_profile)"
 
-echo "[dev-bridge] open http://127.0.0.1:5173/?bridge=http://127.0.0.1:32161"
+echo "[dev-bridge] open http://127.0.0.1:5173/?bridge=http://127.0.0.1:${bridge_port}"
 
 while sleep 1; do
   next_stamp="$(source_stamp)"
@@ -116,6 +132,9 @@ while sleep 1; do
     start_bridge
   elif ! kill -0 "$bridge_pid" 2>/dev/null; then
     echo "[dev-bridge] bridge exited; restarting"
+    start_bridge
+  elif ! bridge_startup_grace_active && ! bridge_healthy; then
+    echo "[dev-bridge] bridge health check failed; restarting"
     start_bridge
   fi
 done

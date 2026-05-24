@@ -200,6 +200,8 @@ let bridgeRetryTimer: number | null = null;
 let buildPollTimer: number | null = null;
 let bridgeStreamAbort: AbortController | null = null;
 let bridgeStreamActive = false;
+let bridgeRestarting = false;
+let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
@@ -437,6 +439,8 @@ stepFrame.addEventListener("click", async () => {
 });
 
 resetCore.addEventListener("click", async () => {
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
   let drewCoreFrame = false;
   if (isTauri && ui.runtime === "tauri" && ui.loaded) {
     ui.playing = false;
@@ -468,6 +472,8 @@ resetCore.addEventListener("click", async () => {
   ui.status = ui.loaded ? "RESET" : "IDLE";
   pushTrace("Reset vector reloaded");
   renderUi();
+  resetCore.blur();
+  window.scrollTo(scrollX, scrollY);
 });
 
 releaseBuild.addEventListener("click", async () => {
@@ -727,6 +733,7 @@ async function buildReleaseBinary(): Promise<void> {
     }
   }
   desiredBuildProfile = "release";
+  const wasPlaying = pauseBridgeForRestart();
   try {
     applyBuildStatus(
       await bridgeJson<BridgeBuildStatus>("/build/release", { method: "POST" }, 1000),
@@ -738,6 +745,9 @@ async function buildReleaseBinary(): Promise<void> {
     ui.lastError = String(error);
     pushTrace("Release build refused");
     renderUi();
+  } finally {
+    bridgeRestarting = false;
+    restoreBridgePlaybackAfterRestart(wasPlaying);
   }
 }
 
@@ -755,6 +765,7 @@ async function setBridgeBuildProfile(profile: "debug" | "release"): Promise<void
     renderUi();
     return;
   }
+  const wasPlaying = pauseBridgeForRestart();
   try {
     const status = await bridgeJson<BridgeBuildStatus>(
       `/build/profile?profile=${profile}`,
@@ -764,11 +775,13 @@ async function setBridgeBuildProfile(profile: "debug" | "release"): Promise<void
     applyBuildStatus(status);
     pushTrace(profile === "release" ? "Release bin arming" : "Debug bridge arming");
     renderUi();
-    await reconnectAfterBridgeRestart();
+    await reconnectAfterBridgeRestart(wasPlaying);
   } catch (error) {
     ui.lastError = String(error);
     pushTrace("Bridge profile switch failed");
     renderUi();
+  } finally {
+    bridgeRestarting = false;
   }
 }
 
@@ -820,23 +833,53 @@ function applyBuildStatus(status: BridgeBuildStatus): void {
       : desiredBuildProfile;
 }
 
-async function reconnectAfterBridgeRestart(): Promise<void> {
+async function reconnectAfterBridgeRestart(resumePlayback = false): Promise<void> {
+  const token = ++bridgeReconnectToken;
   ui.status = "REARMING";
   renderUi();
   await sleep(700);
   for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (token !== bridgeReconnectToken) {
+      return;
+    }
     if (romBytes.length > 0) {
       if (await loadBytesThroughBridge(romDisplayName, romBytes)) {
         await refreshBuildStatus(true);
+        restoreBridgePlaybackAfterRestart(resumePlayback);
         return;
       }
     } else if (await connectBridge(false)) {
       await refreshBuildStatus(true);
+      restoreBridgePlaybackAfterRestart(resumePlayback);
       return;
     }
     await sleep(350);
   }
   scheduleBridgeRetry();
+}
+
+function pauseBridgeForRestart(): boolean {
+  const wasPlaying = ui.playing;
+  bridgeRestarting = true;
+  bridgeReconnectToken += 1;
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  stopBridgeStream();
+  audioCursor = audioContext?.currentTime ?? 0;
+  return wasPlaying;
+}
+
+function restoreBridgePlaybackAfterRestart(wasPlaying: boolean): void {
+  if (!wasPlaying || ui.runtime !== "bridge" || !ui.loaded) {
+    renderUi();
+    return;
+  }
+  ui.playing = true;
+  ui.status = "RUNNING";
+  playToggle.textContent = "Pause";
+  void ensureAudio();
+  void bridgeStreamLoop();
+  renderUi();
 }
 
 function emptyBuildStatus(): BridgeBuildStatus {
@@ -1222,7 +1265,7 @@ async function bridgeStreamLoop(): Promise<void> {
       }
     }
   } catch (error) {
-    if (ui.playing && ui.runtime === "bridge") {
+    if (ui.playing && ui.runtime === "bridge" && !bridgeRestarting) {
       ui.lastError = String(error);
       pushTrace("Bridge stream fell back");
       nextFrameDue = performance.now();
@@ -1523,8 +1566,12 @@ async function loadStateSlot(slot: number): Promise<void> {
   if (!ui.loaded) {
     return;
   }
+  const wasPlaying = ui.playing;
   if (isTauri && ui.runtime === "tauri" && ui.nativeStates) {
     try {
+      ui.playing = false;
+      playToggle.textContent = "Play";
+      await invoke("set_native_running", { running: false });
       const result = await invoke<LoadStateResult>("load_state_slot", { slot });
       drawNativeFrame(result.frame);
       ui.frame = result.frame.frame;
@@ -1535,14 +1582,30 @@ async function loadStateSlot(slot: number): Promise<void> {
       ui.status = `ARGON ${slot}`;
       applyStateSlots(result.states);
       pushTrace(`Argon slot ${slot} reduced`);
+      audioCursor = audioContext?.currentTime ?? 0;
+      if (wasPlaying) {
+        ui.playing = true;
+        playToggle.textContent = "Pause";
+        await invoke("set_native_running", { running: true });
+        void nativeStatusLoop();
+      }
       renderUi();
       return;
     } catch (error) {
+      ui.playing = wasPlaying;
+      playToggle.textContent = ui.playing ? "Pause" : "Play";
+      if (wasPlaying) {
+        await invoke("set_native_running", { running: true });
+        void nativeStatusLoop();
+      }
       ui.lastError = String(error);
       pushTrace("Native argon load rejected");
     }
   } else if (ui.runtime === "bridge" && ui.nativeStates) {
     try {
+      ui.playing = false;
+      playToggle.textContent = "Play";
+      stopBridgeStream();
       const result = await bridgeJson<LoadStateResult>(`/state/load?slot=${slot}`, {
         method: "POST",
       });
@@ -1555,9 +1618,23 @@ async function loadStateSlot(slot: number): Promise<void> {
       ui.status = `ARGON ${slot}`;
       applyStateSlots(result.states);
       pushTrace(`Argon slot ${slot} reduced`);
+      audioCursor = audioContext?.currentTime ?? 0;
+      await syncInput();
+      if (wasPlaying) {
+        ui.playing = true;
+        ui.status = "RUNNING";
+        playToggle.textContent = "Pause";
+        void ensureAudio();
+        void bridgeStreamLoop();
+      }
       renderUi();
       return;
     } catch (error) {
+      ui.playing = wasPlaying;
+      playToggle.textContent = ui.playing ? "Pause" : "Play";
+      if (wasPlaying) {
+        void bridgeStreamLoop();
+      }
       ui.lastError = String(error);
       pushTrace("Bridge argon load rejected");
     }

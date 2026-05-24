@@ -18,6 +18,7 @@ body {
   min-width: 320px;
   min-height: 100vh;
   overflow: hidden;
+  overflow-anchor: none;
   background:
     radial-gradient(circle at 20% 10%, rgba(90, 134, 69, 0.28), transparent 28%),
     radial-gradient(circle at 85% 18%, rgba(179, 56, 48, 0.23), transparent 26%),
@@ -484,7 +485,10 @@ h2 {
 .screen-vessel {
   display: grid;
   place-items: center;
+  align-self: stretch;
+  justify-self: stretch;
   min-height: 0;
+  height: 100%;
   padding: 14px;
   border-radius: 8px;
   background:
@@ -497,6 +501,7 @@ h2 {
   width: min(100%, calc((100vh - 190px) * 1.43));
   max-width: 960px;
   aspect-ratio: 10 / 7;
+  flex: none;
   display: grid;
   place-items: center;
   border: 1px solid rgba(221, 249, 189, 0.18);
