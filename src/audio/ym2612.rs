@@ -125,6 +125,7 @@ pub struct Ym2612 {
     jg: JgYm2612,
     jg_cycle_remainder: u64,
     jg_frame_samples: Vec<f32>,
+    jg_frame_stereo_samples: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,6 +187,8 @@ pub struct Ym2612Snapshot {
     jg_cycle_remainder: u64,
     #[serde(default)]
     jg_frame_samples: Vec<f32>,
+    #[serde(default)]
+    jg_frame_stereo_samples: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -319,6 +322,7 @@ impl Ym2612 {
             jg: JgYm2612::default(),
             jg_cycle_remainder: 0,
             jg_frame_samples: Vec::new(),
+            jg_frame_stereo_samples: Vec::new(),
         };
         ym.reset();
         ym
@@ -340,6 +344,7 @@ impl Ym2612 {
         self.jg.reset();
         self.jg_cycle_remainder = 0;
         self.jg_frame_samples.clear();
+        self.jg_frame_stereo_samples.clear();
         self.timer_a_latch = 0;
         self.timer_b_latch = 0;
         self.timer_a_counter = 0;
@@ -435,6 +440,7 @@ impl Ym2612 {
             jg: self.jg.clone(),
             jg_cycle_remainder: self.jg_cycle_remainder,
             jg_frame_samples: self.jg_frame_samples.clone(),
+            jg_frame_stereo_samples: self.jg_frame_stereo_samples.clone(),
         }
     }
 
@@ -489,6 +495,7 @@ impl Ym2612 {
         self.jg = snapshot.jg;
         self.jg_cycle_remainder = snapshot.jg_cycle_remainder;
         self.jg_frame_samples = snapshot.jg_frame_samples;
+        self.jg_frame_stereo_samples = snapshot.jg_frame_stereo_samples;
     }
 
     pub fn begin_frame(&mut self) {
@@ -496,6 +503,7 @@ impl Ym2612 {
         self.frame_start_state = self.capture_render_state();
         self.frame_writes.clear();
         self.jg_frame_samples.clear();
+        self.jg_frame_stereo_samples.clear();
         self.frame_jg_samples = 0;
         self.frame_jg_peak = 0.0;
     }
@@ -614,6 +622,32 @@ impl Ym2612 {
         }
 
         resample_linear(&internal_samples, count)
+    }
+
+    pub fn render_frame_stereo_samples(
+        &mut self,
+        count: usize,
+        _frame_cycles: f64,
+        _sample_rate: usize,
+    ) -> Vec<[f32; 2]> {
+        if count == 0 {
+            return Vec::new();
+        }
+
+        let mut internal_samples = if self.jg_frame_stereo_samples.is_empty() {
+            self.jg_frame_samples
+                .iter()
+                .map(|sample| [*sample, *sample])
+                .collect::<Vec<_>>()
+        } else {
+            self.jg_frame_stereo_samples.clone()
+        };
+        if internal_samples.is_empty() {
+            let (left, right) = self.jg.sample();
+            internal_samples.push([left as f32, right as f32]);
+        }
+
+        resample_linear_stereo(&internal_samples, count)
     }
 
     pub fn channel_frequency(&self, channel: usize) -> f64 {
@@ -775,8 +809,14 @@ impl Ym2612 {
             let tick_batch = ticks.min(u32::MAX as u64) as u32;
             self.jg.tick(tick_batch, |(left, right)| {
                 let sample = ((left + right) * 0.5) as f32;
-                self.frame_jg_peak = self.frame_jg_peak.max(sample.abs());
+                self.frame_jg_peak = self
+                    .frame_jg_peak
+                    .max(sample.abs())
+                    .max((left as f32).abs())
+                    .max((right as f32).abs());
                 self.jg_frame_samples.push(sample);
+                self.jg_frame_stereo_samples
+                    .push([left as f32, right as f32]);
             });
             ticks -= u64::from(tick_batch);
         }
@@ -1338,6 +1378,35 @@ fn resample_linear(samples: &[f32], output_count: usize) -> Vec<f32> {
             let right = (left + 1).min(samples.len() - 1);
             let frac = (pos - left as f64) as f32;
             samples[left] + (samples[right] - samples[left]) * frac
+        })
+        .collect()
+}
+
+fn resample_linear_stereo(samples: &[[f32; 2]], output_count: usize) -> Vec<[f32; 2]> {
+    if output_count == 0 {
+        return Vec::new();
+    }
+    if samples.is_empty() {
+        return vec![[0.0; 2]; output_count];
+    }
+    if samples.len() == 1 {
+        return vec![samples[0]; output_count];
+    }
+    if output_count == 1 {
+        return vec![samples[0]];
+    }
+
+    let scale = (samples.len() - 1) as f64 / (output_count - 1) as f64;
+    (0..output_count)
+        .map(|index| {
+            let pos = index as f64 * scale;
+            let left = pos.floor() as usize;
+            let right = (left + 1).min(samples.len() - 1);
+            let frac = (pos - left as f64) as f32;
+            [
+                samples[left][0] + (samples[right][0] - samples[left][0]) * frac,
+                samples[left][1] + (samples[right][1] - samples[left][1]) * frac,
+            ]
         })
         .collect()
 }

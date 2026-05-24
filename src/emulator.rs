@@ -22,10 +22,13 @@ pub struct Emulator {
     pub region: SystemRegion,
     pub last_error: Option<CpuError>,
     pub z80_pending_cycles: f64,
+    pub z80_ym_frame_cycle: f64,
     pub z80_vblank_irq_cycles: f64,
     pub z80_ym_irq_asserted: bool,
     pub z80_ym_irq_pending: bool,
     audio_filter: GenesisAudioFilter,
+    audio_filter_left: GenesisAudioFilter,
+    audio_filter_right: GenesisAudioFilter,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,6 +44,8 @@ pub struct EmulatorSnapshot {
     pub last_error: Option<CpuError>,
     #[serde(default)]
     pub z80_pending_cycles: f64,
+    #[serde(default)]
+    pub z80_ym_frame_cycle: f64,
     #[serde(default)]
     pub z80_vblank_irq_cycles: f64,
     #[serde(default)]
@@ -83,10 +88,13 @@ impl Emulator {
             region: SystemRegion::Usa,
             last_error: None,
             z80_pending_cycles: 0.0,
+            z80_ym_frame_cycle: 0.0,
             z80_vblank_irq_cycles: 0.0,
             z80_ym_irq_asserted: false,
             z80_ym_irq_pending: false,
             audio_filter: GenesisAudioFilter::new(),
+            audio_filter_left: GenesisAudioFilter::new(),
+            audio_filter_right: GenesisAudioFilter::new(),
         }
     }
 
@@ -122,10 +130,13 @@ impl Emulator {
         self.frame_count = 0;
         self.last_error = None;
         self.z80_pending_cycles = 0.0;
+        self.z80_ym_frame_cycle = 0.0;
         self.z80_vblank_irq_cycles = 0.0;
         self.z80_ym_irq_asserted = false;
         self.z80_ym_irq_pending = false;
         self.audio_filter.reset();
+        self.audio_filter_left.reset();
+        self.audio_filter_right.reset();
     }
 
     pub fn reset(&mut self) {
@@ -136,10 +147,13 @@ impl Emulator {
         self.frame_count = 0;
         self.last_error = None;
         self.z80_pending_cycles = 0.0;
+        self.z80_ym_frame_cycle = 0.0;
         self.z80_vblank_irq_cycles = 0.0;
         self.z80_ym_irq_asserted = false;
         self.z80_ym_irq_pending = false;
         self.audio_filter.reset();
+        self.audio_filter_left.reset();
+        self.audio_filter_right.reset();
     }
 
     pub fn run_frame(&mut self) -> FrameRun {
@@ -155,6 +169,7 @@ impl Emulator {
         let z80_frame_start = self.z80.total_cycles;
 
         self.bus.begin_frame();
+        self.z80_ym_frame_cycle = 0.0;
         while cycles < cycles_per_frame {
             self.bus.frame_cycle = cycles;
             self.bus.ym_frame_cycle = cycles;
@@ -165,7 +180,6 @@ impl Emulator {
                     cycles += step_cycles as u64;
                     steps += 1;
                     self.bus.ym_frame_cycle = cycles;
-                    self.bus.ym2612.sync_to_cycle(cycles);
                     if self.bus.take_z80_reset_request() {
                         self.z80.reset();
                     }
@@ -175,8 +189,10 @@ impl Emulator {
                         self.z80_pending_cycles += f64::from(dma_wait_cycles) * z80_ratio;
                     }
                     self.z80_pending_cycles += f64::from(step_cycles) * z80_ratio;
-                    self.interrupt_z80_for_ym_timer();
                     self.run_z80_until_budget();
+                    self.bus.ym_frame_cycle = cycles;
+                    self.bus.ym2612.sync_to_cycle(cycles);
+                    self.interrupt_z80_for_ym_timer();
                 }
                 Err(err) => {
                     self.last_error = Some(err);
@@ -272,6 +288,42 @@ impl Emulator {
             .collect()
     }
 
+    pub fn render_audio_frame_i16_stereo(&mut self, sample_rate: usize) -> Vec<i16> {
+        let sample_rate = sample_rate.max(1);
+        let count = ((sample_rate as f64 / self.frame_rate()).round() as usize).max(1);
+        let psg_cycles = Self::Z80_CLOCK / self.frame_rate();
+        let ym_cycles = self.current_m68k_frame_cycles() as f64;
+        let psg_samples = self
+            .bus
+            .psg
+            .render_frame_samples(count, psg_cycles, sample_rate);
+        let ym_samples = self
+            .bus
+            .ym2612
+            .render_frame_stereo_samples(count, ym_cycles, sample_rate);
+
+        let mut output = Vec::with_capacity(count * 2);
+        for (psg, ym) in psg_samples.into_iter().zip(ym_samples) {
+            let psg_l = self
+                .audio_filter_left
+                .filter_psg(f64::from(psg), sample_rate);
+            let ym_l = self
+                .audio_filter_left
+                .filter_ym(f64::from(ym[0]), sample_rate);
+            let psg_r = self
+                .audio_filter_right
+                .filter_psg(f64::from(psg), sample_rate);
+            let ym_r = self
+                .audio_filter_right
+                .filter_ym(f64::from(ym[1]), sample_rate);
+            let left = ((ym_l * Audio::YM_GAIN) + (psg_l * Audio::PSG_GAIN)).clamp(-1.0, 1.0);
+            let right = ((ym_r * Audio::YM_GAIN) + (psg_r * Audio::PSG_GAIN)).clamp(-1.0, 1.0);
+            output.push((left * f64::from(i16::MAX)) as i16);
+            output.push((right * f64::from(i16::MAX)) as i16);
+        }
+        output
+    }
+
     pub fn frame_rgba(&self) -> Vec<u8> {
         let (width, height) = self.frame_size();
         let mut rgba = Vec::with_capacity(width * height * 4);
@@ -295,6 +347,7 @@ impl Emulator {
             region: self.region,
             last_error: self.last_error.clone(),
             z80_pending_cycles: self.z80_pending_cycles,
+            z80_ym_frame_cycle: self.z80_ym_frame_cycle,
             z80_vblank_irq_cycles: self.z80_vblank_irq_cycles,
             z80_ym_irq_asserted: self.z80_ym_irq_asserted,
             z80_ym_irq_pending: self.z80_ym_irq_pending,
@@ -311,10 +364,13 @@ impl Emulator {
         self.region = snapshot.region;
         self.last_error = snapshot.last_error;
         self.z80_pending_cycles = snapshot.z80_pending_cycles;
+        self.z80_ym_frame_cycle = snapshot.z80_ym_frame_cycle;
         self.z80_vblank_irq_cycles = snapshot.z80_vblank_irq_cycles;
         self.z80_ym_irq_asserted = snapshot.z80_ym_irq_asserted;
         self.z80_ym_irq_pending = snapshot.z80_ym_irq_pending;
         self.audio_filter.reset();
+        self.audio_filter_left.reset();
+        self.audio_filter_right.reset();
     }
 
     fn configure_region_register(&mut self) {
@@ -350,9 +406,16 @@ impl Emulator {
         while self.z80_pending_cycles >= Z80_BATCH_CYCLES && self.bus.z80_running() {
             let before = self.z80.total_cycles;
             let int_low = self.z80_vblank_irq_cycles > 0.0 || self.z80_ym_irq_pending;
-            let (_, serviced_interrupt) =
-                self.z80
-                    .run_cycles_jg(&mut self.bus, Z80_BATCH_CYCLES, int_low);
+            let m68k_per_z80 = Self::M68K_CLOCK / Self::Z80_CLOCK;
+            let ym_cycle_limit = self.bus.ym_frame_cycle as f64;
+            let (_, serviced_interrupt) = self.z80.run_cycles_jg(
+                &mut self.bus,
+                Z80_BATCH_CYCLES,
+                int_low,
+                &mut self.z80_ym_frame_cycle,
+                ym_cycle_limit,
+                m68k_per_z80,
+            );
             if serviced_interrupt {
                 if self.z80_vblank_irq_cycles > 0.0 {
                     self.z80_vblank_irq_cycles = 0.0;

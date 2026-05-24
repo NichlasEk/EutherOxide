@@ -53,6 +53,7 @@ type AudioResult = {
   frame: number;
   sampleRate: number;
   samples: number[] | Int16Array<ArrayBuffer>;
+  channels?: number;
 };
 
 type FrameAudioResult = {
@@ -1067,16 +1068,16 @@ async function tauriFrameAudio(): Promise<FrameAudioResult> {
 
 function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
   const bytes = new Uint8Array(buffer);
+  const magic = String.fromCharCode(bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0, bytes[3] ?? 0);
+  const headerLength = magic === "EOX2" ? 52 : 48;
   if (
-    bytes.length < 48 ||
-    bytes[0] !== 0x45 ||
-    bytes[1] !== 0x4f ||
-    bytes[2] !== 0x58 ||
-    bytes[3] !== 0x42
+    bytes.length < headerLength ||
+    (magic !== "EOXB" && magic !== "EOX2")
   ) {
     throw new Error("Bad EutherOxide frame/audio packet");
   }
   const view = new DataView(buffer);
+  const hasChannels = magic === "EOX2";
   const frame = view.getUint32(4, true);
   const width = view.getUint32(8, true);
   const height = view.getUint32(12, true);
@@ -1088,11 +1089,12 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
   const sampleCount = view.getUint32(36, true);
   const rgbaLength = view.getUint32(40, true);
   const pcmLength = view.getUint32(44, true);
-  const rgbaOffset = 48;
+  const channels = hasChannels ? Math.max(1, view.getUint32(48, true)) : 1;
+  const rgbaOffset = headerLength;
   const pcmOffset = rgbaOffset + rgbaLength;
   if (
     rgbaLength !== width * height * 4 ||
-    pcmLength !== sampleCount * 2 ||
+    pcmLength !== sampleCount * channels * 2 ||
     bytes.byteLength !== pcmOffset + pcmLength
   ) {
     throw new Error("EutherOxide frame/audio packet size mismatch");
@@ -1112,7 +1114,8 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
     audio: {
       frame,
       sampleRate,
-      samples: new Int16Array(buffer, pcmOffset, sampleCount) as Int16Array<ArrayBuffer>,
+      samples: new Int16Array(buffer, pcmOffset, sampleCount * channels) as Int16Array<ArrayBuffer>,
+      channels,
     },
     transport: "BRIDGE PACKET",
   };
@@ -1120,24 +1123,26 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
 
 function decodeBridgeAudio(buffer: ArrayBuffer): AudioResult {
   const bytes = new Uint8Array(buffer);
+  const magic = String.fromCharCode(bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0, bytes[3] ?? 0);
+  const headerLength = magic === "EOA2" ? 20 : 16;
   if (
-    bytes.length < 16 ||
-    bytes[0] !== 0x45 ||
-    bytes[1] !== 0x4f ||
-    bytes[2] !== 0x58 ||
-    bytes[3] !== 0x41
+    bytes.length < headerLength ||
+    (magic !== "EOXA" && magic !== "EOA2")
   ) {
     throw new Error("Bad EutherOxide audio packet");
   }
   const view = new DataView(buffer);
+  const hasChannels = magic === "EOA2";
   const frame = view.getUint32(4, true);
   const sampleRate = view.getUint32(8, true);
   const count = view.getUint32(12, true);
-  if (bytes.byteLength !== 16 + count * 2) {
+  const channels = hasChannels ? Math.max(1, view.getUint32(16, true)) : 1;
+  const pcmOffset = headerLength;
+  if (bytes.byteLength !== pcmOffset + count * channels * 2) {
     throw new Error("EutherOxide audio packet size mismatch");
   }
-  const samples = new Int16Array(buffer, 16, count) as Int16Array<ArrayBuffer>;
-  return { frame, sampleRate, samples };
+  const samples = new Int16Array(buffer, pcmOffset, count * channels) as Int16Array<ArrayBuffer>;
+  return { frame, sampleRate, samples, channels };
 }
 
 function decodeBridgeFrame(buffer: ArrayBuffer): FrameResult {
@@ -1461,7 +1466,12 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
   if (samples.length === 0) {
     return 0;
   }
-  if (isTauri && ui.runtime === "tauri") {
+  const channels = Math.max(1, Math.floor(audio.channels ?? 1));
+  const frameCount = Math.floor(samples.length / channels);
+  if (frameCount === 0) {
+    return 0;
+  }
+  if (isTauri && ui.runtime === "tauri" && channels === 1) {
     try {
       const result = await invoke<NativeAudioResult>("play_native_audio", {
         samples: Array.from(samples),
@@ -1479,10 +1489,21 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
   if (!context) {
     return 0;
   }
-  const buffer = context.createBuffer(1, samples.length, audio.sampleRate);
-  const channel = buffer.getChannelData(0);
-  for (let index = 0; index < samples.length; index += 1) {
-    channel[index] = samples[index] / 32768;
+  const outputChannels = channels === 1 ? 1 : 2;
+  const buffer = context.createBuffer(outputChannels, frameCount, audio.sampleRate);
+  if (channels === 1) {
+    const channel = buffer.getChannelData(0);
+    for (let index = 0; index < frameCount; index += 1) {
+      channel[index] = samples[index] / 32768;
+    }
+  } else {
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let index = 0; index < frameCount; index += 1) {
+      const sampleOffset = index * channels;
+      left[index] = samples[sampleOffset] / 32768;
+      right[index] = samples[sampleOffset + 1] / 32768;
+    }
   }
 
   const source = context.createBufferSource();

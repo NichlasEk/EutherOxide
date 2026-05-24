@@ -1,7 +1,16 @@
 use crate::bus::M68kBus;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use z80_emu::BusInterface;
 use z80_emu::traits::InterruptLine;
+
+fn genesis_ym_io_port(address: u16) -> Option<u32> {
+    let low = address & 0x00ff;
+    if (0x40..=0x43).contains(&low) || low <= 0x03 {
+        Some(u32::from(low & 0x03))
+    } else {
+        None
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum IndexReg {
@@ -9,7 +18,7 @@ enum IndexReg {
     Iy,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Z80 {
     pub a: u8,
     pub f: u8,
@@ -42,13 +51,151 @@ pub struct Z80 {
     pub cycles: u32,
     pub total_cycles: u64,
     pub last_run_steps: u64,
-    #[serde(skip, default)]
     jg: z80_emu::Z80,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Z80Serde {
+    a: u8,
+    f: u8,
+    b: u8,
+    c: u8,
+    d: u8,
+    e: u8,
+    h: u8,
+    l: u8,
+    a_alt: u8,
+    f_alt: u8,
+    b_alt: u8,
+    c_alt: u8,
+    d_alt: u8,
+    e_alt: u8,
+    h_alt: u8,
+    l_alt: u8,
+    pc: u16,
+    sp: u16,
+    ix: u16,
+    iy: u16,
+    i: u8,
+    r: u8,
+    halted: bool,
+    iff1: bool,
+    iff2: bool,
+    ei_pending: bool,
+    ei_pending_done: bool,
+    im: u8,
+    cycles: u32,
+    total_cycles: u64,
+    last_run_steps: u64,
+    #[serde(default)]
+    jg_bincode: Vec<u8>,
 }
 
 struct JgBus<'a> {
     bus: &'a mut M68kBus,
     int: InterruptLine,
+}
+
+impl Serialize for Z80 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let jg_bincode = bincode::encode_to_vec(&self.jg, bincode::config::standard())
+            .map_err(serde::ser::Error::custom)?;
+        Z80Serde {
+            a: self.a,
+            f: self.f,
+            b: self.b,
+            c: self.c,
+            d: self.d,
+            e: self.e,
+            h: self.h,
+            l: self.l,
+            a_alt: self.a_alt,
+            f_alt: self.f_alt,
+            b_alt: self.b_alt,
+            c_alt: self.c_alt,
+            d_alt: self.d_alt,
+            e_alt: self.e_alt,
+            h_alt: self.h_alt,
+            l_alt: self.l_alt,
+            pc: self.pc,
+            sp: self.sp,
+            ix: self.ix,
+            iy: self.iy,
+            i: self.i,
+            r: self.r,
+            halted: self.halted,
+            iff1: self.iff1,
+            iff2: self.iff2,
+            ei_pending: self.ei_pending,
+            ei_pending_done: self.ei_pending_done,
+            im: self.im,
+            cycles: self.cycles,
+            total_cycles: self.total_cycles,
+            last_run_steps: self.last_run_steps,
+            jg_bincode,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Z80 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let snapshot = Z80Serde::deserialize(deserializer)?;
+        let mut jg = if snapshot.jg_bincode.is_empty() {
+            z80_emu::Z80::new()
+        } else {
+            bincode::decode_from_slice::<z80_emu::Z80, _>(
+                &snapshot.jg_bincode,
+                bincode::config::standard(),
+            )
+            .map(|(jg, _)| jg)
+            .map_err(serde::de::Error::custom)?
+        };
+        if snapshot.jg_bincode.is_empty() {
+            jg.set_pc(snapshot.pc);
+            jg.set_sp(snapshot.sp);
+            jg.set_interrupt_mode(match snapshot.im {
+                1 => z80_emu::InterruptMode::Mode1,
+                2 => z80_emu::InterruptMode::Mode2,
+                _ => z80_emu::InterruptMode::Mode0,
+            });
+        }
+
+        Ok(Self {
+            a: snapshot.a,
+            f: snapshot.f,
+            b: snapshot.b,
+            c: snapshot.c,
+            d: snapshot.d,
+            e: snapshot.e,
+            h: snapshot.h,
+            l: snapshot.l,
+            a_alt: snapshot.a_alt,
+            f_alt: snapshot.f_alt,
+            b_alt: snapshot.b_alt,
+            c_alt: snapshot.c_alt,
+            d_alt: snapshot.d_alt,
+            e_alt: snapshot.e_alt,
+            h_alt: snapshot.h_alt,
+            l_alt: snapshot.l_alt,
+            pc: snapshot.pc,
+            sp: snapshot.sp,
+            ix: snapshot.ix,
+            iy: snapshot.iy,
+            i: snapshot.i,
+            r: snapshot.r,
+            halted: snapshot.halted,
+            iff1: snapshot.iff1,
+            iff2: snapshot.iff2,
+            ei_pending: snapshot.ei_pending,
+            ei_pending_done: snapshot.ei_pending_done,
+            im: snapshot.im,
+            cycles: snapshot.cycles,
+            total_cycles: snapshot.total_cycles,
+            last_run_steps: snapshot.last_run_steps,
+            jg,
+        })
+    }
 }
 
 impl BusInterface for JgBus<'_> {
@@ -60,11 +207,22 @@ impl BusInterface for JgBus<'_> {
         self.bus.z80_write_byte(address, value);
     }
 
-    fn read_io(&mut self, _address: u16) -> u8 {
+    fn read_io(&mut self, address: u16) -> u8 {
+        if let Some(port) = genesis_ym_io_port(address) {
+            self.bus.ym2612.sync_to_cycle(self.bus.ym_frame_cycle);
+            return self.bus.ym2612.read_register(port);
+        }
         0xff
     }
 
-    fn write_io(&mut self, _address: u16, _value: u8) {}
+    fn write_io(&mut self, address: u16, value: u8) {
+        if let Some(port) = genesis_ym_io_port(address) {
+            self.bus.ym2612.sync_to_cycle(self.bus.ym_frame_cycle);
+            self.bus
+                .ym2612
+                .write_port(port, value, Some(self.bus.ym_frame_cycle));
+        }
+    }
 
     fn nmi(&self) -> InterruptLine {
         InterruptLine::High
@@ -203,6 +361,9 @@ impl Z80 {
         bus: &mut M68kBus,
         max_cycles: f64,
         int_low: bool,
+        ym_cycle_cursor: &mut f64,
+        ym_cycle_limit: f64,
+        m68k_cycles_per_z80_cycle: f64,
     ) -> (f64, bool) {
         if max_cycles <= 0.0 || !bus.z80_running() {
             return (0.0, false);
@@ -218,10 +379,13 @@ impl Z80 {
             } else {
                 InterruptLine::High
             };
+            bus.ym_frame_cycle = ym_cycle_cursor.min(ym_cycle_limit).max(0.0).round() as u64;
             let mut adapter = JgBus { bus, int };
             let before_pc = self.jg.pc();
             let cycles = self.jg.execute_instruction(&mut adapter);
             ran = ran.saturating_add(cycles);
+            *ym_cycle_cursor = (*ym_cycle_cursor + f64::from(cycles) * m68k_cycles_per_z80_cycle)
+                .min(ym_cycle_limit);
             steps += 1;
             if int_low && cycles == 13 && self.jg.pc() == 0x0038 && before_pc != 0x0038 {
                 serviced_interrupt = true;
@@ -874,11 +1038,20 @@ impl Z80 {
         bus.z80_write_byte(address.wrapping_add(1), (value >> 8) as u8);
     }
 
-    fn read_io(&mut self, _bus: &mut M68kBus, _port: u16) -> u8 {
+    fn read_io(&mut self, bus: &mut M68kBus, port: u16) -> u8 {
+        if let Some(port) = genesis_ym_io_port(port) {
+            bus.ym2612.sync_to_cycle(bus.ym_frame_cycle);
+            return bus.ym2612.read_register(port);
+        }
         0xff
     }
 
-    fn write_io(&mut self, _bus: &mut M68kBus, _port: u16, _value: u8) {}
+    fn write_io(&mut self, bus: &mut M68kBus, port: u16, value: u8) {
+        if let Some(port) = genesis_ym_io_port(port) {
+            bus.ym2612.sync_to_cycle(bus.ym_frame_cycle);
+            bus.ym2612.write_port(port, value, Some(bus.ym_frame_cycle));
+        }
+    }
 
     fn push_word(&mut self, bus: &mut M68kBus, value: u16) {
         self.sp = self.sp.wrapping_sub(1);

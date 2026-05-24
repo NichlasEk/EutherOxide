@@ -48,7 +48,6 @@ pub enum Opn2BusyBehavior {
 }
 
 const FM_SAMPLE_DIVIDER: u8 = 24;
-
 // Phase is 10 bits
 const PHASE_MASK: u16 = 0x03FF;
 const HALF_PHASE_MASK: u16 = PHASE_MASK >> 1;

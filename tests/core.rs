@@ -558,6 +558,131 @@ fn z80_program_can_drive_ym2612_ports() {
 }
 
 #[test]
+fn z80_jgenesis_io_ports_drive_ym2612() {
+    let mut bus = M68kBus::new();
+    let mut z80 = Z80::new();
+    let program = [
+        0x3e, 0x22, // ld a,$22
+        0xd3, 0x40, // out ($40),a
+        0x3e, 0x34, // ld a,$34
+        0xd3, 0x41, // out ($41),a
+        0x3e, 0x2a, // ld a,$2a
+        0xd3, 0x00, // out ($00),a
+        0x3e, 0x80, // ld a,$80
+        0xd3, 0x01, // out ($01),a
+        0x76, // halt
+    ];
+
+    for (offset, byte) in program.iter().copied().enumerate() {
+        bus.z80_write_byte(offset as u16, byte);
+    }
+    bus.write_byte(0x00a1_1200, 0x01);
+    bus.write_byte(0x00a1_1100, 0x00);
+    bus.begin_frame();
+
+    let mut ym_cursor = 0.0;
+    z80.run_cycles_jg(
+        &mut bus,
+        4096.0,
+        false,
+        &mut ym_cursor,
+        8192.0,
+        Emulator::M68K_CLOCK / Emulator::Z80_CLOCK,
+    );
+
+    assert_eq!(bus.ym2612.registers[0][0x22], 0x34);
+    assert_eq!(bus.ym2612.registers[0][0x2a], 0x80);
+}
+
+#[test]
+fn z80_jgenesis_ym_writes_advance_with_frame_time() {
+    let mut bus = M68kBus::new();
+    let mut z80 = Z80::new();
+    let program = [
+        0x3e, 0x2b, // ld a,$2b
+        0x32, 0x00, 0x40, // ld ($4000),a
+        0x3e, 0x80, // ld a,$80
+        0x32, 0x01, 0x40, // ld ($4001),a
+        0x3e, 0x2a, // ld a,$2a
+        0x32, 0x00, 0x40, // ld ($4000),a
+        0x3e, 0x10, // ld a,$10
+        0x32, 0x01, 0x40, // ld ($4001),a
+        0x3e, 0xf0, // ld a,$f0
+        0x32, 0x01, 0x40, // ld ($4001),a
+        0x76, // halt
+    ];
+
+    for (offset, byte) in program.iter().copied().enumerate() {
+        bus.z80_write_byte(offset as u16, byte);
+    }
+    bus.write_byte(0x00a1_1200, 0x01);
+    bus.write_byte(0x00a1_1100, 0x00);
+    bus.begin_frame();
+
+    let mut ym_cursor = 0.0;
+    z80.run_cycles_jg(
+        &mut bus,
+        256.0,
+        false,
+        &mut ym_cursor,
+        512.0,
+        Emulator::M68K_CLOCK / Emulator::Z80_CLOCK,
+    );
+
+    let dac_cycles: Vec<u64> = bus
+        .ym2612
+        .write_log
+        .iter()
+        .filter(|write| write.reg == 0x2a)
+        .filter_map(|write| write.cycle)
+        .collect();
+    assert!(dac_cycles.len() >= 2);
+    assert!(dac_cycles[1] > dac_cycles[0]);
+}
+
+#[test]
+fn z80_jgenesis_state_survives_json_savestate() {
+    let mut bus = M68kBus::new();
+    let mut z80 = Z80::new();
+    let program = [
+        0x3e, 0x2a, // ld a,$2a
+        0x32, 0x00, 0x40, // ld ($4000),a
+        0x3e, 0xf0, // ld a,$f0
+        0x32, 0x01, 0x40, // ld ($4001),a
+        0x76, // halt
+    ];
+
+    for (offset, byte) in program.iter().copied().enumerate() {
+        bus.z80_write_byte(offset as u16, byte);
+    }
+    bus.write_byte(0x00a1_1200, 0x01);
+    bus.write_byte(0x00a1_1100, 0x00);
+
+    let mut ym_cursor = 0.0;
+    z80.run_cycles_jg(
+        &mut bus,
+        4.0,
+        false,
+        &mut ym_cursor,
+        512.0,
+        Emulator::M68K_CLOCK / Emulator::Z80_CLOCK,
+    );
+    let encoded = serde_json::to_string(&z80).unwrap();
+    let mut restored: Z80 = serde_json::from_str(&encoded).unwrap();
+
+    restored.run_cycles_jg(
+        &mut bus,
+        96.0,
+        false,
+        &mut ym_cursor,
+        512.0,
+        Emulator::M68K_CLOCK / Emulator::Z80_CLOCK,
+    );
+
+    assert_eq!(bus.ym2612.registers[0][0x2a], 0xf0);
+}
+
+#[test]
 fn vdp_renders_plane_a_tile() {
     let mut bus = M68kBus::new();
     bus.vdp.registers[1] = 0x40;

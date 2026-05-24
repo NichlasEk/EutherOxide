@@ -931,12 +931,15 @@ fn bridge_frame_bytes(emulator: &Emulator, run: &FrameRun) -> Vec<u8> {
 }
 
 fn bridge_audio_bytes(emulator: &mut Emulator, sample_rate: usize) -> Vec<u8> {
-    let samples = emulator.render_audio_frame_i16(sample_rate);
-    let mut bytes = Vec::with_capacity(16 + samples.len() * 2);
-    bytes.extend_from_slice(b"EOXA");
+    let channels = 2u32;
+    let samples = emulator.render_audio_frame_i16_stereo(sample_rate);
+    let sample_frames = samples.len() / channels as usize;
+    let mut bytes = Vec::with_capacity(20 + samples.len() * 2);
+    bytes.extend_from_slice(b"EOA2");
     bytes.extend_from_slice(&(emulator.frame_count.min(u32::MAX as u64) as u32).to_le_bytes());
     bytes.extend_from_slice(&(sample_rate as u32).to_le_bytes());
-    bytes.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(sample_frames as u32).to_le_bytes());
+    bytes.extend_from_slice(&channels.to_le_bytes());
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
@@ -949,11 +952,13 @@ fn bridge_frame_audio_bytes(
     sample_rate: usize,
 ) -> Vec<u8> {
     let frame = bridge_frame(emulator, run);
-    let samples = emulator.render_audio_frame_i16(sample_rate);
+    let channels = 2u32;
+    let samples = emulator.render_audio_frame_i16_stereo(sample_rate);
+    let sample_frames = samples.len() / channels as usize;
     let rgba_len = frame.rgba.len();
     let pcm_len = samples.len() * 2;
-    let mut bytes = Vec::with_capacity(48 + rgba_len + pcm_len);
-    bytes.extend_from_slice(b"EOXB");
+    let mut bytes = Vec::with_capacity(52 + rgba_len + pcm_len);
+    bytes.extend_from_slice(b"EOX2");
     bytes.extend_from_slice(&(frame.frame.min(u32::MAX as u64) as u32).to_le_bytes());
     bytes.extend_from_slice(&(frame.width as u32).to_le_bytes());
     bytes.extend_from_slice(&(frame.height as u32).to_le_bytes());
@@ -962,9 +967,10 @@ fn bridge_frame_audio_bytes(
     bytes.extend_from_slice(&((frame.frame_ms * 1000.0).max(0.0) as u32).to_le_bytes());
     bytes.extend_from_slice(&u32::from(frame.stopped).to_le_bytes());
     bytes.extend_from_slice(&(sample_rate as u32).to_le_bytes());
-    bytes.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(sample_frames as u32).to_le_bytes());
     bytes.extend_from_slice(&(rgba_len as u32).to_le_bytes());
     bytes.extend_from_slice(&(pcm_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&channels.to_le_bytes());
     bytes.extend_from_slice(&frame.rgba);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
