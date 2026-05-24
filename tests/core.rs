@@ -128,6 +128,17 @@ fn cpu_cmpa_word_uses_sign_extended_32_bit_operand() {
 }
 
 #[test]
+fn cpu_lea_absolute_short_preserves_sign_extended_address() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(&mut bus, 0x100, &[0x41f8, 0xf0d0]);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.a()[0], 0xffff_f0d0);
+}
+
+#[test]
 fn cpu_movem_long_preserves_address_register_data_bits() {
     let mut bus = M68kBus::new();
     let mut cpu = M68k::new();

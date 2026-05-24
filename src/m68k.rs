@@ -590,12 +590,10 @@ impl M68k {
         } else {
             let source_address = self
                 .read_address_register(source)
-                .wrapping_sub(size.address_increment(source == 7))
-                & Self::ADDRESS_MASK;
+                .wrapping_sub(size.address_increment(source == 7));
             let dest_address = self
                 .read_address_register(dest)
-                .wrapping_sub(size.address_increment(dest == 7))
-                & Self::ADDRESS_MASK;
+                .wrapping_sub(size.address_increment(dest == 7));
             self.write_address_register(source, source_address);
             self.write_address_register(dest, dest_address);
             (
@@ -1107,7 +1105,7 @@ impl M68k {
                         },
                     );
                 }
-                address = address.wrapping_add(size.bytes() as u32) & Self::ADDRESS_MASK;
+                address = address.wrapping_add(size.bytes() as u32);
             }
             if mode == 3 {
                 self.write_address_register(reg as usize, address);
@@ -1119,7 +1117,7 @@ impl M68k {
                     continue;
                 }
                 let target = 15 - index;
-                address = address.wrapping_sub(size.bytes() as u32) & Self::ADDRESS_MASK;
+                address = address.wrapping_sub(size.bytes() as u32);
                 let value = if target < 8 {
                     self.d[target]
                 } else {
@@ -1140,7 +1138,7 @@ impl M68k {
                     self.read_address_register(index - 8)
                 };
                 self.write_memory(bus, address, size, value);
-                address = address.wrapping_add(size.bytes() as u32) & Self::ADDRESS_MASK;
+                address = address.wrapping_add(size.bytes() as u32);
             }
         }
         Ok(self.finish(12))
@@ -1152,8 +1150,7 @@ impl M68k {
         let displacement = sign_extend(self.fetch_word(bus) as u32, 16);
         let address = self
             .read_address_register(addr_reg)
-            .wrapping_add(displacement)
-            & Self::ADDRESS_MASK;
+            .wrapping_add(displacement);
         let memory_to_reg = (opcode & 0x0080) != 0;
         let long = (opcode & 0x0040) != 0;
         if memory_to_reg {
@@ -1310,15 +1307,14 @@ impl M68k {
                 let address = self.read_address_register(reg as usize);
                 self.write_address_register(
                     reg as usize,
-                    address.wrapping_add(size.address_increment(reg == 7)) & Self::ADDRESS_MASK,
+                    address.wrapping_add(size.address_increment(reg == 7)),
                 );
                 Ok(EaTarget::Memory(address))
             }
             4 => {
                 let address = self
                     .read_address_register(reg as usize)
-                    .wrapping_sub(size.address_increment(reg == 7))
-                    & Self::ADDRESS_MASK;
+                    .wrapping_sub(size.address_increment(reg == 7));
                 self.write_address_register(reg as usize, address);
                 Ok(EaTarget::Memory(address))
             }
@@ -1359,20 +1355,19 @@ impl M68k {
                 let displacement = sign_extend(self.fetch_word(bus) as u32, 16);
                 Ok(self
                     .read_address_register(reg as usize)
-                    .wrapping_add(displacement)
-                    & Self::ADDRESS_MASK)
+                    .wrapping_add(displacement))
             }
             6 => {
                 let extension = self.fetch_word(bus);
                 Ok(self.indexed_address(self.read_address_register(reg as usize), extension))
             }
             7 => match reg {
-                0 => Ok(sign_extend(self.fetch_word(bus) as u32, 16) & Self::ADDRESS_MASK),
-                1 => Ok(self.fetch_long(bus) & Self::ADDRESS_MASK),
+                0 => Ok(sign_extend(self.fetch_word(bus) as u32, 16)),
+                1 => Ok(self.fetch_long(bus)),
                 2 => {
                     let base = self.pc;
                     let displacement = sign_extend(self.fetch_word(bus) as u32, 16);
-                    Ok(base.wrapping_add(displacement) & Self::ADDRESS_MASK)
+                    Ok(base.wrapping_add(displacement))
                 }
                 3 => {
                     let base = self.pc;
@@ -1408,7 +1403,7 @@ impl M68k {
         } else {
             sign_extend(raw & 0xffff, 16)
         };
-        base.wrapping_add(index).wrapping_add(displacement) & Self::ADDRESS_MASK
+        base.wrapping_add(index).wrapping_add(displacement)
     }
 
     fn read_target(&mut self, bus: &mut M68kBus, target: EaTarget, size: Size) -> u32 {
@@ -1494,13 +1489,13 @@ impl M68k {
     }
 
     fn push_word(&mut self, bus: &mut M68kBus, value: u16) {
-        let sp = self.sp().wrapping_sub(2) & Self::ADDRESS_MASK;
+        let sp = self.sp().wrapping_sub(2);
         self.set_sp(sp);
         bus.write_word(sp, value);
     }
 
     fn push_long(&mut self, bus: &mut M68kBus, value: u32) {
-        let sp = self.sp().wrapping_sub(4) & Self::ADDRESS_MASK;
+        let sp = self.sp().wrapping_sub(4);
         self.set_sp(sp);
         bus.write_long(sp, value);
     }
@@ -1508,14 +1503,14 @@ impl M68k {
     fn pop_word(&mut self, bus: &mut M68kBus) -> u16 {
         let sp = self.sp();
         let value = bus.read_word(sp);
-        self.set_sp(sp.wrapping_add(2) & Self::ADDRESS_MASK);
+        self.set_sp(sp.wrapping_add(2));
         value
     }
 
     fn pop_long(&mut self, bus: &mut M68kBus) -> u32 {
         let sp = self.sp();
         let value = bus.read_long(sp);
-        self.set_sp(sp.wrapping_add(4) & Self::ADDRESS_MASK);
+        self.set_sp(sp.wrapping_add(4));
         value
     }
 
