@@ -731,7 +731,7 @@ impl M68k {
             self.d[reg] & size.mask()
         };
         let operand = if opmode == 0x03 && size == Size::Word {
-            sign_extend(right, 16) & Self::ADDRESS_MASK
+            sign_extend(right, 16)
         } else {
             right
         };
@@ -1524,7 +1524,6 @@ impl M68k {
     }
 
     fn write_address_register(&mut self, reg: usize, value: u32) {
-        let value = value & Self::ADDRESS_MASK;
         if reg == 7 {
             self.set_sp(value);
         } else {

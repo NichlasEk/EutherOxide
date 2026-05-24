@@ -114,17 +114,43 @@ fn cpu_dbcc_self_loop_caps_iterations_to_counter() {
 }
 
 #[test]
-fn cpu_cmpa_word_uses_sign_extended_24_bit_operand() {
+fn cpu_cmpa_word_uses_sign_extended_32_bit_operand() {
     let mut bus = M68kBus::new();
     let mut cpu = M68k::new();
     reset_to(&mut cpu, &mut bus, 0x100);
-    cpu.set_address_register(1, 0x00ff_90c8);
+    cpu.set_address_register(1, 0xffff_90c8);
     load_program(&mut bus, 0x100, &[0xb2fc, 0x90c8, 0x6702, 0x7001, 0x7002]);
 
     cpu.step(&mut bus).unwrap();
     assert!(cpu.flag_z());
     cpu.step(&mut bus).unwrap();
     assert_eq!(cpu.pc, 0x108);
+}
+
+#[test]
+fn cpu_movem_long_preserves_address_register_data_bits() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    cpu.set_address_register(1, 0x0000_2000);
+    cpu.set_address_register(2, 0x0000_3000);
+    bus.write_long(0x2000, 0x1234_5678);
+    bus.write_long(0x2004, 0x9abc_def0);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x4cd1, 0x3000, // movem.l (a1),a4-a5
+            0x48d2, 0x3000, // movem.l a4-a5,(a2)
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.a()[4], 0x1234_5678);
+    assert_eq!(cpu.a()[5], 0x9abc_def0);
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(bus.read_long(0x3000), 0x1234_5678);
+    assert_eq!(bus.read_long(0x3004), 0x9abc_def0);
 }
 
 #[test]
@@ -347,8 +373,8 @@ fn cpu_movem_predecrement_uses_reversed_register_mask() {
     cpu.step(&mut bus).unwrap();
 
     assert_eq!(cpu.d[4], 0xd000_0004);
-    assert_eq!(cpu.a()[1], 0x0000_0001);
-    assert_eq!(cpu.a()[5], 0x0000_0005);
+    assert_eq!(cpu.a()[1], 0xa000_0001);
+    assert_eq!(cpu.a()[5], 0xa000_0005);
     assert_eq!(cpu.a()[7], 0x00ff_0100);
 }
 
