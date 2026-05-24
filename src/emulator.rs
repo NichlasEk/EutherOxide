@@ -22,6 +22,9 @@ pub struct Emulator {
     pub region: SystemRegion,
     pub last_error: Option<CpuError>,
     pub z80_pending_cycles: f64,
+    pub z80_vblank_irq_cycles: f64,
+    pub z80_ym_irq_asserted: bool,
+    pub z80_ym_irq_pending: bool,
     audio_filter: GenesisAudioFilter,
 }
 
@@ -38,6 +41,12 @@ pub struct EmulatorSnapshot {
     pub last_error: Option<CpuError>,
     #[serde(default)]
     pub z80_pending_cycles: f64,
+    #[serde(default)]
+    pub z80_vblank_irq_cycles: f64,
+    #[serde(default)]
+    pub z80_ym_irq_asserted: bool,
+    #[serde(default)]
+    pub z80_ym_irq_pending: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +83,9 @@ impl Emulator {
             region: SystemRegion::Usa,
             last_error: None,
             z80_pending_cycles: 0.0,
+            z80_vblank_irq_cycles: 0.0,
+            z80_ym_irq_asserted: false,
+            z80_ym_irq_pending: false,
             audio_filter: GenesisAudioFilter::new(),
         }
     }
@@ -110,6 +122,9 @@ impl Emulator {
         self.frame_count = 0;
         self.last_error = None;
         self.z80_pending_cycles = 0.0;
+        self.z80_vblank_irq_cycles = 0.0;
+        self.z80_ym_irq_asserted = false;
+        self.z80_ym_irq_pending = false;
         self.audio_filter.reset();
     }
 
@@ -121,6 +136,9 @@ impl Emulator {
         self.frame_count = 0;
         self.last_error = None;
         self.z80_pending_cycles = 0.0;
+        self.z80_vblank_irq_cycles = 0.0;
+        self.z80_ym_irq_asserted = false;
+        self.z80_ym_irq_pending = false;
         self.audio_filter.reset();
     }
 
@@ -277,6 +295,9 @@ impl Emulator {
             region: self.region,
             last_error: self.last_error.clone(),
             z80_pending_cycles: self.z80_pending_cycles,
+            z80_vblank_irq_cycles: self.z80_vblank_irq_cycles,
+            z80_ym_irq_asserted: self.z80_ym_irq_asserted,
+            z80_ym_irq_pending: self.z80_ym_irq_pending,
         }
     }
 
@@ -290,6 +311,9 @@ impl Emulator {
         self.region = snapshot.region;
         self.last_error = snapshot.last_error;
         self.z80_pending_cycles = snapshot.z80_pending_cycles;
+        self.z80_vblank_irq_cycles = snapshot.z80_vblank_irq_cycles;
+        self.z80_ym_irq_asserted = snapshot.z80_ym_irq_asserted;
+        self.z80_ym_irq_pending = snapshot.z80_ym_irq_pending;
         self.audio_filter.reset();
     }
 
@@ -317,32 +341,45 @@ impl Emulator {
     fn run_z80_until_budget(&mut self) {
         const Z80_BATCH_CYCLES: f64 = 32.0;
 
+        if !self.bus.z80_running() {
+            let max_blocked_carry = Self::Z80_CLOCK / self.frame_rate();
+            self.z80_pending_cycles = self.z80_pending_cycles.min(max_blocked_carry);
+            return;
+        }
+
         while self.z80_pending_cycles >= Z80_BATCH_CYCLES && self.bus.z80_running() {
             let before = self.z80.total_cycles;
-            self.z80.run_cycles(&mut self.bus, Z80_BATCH_CYCLES);
+            let int_low = self.z80_vblank_irq_cycles > 0.0 || self.z80_ym_irq_pending;
+            let (_, serviced_interrupt) =
+                self.z80
+                    .run_cycles_jg(&mut self.bus, Z80_BATCH_CYCLES, int_low);
+            if serviced_interrupt {
+                if self.z80_vblank_irq_cycles > 0.0 {
+                    self.z80_vblank_irq_cycles = 0.0;
+                } else {
+                    self.z80_ym_irq_pending = false;
+                }
+            }
             let ran = self.z80.total_cycles.saturating_sub(before);
             if ran == 0 {
                 break;
             }
-            self.z80_pending_cycles -= ran as f64;
-        }
-
-        if !self.bus.z80_running() {
-            self.z80_pending_cycles = self.z80_pending_cycles.min(Z80_BATCH_CYCLES);
+            self.z80_vblank_irq_cycles = (self.z80_vblank_irq_cycles - ran as f64).max(0.0);
+            self.z80_pending_cycles = (self.z80_pending_cycles - ran as f64).max(0.0);
         }
     }
 
     fn interrupt_z80_for_vblank(&mut self) {
-        if self.bus.z80_running() {
-            let cycles = self.z80.interrupt(&mut self.bus, 0xff);
-            self.z80_pending_cycles = (self.z80_pending_cycles - f64::from(cycles)).max(0.0);
-        }
+        self.z80_vblank_irq_cycles = 171.0;
     }
 
     fn interrupt_z80_for_ym_timer(&mut self) {
-        if self.bus.z80_running() && self.bus.ym2612.irq_asserted() {
-            let cycles = self.z80.interrupt(&mut self.bus, 0xff);
-            self.z80_pending_cycles = (self.z80_pending_cycles - f64::from(cycles)).max(0.0);
+        let asserted = self.bus.ym2612.irq_asserted();
+        if asserted && !self.z80_ym_irq_asserted {
+            self.z80_ym_irq_pending = true;
+        } else if !asserted {
+            self.z80_ym_irq_pending = false;
         }
+        self.z80_ym_irq_asserted = asserted;
     }
 }

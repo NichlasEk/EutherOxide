@@ -1,5 +1,8 @@
+#![allow(dead_code)]
+
 use std::f64::consts::TAU;
 
+use super::jg_ym2612::Ym2612 as JgYm2612;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,9 +20,13 @@ struct RenderState {
     key_mask: [u8; Ym2612::CHANNELS],
     fnum: [u16; Ym2612::CHANNELS],
     block: [u8; Ym2612::CHANNELS],
+    pending_fnum_high: [u8; Ym2612::CHANNELS],
+    pending_block: [u8; Ym2612::CHANNELS],
     channel_frequency: [f64; Ym2612::CHANNELS],
     operator_fnum: [u16; Ym2612::OPERATORS_TOTAL],
     operator_block: [u8; Ym2612::OPERATORS_TOTAL],
+    operator_pending_fnum_high: [u8; Ym2612::OPERATORS_TOTAL],
+    operator_pending_block: [u8; Ym2612::OPERATORS_TOTAL],
     operator_frequency: [f64; Ym2612::OPERATORS_TOTAL],
     algorithm: [u8; Ym2612::CHANNELS],
     feedback: [u8; Ym2612::CHANNELS],
@@ -48,6 +55,7 @@ struct RenderState {
     status: u8,
     busy_cycles: i64,
     last_status_read: u8,
+    jg: JgYm2612,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +73,12 @@ pub struct Ym2612 {
     pub status: u8,
     pub writes: u64,
     pub write_log: Vec<YmWrite>,
+    pub key_on_writes: u64,
+    pub key_on_active_writes: u64,
+    pub dac_enable_writes: u64,
+    pub dac_data_writes: u64,
+    pub frame_jg_samples: usize,
+    pub frame_jg_peak: f32,
     address: [u8; 2],
     busy_cycles: i64,
     timer_a_latch: u16,
@@ -78,9 +92,13 @@ pub struct Ym2612 {
     key_mask: [u8; Self::CHANNELS],
     fnum: [u16; Self::CHANNELS],
     block: [u8; Self::CHANNELS],
+    pending_fnum_high: [u8; Self::CHANNELS],
+    pending_block: [u8; Self::CHANNELS],
     channel_frequency: [f64; Self::CHANNELS],
     operator_fnum: [u16; Self::OPERATORS_TOTAL],
     operator_block: [u8; Self::OPERATORS_TOTAL],
+    operator_pending_fnum_high: [u8; Self::OPERATORS_TOTAL],
+    operator_pending_block: [u8; Self::OPERATORS_TOTAL],
     operator_frequency: [f64; Self::OPERATORS_TOTAL],
     algorithm: [u8; Self::CHANNELS],
     feedback: [u8; Self::CHANNELS],
@@ -104,6 +122,9 @@ pub struct Ym2612 {
     last_sync_cycle: u64,
     frame_start_state: RenderState,
     frame_writes: Vec<(u64, usize, u8, u8)>,
+    jg: JgYm2612,
+    jg_cycle_remainder: u64,
+    jg_frame_samples: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -125,9 +146,17 @@ pub struct Ym2612Snapshot {
     key_mask: [u8; Ym2612::CHANNELS],
     fnum: [u16; Ym2612::CHANNELS],
     block: [u8; Ym2612::CHANNELS],
+    #[serde(default)]
+    pending_fnum_high: [u8; Ym2612::CHANNELS],
+    #[serde(default)]
+    pending_block: [u8; Ym2612::CHANNELS],
     channel_frequency: [f64; Ym2612::CHANNELS],
     operator_fnum: [u16; Ym2612::OPERATORS_TOTAL],
     operator_block: [u8; Ym2612::OPERATORS_TOTAL],
+    #[serde(default)]
+    operator_pending_fnum_high: [u8; Ym2612::OPERATORS_TOTAL],
+    #[serde(default)]
+    operator_pending_block: [u8; Ym2612::OPERATORS_TOTAL],
     operator_frequency: [f64; Ym2612::OPERATORS_TOTAL],
     algorithm: [u8; Ym2612::CHANNELS],
     feedback: [u8; Ym2612::CHANNELS],
@@ -151,6 +180,12 @@ pub struct Ym2612Snapshot {
     last_sync_cycle: u64,
     frame_start_state: RenderStateSnapshot,
     frame_writes: Vec<(u64, usize, u8, u8)>,
+    #[serde(default)]
+    jg: JgYm2612,
+    #[serde(default)]
+    jg_cycle_remainder: u64,
+    #[serde(default)]
+    jg_frame_samples: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,9 +194,17 @@ struct RenderStateSnapshot {
     key_mask: [u8; Ym2612::CHANNELS],
     fnum: [u16; Ym2612::CHANNELS],
     block: [u8; Ym2612::CHANNELS],
+    #[serde(default)]
+    pending_fnum_high: [u8; Ym2612::CHANNELS],
+    #[serde(default)]
+    pending_block: [u8; Ym2612::CHANNELS],
     channel_frequency: [f64; Ym2612::CHANNELS],
     operator_fnum: [u16; Ym2612::OPERATORS_TOTAL],
     operator_block: [u8; Ym2612::OPERATORS_TOTAL],
+    #[serde(default)]
+    operator_pending_fnum_high: [u8; Ym2612::OPERATORS_TOTAL],
+    #[serde(default)]
+    operator_pending_block: [u8; Ym2612::OPERATORS_TOTAL],
     operator_frequency: [f64; Ym2612::OPERATORS_TOTAL],
     algorithm: [u8; Ym2612::CHANNELS],
     feedback: [u8; Ym2612::CHANNELS],
@@ -190,6 +233,8 @@ struct RenderStateSnapshot {
     status: u8,
     busy_cycles: i64,
     last_status_read: u8,
+    #[serde(default)]
+    jg: JgYm2612,
 }
 
 impl Default for Ym2612 {
@@ -204,12 +249,14 @@ impl Ym2612 {
     pub const OPERATORS: usize = 4;
     pub const OPERATORS_TOTAL: usize = Self::CHANNELS * Self::OPERATORS;
     pub const SAMPLE_RATE: usize = 44_100;
-    pub const WRITE_BUSY_CYCLES: i64 = 1_344;
+    pub const WRITE_BUSY_CYCLES: i64 = 192;
     pub const TIMER_TICK_CYCLES: i64 = 144;
+    pub const INTERNAL_SAMPLE_DIVIDER: i64 = Self::TIMER_TICK_CYCLES;
+    pub const INTERNAL_SAMPLE_TICKS: u32 = (Self::INTERNAL_SAMPLE_DIVIDER / 6) as u32;
     const FNUM_HZ_SCALE: f64 = 0.0529819;
     const DAC_GAIN: f64 = 0.85;
     const DAC_SMOOTHING: f64 = 0.38;
-    const MODULATION_DEPTH: f64 = 8.0;
+    const MODULATION_DEPTH: f64 = 32.0;
     const MULTIPLE_RATIOS: [f64; 16] = [
         0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 10.0, 12.0, 12.0, 15.0, 15.0,
     ];
@@ -220,6 +267,12 @@ impl Ym2612 {
             status: 0,
             writes: 0,
             write_log: Vec::new(),
+            key_on_writes: 0,
+            key_on_active_writes: 0,
+            dac_enable_writes: 0,
+            dac_data_writes: 0,
+            frame_jg_samples: 0,
+            frame_jg_peak: 0.0,
             address: [0; 2],
             busy_cycles: 0,
             timer_a_latch: 0,
@@ -233,9 +286,13 @@ impl Ym2612 {
             key_mask: [0; Self::CHANNELS],
             fnum: [0; Self::CHANNELS],
             block: [0; Self::CHANNELS],
+            pending_fnum_high: [0; Self::CHANNELS],
+            pending_block: [0; Self::CHANNELS],
             channel_frequency: [0.0; Self::CHANNELS],
             operator_fnum: [0; Self::OPERATORS_TOTAL],
             operator_block: [0; Self::OPERATORS_TOTAL],
+            operator_pending_fnum_high: [0; Self::OPERATORS_TOTAL],
+            operator_pending_block: [0; Self::OPERATORS_TOTAL],
             operator_frequency: [0.0; Self::OPERATORS_TOTAL],
             algorithm: [0; Self::CHANNELS],
             feedback: [0; Self::CHANNELS],
@@ -259,6 +316,9 @@ impl Ym2612 {
             last_sync_cycle: 0,
             frame_start_state: RenderState::blank(),
             frame_writes: Vec::new(),
+            jg: JgYm2612::default(),
+            jg_cycle_remainder: 0,
+            jg_frame_samples: Vec::new(),
         };
         ym.reset();
         ym
@@ -269,8 +329,17 @@ impl Ym2612 {
         self.status = 0;
         self.writes = 0;
         self.write_log.clear();
+        self.key_on_writes = 0;
+        self.key_on_active_writes = 0;
+        self.dac_enable_writes = 0;
+        self.dac_data_writes = 0;
+        self.frame_jg_samples = 0;
+        self.frame_jg_peak = 0.0;
         self.address = [0; 2];
         self.busy_cycles = 0;
+        self.jg.reset();
+        self.jg_cycle_remainder = 0;
+        self.jg_frame_samples.clear();
         self.timer_a_latch = 0;
         self.timer_b_latch = 0;
         self.timer_a_counter = 0;
@@ -282,9 +351,13 @@ impl Ym2612 {
         self.key_mask = [0; Self::CHANNELS];
         self.fnum = [0; Self::CHANNELS];
         self.block = [0; Self::CHANNELS];
+        self.pending_fnum_high = [0; Self::CHANNELS];
+        self.pending_block = [0; Self::CHANNELS];
         self.channel_frequency = [0.0; Self::CHANNELS];
         self.operator_fnum = [0; Self::OPERATORS_TOTAL];
         self.operator_block = [0; Self::OPERATORS_TOTAL];
+        self.operator_pending_fnum_high = [0; Self::OPERATORS_TOTAL];
+        self.operator_pending_block = [0; Self::OPERATORS_TOTAL];
         self.operator_frequency = [0.0; Self::OPERATORS_TOTAL];
         self.algorithm = [0; Self::CHANNELS];
         self.feedback = [0; Self::CHANNELS];
@@ -329,9 +402,13 @@ impl Ym2612 {
             key_mask: self.key_mask,
             fnum: self.fnum,
             block: self.block,
+            pending_fnum_high: self.pending_fnum_high,
+            pending_block: self.pending_block,
             channel_frequency: self.channel_frequency,
             operator_fnum: self.operator_fnum,
             operator_block: self.operator_block,
+            operator_pending_fnum_high: self.operator_pending_fnum_high,
+            operator_pending_block: self.operator_pending_block,
             operator_frequency: self.operator_frequency,
             algorithm: self.algorithm,
             feedback: self.feedback,
@@ -355,6 +432,9 @@ impl Ym2612 {
             last_sync_cycle: self.last_sync_cycle,
             frame_start_state: self.frame_start_state.snapshot(),
             frame_writes: self.frame_writes.clone(),
+            jg: self.jg.clone(),
+            jg_cycle_remainder: self.jg_cycle_remainder,
+            jg_frame_samples: self.jg_frame_samples.clone(),
         }
     }
 
@@ -376,9 +456,13 @@ impl Ym2612 {
         self.key_mask = snapshot.key_mask;
         self.fnum = snapshot.fnum;
         self.block = snapshot.block;
+        self.pending_fnum_high = snapshot.pending_fnum_high;
+        self.pending_block = snapshot.pending_block;
         self.channel_frequency = snapshot.channel_frequency;
         self.operator_fnum = snapshot.operator_fnum;
         self.operator_block = snapshot.operator_block;
+        self.operator_pending_fnum_high = snapshot.operator_pending_fnum_high;
+        self.operator_pending_block = snapshot.operator_pending_block;
         self.operator_frequency = snapshot.operator_frequency;
         self.algorithm = snapshot.algorithm;
         self.feedback = snapshot.feedback;
@@ -402,12 +486,18 @@ impl Ym2612 {
         self.last_sync_cycle = snapshot.last_sync_cycle;
         self.frame_start_state = RenderState::from_snapshot(snapshot.frame_start_state);
         self.frame_writes = snapshot.frame_writes;
+        self.jg = snapshot.jg;
+        self.jg_cycle_remainder = snapshot.jg_cycle_remainder;
+        self.jg_frame_samples = snapshot.jg_frame_samples;
     }
 
     pub fn begin_frame(&mut self) {
         self.last_sync_cycle = 0;
         self.frame_start_state = self.capture_render_state();
         self.frame_writes.clear();
+        self.jg_frame_samples.clear();
+        self.frame_jg_samples = 0;
+        self.frame_jg_peak = 0.0;
     }
 
     pub fn sync_to_cycle(&mut self, cycle: u64) {
@@ -418,23 +508,19 @@ impl Ym2612 {
     }
 
     pub fn read_register(&mut self, address: u32) -> u8 {
-        if (address & 0x03) != 0 {
-            return self.last_status_read;
-        }
-        let mut value = self.status & 0x03;
-        if self.busy_cycles > 0 {
-            value |= 0x80;
-        }
+        let value = self.jg.read_register(address as u16);
         self.last_status_read = value;
         value
     }
 
     pub fn write_address_1(&mut self, value: u8) {
         self.address[0] = value;
+        self.jg.write_address_1(value);
     }
 
     pub fn write_address_2(&mut self, value: u8) {
         self.address[1] = value;
+        self.jg.write_address_2(value);
     }
 
     pub fn write_data(&mut self, value: u8, port: usize, cycle: Option<u64>) {
@@ -464,6 +550,17 @@ impl Ym2612 {
         self.registers[port][reg as usize] = value;
         if log {
             self.writes += 1;
+            match reg {
+                0x28 => {
+                    self.key_on_writes += 1;
+                    if (value & 0xf0) != 0 {
+                        self.key_on_active_writes += 1;
+                    }
+                }
+                0x2a => self.dac_data_writes += 1,
+                0x2b => self.dac_enable_writes += 1,
+                _ => {}
+            }
             self.write_log.push(YmWrite {
                 index: self.writes,
                 port,
@@ -480,6 +577,12 @@ impl Ym2612 {
         if self.busy_cycles <= 0 {
             self.busy_cycles = Self::WRITE_BUSY_CYCLES;
         }
+        if port == 0 {
+            self.jg.write_address_1(reg);
+        } else {
+            self.jg.write_address_2(reg);
+        }
+        self.jg.write_data(value);
         self.apply_register(port, reg, value);
     }
 
@@ -487,49 +590,30 @@ impl Ym2612 {
         let cycles = cycles.max(0);
         self.busy_cycles = (self.busy_cycles - cycles).max(0);
         self.tick_timers(cycles);
+        self.advance_jg_by_cycles(cycles as u64);
     }
 
     pub fn irq_asserted(&self) -> bool {
-        ((self.status & 0x01) != 0 && (self.timer_control & 0x04) != 0)
-            || ((self.status & 0x02) != 0 && (self.timer_control & 0x08) != 0)
+        self.jg.irq_asserted()
     }
 
     pub fn render_frame_mono_samples(
         &mut self,
         count: usize,
-        frame_cycles: f64,
-        sample_rate: usize,
+        _frame_cycles: f64,
+        _sample_rate: usize,
     ) -> Vec<f32> {
-        let live = self.capture_render_state();
-        self.restore_render_state(&self.frame_start_state.clone());
-        let writes = self.frame_writes.clone();
-        let mut write_index = 0;
-        let mut cycle_position = 0.0;
-        let cycle_step = frame_cycles / count.max(1) as f64;
-        let sample_step = 1.0 / sample_rate.max(1) as f64;
-        let mut samples = vec![0.0; count];
-
-        for sample in samples.iter_mut() {
-            let cycle = cycle_position as u64;
-            cycle_position += cycle_step;
-            while write_index < writes.len() && writes[write_index].0 <= cycle {
-                let (_, port, reg, value) = writes[write_index];
-                self.write_register(port, reg, value, None, false);
-                write_index += 1;
-            }
-            *sample = self.render_sample_mono(sample_step) as f32;
+        if count == 0 {
+            return Vec::new();
         }
 
-        let rendered = self.capture_render_state();
-        self.restore_render_state(&live);
-        self.phase = rendered.phase;
-        self.envelope = rendered.envelope;
-        self.envelope_stage = rendered.envelope_stage;
-        self.operator_output = rendered.operator_output;
-        self.operator_last_output = rendered.operator_last_output;
-        self.dac_output = rendered.dac_output;
+        let mut internal_samples = self.jg_frame_samples.clone();
+        if internal_samples.is_empty() {
+            let (left, right) = self.jg.sample();
+            internal_samples.push(((left + right) * 0.5) as f32);
+        }
 
-        samples
+        resample_linear(&internal_samples, count)
     }
 
     pub fn channel_frequency(&self, channel: usize) -> f64 {
@@ -565,16 +649,16 @@ impl Ym2612 {
             0x30..=0x9f => self.write_operator_register(port, reg, value),
             0xa0..=0xa2 => {
                 if let Some(channel) = self.channel_index(port, reg & 0x03) {
-                    self.fnum[channel] = (self.fnum[channel] & 0x0700) | value as u16;
+                    self.fnum[channel] =
+                        value as u16 | ((u16::from(self.pending_fnum_high[channel])) << 8);
+                    self.block[channel] = self.pending_block[channel];
                     self.refresh_channel_frequency(channel);
                 }
             }
             0xa4..=0xa6 => {
                 if let Some(channel) = self.channel_index(port, reg & 0x03) {
-                    self.fnum[channel] =
-                        (self.fnum[channel] & 0x00ff) | (((value & 0x07) as u16) << 8);
-                    self.block[channel] = (value >> 3) & 0x07;
-                    self.refresh_channel_frequency(channel);
+                    self.pending_fnum_high[channel] = value & 0x07;
+                    self.pending_block[channel] = (value >> 3) & 0x07;
                 }
             }
             0xa8..=0xaa => self.write_special_operator_frequency(port, reg, value, false),
@@ -660,13 +744,14 @@ impl Ym2612 {
         };
         let idx = channel * Self::OPERATORS + op;
         if high {
-            self.operator_fnum[idx] =
-                (self.operator_fnum[idx] & 0x00ff) | (((value & 0x07) as u16) << 8);
-            self.operator_block[idx] = (value >> 3) & 0x07;
+            self.operator_pending_fnum_high[idx] = value & 0x07;
+            self.operator_pending_block[idx] = (value >> 3) & 0x07;
         } else {
-            self.operator_fnum[idx] = (self.operator_fnum[idx] & 0x0700) | value as u16;
+            self.operator_fnum[idx] =
+                value as u16 | ((u16::from(self.operator_pending_fnum_high[idx])) << 8);
+            self.operator_block[idx] = self.operator_pending_block[idx];
+            self.refresh_operator_frequency(idx);
         }
-        self.refresh_operator_frequency(idx);
     }
 
     fn channel_index(&self, port: usize, slot: u8) -> Option<usize> {
@@ -675,6 +760,27 @@ impl Ym2612 {
         } else {
             Some((port & 1) * 3 + slot as usize)
         }
+    }
+
+    fn advance_jg_by_cycles(&mut self, cycles: u64) {
+        if cycles == 0 {
+            return;
+        }
+
+        let total_cycles = cycles + self.jg_cycle_remainder;
+        let mut ticks = total_cycles / 6;
+        self.jg_cycle_remainder = total_cycles % 6;
+
+        while ticks > 0 {
+            let tick_batch = ticks.min(u32::MAX as u64) as u32;
+            self.jg.tick(tick_batch, |(left, right)| {
+                let sample = ((left + right) * 0.5) as f32;
+                self.frame_jg_peak = self.frame_jg_peak.max(sample.abs());
+                self.jg_frame_samples.push(sample);
+            });
+            ticks -= u64::from(tick_batch);
+        }
+        self.frame_jg_samples = self.jg_frame_samples.len();
     }
 
     fn tick_timers(&mut self, cycles: i64) {
@@ -788,48 +894,65 @@ impl Ym2612 {
         let sample = match self.algorithm[channel] {
             0 => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
-                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1 * 2.0);
-                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 2.0)
+                let o1_old = self.operator_output[base + 1];
+                self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 0.5);
+                let o2 =
+                    self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1_old * 0.5);
+                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 0.5)
             }
             1 => {
-                let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, 0.0);
-                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o0 + o1);
-                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 2.0)
+                let o0_old = self.operator_output[base];
+                self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
+                let o1_old = self.operator_output[base + 1];
+                self.operator_sample(base + 1, op_freq(self, 1), sample_step, 0.0);
+                let o2 = self.operator_sample(
+                    base + 2,
+                    op_freq(self, 2),
+                    sample_step,
+                    (o0_old + o1_old) * 0.5,
+                );
+                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 0.5)
             }
             2 => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, 0.0);
-                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1 * 2.0);
-                self.operator_sample(base + 3, base_frequency, sample_step, o0 + o2)
+                let o1_old = self.operator_output[base + 1];
+                self.operator_sample(base + 1, op_freq(self, 1), sample_step, 0.0);
+                let o2 =
+                    self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1_old * 0.5);
+                self.operator_sample(base + 3, base_frequency, sample_step, (o0 + o2) * 0.5)
             }
             3 => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
+                let o1_old = self.operator_output[base + 1];
+                self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 0.5);
                 let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, 0.0);
-                self.operator_sample(base + 3, base_frequency, sample_step, o1 + o2)
+                self.operator_sample(base + 3, base_frequency, sample_step, (o1_old + o2) * 0.5)
             }
             4 => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
+                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 0.5);
                 let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, 0.0);
-                let o3 = self.operator_sample(base + 3, base_frequency, sample_step, o2 * 2.0);
+                let o3 = self.operator_sample(base + 3, base_frequency, sample_step, o2 * 0.5);
                 (o1 + o3) * 0.5
             }
             5 => {
+                let modulator_old = self.operator_output[base];
                 let modulator = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
                 let o1 =
-                    self.operator_sample(base + 1, op_freq(self, 1), sample_step, modulator * 2.0);
-                let o2 =
-                    self.operator_sample(base + 2, op_freq(self, 2), sample_step, modulator * 2.0);
+                    self.operator_sample(base + 1, op_freq(self, 1), sample_step, modulator * 0.5);
+                let o2 = self.operator_sample(
+                    base + 2,
+                    op_freq(self, 2),
+                    sample_step,
+                    modulator_old * 0.5,
+                );
                 let o3 =
-                    self.operator_sample(base + 3, base_frequency, sample_step, modulator * 2.0);
+                    self.operator_sample(base + 3, base_frequency, sample_step, modulator * 0.5);
                 (o1 + o2 + o3) / 3.0
             }
             6 => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
+                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 0.5);
                 let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, 0.0);
                 let o3 = self.operator_sample(base + 3, base_frequency, sample_step, 0.0);
                 (o1 + o2 + o3) / 3.0
@@ -843,9 +966,11 @@ impl Ym2612 {
             }
             _ => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
-                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
-                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1 * 2.0);
-                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 2.0)
+                let o1_old = self.operator_output[base + 1];
+                self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 0.5);
+                let o2 =
+                    self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1_old * 0.5);
+                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 0.5)
             }
         };
 
@@ -921,9 +1046,13 @@ impl Ym2612 {
             key_mask: self.key_mask,
             fnum: self.fnum,
             block: self.block,
+            pending_fnum_high: self.pending_fnum_high,
+            pending_block: self.pending_block,
             channel_frequency: self.channel_frequency,
             operator_fnum: self.operator_fnum,
             operator_block: self.operator_block,
+            operator_pending_fnum_high: self.operator_pending_fnum_high,
+            operator_pending_block: self.operator_pending_block,
             operator_frequency: self.operator_frequency,
             algorithm: self.algorithm,
             feedback: self.feedback,
@@ -952,6 +1081,7 @@ impl Ym2612 {
             status: self.status,
             busy_cycles: self.busy_cycles,
             last_status_read: self.last_status_read,
+            jg: self.jg.clone(),
         }
     }
 
@@ -960,9 +1090,13 @@ impl Ym2612 {
         self.key_mask = state.key_mask;
         self.fnum = state.fnum;
         self.block = state.block;
+        self.pending_fnum_high = state.pending_fnum_high;
+        self.pending_block = state.pending_block;
         self.channel_frequency = state.channel_frequency;
         self.operator_fnum = state.operator_fnum;
         self.operator_block = state.operator_block;
+        self.operator_pending_fnum_high = state.operator_pending_fnum_high;
+        self.operator_pending_block = state.operator_pending_block;
         self.operator_frequency = state.operator_frequency;
         self.algorithm = state.algorithm;
         self.feedback = state.feedback;
@@ -991,6 +1125,7 @@ impl Ym2612 {
         self.status = state.status;
         self.busy_cycles = state.busy_cycles;
         self.last_status_read = state.last_status_read;
+        self.jg = state.jg.clone();
     }
 }
 
@@ -1001,9 +1136,13 @@ impl RenderState {
             key_mask: self.key_mask,
             fnum: self.fnum,
             block: self.block,
+            pending_fnum_high: self.pending_fnum_high,
+            pending_block: self.pending_block,
             channel_frequency: self.channel_frequency,
             operator_fnum: self.operator_fnum,
             operator_block: self.operator_block,
+            operator_pending_fnum_high: self.operator_pending_fnum_high,
+            operator_pending_block: self.operator_pending_block,
             operator_frequency: self.operator_frequency,
             algorithm: self.algorithm,
             feedback: self.feedback,
@@ -1032,6 +1171,7 @@ impl RenderState {
             status: self.status,
             busy_cycles: self.busy_cycles,
             last_status_read: self.last_status_read,
+            jg: self.jg.clone(),
         }
     }
 
@@ -1041,9 +1181,13 @@ impl RenderState {
             key_mask: snapshot.key_mask,
             fnum: snapshot.fnum,
             block: snapshot.block,
+            pending_fnum_high: snapshot.pending_fnum_high,
+            pending_block: snapshot.pending_block,
             channel_frequency: snapshot.channel_frequency,
             operator_fnum: snapshot.operator_fnum,
             operator_block: snapshot.operator_block,
+            operator_pending_fnum_high: snapshot.operator_pending_fnum_high,
+            operator_pending_block: snapshot.operator_pending_block,
             operator_frequency: snapshot.operator_frequency,
             algorithm: snapshot.algorithm,
             feedback: snapshot.feedback,
@@ -1072,6 +1216,7 @@ impl RenderState {
             status: snapshot.status,
             busy_cycles: snapshot.busy_cycles,
             last_status_read: snapshot.last_status_read,
+            jg: snapshot.jg,
         }
     }
 
@@ -1081,9 +1226,13 @@ impl RenderState {
             key_mask: [0; Ym2612::CHANNELS],
             fnum: [0; Ym2612::CHANNELS],
             block: [0; Ym2612::CHANNELS],
+            pending_fnum_high: [0; Ym2612::CHANNELS],
+            pending_block: [0; Ym2612::CHANNELS],
             channel_frequency: [0.0; Ym2612::CHANNELS],
             operator_fnum: [0; Ym2612::OPERATORS_TOTAL],
             operator_block: [0; Ym2612::OPERATORS_TOTAL],
+            operator_pending_fnum_high: [0; Ym2612::OPERATORS_TOTAL],
+            operator_pending_block: [0; Ym2612::OPERATORS_TOTAL],
             operator_frequency: [0.0; Ym2612::OPERATORS_TOTAL],
             algorithm: [0; Ym2612::CHANNELS],
             feedback: [0; Ym2612::CHANNELS],
@@ -1112,6 +1261,7 @@ impl RenderState {
             status: 0,
             busy_cycles: 0,
             last_status_read: 0,
+            jg: JgYm2612::default(),
         }
     }
 }
@@ -1137,6 +1287,59 @@ fn operator_index(reg: u8) -> usize {
         2 => 1,
         _ => 3,
     }
+}
+
+fn advance_jg_to_cycle(
+    jg: &mut JgYm2612,
+    target_cycle: u64,
+    cycle_cursor: &mut u64,
+    tick_remainder: &mut u64,
+    samples: &mut Vec<f32>,
+) {
+    if target_cycle <= *cycle_cursor {
+        return;
+    }
+
+    let elapsed_cycles = target_cycle - *cycle_cursor;
+    *cycle_cursor = target_cycle;
+
+    let total_cycles = elapsed_cycles + *tick_remainder;
+    let mut ticks = total_cycles / 6;
+    *tick_remainder = total_cycles % 6;
+
+    while ticks > 0 {
+        let tick_batch = ticks.min(u32::MAX as u64) as u32;
+        jg.tick(tick_batch, |(left, right)| {
+            samples.push(((left + right) * 0.5) as f32);
+        });
+        ticks -= u64::from(tick_batch);
+    }
+}
+
+fn resample_linear(samples: &[f32], output_count: usize) -> Vec<f32> {
+    if output_count == 0 {
+        return Vec::new();
+    }
+    if samples.is_empty() {
+        return vec![0.0; output_count];
+    }
+    if samples.len() == 1 {
+        return vec![samples[0]; output_count];
+    }
+    if output_count == 1 {
+        return vec![samples[0]];
+    }
+
+    let scale = (samples.len() - 1) as f64 / (output_count - 1) as f64;
+    (0..output_count)
+        .map(|index| {
+            let pos = index as f64 * scale;
+            let left = pos.floor() as usize;
+            let right = (left + 1).min(samples.len() - 1);
+            let frac = (pos - left as f64) as f32;
+            samples[left] + (samples[right] - samples[left]) * frac
+        })
+        .collect()
 }
 
 fn volume_table(level: u8) -> f64 {

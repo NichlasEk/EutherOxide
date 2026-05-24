@@ -1,5 +1,7 @@
 use crate::bus::M68kBus;
 use serde::{Deserialize, Serialize};
+use z80_emu::BusInterface;
+use z80_emu::traits::InterruptLine;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum IndexReg {
@@ -40,6 +42,45 @@ pub struct Z80 {
     pub cycles: u32,
     pub total_cycles: u64,
     pub last_run_steps: u64,
+    #[serde(skip, default)]
+    jg: z80_emu::Z80,
+}
+
+struct JgBus<'a> {
+    bus: &'a mut M68kBus,
+    int: InterruptLine,
+}
+
+impl BusInterface for JgBus<'_> {
+    fn read_memory(&mut self, address: u16) -> u8 {
+        self.bus.z80_read_byte(address)
+    }
+
+    fn write_memory(&mut self, address: u16, value: u8) {
+        self.bus.z80_write_byte(address, value);
+    }
+
+    fn read_io(&mut self, _address: u16) -> u8 {
+        0xff
+    }
+
+    fn write_io(&mut self, _address: u16, _value: u8) {}
+
+    fn nmi(&self) -> InterruptLine {
+        InterruptLine::High
+    }
+
+    fn int(&self) -> InterruptLine {
+        self.int
+    }
+
+    fn busreq(&self) -> bool {
+        false
+    }
+
+    fn reset(&self) -> bool {
+        false
+    }
 }
 
 impl Default for Z80 {
@@ -78,7 +119,7 @@ impl Z80 {
             h_alt: 0,
             l_alt: 0,
             pc: 0,
-            sp: 0xdff0,
+            sp: 0,
             ix: 0,
             iy: 0,
             i: 0,
@@ -92,6 +133,7 @@ impl Z80 {
             cycles: 0,
             total_cycles: 0,
             last_run_steps: 0,
+            jg: z80_emu::Z80::new(),
         };
         z80.reset();
         z80
@@ -115,7 +157,7 @@ impl Z80 {
         self.h_alt = 0;
         self.l_alt = 0;
         self.pc = 0;
-        self.sp = 0xdff0;
+        self.sp = 0;
         self.ix = 0;
         self.iy = 0;
         self.i = 0;
@@ -129,6 +171,8 @@ impl Z80 {
         self.cycles = 0;
         self.total_cycles = 0;
         self.last_run_steps = 0;
+        self.jg = z80_emu::Z80::new();
+        self.jg.set_sp(self.sp);
     }
 
     pub fn run_cycles(&mut self, bus: &mut M68kBus, max_cycles: f64) -> f64 {
@@ -152,6 +196,45 @@ impl Z80 {
         }
         self.last_run_steps = steps;
         f64::from(ran)
+    }
+
+    pub fn run_cycles_jg(
+        &mut self,
+        bus: &mut M68kBus,
+        max_cycles: f64,
+        int_low: bool,
+    ) -> (f64, bool) {
+        if max_cycles <= 0.0 || !bus.z80_running() {
+            return (0.0, false);
+        }
+
+        let target = max_cycles.floor().max(0.0) as u32;
+        let mut ran = 0u32;
+        let mut steps = 0u64;
+        let mut serviced_interrupt = false;
+        while ran < target && bus.z80_running() {
+            let int = if int_low {
+                InterruptLine::Low
+            } else {
+                InterruptLine::High
+            };
+            let mut adapter = JgBus { bus, int };
+            let before_pc = self.jg.pc();
+            let cycles = self.jg.execute_instruction(&mut adapter);
+            ran = ran.saturating_add(cycles);
+            steps += 1;
+            if int_low && cycles == 13 && self.jg.pc() == 0x0038 && before_pc != 0x0038 {
+                serviced_interrupt = true;
+            }
+            if cycles == 0 {
+                break;
+            }
+        }
+        self.pc = self.jg.pc();
+        self.cycles = ran;
+        self.total_cycles = self.total_cycles.wrapping_add(u64::from(ran));
+        self.last_run_steps = steps;
+        (f64::from(ran), serviced_interrupt)
     }
 
     pub fn step(&mut self, bus: &mut M68kBus) -> u32 {

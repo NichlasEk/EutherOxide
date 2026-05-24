@@ -1,3 +1,4 @@
+mod jg_ym2612;
 pub mod psg;
 pub mod ym2612;
 

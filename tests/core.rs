@@ -992,14 +992,33 @@ fn fill_pattern(bus: &mut M68kBus, pattern: usize, color: u8) {
 #[test]
 fn ym2612_timer_busy_and_pitch_paths_work() {
     let mut ym = Ym2612::new();
-    ym.write_address_1(0xa0);
-    ym.write_data(0x6a, 0, None);
     ym.write_address_1(0xa4);
     ym.write_data((4 << 3) | 0x02, 0, None);
+    ym.write_address_1(0xa0);
+    ym.write_data(0x6a, 0, None);
     assert!((ym.channel_frequency(0) - 261.95).abs() < 0.75);
     assert_ne!(ym.read_register(0), 0);
     ym.tick(Ym2612::WRITE_BUSY_CYCLES);
     assert_eq!(ym.read_register(0) & 0x80, 0);
+}
+
+#[test]
+fn ym2612_all_ports_report_current_busy_status() {
+    let mut ym = Ym2612::new();
+    ym.write_address_1(0x22);
+    ym.write_data(0x34, 0, None);
+    assert_ne!(ym.read_register(1) & 0x80, 0);
+
+    ym.tick(Ym2612::WRITE_BUSY_CYCLES);
+
+    assert_eq!(ym.read_register(1) & 0x80, 0);
+}
+
+#[test]
+fn ym2612_busy_duration_matches_jgenesis_tick_domain() {
+    assert_eq!(Ym2612::WRITE_BUSY_CYCLES, 32 * 6);
+    assert_eq!(Ym2612::TIMER_TICK_CYCLES, 24 * 6);
+    assert_eq!(Ym2612::INTERNAL_SAMPLE_DIVIDER, Ym2612::TIMER_TICK_CYCLES);
 }
 
 #[test]
@@ -1042,6 +1061,21 @@ fn ym2612_audio_render_does_not_roll_back_live_busy_state() {
 }
 
 #[test]
+fn ym2612_live_jgenesis_dac_renders_samples() {
+    let mut ym = Ym2612::new();
+    ym.write_address_1(0x2b);
+    ym.write_data(0x80, 0, None);
+    ym.write_address_1(0x2a);
+    ym.write_data(0xff, 0, None);
+    ym.begin_frame();
+
+    ym.tick(Ym2612::TIMER_TICK_CYCLES * 8);
+    let samples = ym.render_frame_mono_samples(64, 1_000.0, 44_100);
+
+    assert!(samples.iter().any(|sample| sample.abs() > 0.001));
+}
+
+#[test]
 fn emulator_loads_tiny_rom_and_sets_reset_pc() {
     let mut rom = vec![0; 0x200];
     rom[0x000..0x004].copy_from_slice(&0x00ff_0000u32.to_be_bytes());
@@ -1055,6 +1089,23 @@ fn emulator_loads_tiny_rom_and_sets_reset_pc() {
     assert_eq!(emulator.cpu.pc, 0x120);
     emulator.cpu.step(&mut emulator.bus).unwrap();
     assert_eq!(emulator.cpu.d[0], 1);
+}
+
+#[test]
+fn z80_scheduler_preserves_blocked_cycle_carry() {
+    let mut rom = vec![0; 0x200];
+    rom[0x000..0x004].copy_from_slice(&0x00ff_0000u32.to_be_bytes());
+    rom[0x004..0x008].copy_from_slice(&0x0000_0120u32.to_be_bytes());
+    rom[0x100..0x104].copy_from_slice(b"SEGA");
+    rom[0x120] = 0x60;
+    rom[0x121] = 0xfe;
+
+    let mut emulator = Emulator::new();
+    emulator.load_rom_bytes(&rom);
+    let run = emulator.run_frame();
+    assert!(!run.hit_unsupported_opcode);
+    assert!(emulator.z80_pending_cycles > 1_000.0);
+    assert!(emulator.z80_pending_cycles <= Emulator::Z80_CLOCK / emulator.frame_rate());
 }
 
 #[test]

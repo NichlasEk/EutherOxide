@@ -367,11 +367,17 @@ fn print_vdp_summary(emulator: &Emulator) {
         vdp.dma_pattern_transfers, vdp.dma_pattern_nonzero_words, vdp.dma_pattern_last_source
     );
     println!(
-        "Audio: Z80 pc=${:04X} cycles={} halted={} | YM writes {} | PSG writes {}",
+        "Audio: Z80 pc=${:04X} cycles={} halted={} | YM writes {} key {}/{} dac en/data {}/{} frame samples {} peak {:.5} | PSG writes {}",
         emulator.z80.pc,
         emulator.z80.total_cycles,
         emulator.z80.halted,
         emulator.bus.ym2612.writes,
+        emulator.bus.ym2612.key_on_active_writes,
+        emulator.bus.ym2612.key_on_writes,
+        emulator.bus.ym2612.dac_enable_writes,
+        emulator.bus.ym2612.dac_data_writes,
+        emulator.bus.ym2612.frame_jg_samples,
+        emulator.bus.ym2612.frame_jg_peak,
         emulator.bus.psg.writes
     );
     print!("YM recent:");
@@ -388,44 +394,6 @@ fn print_vdp_summary(emulator: &Emulator) {
     print!("PSG recent:");
     for write in emulator.bus.psg.write_log.iter().rev().take(8).rev() {
         print!(" ${:02X}@{}", write.value, write.cycle.unwrap_or(0));
-    }
-    println!();
-    println!(
-        "Sonic RAM: f600=${:02X} f62a=${:02X} f644=${:02X}{:02X} f64e=${:02X} fe10=${:02X}",
-        emulator.bus.peek_byte(0xffff_f600),
-        emulator.bus.peek_byte(0xffff_f62a),
-        emulator.bus.peek_byte(0xffff_f644),
-        emulator.bus.peek_byte(0xffff_f645),
-        emulator.bus.peek_byte(0xffff_f64e),
-        emulator.bus.peek_byte(0xffff_fe10)
-    );
-    let sonic_obj = 0xffff_d000;
-    let sonic_word = |offset| {
-        (u16::from(emulator.bus.peek_byte(sonic_obj + offset)) << 8)
-            | u16::from(emulator.bus.peek_byte(sonic_obj + offset + 1))
-    };
-    let signed = |value: u16| value as i16;
-    println!(
-        "Sonic object: id=${:02X} routine=${:02X} x={}.{:04X} y={}.{:04X} xvel={} yvel={} inertia={} status=${:02X} anim=${:02X} angle=${:02X}",
-        emulator.bus.peek_byte(sonic_obj),
-        emulator.bus.peek_byte(sonic_obj + 1),
-        sonic_word(0x08),
-        sonic_word(0x0a),
-        sonic_word(0x0c),
-        sonic_word(0x0e),
-        signed(sonic_word(0x10)),
-        signed(sonic_word(0x12)),
-        signed(sonic_word(0x14)),
-        emulator.bus.peek_byte(sonic_obj + 0x22),
-        emulator.bus.peek_byte(sonic_obj + 0x1c),
-        emulator.bus.peek_byte(sonic_obj + 0x26)
-    );
-    let aa00_nonzero = (0..0x400)
-        .filter(|offset| emulator.bus.peek_byte(0xffff_aa00 + offset) != 0)
-        .count();
-    print!("Sonic RAM aa00 nonzero {aa00_nonzero}/1024 first:");
-    for offset in 0..16 {
-        print!(" {:02X}", emulator.bus.peek_byte(0xffff_aa00 + offset));
     }
     println!();
 }
