@@ -366,9 +366,6 @@ impl M68k {
         let displacement = if low == 0 {
             base = self.pc;
             sign_extend(self.fetch_word(bus) as u32, 16) as i32
-        } else if low == 0xff {
-            base = self.pc;
-            self.fetch_long(bus) as i32
         } else {
             base = self.pc;
             (low as i8) as i32
@@ -401,7 +398,7 @@ impl M68k {
         if next != 0xffff {
             let target = extension_address.wrapping_add(displacement) & Self::ADDRESS_MASK;
             if target == extension_address.wrapping_sub(2) & Self::ADDRESS_MASK {
-                let iterations = Self::BUSY_WAIT_BRANCH_CYCLES / 10;
+                let iterations = ((next as u32) + 1).min(Self::BUSY_WAIT_BRANCH_CYCLES / 10);
                 let value = (next as u32).wrapping_sub(iterations.saturating_sub(1)) as u16;
                 self.d[reg] = (self.d[reg] & 0xffff_0000) | value as u32;
                 self.pc = target;
@@ -514,6 +511,16 @@ impl M68k {
         if opcode == 0x007c {
             let value = self.fetch_word(bus);
             self.set_sr(self.sr() | value);
+            return Ok(self.finish(20));
+        }
+        if opcode == 0x0a3c {
+            let value = self.fetch_word(bus) as u8;
+            self.ccr ^= value & 0x1f;
+            return Ok(self.finish(20));
+        }
+        if opcode == 0x0a7c {
+            let value = self.fetch_word(bus);
+            self.set_sr(self.sr() ^ value);
             return Ok(self.finish(20));
         }
 
@@ -724,7 +731,7 @@ impl M68k {
             self.d[reg] & size.mask()
         };
         let operand = if opmode == 0x03 && size == Size::Word {
-            sign_extend(right, 16)
+            sign_extend(right, 16) & Self::ADDRESS_MASK
         } else {
             right
         };

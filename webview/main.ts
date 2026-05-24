@@ -200,6 +200,7 @@ let bridgeRetryTimer: number | null = null;
 let buildPollTimer: number | null = null;
 let bridgeStreamAbort: AbortController | null = null;
 let bridgeStreamActive = false;
+let bridgeStreamGeneration = 0;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
@@ -568,6 +569,10 @@ async function chooseDesktopRom(): Promise<void> {
 }
 
 async function loadRomPath(path: string): Promise<void> {
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  stopBridgeStream();
+  await invoke("set_native_running", { running: false });
   romDisplayName = basename(path);
   romHash = hashText(path);
   const result = await invoke<LoadResult>("load_rom_path", { path });
@@ -585,6 +590,12 @@ async function loadRomPath(path: string): Promise<void> {
 }
 
 async function loadFile(file: File): Promise<void> {
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  stopBridgeStream();
+  if (isTauri) {
+    await invoke("set_native_running", { running: false });
+  }
   lastBrowserFile = file;
   const buffer = await file.arrayBuffer();
   romBytes = new Uint8Array(buffer);
@@ -637,6 +648,7 @@ async function loadFile(file: File): Promise<void> {
 }
 
 async function loadBytesThroughBridge(fileName: string, bytes: Uint8Array): Promise<boolean> {
+  stopBridgeStream();
   try {
     const result = await bridgeJson<BridgeStatusResult>(
       "/load",
@@ -1205,6 +1217,7 @@ async function animationLoop(): Promise<void> {
 }
 
 function stopBridgeStream(): void {
+  bridgeStreamGeneration += 1;
   bridgeStreamAbort?.abort();
   bridgeStreamAbort = null;
   bridgeStreamActive = false;
@@ -1215,6 +1228,7 @@ async function bridgeStreamLoop(): Promise<void> {
     return;
   }
   bridgeStreamActive = true;
+  const generation = bridgeStreamGeneration;
   bridgeStreamAbort = new AbortController();
   const started = performance.now();
   let received = 0;
@@ -1226,7 +1240,7 @@ async function bridgeStreamLoop(): Promise<void> {
       throw new Error("Bridge stream body unavailable");
     }
     pushTrace("Bridge stream bonded");
-    while (ui.playing && ui.runtime === "bridge") {
+    while (generation === bridgeStreamGeneration && ui.playing && ui.runtime === "bridge") {
       const read = await reader.read();
       if (read.done) {
         break;
@@ -1243,6 +1257,9 @@ async function bridgeStreamLoop(): Promise<void> {
         }
         const packet = pending.slice(4, 4 + packetLength);
         pending = pending.slice(4 + packetLength);
+        if (generation !== bridgeStreamGeneration || !ui.playing || ui.runtime !== "bridge") {
+          break;
+        }
         const before = performance.now();
         const frameAudio = decodeBridgeFrameAudio(packet.buffer);
         const decoded = performance.now();
@@ -1272,8 +1289,10 @@ async function bridgeStreamLoop(): Promise<void> {
       void animationLoop();
     }
   } finally {
-    bridgeStreamActive = false;
-    bridgeStreamAbort = null;
+    if (generation === bridgeStreamGeneration) {
+      bridgeStreamActive = false;
+      bridgeStreamAbort = null;
+    }
   }
 }
 

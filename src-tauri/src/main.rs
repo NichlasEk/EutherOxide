@@ -74,6 +74,7 @@ struct NativeFrameResult {
     frame: u64,
     width: usize,
     height: usize,
+    frame_rate: f64,
     cpu_cycles: u64,
     cpu_steps: u64,
     frame_ms: f64,
@@ -491,6 +492,7 @@ fn native_frame_result(emulator: &Emulator, run: &FrameRun) -> NativeFrameResult
         frame: emulator.frame_count,
         width,
         height,
+        frame_rate: emulator.frame_rate(),
         cpu_cycles: run.cpu_cycles,
         cpu_steps: run.cpu_steps,
         frame_ms: run.elapsed.as_secs_f64() * 1000.0,
@@ -599,18 +601,18 @@ fn start_native_runner(state: AppState) {
                         if result.stopped {
                             state.native_running.store(false, Ordering::Release);
                         }
+                        let frame_time = Duration::from_secs_f64(1.0 / result.frame_rate);
+                        let elapsed = started.elapsed();
+                        if elapsed < frame_time {
+                            thread::sleep(frame_time - elapsed);
+                        } else {
+                            thread::yield_now();
+                        }
                     }
                     Err(_) => {
                         state.native_running.store(false, Ordering::Release);
+                        thread::yield_now();
                     }
-                }
-
-                let frame_time = Duration::from_secs_f64(1.0 / 60.0);
-                let elapsed = started.elapsed();
-                if elapsed < frame_time {
-                    thread::sleep(frame_time - elapsed);
-                } else {
-                    thread::yield_now();
                 }
             }
         });

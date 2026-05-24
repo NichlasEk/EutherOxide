@@ -90,6 +90,57 @@ fn cpu_branches_calls_and_returns_on_supervisor_stack() {
 }
 
 #[test]
+fn cpu_68000_branch_ff_is_short_negative_displacement() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(&mut bus, 0x100, &[0x60ff, 0x7001]);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.pc, 0x101);
+}
+
+#[test]
+fn cpu_dbcc_self_loop_caps_iterations_to_counter() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    cpu.d[0] = 1;
+    load_program(&mut bus, 0x100, &[0x51c8, 0xfffe]);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.pc, 0x100);
+    assert_eq!(cpu.d[0] & 0xffff, 0);
+}
+
+#[test]
+fn cpu_cmpa_word_uses_sign_extended_24_bit_operand() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    cpu.set_address_register(1, 0x00ff_90c8);
+    load_program(&mut bus, 0x100, &[0xb2fc, 0x90c8, 0x6702, 0x7001, 0x7002]);
+
+    cpu.step(&mut bus).unwrap();
+    assert!(cpu.flag_z());
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.pc, 0x108);
+}
+
+#[test]
+fn cpu_eori_to_ccr_updates_condition_codes() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(&mut bus, 0x100, &[0x003c, 0x0011, 0x0a3c, 0x0011]);
+
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.sr() & 0x1f, 0x11);
+    cpu.step(&mut bus).unwrap();
+    assert_eq!(cpu.sr() & 0x1f, 0x00);
+}
+
+#[test]
 fn cpu_trap_and_rte_restore_status_and_return_pc() {
     let mut bus = M68kBus::new();
     let mut cpu = M68k::new();
@@ -364,6 +415,18 @@ fn z80_ram_window_is_inaccessible_without_bus_grant() {
     assert_eq!(bus.read_byte(0x00a0_0000), 0x00);
     bus.write_byte(0x00a0_0000, 0x3e);
     assert_eq!(bus.read_byte(0x00a0_0000), 0x3e);
+}
+
+#[test]
+fn z80_reset_line_reports_assertion_edges() {
+    let mut bus = M68kBus::new();
+
+    assert!(!bus.take_z80_reset_request());
+    bus.write_word(0x00a1_1200, 0x0100);
+    assert!(!bus.take_z80_reset_request());
+    bus.write_word(0x00a1_1200, 0x0000);
+    assert!(bus.take_z80_reset_request());
+    assert!(!bus.take_z80_reset_request());
 }
 
 #[test]
@@ -879,6 +942,21 @@ fn mega_drive_sram_header_maps_and_persists_beside_rom() {
 
     let _ = fs::remove_file(&srm_path);
     let _ = fs::remove_file(&rom_path);
+}
+
+#[test]
+fn mega_drive_without_sram_header_does_not_shadow_rom_mirror() {
+    let mut rom = vec![0; 0x20_0000];
+    rom[0x000..0x004].copy_from_slice(&0x00ff_0000u32.to_be_bytes());
+    rom[0x004..0x008].copy_from_slice(&0x0000_0100u32.to_be_bytes());
+    rom[0x100..0x104].copy_from_slice(b"SEGA");
+    rom[0] = 0x42;
+
+    let mut bus = M68kBus::new();
+    bus.load_rom(rom);
+
+    assert_eq!(bus.sram_path(), None);
+    assert_eq!(bus.read_byte(0x0020_0000), 0x42);
 }
 
 #[test]

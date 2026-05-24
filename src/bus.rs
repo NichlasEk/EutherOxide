@@ -36,9 +36,11 @@ pub struct M68kBus {
     pub controller_b: Controller,
     pub frame_cycle: u64,
     pub ym_frame_cycle: u64,
+    dma_wait_cycles: u32,
     pub version_register: u8,
     z80_bus_requested: bool,
     z80_reset_asserted: bool,
+    z80_reset_requested: bool,
     z80_bank_register: u16,
     sram: Option<Vec<u8>>,
     sram_start: u32,
@@ -63,9 +65,13 @@ pub struct M68kBusSnapshot {
     pub controller_b: Controller,
     pub frame_cycle: u64,
     pub ym_frame_cycle: u64,
+    #[serde(default)]
+    dma_wait_cycles: u32,
     pub version_register: u8,
     z80_bus_requested: bool,
     z80_reset_asserted: bool,
+    #[serde(default)]
+    z80_reset_requested: bool,
     #[serde(default)]
     z80_bank_register: u16,
     #[serde(default)]
@@ -141,9 +147,11 @@ impl M68kBus {
             controller_b: Controller::new(),
             frame_cycle: 0,
             ym_frame_cycle: 0,
+            dma_wait_cycles: 0,
             version_register: 0xa0,
             z80_bus_requested: false,
             z80_reset_asserted: true,
+            z80_reset_requested: false,
             z80_bank_register: 0,
             sram: None,
             sram_start: 0,
@@ -167,8 +175,10 @@ impl M68kBus {
         self.controller_b.reset();
         self.frame_cycle = 0;
         self.ym_frame_cycle = 0;
+        self.dma_wait_cycles = 0;
         self.z80_bus_requested = false;
         self.z80_reset_asserted = true;
+        self.z80_reset_requested = true;
         self.z80_bank_register = 0;
         if let Some(cartridge) = &mut self.cartridge_override {
             cartridge.reset();
@@ -243,9 +253,11 @@ impl M68kBus {
             controller_b: self.controller_b.clone(),
             frame_cycle: self.frame_cycle,
             ym_frame_cycle: self.ym_frame_cycle,
+            dma_wait_cycles: self.dma_wait_cycles,
             version_register: self.version_register,
             z80_bus_requested: self.z80_bus_requested,
             z80_reset_asserted: self.z80_reset_asserted,
+            z80_reset_requested: self.z80_reset_requested,
             z80_bank_register: self.z80_bank_register,
             sram: self.sram.clone(),
             sram_start: self.sram_start,
@@ -284,9 +296,11 @@ impl M68kBus {
         self.controller_b = snapshot.controller_b;
         self.frame_cycle = snapshot.frame_cycle;
         self.ym_frame_cycle = snapshot.ym_frame_cycle;
+        self.dma_wait_cycles = snapshot.dma_wait_cycles;
         self.version_register = snapshot.version_register;
         self.z80_bus_requested = snapshot.z80_bus_requested;
         self.z80_reset_asserted = snapshot.z80_reset_asserted;
+        self.z80_reset_requested = snapshot.z80_reset_requested;
         self.z80_bank_register = snapshot.z80_bank_register & 0x01ff;
         self.sram = snapshot.sram;
         self.sram_start = snapshot.sram_start;
@@ -546,7 +560,11 @@ impl M68kBus {
         } else if self.z80_bus_request_address(address) {
             self.z80_bus_requested = (value & 0x01) != 0;
         } else if self.z80_reset_address(address) {
-            self.z80_reset_asserted = (value & 0x01) == 0;
+            let asserted = (value & 0x01) == 0;
+            if asserted && !self.z80_reset_asserted {
+                self.z80_reset_requested = true;
+            }
+            self.z80_reset_asserted = asserted;
         } else if self.z80_ram_mirror_address(address) {
             if self.z80_bus_requested {
                 self.z80_ram[(address as usize) & 0x1fff] = value;
@@ -621,6 +639,18 @@ impl M68kBus {
 
     pub fn z80_running(&self) -> bool {
         !self.z80_reset_asserted && !self.z80_bus_requested
+    }
+
+    pub fn take_z80_reset_request(&mut self) -> bool {
+        let requested = self.z80_reset_requested;
+        self.z80_reset_requested = false;
+        requested
+    }
+
+    pub fn take_dma_wait_cycles(&mut self) -> u32 {
+        let cycles = self.dma_wait_cycles;
+        self.dma_wait_cycles = 0;
+        cycles
     }
 
     pub fn z80_read_byte(&mut self, address: u16) -> u8 {
@@ -726,14 +756,10 @@ impl M68kBus {
     fn configure_sram(&mut self, rom_path: Option<PathBuf>) {
         self.reset_sram();
         self.sram_rom_limit = Self::declared_rom_limit(&self.rom).or(Some(self.rom.len()));
-        let info = Self::parse_sram_header(&self.rom).unwrap_or(SramInfo {
-            start: 0x0020_0001,
-            end: 0x0020_ffff,
-            access: SramAccess::Word,
-            eeprom: false,
-        });
-        self.allocate_sram(info, rom_path);
-        self.sram_enabled = self.initial_sram_enabled(info);
+        if let Some(info) = Self::parse_sram_header(&self.rom) {
+            self.allocate_sram(info, rom_path);
+            self.sram_enabled = self.initial_sram_enabled(info);
+        }
     }
 
     fn reset_sram(&mut self) {
@@ -940,6 +966,9 @@ impl M68kBus {
                 }
                 self.vdp
                     .record_dma_transfer(start_source, target, length, nonzero_words);
+                self.dma_wait_cycles = self
+                    .dma_wait_cycles
+                    .saturating_add((length as u32).saturating_mul(2));
             }
             VdpDmaMode::Fill => self.vdp.arm_dma_fill(),
             VdpDmaMode::Copy => self.vdp.perform_vram_copy_dma(),
