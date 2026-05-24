@@ -1,4 +1,4 @@
-use euther_oxide::audio::{Psg, Ym2612};
+use euther_oxide::audio::{GenesisAudioFilter, Psg, Ym2612};
 use euther_oxide::rom::{SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
 use euther_oxide::savestate::{argon_path_for_rom, load_slot_for_emulator, save_slot_for_emulator};
 use euther_oxide::z80::Z80;
@@ -162,6 +162,28 @@ fn cpu_movem_long_preserves_address_register_data_bits() {
     cpu.step(&mut bus).unwrap();
     assert_eq!(bus.read_long(0x3000), 0x1234_5678);
     assert_eq!(bus.read_long(0x3004), 0x9abc_def0);
+}
+
+#[test]
+fn cpu_movep_word_register_to_memory_uses_spaced_bytes() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    cpu.d[0] = 0x1234_5678;
+    cpu.set_address_register(0, 0x2000);
+    load_program(
+        &mut bus,
+        0x100,
+        &[
+            0x0188, 0x0001, // movep.w d0,1(a0)
+        ],
+    );
+
+    cpu.step(&mut bus).unwrap();
+
+    assert_eq!(bus.read_byte(0x2001), 0x56);
+    assert_eq!(bus.read_byte(0x2002), 0x00);
+    assert_eq!(bus.read_byte(0x2003), 0x78);
 }
 
 #[test]
@@ -415,6 +437,18 @@ fn psg_renders_bipolar_tone_samples() {
 }
 
 #[test]
+fn genesis_audio_filter_blocks_dc_offset() {
+    let mut filter = GenesisAudioFilter::new();
+    let mut last = 0.0;
+
+    for _ in 0..44_100 {
+        last = filter.filter_psg(1.0, 44_100);
+    }
+
+    assert!(last.abs() < 0.01, "filtered DC offset remained {last}");
+}
+
+#[test]
 fn z80_bus_routes_ram_ym_psg_and_banked_68k() {
     let mut bus = M68kBus::new();
 
@@ -461,10 +495,13 @@ fn z80_ram_window_is_inaccessible_without_bus_grant() {
     bus.write_byte(0x00a0_0000, 0x3e);
 
     assert_eq!(bus.read_byte(0x00a0_0000), 0xff);
-    bus.write_byte(0x00a1_1100, 0x01);
+    bus.write_byte(0x00a1_1101, 0x01);
     assert_eq!(bus.read_byte(0x00a0_0000), 0x00);
     bus.write_byte(0x00a0_0000, 0x3e);
     assert_eq!(bus.read_byte(0x00a0_0000), 0x3e);
+
+    bus.write_word(0x00a1_1100, 0x0000);
+    assert_eq!(bus.read_byte(0x00a0_0000), 0xff);
 }
 
 #[test]
@@ -477,6 +514,9 @@ fn z80_reset_line_reports_assertion_edges() {
     bus.write_word(0x00a1_1200, 0x0000);
     assert!(bus.take_z80_reset_request());
     assert!(!bus.take_z80_reset_request());
+    bus.write_byte(0x00a1_1201, 0x01);
+    bus.write_byte(0x00a1_1201, 0x00);
+    assert!(bus.take_z80_reset_request());
 }
 
 #[test]
@@ -739,6 +779,38 @@ fn vdp_sprite_cell_limit_renders_overflowing_sprite_then_stops() {
 }
 
 #[test]
+fn vdp_sprite_x_zero_masks_following_sprites_on_scanline() {
+    let mut bus = M68kBus::new();
+    bus.vdp.registers[1] = 0x40;
+    bus.vdp.registers[5] = 0x00;
+    bus.vdp.cram[1] = 0x00e;
+    bus.vdp.cram[2] = 0x0e0;
+
+    write_vram_word_direct(&mut bus, 0x0000, 0x0080);
+    write_vram_word_direct(&mut bus, 0x0002, 0x0001);
+    write_vram_word_direct(&mut bus, 0x0004, 0x0001);
+    write_vram_word_direct(&mut bus, 0x0006, 0x0080);
+
+    write_vram_word_direct(&mut bus, 0x0008, 0x0080);
+    write_vram_word_direct(&mut bus, 0x000a, 0x0002);
+    write_vram_word_direct(&mut bus, 0x000c, 0x0000);
+    write_vram_word_direct(&mut bus, 0x000e, 0x0000);
+
+    write_vram_word_direct(&mut bus, 0x0010, 0x0080);
+    write_vram_word_direct(&mut bus, 0x0012, 0x0000);
+    write_vram_word_direct(&mut bus, 0x0014, 0x0002);
+    write_vram_word_direct(&mut bus, 0x0016, 0x0088);
+
+    fill_pattern(&mut bus, 1, 1);
+    fill_pattern(&mut bus, 2, 2);
+
+    bus.vdp.render_frame();
+
+    assert_eq!(bus.vdp.framebuffer[0], bus.vdp.palette_color(1));
+    assert_ne!(bus.vdp.framebuffer[8], bus.vdp.palette_color(2));
+}
+
+#[test]
 fn vdp_non_interlace_sprites_wrap_y_with_nine_bits() {
     let mut bus = M68kBus::new();
     bus.vdp.registers[1] = 0x40;
@@ -774,6 +846,36 @@ fn vdp_dma_fill_writes_high_byte_to_vram_bytes() {
     assert_eq!(bus.vdp.vram[1], 0xab);
     assert_eq!(bus.vdp.vram[2], 0x00);
     assert_eq!(bus.vdp.vram[3], 0xab);
+}
+
+#[test]
+fn vdp_ports_mirror_through_the_vdp_window() {
+    let mut bus = M68kBus::new();
+    const VDP_DATA_MIRROR: u32 = 0x00c0_0020;
+    const VDP_CONTROL_MIRROR: u32 = 0x00c0_0024;
+
+    bus.write_word(VDP_CONTROL_MIRROR, 0x4000);
+    bus.write_word(VDP_CONTROL_MIRROR, 0x0000);
+    bus.write_word(VDP_DATA_MIRROR, 0x1234);
+
+    assert_eq!(bus.vdp.vram[0], 0x12);
+    assert_eq!(bus.vdp.vram[1], 0x34);
+}
+
+#[test]
+fn vdp_register_control_words_still_latch_address_bits() {
+    let mut bus = M68kBus::new();
+    const VDP_DATA: u32 = 0x00c0_0000;
+    const VDP_CONTROL: u32 = 0x00c0_0004;
+
+    bus.write_word(VDP_CONTROL, 0x8f02);
+    bus.write_word(VDP_DATA, 0x1234);
+
+    assert_eq!(bus.vdp.registers[15], 0x02);
+    assert_eq!(bus.vdp.vram[0x0f02], 0x12);
+    assert_eq!(bus.vdp.vram[0x0f03], 0x34);
+    assert_eq!(bus.vdp.vram[0], 0x00);
+    assert_eq!(bus.vdp.vram[1], 0x00);
 }
 
 #[test]
@@ -917,8 +1019,13 @@ fn ym2612_timers_use_144_cycle_tick_and_gate_status_flags() {
     ym.write_data(0x05, 0, None);
     ym.tick(Ym2612::TIMER_TICK_CYCLES - 1);
     assert_eq!(ym.read_register(0) & 0x01, 0);
+    assert!(!ym.irq_asserted());
     ym.tick(1);
     assert_eq!(ym.read_register(0) & 0x01, 0x01);
+    assert!(ym.irq_asserted());
+    ym.write_address_1(0x27);
+    ym.write_data(0x10, 0, None);
+    assert!(!ym.irq_asserted());
 }
 
 #[test]

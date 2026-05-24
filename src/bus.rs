@@ -129,7 +129,6 @@ impl M68kBus {
     const IO_PORT_2_CONTROL_BASE: u32 = 0x00a1_000a;
     const IO_EXPANSION_CONTROL_BASE: u32 = 0x00a1_000c;
     const SRAM_LOCK: u32 = 0x00a1_30f1;
-    const VDP_HV_COUNTER: u32 = 0x00c0_0008;
     const WORK_RAM_BASE: u32 = 0x00e0_0000;
     const WORK_RAM_MASK: u32 = 0x0000_ffff;
 
@@ -558,13 +557,9 @@ impl M68kBus {
             self.set_sram_enabled((value & 0x01) != 0);
         } else if self.sram_control_range(address) {
         } else if self.z80_bus_request_address(address) {
-            self.z80_bus_requested = (value & 0x01) != 0;
+            self.set_z80_bus_requested(value);
         } else if self.z80_reset_address(address) {
-            let asserted = (value & 0x01) == 0;
-            if asserted && !self.z80_reset_asserted {
-                self.z80_reset_requested = true;
-            }
-            self.z80_reset_asserted = asserted;
+            self.set_z80_reset(value);
         } else if self.z80_ram_mirror_address(address) {
             if self.z80_bus_requested {
                 self.z80_ram[(address as usize) & 0x1fff] = value;
@@ -602,6 +597,18 @@ impl M68kBus {
             return;
         }
         if self.sram_control_range(address) {
+            return;
+        }
+        if self.z80_bus_request_address(address) {
+            self.set_z80_bus_requested((value >> 8) as u8);
+            return;
+        }
+        if self.z80_reset_address(address) {
+            self.set_z80_reset((value >> 8) as u8);
+            return;
+        }
+        if self.z80_bank_register_address(address) {
+            self.write_z80_bank_register((value >> 8) as u8);
             return;
         }
         if self.z80_ram_mirror_address(address) {
@@ -751,6 +758,18 @@ impl M68kBus {
     fn write_z80_bank_register(&mut self, value: u8) {
         self.z80_bank_register =
             ((self.z80_bank_register >> 1) | (u16::from(value & 1) << 8)) & 0x01ff;
+    }
+
+    fn set_z80_bus_requested(&mut self, value: u8) {
+        self.z80_bus_requested = (value & 0x01) != 0;
+    }
+
+    fn set_z80_reset(&mut self, value: u8) {
+        let asserted = (value & 0x01) == 0;
+        if asserted && !self.z80_reset_asserted {
+            self.z80_reset_requested = true;
+        }
+        self.z80_reset_asserted = asserted;
     }
 
     fn configure_sram(&mut self, rom_path: Option<PathBuf>) {
@@ -992,12 +1011,16 @@ impl M68kBus {
             && matches!(address & 0x1f, 0x11 | 0x13 | 0x15 | 0x17)
     }
 
+    fn vdp_port_window(address: u32) -> bool {
+        (0x00c0_0000..=0x00df_ffff).contains(&address)
+    }
+
     fn z80_bus_request_address(&self, address: u32) -> bool {
-        (address & 0x00ff_ff00) == Self::Z80_BUS_REQUEST && (address & 1) == 0
+        (address & 0x00ff_fffe) == Self::Z80_BUS_REQUEST
     }
 
     fn z80_reset_address(&self, address: u32) -> bool {
-        (address & 0x00ff_ff00) == Self::Z80_RESET && (address & 1) == 0
+        (address & 0x00ff_fffe) == Self::Z80_RESET
     }
 
     fn z80_ram_mirror_address(&self, address: u32) -> bool {
@@ -1005,19 +1028,19 @@ impl M68kBus {
     }
 
     fn z80_bank_register_address(&self, address: u32) -> bool {
-        (address & 0x00ff_ff00) == Self::Z80_BANK_REGISTER_BASE
+        (address & 0x00ff_fffe) == Self::Z80_BANK_REGISTER_BASE
     }
 
     fn vdp_data_address(&self, address: u32) -> bool {
-        (address & 0x00ff_fffc) == 0x00c0_0000
+        Self::vdp_port_window(address) && matches!(address & 0x1f, 0x00..=0x03)
     }
 
     fn vdp_control_address(&self, address: u32) -> bool {
-        (address & 0x00ff_fffc) == 0x00c0_0004
+        Self::vdp_port_window(address) && matches!(address & 0x1f, 0x04..=0x07)
     }
 
     fn vdp_hv_counter_address(&self, address: u32) -> bool {
-        (address & 0x00ff_fffe) == Self::VDP_HV_COUNTER
+        Self::vdp_port_window(address) && matches!(address & 0x1f, 0x08..=0x0f)
     }
 
     fn io_pair(address: u32, base: u32) -> bool {

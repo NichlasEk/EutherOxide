@@ -1151,8 +1151,9 @@ impl M68k {
         let address = self
             .read_address_register(addr_reg)
             .wrapping_add(displacement);
-        let memory_to_reg = (opcode & 0x0080) != 0;
-        let long = (opcode & 0x0040) != 0;
+        let opmode = (opcode >> 6) & 0x03;
+        let memory_to_reg = (opmode & 0x02) == 0;
+        let long = (opmode & 0x01) != 0;
         if memory_to_reg {
             let mut value = 0;
             let count = if long { 4 } else { 2 };

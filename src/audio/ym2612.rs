@@ -489,6 +489,11 @@ impl Ym2612 {
         self.tick_timers(cycles);
     }
 
+    pub fn irq_asserted(&self) -> bool {
+        ((self.status & 0x01) != 0 && (self.timer_control & 0x04) != 0)
+            || ((self.status & 0x02) != 0 && (self.timer_control & 0x08) != 0)
+    }
+
     pub fn render_frame_mono_samples(
         &mut self,
         count: usize,

@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::audio::Audio;
+use crate::audio::{Audio, GenesisAudioFilter};
 use crate::bus::{M68kBus, M68kBusSnapshot};
 use crate::m68k::{CpuError, M68k};
 use crate::rom::{RomHeader, SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
@@ -22,6 +22,7 @@ pub struct Emulator {
     pub region: SystemRegion,
     pub last_error: Option<CpuError>,
     pub z80_pending_cycles: f64,
+    audio_filter: GenesisAudioFilter,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,6 +74,7 @@ impl Emulator {
             region: SystemRegion::Usa,
             last_error: None,
             z80_pending_cycles: 0.0,
+            audio_filter: GenesisAudioFilter::new(),
         }
     }
 
@@ -108,6 +110,7 @@ impl Emulator {
         self.frame_count = 0;
         self.last_error = None;
         self.z80_pending_cycles = 0.0;
+        self.audio_filter.reset();
     }
 
     pub fn reset(&mut self) {
@@ -118,6 +121,7 @@ impl Emulator {
         self.frame_count = 0;
         self.last_error = None;
         self.z80_pending_cycles = 0.0;
+        self.audio_filter.reset();
     }
 
     pub fn run_frame(&mut self) -> FrameRun {
@@ -142,6 +146,8 @@ impl Emulator {
                 Ok(step_cycles) => {
                     cycles += step_cycles as u64;
                     steps += 1;
+                    self.bus.ym_frame_cycle = cycles;
+                    self.bus.ym2612.sync_to_cycle(cycles);
                     if self.bus.take_z80_reset_request() {
                         self.z80.reset();
                     }
@@ -151,6 +157,7 @@ impl Emulator {
                         self.z80_pending_cycles += f64::from(dma_wait_cycles) * z80_ratio;
                     }
                     self.z80_pending_cycles += f64::from(step_cycles) * z80_ratio;
+                    self.interrupt_z80_for_ym_timer();
                     self.run_z80_until_budget();
                 }
                 Err(err) => {
@@ -182,6 +189,9 @@ impl Emulator {
             self.z80_pending_cycles += target_z80_cycles - z80_frame_cycles;
             self.run_z80_until_budget();
         }
+        self.bus.ym_frame_cycle = cycles_per_frame;
+        self.bus.ym2612.sync_to_cycle(cycles_per_frame);
+        self.interrupt_z80_for_ym_timer();
 
         if !frame_rendered {
             self.bus.vdp.render_frame();
@@ -236,7 +246,9 @@ impl Emulator {
             .into_iter()
             .zip(ym_samples)
             .map(|(psg, ym)| {
-                let mixed = (f64::from(ym) * Audio::YM_GAIN) + (f64::from(psg) * Audio::PSG_GAIN);
+                let psg = self.audio_filter.filter_psg(f64::from(psg), sample_rate);
+                let ym = self.audio_filter.filter_ym(f64::from(ym), sample_rate);
+                let mixed = (ym * Audio::YM_GAIN) + (psg * Audio::PSG_GAIN);
                 (mixed.clamp(-1.0, 1.0) * f64::from(i16::MAX)) as i16
             })
             .collect()
@@ -278,6 +290,7 @@ impl Emulator {
         self.region = snapshot.region;
         self.last_error = snapshot.last_error;
         self.z80_pending_cycles = snapshot.z80_pending_cycles;
+        self.audio_filter.reset();
     }
 
     fn configure_region_register(&mut self) {
@@ -321,6 +334,13 @@ impl Emulator {
 
     fn interrupt_z80_for_vblank(&mut self) {
         if self.bus.z80_running() {
+            let cycles = self.z80.interrupt(&mut self.bus, 0xff);
+            self.z80_pending_cycles = (self.z80_pending_cycles - f64::from(cycles)).max(0.0);
+        }
+    }
+
+    fn interrupt_z80_for_ym_timer(&mut self) {
+        if self.bus.z80_running() && self.bus.ym2612.irq_asserted() {
             let cycles = self.z80.interrupt(&mut self.bus, 0xff);
             self.z80_pending_cycles = (self.z80_pending_cycles - f64::from(cycles)).max(0.0);
         }

@@ -433,6 +433,8 @@ impl Vdp {
         } else {
             self.control_latch = value;
             self.address = (self.address & 0x1c000) | (value as u32 & 0x3fff);
+            self.mode_write = (value & 0x4000) != 0;
+            self.location_bits = (self.location_bits & 0x06) | (((value >> 15) as u8) & 0x01);
 
             if (value & 0xc000) == 0x8000 {
                 let register = ((value >> 8) & 0x1f) as usize;
@@ -447,8 +449,6 @@ impl Vdp {
                 }
                 self.control_pending = false;
             } else {
-                self.mode_write = (value & 0x4000) != 0;
-                self.location_bits = (self.location_bits & 0x06) | (((value >> 15) as u8) & 0x01);
                 self.control_pending = true;
             }
         }
@@ -878,6 +878,8 @@ impl Vdp {
         let mut occupied = vec![false; self.screen_width * self.screen_height];
         let mut line_sprite_counts = vec![0usize; self.screen_height];
         let mut line_sprite_cells = vec![0usize; self.screen_height];
+        let mut line_sprite_mask_allowed = vec![false; self.screen_height];
+        let mut line_sprite_masked = vec![false; self.screen_height];
 
         for _ in 0..max_sprites {
             let entry = (sprite_base + sprite_index * 8) & 0xffff;
@@ -907,8 +909,11 @@ impl Vdp {
                     &mut occupied,
                     &mut line_sprite_counts,
                     &mut line_sprite_cells,
+                    &mut line_sprite_mask_allowed,
+                    &mut line_sprite_masked,
                     x,
                     y,
+                    x_raw,
                     width_cells,
                     height_cells,
                     max_line_sprites,
@@ -935,8 +940,11 @@ impl Vdp {
         occupied: &mut [bool],
         line_sprite_counts: &mut [usize],
         line_sprite_cells: &mut [usize],
+        line_sprite_mask_allowed: &mut [bool],
+        line_sprite_masked: &mut [bool],
         x: i32,
         y: i32,
+        x_raw: u16,
         width_cells: usize,
         height_cells: usize,
         max_line_sprites: usize,
@@ -964,6 +972,9 @@ impl Vdp {
                 continue;
             }
             let line = screen_y as usize;
+            if line_sprite_masked[line] {
+                continue;
+            }
             if line_sprite_counts[line] >= max_line_sprites
                 || line_sprite_cells[line] >= max_line_sprite_cells
             {
@@ -971,6 +982,13 @@ impl Vdp {
             }
             line_sprite_counts[line] += 1;
             line_sprite_cells[line] = line_sprite_cells[line].saturating_add(width_cells);
+            if x_raw == 0 {
+                if line_sprite_mask_allowed[line] {
+                    line_sprite_masked[line] = true;
+                }
+                continue;
+            }
+            line_sprite_mask_allowed[line] = true;
 
             for local_x in 0..sprite_width {
                 let source_x = if h_flip {
