@@ -55,7 +55,8 @@ impl Psg {
     pub const TONE_CHANNELS: usize = 3;
     pub const CHANNELS: usize = 4;
     pub const MAX_PERIOD: u16 = 0x03ff;
-    const INITIAL_LFSR: u16 = 0x8000;
+    const INITIAL_LFSR: u16 = 0x4000;
+    const NOISE_SHIFT: u16 = 14;
 
     pub fn new() -> Self {
         let state = PsgState {
@@ -218,13 +219,17 @@ impl Psg {
             while self.phases[channel] >= 1.0 {
                 self.phases[channel] -= 1.0;
             }
-            mixed += if self.phases[channel] < 0.5 { 0.0 } else { 1.0 } * volume;
+            mixed += if self.phases[channel] < 0.5 {
+                -1.0
+            } else {
+                1.0
+            } * volume;
         }
 
         let noise_volume = self.channel_volume(3);
         if noise_volume > 0.0 {
             self.advance_noise(sample_rate);
-            mixed += if self.noise_output > 0.0 { 1.0 } else { 0.0 } * noise_volume;
+            mixed += self.noise_output * noise_volume;
         }
 
         (mixed / Self::CHANNELS as f64).clamp(-1.0, 1.0)
@@ -285,7 +290,7 @@ impl Psg {
             } else {
                 self.noise_lfsr & 1
             };
-            self.noise_lfsr = (self.noise_lfsr >> 1) | (feedback << 15);
+            self.noise_lfsr = (self.noise_lfsr >> 1) | (feedback << Self::NOISE_SHIFT);
         }
     }
 

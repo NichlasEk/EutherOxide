@@ -498,9 +498,9 @@ h2 {
 
 .screen-glass {
   position: relative;
-  width: min(100%, calc((100vh - 190px) * 1.43));
+  width: min(100%, calc((100vh - 190px) * var(--screen-aspect-value, 1.428571)));
   max-width: 960px;
-  aspect-ratio: 10 / 7;
+  aspect-ratio: var(--screen-aspect-ratio, 10 / 7);
   flex: none;
   display: grid;
   place-items: center;

@@ -1,4 +1,4 @@
-use euther_oxide::audio::Ym2612;
+use euther_oxide::audio::{Psg, Ym2612};
 use euther_oxide::rom::{SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
 use euther_oxide::savestate::{argon_path_for_rom, load_slot_for_emulator, save_slot_for_emulator};
 use euther_oxide::z80::Z80;
@@ -399,6 +399,19 @@ fn bus_routes_ym_and_psg_writes() {
     bus.write_word(0x00c0_0010, 0x009f);
     assert_eq!(bus.psg.writes, 1);
     assert_eq!(bus.psg.write_log.last().unwrap().value, 0x9f);
+}
+
+#[test]
+fn psg_renders_bipolar_tone_samples() {
+    let mut psg = Psg::new();
+    psg.apply_write(0x80);
+    psg.apply_write(0x02);
+    psg.apply_write(0x90);
+    psg.begin_frame();
+
+    let samples = psg.render_frame_samples(512, Psg::CLOCK / 60.0, 44_100);
+    assert!(samples.iter().any(|sample| *sample < 0.0));
+    assert!(samples.iter().any(|sample| *sample > 0.0));
 }
 
 #[test]

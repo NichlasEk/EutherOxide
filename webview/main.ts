@@ -1499,6 +1499,7 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
 }
 
 function drawNativeFrame(frame: FrameResult): void {
+  syncScreenGeometry(frame.width, frame.height);
   if (videoCanvas.width !== frame.width || videoCanvas.height !== frame.height) {
     videoCanvas.width = frame.width;
     videoCanvas.height = frame.height;
@@ -1509,6 +1510,15 @@ function drawNativeFrame(frame: FrameResult): void {
     frame.height,
   );
   videoContext.putImageData(image, 0, 0);
+}
+
+function syncScreenGeometry(width: number, height: number): void {
+  const safeWidth = Math.max(1, width);
+  const safeHeight = Math.max(1, height);
+  ui.width = safeWidth;
+  ui.height = safeHeight;
+  screenGlass.style.setProperty("--screen-aspect-value", (safeWidth / safeHeight).toFixed(6));
+  screenGlass.style.setProperty("--screen-aspect-ratio", `${safeWidth} / ${safeHeight}`);
 }
 
 function framePixels(rgba: number[] | Uint8Array<ArrayBufferLike>): Uint8ClampedArray<ArrayBuffer> {
@@ -1676,6 +1686,7 @@ async function loadStateSlot(slot: number): Promise<void> {
 function drawSyntheticFrame(): void {
   const width = 320;
   const height = 224;
+  syncScreenGeometry(width, height);
   if (videoCanvas.width !== width || videoCanvas.height !== height) {
     videoCanvas.width = width;
     videoCanvas.height = height;

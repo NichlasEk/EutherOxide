@@ -787,6 +787,24 @@ impl Ym2612 {
                 let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1 * 2.0);
                 self.operator_sample(base + 3, base_frequency, sample_step, o2 * 2.0)
             }
+            1 => {
+                let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
+                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, 0.0);
+                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o0 + o1);
+                self.operator_sample(base + 3, base_frequency, sample_step, o2 * 2.0)
+            }
+            2 => {
+                let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
+                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, 0.0);
+                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, o1 * 2.0);
+                self.operator_sample(base + 3, base_frequency, sample_step, o0 + o2)
+            }
+            3 => {
+                let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
+                let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
+                let o2 = self.operator_sample(base + 2, op_freq(self, 2), sample_step, 0.0);
+                self.operator_sample(base + 3, base_frequency, sample_step, o1 + o2)
+            }
             4 => {
                 let o0 = self.operator_sample(base, op_freq(self, 0), sample_step, feedback);
                 let o1 = self.operator_sample(base + 1, op_freq(self, 1), sample_step, o0 * 2.0);
