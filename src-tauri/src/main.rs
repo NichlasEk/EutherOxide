@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use tauri::{Manager, State, ipc::Response};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AppState {
     emulator: Arc<Mutex<Option<Emulator>>>,
     bridge_url: Arc<Mutex<String>>,
@@ -24,7 +24,23 @@ struct AppState {
     native_frame: Arc<Mutex<Option<NativeFrameImage>>>,
     native_status: Arc<Mutex<Option<NativeFrameResult>>>,
     native_running: Arc<AtomicBool>,
+    native_audio_volume: Arc<AtomicU32>,
     native_audio: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            emulator: Arc::default(),
+            bridge_url: Arc::default(),
+            native_surface_rect: Arc::default(),
+            native_frame: Arc::default(),
+            native_status: Arc::default(),
+            native_running: Arc::default(),
+            native_audio_volume: Arc::new(AtomicU32::new(1000)),
+            native_audio: Arc::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -44,6 +60,7 @@ struct NativeFrameImage {
 
 struct NativeAudio {
     queue: Arc<Mutex<VecDeque<f32>>>,
+    _volume: Arc<AtomicU32>,
     _stream: cpal::Stream,
     sample_rate: u32,
     primed: bool,
@@ -296,6 +313,14 @@ fn play_native_audio(
     ))
 }
 
+#[tauri::command]
+fn set_audio_volume(state: State<'_, AppState>, volume: f32) {
+    let volume = volume.clamp(0.0, 1.0);
+    state
+        .native_audio_volume
+        .store((volume * 1000.0).round() as u32, Ordering::Release);
+}
+
 fn queue_native_audio(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> NativeAudioResult {
     let sender = {
         let mut guard = match state.native_audio.lock() {
@@ -310,7 +335,7 @@ fn queue_native_audio(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> 
         match guard.as_ref() {
             Some(sender) => sender.clone(),
             None => {
-                let sender = start_native_audio_thread();
+                let sender = start_native_audio_thread(state.native_audio_volume.clone());
                 *guard = Some(sender.clone());
                 sender
             }
@@ -325,7 +350,7 @@ fn queue_native_audio(state: &AppState, samples: Vec<i16>, sample_rate: u32) -> 
     };
 
     if let Err(err) = sender.send(command) {
-        let sender = start_native_audio_thread();
+        let sender = start_native_audio_thread(state.native_audio_volume.clone());
         if let Ok(mut guard) = state.native_audio.lock() {
             *guard = Some(sender.clone());
         }
@@ -369,7 +394,7 @@ fn native_audio_sender(state: &AppState) -> Option<mpsc::Sender<AudioCommand>> {
     Some(match guard.as_ref() {
         Some(sender) => sender.clone(),
         None => {
-            let sender = start_native_audio_thread();
+            let sender = start_native_audio_thread(state.native_audio_volume.clone());
             *guard = Some(sender.clone());
             sender
         }
@@ -388,7 +413,7 @@ fn queue_native_audio_async(state: &AppState, samples: Vec<i16>, sample_rate: u3
         return true;
     };
 
-    let sender = start_native_audio_thread();
+    let sender = start_native_audio_thread(state.native_audio_volume.clone());
     if let Ok(mut guard) = state.native_audio.lock() {
         *guard = Some(sender.clone());
     }
@@ -721,7 +746,7 @@ Connection: close\r\n\
     let _ = stream.write_all(&response);
 }
 
-fn start_native_audio_thread() -> mpsc::Sender<AudioCommand> {
+fn start_native_audio_thread(volume: Arc<AtomicU32>) -> mpsc::Sender<AudioCommand> {
     let (sender, receiver) = mpsc::channel::<AudioCommand>();
     let _ = thread::Builder::new()
         .name("euther-oxide-native-audio".to_string())
@@ -735,7 +760,7 @@ fn start_native_audio_thread() -> mpsc::Sender<AudioCommand> {
                         response,
                     } => {
                         if audio.is_none() {
-                            audio = NativeAudio::new();
+                            audio = NativeAudio::new(volume.clone());
                         }
                         let result = match audio.as_mut() {
                             Some(audio) => NativeAudioResult {
@@ -754,7 +779,7 @@ fn start_native_audio_thread() -> mpsc::Sender<AudioCommand> {
                         sample_rate,
                     } => {
                         if audio.is_none() {
-                            audio = NativeAudio::new();
+                            audio = NativeAudio::new(volume.clone());
                         }
                         if let Some(audio) = audio.as_mut() {
                             audio.push_i16(&samples, sample_rate);
@@ -767,7 +792,7 @@ fn start_native_audio_thread() -> mpsc::Sender<AudioCommand> {
 }
 
 impl NativeAudio {
-    fn new() -> Option<Self> {
+    fn new(volume: Arc<AtomicU32>) -> Option<Self> {
         let host = cpal::default_host();
         let device = host.default_output_device()?;
         let config = device.default_output_config().ok()?;
@@ -784,6 +809,7 @@ impl NativeAudio {
                 &device,
                 &stream_config,
                 queue.clone(),
+                volume.clone(),
                 channels,
                 err_fn,
             ),
@@ -791,6 +817,7 @@ impl NativeAudio {
                 &device,
                 &stream_config,
                 queue.clone(),
+                volume.clone(),
                 channels,
                 err_fn,
             ),
@@ -798,6 +825,7 @@ impl NativeAudio {
                 &device,
                 &stream_config,
                 queue.clone(),
+                volume.clone(),
                 channels,
                 err_fn,
             ),
@@ -807,6 +835,7 @@ impl NativeAudio {
         stream.play().ok()?;
         Some(Self {
             queue,
+            _volume: volume,
             _stream: stream,
             sample_rate,
             primed: false,
@@ -849,6 +878,7 @@ fn build_native_audio_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     queue: Arc<Mutex<VecDeque<f32>>>,
+    volume: Arc<AtomicU32>,
     channels: usize,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -860,10 +890,12 @@ where
         move |data: &mut [T], _| {
             let mut queue = queue.lock().ok();
             for frame in data.chunks_mut(channels) {
+                let gain = volume.load(Ordering::Acquire) as f32 / 1000.0;
                 let sample = queue
                     .as_mut()
                     .and_then(|queue| queue.pop_front())
-                    .unwrap_or(0.0);
+                    .unwrap_or(0.0)
+                    * gain;
                 let output = T::from_sample(sample);
                 for channel in frame {
                     *channel = output;
@@ -1207,6 +1239,7 @@ fn main() {
             native_frame_status,
             set_native_surface_rect,
             play_native_audio,
+            set_audio_volume,
             reset_emulator,
             set_input,
             list_state_slots,

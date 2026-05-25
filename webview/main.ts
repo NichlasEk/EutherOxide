@@ -150,6 +150,8 @@ const bridgeBase =
   new URLSearchParams(window.location.search).get("bridge") ?? "http://127.0.0.1:32161";
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
+const volumeStorageKey = "eutheroxide-audio-volume";
+let audioVolume = readStoredVolume();
 const inputState: InputState = {
   up: false,
   down: false,
@@ -207,6 +209,7 @@ let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
+let audioGain: GainNode | null = null;
 let audioCursor = 0;
 let nextFrameDue = performance.now();
 let nativeSurfaceRectTimer: number | null = null;
@@ -239,6 +242,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button id="step-frame" type="button">Step</button>
           <button id="reset-core" type="button">Reset</button>
         </div>
+      </div>
+
+      <div class="rail-section volume-section">
+        <div class="volume-head">
+          <p class="section-label">Volume</p>
+          <strong id="volume-value">80%</strong>
+        </div>
+        <input id="volume-slider" type="range" min="0" max="100" value="80" aria-label="volume" />
       </div>
 
       <div class="rail-section state-section">
@@ -348,6 +359,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
 videoContext = videoCanvas.getContext("2d", { alpha: false })!;
 
+const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
+const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
 const romInput = document.querySelector<HTMLInputElement>("#rom-input")!;
 const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
@@ -360,6 +373,13 @@ const buildLamp = document.querySelector<HTMLSpanElement>("#build-lamp")!;
 const buildProfileButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-build-profile]"),
 );
+
+volumeSlider.value = Math.round(audioVolume * 100).toString();
+updateVolumeUi();
+applyAudioVolume();
+volumeSlider.addEventListener("input", () => {
+  setAudioVolume(Number(volumeSlider.value) / 100);
+});
 
 romDrop.addEventListener("click", async (event) => {
   if (!isTauri) {
@@ -1443,6 +1463,38 @@ async function queueNativeAudio(): Promise<void> {
   }
 }
 
+function readStoredVolume(): number {
+  const stored = Number(localStorage.getItem(volumeStorageKey));
+  return Number.isFinite(stored) ? clampVolume(stored) : 0.8;
+}
+
+function clampVolume(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0.8;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function setAudioVolume(value: number): void {
+  audioVolume = clampVolume(value);
+  localStorage.setItem(volumeStorageKey, audioVolume.toString());
+  updateVolumeUi();
+  applyAudioVolume();
+}
+
+function updateVolumeUi(): void {
+  volumeValue.textContent = `${Math.round(audioVolume * 100)}%`;
+}
+
+function applyAudioVolume(): void {
+  if (audioGain && audioContext) {
+    audioGain.gain.setTargetAtTime(audioVolume, audioContext.currentTime, 0.01);
+  }
+  if (isTauri) {
+    void invoke("set_audio_volume", { volume: audioVolume });
+  }
+}
+
 async function ensureAudio(): Promise<AudioContext | null> {
   const AudioCtor = window.AudioContext ?? window.webkitAudioContext;
   if (!AudioCtor) {
@@ -1450,6 +1502,9 @@ async function ensureAudio(): Promise<AudioContext | null> {
   }
   if (!audioContext) {
     audioContext = new AudioCtor();
+    audioGain = audioContext.createGain();
+    audioGain.connect(audioContext.destination);
+    applyAudioVolume();
     audioCursor = audioContext.currentTime;
   }
   if (audioContext.state === "suspended") {
@@ -1508,7 +1563,7 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
 
   const source = context.createBufferSource();
   source.buffer = buffer;
-  source.connect(context.destination);
+  source.connect(audioGain ?? context.destination);
   const now = context.currentTime;
   if (audioCursor < now + 0.02 || audioCursor > now + 0.18) {
     audioCursor = now + 0.035;
@@ -2134,10 +2189,10 @@ function hashText(value: string): number {
 function startMoleculeField(): void {
   const canvas = document.querySelector<HTMLCanvasElement>("#molecule-field")!;
   const context = canvas.getContext("2d")!;
-  const atoms = Array.from({ length: 42 }, (_, index) => ({
+  const atoms = Array.from({ length: 86 }, (_, index) => ({
     x: Math.random(),
     y: Math.random(),
-    r: 2 + (index % 5),
+    r: 2 + (index % 6),
     phase: Math.random() * Math.PI * 2,
     kind: index % 7 === 0 ? "O" : index % 11 === 0 ? "H" : "C",
   }));
@@ -2157,22 +2212,60 @@ function startMoleculeField(): void {
   const draw = (time: number) => {
     const width = window.innerWidth;
     const height = window.innerHeight;
+    const protectedRect = screenGlass.getBoundingClientRect();
+    const guard = {
+      left: protectedRect.left - 18,
+      right: protectedRect.right + 18,
+      top: protectedRect.top - 18,
+      bottom: protectedRect.bottom + 18,
+    };
+    const inGuard = (x: number, y: number) =>
+      x >= guard.left && x <= guard.right && y >= guard.top && y <= guard.bottom;
+
     context.clearRect(0, 0, width, height);
-    context.lineWidth = 1;
+    context.save();
+    context.globalCompositeOperation = "screen";
+    context.lineWidth = 1.4;
+
+    const waveY = height * 0.54 + Math.sin(time * 0.00022) * 18;
+    context.strokeStyle = "rgba(245, 215, 125, 0.12)";
+    context.beginPath();
+    context.moveTo(0, waveY);
+    for (let x = 0; x <= width; x += 44) {
+      const y = waveY + Math.sin(x * 0.018 + time * 0.00058) * 34;
+      context.lineTo(x, y);
+    }
+    context.stroke();
+
+    context.font = "700 15px ui-monospace, SFMono-Regular, Menlo, monospace";
+    context.fillStyle = "rgba(223, 246, 180, 0.13)";
+    for (let index = 0; index < 9; index += 1) {
+      const x = (index * 211 + time * 0.012) % (width + 180) - 90;
+      const y = 72 + ((index * 83) % Math.max(1, height - 140));
+      if (!inGuard(x, y)) {
+        context.fillText(index % 3 === 0 ? "C=C" : index % 3 === 1 ? "O2" : "R-CHO", x, y);
+      }
+    }
 
     for (let i = 0; i < atoms.length; i += 1) {
       const atom = atoms[i];
       const x = atom.x * width + Math.sin(time * 0.00018 + atom.phase) * 24;
       const y = atom.y * height + Math.cos(time * 0.00021 + atom.phase) * 18;
+      if (inGuard(x, y)) {
+        continue;
+      }
       for (let j = i + 1; j < atoms.length; j += 1) {
         const other = atoms[j];
         const ox = other.x * width + Math.sin(time * 0.00018 + other.phase) * 24;
         const oy = other.y * height + Math.cos(time * 0.00021 + other.phase) * 18;
+        if (inGuard(ox, oy)) {
+          continue;
+        }
         const dx = x - ox;
         const dy = y - oy;
         const distance = Math.hypot(dx, dy);
-        if (distance < 150) {
-          context.strokeStyle = `rgba(168, 229, 139, ${0.09 * (1 - distance / 150)})`;
+        if (distance < 170) {
+          context.strokeStyle = `rgba(168, 229, 139, ${0.16 * (1 - distance / 170)})`;
           context.beginPath();
           context.moveTo(x, y);
           context.lineTo(ox, oy);
@@ -2185,6 +2278,7 @@ function startMoleculeField(): void {
       context.arc(x, y, atom.r, 0, Math.PI * 2);
       context.fill();
     }
+    context.restore();
 
     window.requestAnimationFrame(draw);
   };

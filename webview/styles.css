@@ -73,6 +73,7 @@ button:disabled {
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  opacity: 0.92;
 }
 
 .oxide-shell {
@@ -370,6 +371,39 @@ h2 {
   min-height: 38px;
   padding: 0 8px;
   font-size: 0.9rem;
+}
+
+.volume-section {
+  gap: 8px;
+}
+
+.volume-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.volume-head .section-label {
+  margin: 0;
+}
+
+.volume-head strong {
+  color: #fff4c6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.84rem;
+}
+
+#volume-slider {
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  accent-color: #a5de72;
+}
+
+#volume-slider:focus-visible {
+  outline: 2px solid rgba(230, 247, 147, 0.58);
+  outline-offset: 3px;
 }
 
 .state-grid {
