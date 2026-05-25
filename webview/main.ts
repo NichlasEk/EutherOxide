@@ -128,6 +128,23 @@ type GamepadSnapshot = {
   gamepads: GamepadDevice[];
 };
 
+type RomDirSetting = {
+  romDir?: string | null;
+};
+
+type RomDirEntry = {
+  name: string;
+  path: string;
+  isDir: boolean;
+};
+
+type RomDirListing = {
+  romDir?: string | null;
+  path: string;
+  parent?: string | null;
+  entries: RomDirEntry[];
+};
+
 type ShaderParamName =
   | "scanlines"
   | "phosphor_glow"
@@ -325,6 +342,9 @@ const ui: UiState = {
 let romBytes = new Uint8Array(0) as Uint8Array<ArrayBuffer>;
 let romDisplayName = "reaction.argon";
 let romHash = 0xC0FFEE;
+let romDirRoot: string | null = null;
+let romDirPath = "";
+let romDirEntries: RomDirEntry[] = [];
 let webStateSlots: Array<WebStateSnapshot | null> = [null, null, null];
 let stepping = false;
 let shaderRenderer: ShaderRenderer | null = null;
@@ -381,6 +401,22 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <span>ROM Reagent</span>
         <strong id="rom-name">Load Mega Drive</strong>
       </label>
+
+      <div class="rail-section rom-browser-section">
+        <div class="section-head">
+          <p class="section-label">ROM Directory</p>
+          <button id="rom-dir-set" class="mini-action" type="button">Set</button>
+        </div>
+        <div class="rom-dir-path" id="rom-dir-path">No directory</div>
+        <div class="rom-dir-manual" id="rom-dir-manual">
+          <input id="rom-dir-input" type="text" placeholder="/path/to/roms" aria-label="ROM directory path" />
+          <button id="rom-dir-apply" class="mini-action" type="button">Use</button>
+        </div>
+        <div class="rom-breadcrumb" id="rom-breadcrumb">/</div>
+        <div class="rom-list" id="rom-list">
+          <button type="button" disabled>Set ROM directory</button>
+        </div>
+      </div>
 
       <div class="rail-section transport-section">
         <p class="section-label">Transport</p>
@@ -553,6 +589,13 @@ shaderCanvas = document.querySelector<HTMLCanvasElement>("#shader-video")!;
 
 const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
 const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
+const romDirSet = document.querySelector<HTMLButtonElement>("#rom-dir-set")!;
+const romDirPathLabel = document.querySelector<HTMLDivElement>("#rom-dir-path")!;
+const romDirManual = document.querySelector<HTMLDivElement>("#rom-dir-manual")!;
+const romDirInput = document.querySelector<HTMLInputElement>("#rom-dir-input")!;
+const romDirApply = document.querySelector<HTMLButtonElement>("#rom-dir-apply")!;
+const romBreadcrumb = document.querySelector<HTMLDivElement>("#rom-breadcrumb")!;
+const romList = document.querySelector<HTMLDivElement>("#rom-list")!;
 const shaderDrawer = document.querySelector<HTMLDivElement>("#shader-drawer")!;
 const shaderToggle = document.querySelector<HTMLButtonElement>("#shader-toggle")!;
 const shaderSelect = document.querySelector<HTMLSelectElement>("#shader-select")!;
@@ -581,6 +624,7 @@ const buildProfileButtons = Array.from(
 volumeSlider.value = Math.round(audioVolume * 100).toString();
 initializeShaderControls();
 void loadShaderConfigFile();
+void loadRomDirSetting();
 updateVolumeUi();
 applyAudioVolume();
 volumeSlider.addEventListener("input", () => {
@@ -623,6 +667,44 @@ romInput.addEventListener("change", async () => {
   const file = romInput.files?.[0];
   if (file) {
     await loadFile(file);
+  }
+});
+
+romDirSet.addEventListener("click", async () => {
+  if (isTauri) {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+    });
+    if (typeof selected === "string") {
+      await setRomDir(selected);
+    }
+    return;
+  }
+  romDirManual.classList.toggle("is-open");
+  romDirInput.focus();
+});
+
+romDirApply.addEventListener("click", async () => {
+  await setRomDir(romDirInput.value);
+});
+
+romDirInput.addEventListener("keydown", async (event) => {
+  if (event.key === "Enter") {
+    await setRomDir(romDirInput.value);
+  }
+});
+
+romList.addEventListener("click", async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-rom-path]");
+  if (!button) {
+    return;
+  }
+  const path = button.dataset.romPath ?? "";
+  if (button.dataset.romKind === "dir") {
+    await refreshRomDir(path);
+  } else {
+    await loadRomDirEntry(path, button.dataset.romName ?? basename(path));
   }
 });
 
@@ -855,6 +937,142 @@ function recomputeInputState(): void {
   }
   updatePadButtons();
   void syncInput();
+}
+
+async function loadRomDirSetting(): Promise<void> {
+  try {
+    const setting = isTauri
+      ? await invoke<RomDirSetting>("get_rom_dir")
+      : ui.runtime === "bridge"
+        ? await bridgeJson<RomDirSetting>("/rom-dir", {}, 400)
+        : { romDir: null };
+    romDirRoot = setting.romDir ?? null;
+    romDirInput.value = romDirRoot ?? "";
+    if (romDirRoot) {
+      await refreshRomDir("");
+    } else {
+      renderRomDir();
+    }
+  } catch {
+    renderRomDir();
+  }
+}
+
+async function setRomDir(path: string): Promise<void> {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return;
+  }
+  try {
+    const setting = isTauri
+      ? await invoke<RomDirSetting>("set_rom_dir", { path: trimmed })
+      : await bridgeJson<RomDirSetting>(
+          "/rom-dir",
+          {
+            method: "POST",
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+            body: trimmed,
+          },
+        );
+    romDirRoot = setting.romDir ?? trimmed;
+    romDirInput.value = romDirRoot;
+    romDirManual.classList.remove("is-open");
+    await refreshRomDir("");
+    pushTrace("ROM directory bonded");
+  } catch (err) {
+    pushTrace(`ROM directory rejected: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function refreshRomDir(path: string): Promise<void> {
+  try {
+    const listing = isTauri
+      ? await invoke<RomDirListing>("list_rom_dir", { relativePath: path })
+      : await bridgeJson<RomDirListing>(
+          `/rom-dir/list?path=${encodeURIComponent(path)}`,
+          {},
+          700,
+        );
+    romDirRoot = listing.romDir ?? romDirRoot;
+    romDirPath = listing.path;
+    romDirEntries = listing.entries;
+    renderRomDir(listing.parent ?? null);
+  } catch (err) {
+    romDirEntries = [];
+    renderRomDir();
+    pushTrace(`ROM directory read missed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function loadRomDirEntry(path: string, name: string): Promise<void> {
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  stopBridgeStream();
+  try {
+    if (isTauri) {
+      const result = await invoke<LoadResult>("load_rom_from_dir", { relativePath: path });
+      await applyLoadedRomResult(result, name, "tauri");
+    } else {
+      const result = await bridgeJson<BridgeStatusResult>(
+        `/rom-dir/load?path=${encodeURIComponent(path)}`,
+        { method: "POST" },
+      );
+      await applyLoadedRomResult(result, name, "bridge");
+      const frame = await bridgeFrame();
+      drawNativeFrame(frame);
+      ui.frame = frame.frame;
+      ui.cpuCycles = frame.cpuCycles;
+      ui.cpuSteps = frame.cpuSteps;
+      ui.frameMs = frame.frameMs;
+    }
+    pushTrace("ROM directory launch");
+  } catch (err) {
+    pushTrace(`ROM launch missed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function applyLoadedRomResult(
+  result: LoadResult,
+  displayName: string,
+  runtime: UiState["runtime"],
+): Promise<void> {
+  romDisplayName = displayName;
+  romHash = hashText(displayName);
+  romBytes = new Uint8Array(0) as Uint8Array<ArrayBuffer>;
+  lastBrowserFile = null;
+  Object.assign(ui, result);
+  ui.runtime = runtime;
+  ui.loaded = true;
+  ui.nativeStates = Boolean(result.statePath);
+  ui.status = "LOADED";
+  ui.lastError = "";
+  document.querySelector("#rom-name")!.textContent = displayName;
+  await refreshStateSlots();
+  renderUi();
+}
+
+function renderRomDir(parent: string | null = null): void {
+  romDirPathLabel.textContent = romDirRoot ? basename(romDirRoot) || romDirRoot : "No directory";
+  romBreadcrumb.textContent = romDirPath ? `/${romDirPath}` : "/";
+  if (!romDirRoot) {
+    romList.innerHTML = `<button type="button" disabled>Set ROM directory</button>`;
+    return;
+  }
+  const rows = [];
+  if (parent !== null) {
+    rows.push(
+      `<button data-rom-kind="dir" data-rom-path="${escapeHtml(parent)}" type="button"><span>..</span><strong>Parent</strong></button>`,
+    );
+  }
+  rows.push(
+    ...romDirEntries.map((entry) => {
+      const kind = entry.isDir ? "dir" : "rom";
+      return `<button data-rom-kind="${kind}" data-rom-path="${escapeHtml(entry.path)}" data-rom-name="${escapeHtml(entry.name)}" type="button"><span>${entry.isDir ? "DIR" : "ROM"}</span><strong>${escapeHtml(entry.name)}</strong></button>`;
+    }),
+  );
+  romList.innerHTML = rows.length
+    ? rows.join("")
+    : `<button type="button" disabled>No ROMs here</button>`;
 }
 
 function cloneDefaultBindings(): Record<InputName, ControlBinding> {
@@ -1771,6 +1989,7 @@ async function connectBridge(announce = true): Promise<boolean> {
     ui.lastError = "";
     await refreshBuildStatus(false);
     await loadShaderConfigFile();
+    await loadRomDirSetting();
     document.querySelector("#rom-name")!.textContent = ui.loaded
       ? result.title
       : "Load Mega Drive";

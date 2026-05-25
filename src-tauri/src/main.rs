@@ -196,6 +196,29 @@ struct GamepadControl {
     direction: Option<&'static str>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RomDirSetting {
+    rom_dir: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RomDirListing {
+    rom_dir: Option<String>,
+    path: String,
+    parent: Option<String>,
+    entries: Vec<RomDirEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RomDirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
 #[derive(Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InputState {
@@ -239,6 +262,36 @@ fn load_rom_path(state: State<'_, AppState>, path: String) -> Result<LoadResult,
     *state.native_status.lock().map_err(|err| err.to_string())? = None;
     *state.native_frame.lock().map_err(|err| err.to_string())? = None;
     Ok(result)
+}
+
+#[tauri::command]
+fn get_rom_dir() -> Result<RomDirSetting, String> {
+    Ok(RomDirSetting {
+        rom_dir: read_rom_dir_setting().map_err(|err| err.to_string())?,
+    })
+}
+
+#[tauri::command]
+fn set_rom_dir(path: String) -> Result<RomDirSetting, String> {
+    let canonical = validate_rom_root(path.trim()).map_err(|err| err.to_string())?;
+    write_rom_dir_setting(&canonical).map_err(|err| err.to_string())?;
+    Ok(RomDirSetting {
+        rom_dir: Some(canonical.to_string_lossy().to_string()),
+    })
+}
+
+#[tauri::command]
+fn list_rom_dir(relative_path: String) -> Result<RomDirListing, String> {
+    list_rom_dir_inner(&relative_path).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn load_rom_from_dir(
+    state: State<'_, AppState>,
+    relative_path: String,
+) -> Result<LoadResult, String> {
+    let path = resolve_rom_file_path(&relative_path).map_err(|err| err.to_string())?;
+    load_rom_path(state, path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -511,6 +564,147 @@ fn bridge_control_dir() -> PathBuf {
 
 fn shader_config_path() -> PathBuf {
     bridge_control_dir().join("shaders.toml")
+}
+
+fn settings_path() -> PathBuf {
+    bridge_control_dir().join("settings.toml")
+}
+
+fn read_rom_dir_setting() -> std::io::Result<Option<String>> {
+    let contents = match fs::read_to_string(settings_path()) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    Ok(parse_toml_string(&contents, "rom_dir"))
+}
+
+fn write_rom_dir_setting(path: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(bridge_control_dir())?;
+    fs::write(
+        settings_path(),
+        format!(
+            "rom_dir = \"{}\"\n",
+            escape_toml_string(&path.to_string_lossy())
+        ),
+    )
+}
+
+fn validate_rom_root(path: &str) -> std::io::Result<PathBuf> {
+    let canonical = PathBuf::from(path).canonicalize()?;
+    if !canonical.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "ROM directory must be a directory",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn rom_root_path() -> std::io::Result<PathBuf> {
+    let root = read_rom_dir_setting()?.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "ROM directory is not set")
+    })?;
+    validate_rom_root(&root)
+}
+
+fn list_rom_dir_inner(relative: &str) -> std::io::Result<RomDirListing> {
+    let root = rom_root_path()?;
+    let directory = resolve_rom_dir_path(&root, relative)?;
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let is_dir = file_type.is_dir();
+        let path = entry.path();
+        if !is_dir && !is_rom_path(&path) {
+            continue;
+        }
+        let Ok(relative_path) = path.strip_prefix(&root) else {
+            continue;
+        };
+        entries.push(RomDirEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: normalize_relative_path(relative_path),
+            is_dir,
+        });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    let current = directory
+        .strip_prefix(&root)
+        .map(normalize_relative_path)
+        .unwrap_or_default();
+    let parent = directory
+        .parent()
+        .and_then(|parent| parent.strip_prefix(&root).ok())
+        .map(normalize_relative_path)
+        .filter(|path| path != &current);
+    Ok(RomDirListing {
+        rom_dir: Some(root.to_string_lossy().to_string()),
+        path: current,
+        parent,
+        entries,
+    })
+}
+
+fn resolve_rom_dir_path(root: &std::path::Path, relative: &str) -> std::io::Result<PathBuf> {
+    let joined = root.join(relative);
+    let canonical = joined.canonicalize()?;
+    if !canonical.starts_with(root) || !canonical.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "directory is outside ROM root",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn resolve_rom_file_path(relative: &str) -> std::io::Result<PathBuf> {
+    let root = rom_root_path()?;
+    let canonical = root.join(relative).canonicalize()?;
+    if !canonical.starts_with(&root) || !canonical.is_file() || !is_rom_path(&canonical) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "ROM path is outside root or not a supported ROM",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn is_rom_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "bin" | "gen" | "md" | "smd" | "rom"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn normalize_relative_path(path: &std::path::Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn parse_toml_string(contents: &str, key: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        if name.trim() != key {
+            return None;
+        }
+        let value = value.trim().trim_matches('"');
+        Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
+    })
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 impl GamepadReader {
@@ -1403,6 +1597,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_rom_bytes,
             load_rom_path,
+            get_rom_dir,
+            set_rom_dir,
+            list_rom_dir,
+            load_rom_from_dir,
             run_frame,
             run_frame_audio_packet,
             native_bridge_url,

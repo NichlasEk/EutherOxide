@@ -355,6 +355,85 @@ h2 {
   padding: 14px;
 }
 
+.rom-browser-section {
+  min-height: 0;
+}
+
+.rom-dir-path,
+.rom-breadcrumb {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(207, 240, 178, 0.11);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.62);
+  color: #dff6b4;
+  font-size: 0.78rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rom-breadcrumb {
+  color: #9fbe91;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+
+.rom-dir-manual {
+  display: none;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.rom-dir-manual.is-open {
+  display: grid;
+}
+
+.rom-dir-manual input {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 9px;
+  font-size: 0.78rem;
+}
+
+.rom-list {
+  display: grid;
+  gap: 6px;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.rom-list button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.rom-list button span {
+  color: #f0dc91;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.64rem;
+  font-weight: 900;
+}
+
+.rom-list button strong {
+  min-width: 0;
+  color: #eef8dd;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rail-section {
   display: grid;
   gap: 10px;

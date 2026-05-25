@@ -471,6 +471,29 @@ struct GamepadControl {
     direction: Option<&'static str>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RomDirSetting {
+    rom_dir: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RomDirListing {
+    rom_dir: Option<String>,
+    path: String,
+    parent: Option<String>,
+    entries: Vec<RomDirEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RomDirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeInput {
@@ -672,6 +695,37 @@ fn handle_bridge_request(stream: &mut TcpStream, state: &BridgeState) -> io::Res
             ensure_bridge_control_dir()?;
             fs::write(shader_config_path(), &request.body)?;
             send_empty(stream, 204)
+        }
+        ("GET", "/rom-dir") => send_json(
+            stream,
+            &RomDirSetting {
+                rom_dir: read_rom_dir_setting()?,
+            },
+        ),
+        ("POST", "/rom-dir") => {
+            let path = String::from_utf8(request.body)
+                .map_err(|_| invalid_request("ROM directory path must be UTF-8"))?;
+            let canonical = validate_rom_root(path.trim())?;
+            write_rom_dir_setting(&canonical)?;
+            send_json(
+                stream,
+                &RomDirSetting {
+                    rom_dir: Some(canonical.to_string_lossy().to_string()),
+                },
+            )
+        }
+        ("GET", "/rom-dir/list") => {
+            let relative = query_string_value(&request.path, "path")?.unwrap_or_default();
+            send_json(stream, &list_rom_dir(&relative)?)
+        }
+        ("POST", "/rom-dir/load") => {
+            let relative = query_string_value(&request.path, "path")?
+                .ok_or_else(|| invalid_request("missing path query"))?;
+            let rom_path = resolve_rom_file_path(&relative)?;
+            let mut emulator = lock_bridge_emulator(state)?;
+            emulator.load_rom_file(rom_path)?;
+            reset_bridge_pacer(state)?;
+            send_json(stream, &bridge_status(&emulator))
         }
         ("GET", "/states") => {
             let emulator = lock_bridge_emulator(state)?;
@@ -1231,6 +1285,10 @@ fn shader_config_path() -> PathBuf {
     bridge_control_dir().join("shaders.toml")
 }
 
+fn settings_path() -> PathBuf {
+    bridge_control_dir().join("settings.toml")
+}
+
 fn release_binary_path() -> PathBuf {
     PathBuf::from("target/release/euther-oxide")
 }
@@ -1252,6 +1310,135 @@ fn apply_bridge_input(emulator: &mut Emulator, input: BridgeInput) {
     pad.set_pressed(euther_oxide::controller::Controller::BUTTON_B, input.b);
     pad.set_pressed(euther_oxide::controller::Controller::BUTTON_C, input.c);
     pad.set_pressed(euther_oxide::controller::Controller::START, input.start);
+}
+
+fn read_rom_dir_setting() -> io::Result<Option<String>> {
+    let contents = match fs::read_to_string(settings_path()) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    Ok(parse_toml_string(&contents, "rom_dir"))
+}
+
+fn write_rom_dir_setting(path: &std::path::Path) -> io::Result<()> {
+    ensure_bridge_control_dir()?;
+    fs::write(
+        settings_path(),
+        format!(
+            "rom_dir = \"{}\"\n",
+            escape_toml_string(&path.to_string_lossy())
+        ),
+    )
+}
+
+fn validate_rom_root(path: &str) -> io::Result<PathBuf> {
+    let canonical = PathBuf::from(path).canonicalize()?;
+    if !canonical.is_dir() {
+        return Err(invalid_request("ROM directory must be a directory"));
+    }
+    Ok(canonical)
+}
+
+fn rom_root_path() -> io::Result<PathBuf> {
+    let root =
+        read_rom_dir_setting()?.ok_or_else(|| invalid_request("ROM directory is not set"))?;
+    validate_rom_root(&root)
+}
+
+fn list_rom_dir(relative: &str) -> io::Result<RomDirListing> {
+    let root = rom_root_path()?;
+    let directory = resolve_rom_dir_path(&root, relative)?;
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let is_dir = file_type.is_dir();
+        let path = entry.path();
+        if !is_dir && !is_rom_path(&path) {
+            continue;
+        }
+        let Ok(relative_path) = path.strip_prefix(&root) else {
+            continue;
+        };
+        entries.push(RomDirEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: normalize_relative_path(relative_path),
+            is_dir,
+        });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    let current = directory
+        .strip_prefix(&root)
+        .map(normalize_relative_path)
+        .unwrap_or_default();
+    let parent = directory
+        .parent()
+        .and_then(|parent| parent.strip_prefix(&root).ok())
+        .map(normalize_relative_path)
+        .filter(|path| path != &current);
+    Ok(RomDirListing {
+        rom_dir: Some(root.to_string_lossy().to_string()),
+        path: current,
+        parent,
+        entries,
+    })
+}
+
+fn resolve_rom_dir_path(root: &std::path::Path, relative: &str) -> io::Result<PathBuf> {
+    let joined = root.join(relative);
+    let canonical = joined.canonicalize()?;
+    if !canonical.starts_with(root) || !canonical.is_dir() {
+        return Err(invalid_request("directory is outside ROM root"));
+    }
+    Ok(canonical)
+}
+
+fn resolve_rom_file_path(relative: &str) -> io::Result<PathBuf> {
+    let root = rom_root_path()?;
+    let canonical = root.join(relative).canonicalize()?;
+    if !canonical.starts_with(&root) || !canonical.is_file() || !is_rom_path(&canonical) {
+        return Err(invalid_request(
+            "ROM path is outside root or not a supported ROM",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn is_rom_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "bin" | "gen" | "md" | "smd" | "rom"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn normalize_relative_path(path: &std::path::Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn parse_toml_string(contents: &str, key: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        if name.trim() != key {
+            return None;
+        }
+        let value = value.trim().trim_matches('"');
+        Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
+    })
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 impl GamepadReader {
@@ -1420,6 +1607,42 @@ fn query_profile(path: &str) -> io::Result<&'static str> {
         "release" => Ok("release"),
         _ => Err(invalid_request("profile must be debug or release")),
     }
+}
+
+fn query_string_value(path: &str, key: &str) -> io::Result<Option<String>> {
+    Ok(path.split_once('?').and_then(|(_, query)| {
+        query.split('&').find_map(|pair| {
+            let (name, value) = pair.split_once('=')?;
+            (name == key).then(|| percent_decode(value).ok()).flatten()
+        })
+    }))
+}
+
+fn percent_decode(value: &str) -> io::Result<String> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                    .map_err(|_| invalid_request("invalid percent encoding"))?;
+                let byte = u8::from_str_radix(hex, 16)
+                    .map_err(|_| invalid_request("invalid percent encoding"))?;
+                output.push(byte);
+                index += 3;
+            }
+            b'+' => {
+                output.push(b' ');
+                index += 1;
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(output).map_err(|_| invalid_request("query value must be UTF-8"))
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
