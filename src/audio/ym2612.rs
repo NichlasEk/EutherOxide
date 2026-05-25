@@ -126,6 +126,9 @@ pub struct Ym2612 {
     jg_cycle_remainder: u64,
     jg_frame_samples: Vec<f32>,
     jg_frame_stereo_samples: Vec<[f32; 2]>,
+    jg_resample_phase: f64,
+    jg_resample_carry: [f32; 2],
+    jg_resample_has_carry: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -323,6 +326,9 @@ impl Ym2612 {
             jg_cycle_remainder: 0,
             jg_frame_samples: Vec::new(),
             jg_frame_stereo_samples: Vec::new(),
+            jg_resample_phase: 0.0,
+            jg_resample_carry: [0.0; 2],
+            jg_resample_has_carry: false,
         };
         ym.reset();
         ym
@@ -345,6 +351,7 @@ impl Ym2612 {
         self.jg_cycle_remainder = 0;
         self.jg_frame_samples.clear();
         self.jg_frame_stereo_samples.clear();
+        self.reset_jg_resampler();
         self.timer_a_latch = 0;
         self.timer_b_latch = 0;
         self.timer_a_counter = 0;
@@ -496,6 +503,7 @@ impl Ym2612 {
         self.jg_cycle_remainder = snapshot.jg_cycle_remainder;
         self.jg_frame_samples = snapshot.jg_frame_samples;
         self.jg_frame_stereo_samples = snapshot.jg_frame_stereo_samples;
+        self.reset_jg_resampler();
     }
 
     pub fn begin_frame(&mut self) {
@@ -627,14 +635,14 @@ impl Ym2612 {
     pub fn render_frame_stereo_samples(
         &mut self,
         count: usize,
-        _frame_cycles: f64,
+        frame_cycles: f64,
         _sample_rate: usize,
     ) -> Vec<[f32; 2]> {
         if count == 0 {
             return Vec::new();
         }
 
-        let mut internal_samples = if self.jg_frame_stereo_samples.is_empty() {
+        let frame_samples = if self.jg_frame_stereo_samples.is_empty() {
             self.jg_frame_samples
                 .iter()
                 .map(|sample| [*sample, *sample])
@@ -642,12 +650,19 @@ impl Ym2612 {
         } else {
             self.jg_frame_stereo_samples.clone()
         };
+        let mut internal_samples = Vec::with_capacity(
+            frame_samples.len() + usize::from(self.jg_resample_has_carry),
+        );
+        if self.jg_resample_has_carry {
+            internal_samples.push(self.jg_resample_carry);
+        }
+        internal_samples.extend(frame_samples);
         if internal_samples.is_empty() {
             let (left, right) = self.jg.sample();
             internal_samples.push([left as f32, right as f32]);
         }
 
-        resample_linear_stereo(&internal_samples, count)
+        self.resample_jg_stereo(&internal_samples, count, frame_cycles)
     }
 
     pub fn channel_frequency(&self, channel: usize) -> f64 {
@@ -821,6 +836,63 @@ impl Ym2612 {
             ticks -= u64::from(tick_batch);
         }
         self.frame_jg_samples = self.jg_frame_samples.len();
+    }
+
+    fn reset_jg_resampler(&mut self) {
+        self.jg_resample_phase = 0.0;
+        self.jg_resample_carry = [0.0; 2];
+        self.jg_resample_has_carry = false;
+    }
+
+    fn resample_jg_stereo(
+        &mut self,
+        samples: &[[f32; 2]],
+        output_count: usize,
+        frame_cycles: f64,
+    ) -> Vec<[f32; 2]> {
+        if output_count == 0 {
+            return Vec::new();
+        }
+        if samples.is_empty() {
+            return vec![[0.0; 2]; output_count];
+        }
+        if samples.len() == 1 {
+            self.jg_resample_carry = samples[0];
+            self.jg_resample_has_carry = true;
+            return vec![samples[0]; output_count];
+        }
+
+        let mut output = Vec::with_capacity(output_count);
+        let mut phase = self.jg_resample_phase.max(0.0);
+        let ratio = if frame_cycles > 0.0 {
+            (frame_cycles / Self::INTERNAL_SAMPLE_DIVIDER as f64) / output_count as f64
+        } else {
+            (samples.len() - 1) as f64 / output_count as f64
+        };
+        let max_base = samples.len().saturating_sub(2);
+
+        for _ in 0..output_count {
+            let base = (phase.floor() as usize).min(max_base);
+            let frac = (phase - base as f64).clamp(0.0, 1.0) as f32;
+            let next = base + 1;
+            output.push([
+                samples[base][0] + (samples[next][0] - samples[base][0]) * frac,
+                samples[base][1] + (samples[next][1] - samples[base][1]) * frac,
+            ]);
+            phase += ratio;
+        }
+
+        self.jg_resample_carry = samples[samples.len() - 1];
+        self.jg_resample_has_carry = true;
+        self.jg_resample_phase = phase - (samples.len() - 1) as f64;
+        if !self.jg_resample_phase.is_finite()
+            || self.jg_resample_phase < 0.0
+            || self.jg_resample_phase > samples.len() as f64
+        {
+            self.jg_resample_phase = 0.0;
+        }
+
+        output
     }
 
     fn tick_timers(&mut self, cycles: i64) {

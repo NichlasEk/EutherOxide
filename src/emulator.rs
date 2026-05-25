@@ -395,7 +395,9 @@ impl Emulator {
     }
 
     fn run_z80_until_budget(&mut self) {
-        const Z80_BATCH_CYCLES: f64 = 32.0;
+        // Keep the sound CPU close to the 68k clock. GEMS DAC streams are
+        // sensitive to coarse Z80 bursts, so schedule at instruction granularity.
+        const Z80_BATCH_CYCLES: f64 = 4.0;
 
         if !self.bus.z80_running() {
             let max_blocked_carry = Self::Z80_CLOCK / self.frame_rate();
@@ -428,7 +430,7 @@ impl Emulator {
                 break;
             }
             self.z80_vblank_irq_cycles = (self.z80_vblank_irq_cycles - ran as f64).max(0.0);
-            self.z80_pending_cycles = (self.z80_pending_cycles - ran as f64).max(0.0);
+            self.z80_pending_cycles -= ran as f64;
         }
     }
 
