@@ -191,8 +191,8 @@ impl Emulator {
                         self.z80_pending_cycles += f64::from(dma_wait_cycles) * z80_ratio;
                     }
                     self.z80_pending_cycles += f64::from(step_cycles) * z80_ratio;
-                    self.run_z80_until_budget();
                     self.bus.ym_frame_cycle = cycles;
+                    self.run_z80_until_budget();
                     self.bus.ym2612.sync_to_cycle(cycles);
                     self.interrupt_z80_for_ym_timer();
                 }
@@ -267,8 +267,8 @@ impl Emulator {
     pub fn render_audio_frame_i16(&mut self, sample_rate: usize) -> Vec<i16> {
         let sample_rate = sample_rate.max(1);
         let count = ((sample_rate as f64 / self.frame_rate()).round() as usize).max(1);
-        let psg_cycles = Self::Z80_CLOCK / self.frame_rate();
         let ym_cycles = self.current_m68k_frame_cycles() as f64;
+        let psg_cycles = ym_cycles;
         let psg_samples = self
             .bus
             .psg
@@ -293,8 +293,8 @@ impl Emulator {
     pub fn render_audio_frame_i16_stereo(&mut self, sample_rate: usize) -> Vec<i16> {
         let sample_rate = sample_rate.max(1);
         let count = ((sample_rate as f64 / self.frame_rate()).round() as usize).max(1);
-        let psg_cycles = Self::Z80_CLOCK / self.frame_rate();
         let ym_cycles = self.current_m68k_frame_cycles() as f64;
+        let psg_cycles = ym_cycles;
         let psg_samples = self
             .bus
             .psg
@@ -441,12 +441,11 @@ impl Emulator {
     }
 
     fn interrupt_z80_for_ym_timer(&mut self) {
-        let asserted = self.bus.ym2612.irq_asserted();
-        if asserted && !self.z80_ym_irq_asserted {
-            self.z80_ym_irq_pending = true;
-        } else if !asserted {
-            self.z80_ym_irq_pending = false;
-        }
-        self.z80_ym_irq_asserted = asserted;
+        // MD software polls YM timer status for DAC pacing; EutherDrive's
+        // jgenesis-backed MD path does not wire the YM timer flag into the Z80
+        // IRQ line. Injecting a Z80 interrupt here re-enters GEMS-style sound
+        // drivers during sample playback and corrupts music timing.
+        self.z80_ym_irq_asserted = self.bus.ym2612.irq_asserted();
+        self.z80_ym_irq_pending = false;
     }
 }

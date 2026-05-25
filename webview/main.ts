@@ -152,6 +152,9 @@ const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
 let audioVolume = readStoredVolume();
+const audioTargetLeadSeconds = 0.055;
+const audioMinimumLeadSeconds = 0.018;
+const audioMaximumLeadSeconds = 0.16;
 const inputState: InputState = {
   up: false,
   down: false,
@@ -211,6 +214,7 @@ let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
 let audioGain: GainNode | null = null;
 let audioCursor = 0;
+const activeAudioSources = new Set<AudioBufferSourceNode>();
 let nextFrameDue = performance.now();
 let nativeSurfaceRectTimer: number | null = null;
 
@@ -457,6 +461,7 @@ stepFrame.addEventListener("click", async () => {
     playToggle.textContent = "Play";
     stopBridgeStream();
   }
+  resetScheduledAudio();
   await advanceFrame();
 });
 
@@ -468,6 +473,7 @@ resetCore.addEventListener("click", async () => {
     ui.playing = false;
     playToggle.textContent = "Play";
     await invoke("set_native_running", { running: false });
+    resetScheduledAudio();
     await invoke("reset_emulator");
   } else if (ui.runtime === "bridge" && ui.loaded) {
     ui.playing = false;
@@ -898,7 +904,6 @@ function pauseBridgeForRestart(): boolean {
   ui.playing = false;
   playToggle.textContent = "Play";
   stopBridgeStream();
-  audioCursor = audioContext?.currentTime ?? 0;
   return wasPlaying;
 }
 
@@ -910,6 +915,7 @@ function restoreBridgePlaybackAfterRestart(wasPlaying: boolean): void {
   ui.playing = true;
   ui.status = "RUNNING";
   playToggle.textContent = "Pause";
+  resetScheduledAudio();
   void ensureAudio();
   void bridgeStreamLoop();
   renderUi();
@@ -1246,6 +1252,7 @@ function stopBridgeStream(): void {
   bridgeStreamAbort?.abort();
   bridgeStreamAbort = null;
   bridgeStreamActive = false;
+  resetScheduledAudio();
 }
 
 async function bridgeStreamLoop(): Promise<void> {
@@ -1495,6 +1502,19 @@ function applyAudioVolume(): void {
   }
 }
 
+function resetScheduledAudio(): void {
+  for (const source of activeAudioSources) {
+    try {
+      source.stop();
+    } catch {
+      // Already ended or not started yet.
+    }
+  }
+  activeAudioSources.clear();
+  audioCursor = audioContext?.currentTime ?? 0;
+  ui.audioLeadMs = 0;
+}
+
 async function ensureAudio(): Promise<AudioContext | null> {
   const AudioCtor = window.AudioContext ?? window.webkitAudioContext;
   if (!AudioCtor) {
@@ -1561,13 +1581,18 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
     }
   }
 
+  const now = context.currentTime;
+  if (audioCursor > now + audioMaximumLeadSeconds) {
+    resetScheduledAudio();
+    audioCursor = now + audioTargetLeadSeconds;
+  } else if (audioCursor < now + audioMinimumLeadSeconds) {
+    audioCursor = now + audioTargetLeadSeconds;
+  }
   const source = context.createBufferSource();
   source.buffer = buffer;
   source.connect(audioGain ?? context.destination);
-  const now = context.currentTime;
-  if (audioCursor < now + 0.02 || audioCursor > now + 0.18) {
-    audioCursor = now + 0.035;
-  }
+  activeAudioSources.add(source);
+  source.onended = () => activeAudioSources.delete(source);
   source.start(audioCursor);
   const leadMs = Math.max(0, (audioCursor - now) * 1000);
   audioCursor += buffer.duration;
@@ -1687,7 +1712,7 @@ async function loadStateSlot(slot: number): Promise<void> {
       ui.status = `ARGON ${slot}`;
       applyStateSlots(result.states);
       pushTrace(`Argon slot ${slot} reduced`);
-      audioCursor = audioContext?.currentTime ?? 0;
+      resetScheduledAudio();
       if (wasPlaying) {
         ui.playing = true;
         playToggle.textContent = "Pause";
@@ -1723,7 +1748,7 @@ async function loadStateSlot(slot: number): Promise<void> {
       ui.status = `ARGON ${slot}`;
       applyStateSlots(result.states);
       pushTrace(`Argon slot ${slot} reduced`);
-      audioCursor = audioContext?.currentTime ?? 0;
+      resetScheduledAudio();
       await syncInput();
       if (wasPlaying) {
         ui.playing = true;

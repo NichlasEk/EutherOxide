@@ -55,8 +55,8 @@ impl Psg {
     pub const TONE_CHANNELS: usize = 3;
     pub const CHANNELS: usize = 4;
     pub const MAX_PERIOD: u16 = 0x03ff;
-    const INITIAL_LFSR: u16 = 0x4000;
-    const NOISE_SHIFT: u16 = 14;
+    const INITIAL_LFSR: u16 = 0x8000;
+    const NOISE_SHIFT: u16 = 15;
 
     pub fn new() -> Self {
         let state = PsgState {

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::f64::consts::TAU;
+use std::{collections::VecDeque, f64::consts::TAU};
 
 use super::jg_ym2612::Ym2612 as JgYm2612;
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,7 @@ pub struct Ym2612 {
     jg_cycle_remainder: u64,
     jg_frame_samples: Vec<f32>,
     jg_frame_stereo_samples: Vec<[f32; 2]>,
+    jg_output_queue: VecDeque<[f32; 2]>,
     jg_resample_phase: f64,
     jg_resample_carry: [f32; 2],
     jg_resample_has_carry: bool,
@@ -192,6 +193,8 @@ pub struct Ym2612Snapshot {
     jg_frame_samples: Vec<f32>,
     #[serde(default)]
     jg_frame_stereo_samples: Vec<[f32; 2]>,
+    #[serde(default)]
+    jg_output_queue: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -259,6 +262,7 @@ impl Ym2612 {
     pub const TIMER_TICK_CYCLES: i64 = 144;
     pub const INTERNAL_SAMPLE_DIVIDER: i64 = Self::TIMER_TICK_CYCLES;
     pub const INTERNAL_SAMPLE_TICKS: u32 = (Self::INTERNAL_SAMPLE_DIVIDER / 6) as u32;
+    const MAX_BUFFERED_JG_SAMPLES: usize = 2048;
     const FNUM_HZ_SCALE: f64 = 0.0529819;
     const DAC_GAIN: f64 = 0.85;
     const DAC_SMOOTHING: f64 = 0.38;
@@ -326,6 +330,7 @@ impl Ym2612 {
             jg_cycle_remainder: 0,
             jg_frame_samples: Vec::new(),
             jg_frame_stereo_samples: Vec::new(),
+            jg_output_queue: VecDeque::new(),
             jg_resample_phase: 0.0,
             jg_resample_carry: [0.0; 2],
             jg_resample_has_carry: false,
@@ -351,6 +356,7 @@ impl Ym2612 {
         self.jg_cycle_remainder = 0;
         self.jg_frame_samples.clear();
         self.jg_frame_stereo_samples.clear();
+        self.jg_output_queue.clear();
         self.reset_jg_resampler();
         self.timer_a_latch = 0;
         self.timer_b_latch = 0;
@@ -448,6 +454,7 @@ impl Ym2612 {
             jg_cycle_remainder: self.jg_cycle_remainder,
             jg_frame_samples: self.jg_frame_samples.clone(),
             jg_frame_stereo_samples: self.jg_frame_stereo_samples.clone(),
+            jg_output_queue: self.jg_output_queue.iter().copied().collect(),
         }
     }
 
@@ -503,6 +510,7 @@ impl Ym2612 {
         self.jg_cycle_remainder = snapshot.jg_cycle_remainder;
         self.jg_frame_samples = snapshot.jg_frame_samples;
         self.jg_frame_stereo_samples = snapshot.jg_frame_stereo_samples;
+        self.jg_output_queue = VecDeque::from(snapshot.jg_output_queue);
         self.reset_jg_resampler();
     }
 
@@ -616,20 +624,17 @@ impl Ym2612 {
     pub fn render_frame_mono_samples(
         &mut self,
         count: usize,
-        _frame_cycles: f64,
+        frame_cycles: f64,
         _sample_rate: usize,
     ) -> Vec<f32> {
         if count == 0 {
             return Vec::new();
         }
 
-        let mut internal_samples = self.jg_frame_samples.clone();
-        if internal_samples.is_empty() {
-            let (left, right) = self.jg.sample();
-            internal_samples.push(((left + right) * 0.5) as f32);
-        }
-
-        resample_linear(&internal_samples, count)
+        self.render_jg_stereo_from_queue(count, frame_cycles)
+            .into_iter()
+            .map(|[left, right]| (left + right) * 0.5)
+            .collect()
     }
 
     pub fn render_frame_stereo_samples(
@@ -642,27 +647,7 @@ impl Ym2612 {
             return Vec::new();
         }
 
-        let frame_samples = if self.jg_frame_stereo_samples.is_empty() {
-            self.jg_frame_samples
-                .iter()
-                .map(|sample| [*sample, *sample])
-                .collect::<Vec<_>>()
-        } else {
-            self.jg_frame_stereo_samples.clone()
-        };
-        let mut internal_samples = Vec::with_capacity(
-            frame_samples.len() + usize::from(self.jg_resample_has_carry),
-        );
-        if self.jg_resample_has_carry {
-            internal_samples.push(self.jg_resample_carry);
-        }
-        internal_samples.extend(frame_samples);
-        if internal_samples.is_empty() {
-            let (left, right) = self.jg.sample();
-            internal_samples.push([left as f32, right as f32]);
-        }
-
-        self.resample_jg_stereo(&internal_samples, count, frame_cycles)
+        self.render_jg_stereo_from_queue(count, frame_cycles)
     }
 
     pub fn channel_frequency(&self, channel: usize) -> f64 {
@@ -832,6 +817,10 @@ impl Ym2612 {
                 self.jg_frame_samples.push(sample);
                 self.jg_frame_stereo_samples
                     .push([left as f32, right as f32]);
+                self.jg_output_queue.push_back([left as f32, right as f32]);
+                while self.jg_output_queue.len() > Self::MAX_BUFFERED_JG_SAMPLES {
+                    self.jg_output_queue.pop_front();
+                }
             });
             ticks -= u64::from(tick_batch);
         }
@@ -844,18 +833,32 @@ impl Ym2612 {
         self.jg_resample_has_carry = false;
     }
 
-    fn resample_jg_stereo(
+    fn render_jg_stereo_from_queue(
         &mut self,
-        samples: &[[f32; 2]],
         output_count: usize,
         frame_cycles: f64,
     ) -> Vec<[f32; 2]> {
         if output_count == 0 {
             return Vec::new();
         }
-        if samples.is_empty() {
-            return vec![[0.0; 2]; output_count];
+
+        let mut phase = self.jg_resample_phase.max(0.0);
+        let ratio = if frame_cycles > 0.0 {
+            (frame_cycles / Self::INTERNAL_SAMPLE_DIVIDER as f64) / output_count as f64
+        } else {
+            1.0
+        };
+        let needed_internal =
+            ((phase + ((output_count.saturating_sub(1)) as f64 * ratio)).floor() as usize) + 2;
+        let mut samples =
+            Vec::with_capacity(needed_internal + usize::from(self.jg_resample_has_carry));
+        if self.jg_resample_has_carry {
+            samples.push(self.jg_resample_carry);
         }
+        while samples.len() < needed_internal {
+            samples.push(self.jg_output_queue.pop_front().unwrap_or([0.0; 2]));
+        }
+
         if samples.len() == 1 {
             self.jg_resample_carry = samples[0];
             self.jg_resample_has_carry = true;
@@ -863,12 +866,6 @@ impl Ym2612 {
         }
 
         let mut output = Vec::with_capacity(output_count);
-        let mut phase = self.jg_resample_phase.max(0.0);
-        let ratio = if frame_cycles > 0.0 {
-            (frame_cycles / Self::INTERNAL_SAMPLE_DIVIDER as f64) / output_count as f64
-        } else {
-            (samples.len() - 1) as f64 / output_count as f64
-        };
         let max_base = samples.len().saturating_sub(2);
 
         for _ in 0..output_count {
