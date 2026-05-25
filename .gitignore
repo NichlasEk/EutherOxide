@@ -6,3 +6,8 @@
 .euther-bridge/
 **/*.rs.bk
 *.argon
+*.srm
+/logs/
+/HANDOFF.md
+/hur.txt
+/src/bin/probe_contra.rs
