@@ -3,6 +3,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { WEB_BUILD_ID } from "./build-info";
 import "./styles.css";
 
+const controllerGuideUrl = new URL("./controller-bindings.svg", import.meta.url).href;
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
@@ -91,6 +93,40 @@ type InputState = {
   start: boolean;
 };
 
+type InputName = keyof InputState;
+
+type PadBinding = {
+  kind: "button" | "axis";
+  code: string;
+  direction?: "positive" | "negative";
+};
+
+type ControlBinding = {
+  key: string;
+  pad: PadBinding;
+};
+
+type PadControl = {
+  id: string;
+  label: string;
+  pressed: boolean;
+  value?: number;
+  kind: "button" | "axis";
+  direction?: "positive" | "negative";
+};
+
+type GamepadDevice = {
+  id: string;
+  name: string;
+  controls: PadControl[];
+};
+
+type GamepadSnapshot = {
+  available: boolean;
+  error?: string | null;
+  gamepads: GamepadDevice[];
+};
+
 type StateSlot = {
   slot: number;
   occupied: boolean;
@@ -151,6 +187,7 @@ const bridgeBase =
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
+const bindingsStorageKey = "eutheroxide-input-bindings";
 let audioVolume = readStoredVolume();
 const audioTargetLeadSeconds = 0.055;
 const audioMinimumLeadSeconds = 0.018;
@@ -165,6 +202,31 @@ const inputState: InputState = {
   c: false,
   start: false,
 };
+const keyboardState = emptyInputState();
+const pointerState = emptyInputState();
+const gamepadState = emptyInputState();
+const inputNames: InputName[] = ["up", "down", "left", "right", "a", "b", "c", "start"];
+const inputLabels: Record<InputName, string> = {
+  up: "D-Pad Up",
+  down: "D-Pad Down",
+  left: "D-Pad Left",
+  right: "D-Pad Right",
+  a: "Button A",
+  b: "Button B",
+  c: "Button C",
+  start: "Start",
+};
+const defaultBindings: Record<InputName, ControlBinding> = {
+  up: { key: "ArrowUp", pad: { kind: "button", code: "DPadUp" } },
+  down: { key: "ArrowDown", pad: { kind: "button", code: "DPadDown" } },
+  left: { key: "ArrowLeft", pad: { kind: "button", code: "DPadLeft" } },
+  right: { key: "ArrowRight", pad: { kind: "button", code: "DPadRight" } },
+  a: { key: "z", pad: { kind: "button", code: "South" } },
+  b: { key: "x", pad: { kind: "button", code: "East" } },
+  c: { key: "c", pad: { kind: "button", code: "RightTrigger" } },
+  start: { key: "Enter", pad: { kind: "button", code: "Start" } },
+};
+let controlBindings = readStoredBindings();
 
 const ui: UiState = {
   loaded: false,
@@ -217,6 +279,15 @@ let audioCursor = 0;
 const activeAudioSources = new Set<AudioBufferSourceNode>();
 let nextFrameDue = performance.now();
 let nativeSurfaceRectTimer: number | null = null;
+let controlsOpen = false;
+let captureTarget: InputName | null = null;
+let captureMode: "key" | "pad" | null = null;
+let gamepadPollTimer: number | null = null;
+let lastGamepadSnapshot: GamepadSnapshot = {
+  available: false,
+  error: null,
+  gamepads: [],
+};
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="oxide-shell">
@@ -278,7 +349,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
 
       <div class="rail-section">
-        <p class="section-label">Pad</p>
+        <div class="section-head">
+          <p class="section-label">Pad</p>
+          <button id="controls-open" class="mini-action" type="button">Controls</button>
+        </div>
         <div class="pad-grid" aria-label="controller">
           <button data-pad="up" class="pad-key pad-up" type="button">U</button>
           <button data-pad="left" class="pad-key pad-left" type="button">L</button>
@@ -358,6 +432,36 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </aside>
   </main>
+  <div id="controls-modal" class="controls-modal" aria-hidden="true">
+    <div class="controls-dialog" role="dialog" aria-modal="true" aria-labelledby="controls-title">
+      <header class="controls-dialog-head">
+        <div>
+          <p class="eyebrow">Input Matrix</p>
+          <h2 id="controls-title">Controls</h2>
+        </div>
+        <div class="controls-actions">
+          <button id="controls-reset" class="mini-action" type="button">Reset</button>
+          <button id="controls-close" class="mini-action" type="button" aria-label="Close controls">Close</button>
+        </div>
+      </header>
+      <div class="controls-body">
+        <section class="binding-list" aria-label="controller bindings">
+          <p class="section-label">Bindings</p>
+          <div id="binding-rows" class="binding-rows"></div>
+        </section>
+        <section class="controller-guide" aria-label="controller map">
+          <img src="${controllerGuideUrl}" alt="Neon controller binding map" />
+          <div class="capture-readout" id="capture-readout">Ready</div>
+        </section>
+        <section class="gamepad-panel" aria-label="detected gamepads">
+          <p class="section-label">Gilrs Pads</p>
+          <div id="gamepad-list" class="gamepad-list">
+            <span>No pad detected</span>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
 `;
 
 videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
@@ -374,6 +478,13 @@ const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
 const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
 const releaseBuild = document.querySelector<HTMLButtonElement>("#release-build")!;
 const buildLamp = document.querySelector<HTMLSpanElement>("#build-lamp")!;
+const controlsOpenButton = document.querySelector<HTMLButtonElement>("#controls-open")!;
+const controlsModal = document.querySelector<HTMLDivElement>("#controls-modal")!;
+const controlsClose = document.querySelector<HTMLButtonElement>("#controls-close")!;
+const controlsReset = document.querySelector<HTMLButtonElement>("#controls-reset")!;
+const bindingRows = document.querySelector<HTMLDivElement>("#binding-rows")!;
+const gamepadList = document.querySelector<HTMLDivElement>("#gamepad-list")!;
+const captureReadout = document.querySelector<HTMLDivElement>("#capture-readout")!;
 const buildProfileButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-build-profile]"),
 );
@@ -533,9 +644,9 @@ stateGrid.addEventListener("click", async (event) => {
 document.querySelectorAll<HTMLButtonElement>("[data-pad]").forEach((button) => {
   const name = button.dataset.pad as keyof InputState;
   const set = (pressed: boolean) => {
-    inputState[name] = pressed;
+    pointerState[name] = pressed;
+    recomputeInputState();
     button.classList.toggle("is-active", pressed);
-    void syncInput();
   };
   button.addEventListener("pointerdown", (event) => {
     event.preventDefault();
@@ -547,38 +658,365 @@ document.querySelectorAll<HTMLButtonElement>("[data-pad]").forEach((button) => {
   button.addEventListener("pointerleave", () => set(false));
 });
 
-const keyMap: Record<string, keyof InputState> = {
-  ArrowUp: "up",
-  ArrowDown: "down",
-  ArrowLeft: "left",
-  ArrowRight: "right",
-  z: "a",
-  x: "b",
-  c: "c",
-  Enter: "start",
-};
+controlsOpenButton.addEventListener("click", () => openControls());
+controlsClose.addEventListener("click", () => closeControls());
+controlsReset.addEventListener("click", () => {
+  controlBindings = cloneDefaultBindings();
+  storeBindings();
+  captureTarget = null;
+  captureMode = null;
+  renderBindings();
+});
+controlsModal.addEventListener("pointerdown", (event) => {
+  if (event.target === controlsModal) {
+    closeControls();
+  }
+});
+
+bindingRows.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-bind]");
+  if (!button) {
+    return;
+  }
+  captureTarget = button.dataset.input as InputName;
+  captureMode = button.dataset.bind === "pad" ? "pad" : "key";
+  renderBindings();
+});
 
 window.addEventListener("keydown", (event) => {
-  const key = keyMap[event.key];
-  if (!key || inputState[key]) {
+  if (controlsOpen && event.key === "Escape") {
+    closeControls();
+    event.preventDefault();
+    return;
+  }
+  if (captureTarget && captureMode === "key") {
+    event.preventDefault();
+    controlBindings[captureTarget].key = event.key;
+    storeBindings();
+    captureTarget = null;
+    captureMode = null;
+    renderBindings();
+    return;
+  }
+  const key = keyForEvent(event.key);
+  if (!key || keyboardState[key]) {
     return;
   }
   event.preventDefault();
-  inputState[key] = true;
-  updatePadButtons();
-  void syncInput();
+  keyboardState[key] = true;
+  recomputeInputState();
 });
 
 window.addEventListener("keyup", (event) => {
-  const key = keyMap[event.key];
+  const key = keyForEvent(event.key);
   if (!key) {
     return;
   }
   event.preventDefault();
-  inputState[key] = false;
+  keyboardState[key] = false;
+  recomputeInputState();
+});
+
+function emptyInputState(): InputState {
+  return {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    a: false,
+    b: false,
+    c: false,
+    start: false,
+  };
+}
+
+function keyForEvent(key: string): InputName | null {
+  return inputNames.find((name) => controlBindings[name].key === key) ?? null;
+}
+
+function recomputeInputState(): void {
+  for (const name of inputNames) {
+    inputState[name] = keyboardState[name] || pointerState[name] || gamepadState[name];
+  }
   updatePadButtons();
   void syncInput();
-});
+}
+
+function cloneDefaultBindings(): Record<InputName, ControlBinding> {
+  return Object.fromEntries(
+    inputNames.map((name) => [
+      name,
+      {
+        key: defaultBindings[name].key,
+        pad: { ...defaultBindings[name].pad },
+      },
+    ]),
+  ) as Record<InputName, ControlBinding>;
+}
+
+function readStoredBindings(): Record<InputName, ControlBinding> {
+  const defaults = cloneDefaultBindings();
+  try {
+    const raw = window.localStorage.getItem(bindingsStorageKey);
+    const parsed = raw ? (JSON.parse(raw) as Partial<Record<InputName, ControlBinding>>) : null;
+    if (!parsed) {
+      return defaults;
+    }
+    for (const name of inputNames) {
+      const binding = parsed[name];
+      if (binding?.key && binding.pad?.kind && binding.pad.code) {
+        defaults[name] = {
+          key: binding.key,
+          pad: {
+            kind: binding.pad.kind,
+            code: binding.pad.code,
+            direction: binding.pad.direction,
+          },
+        };
+      }
+    }
+  } catch {
+    return defaults;
+  }
+  return defaults;
+}
+
+function storeBindings(): void {
+  window.localStorage.setItem(bindingsStorageKey, JSON.stringify(controlBindings));
+}
+
+function openControls(): void {
+  controlsOpen = true;
+  controlsModal.classList.add("is-open");
+  controlsModal.setAttribute("aria-hidden", "false");
+  renderBindings();
+  startGamepadPolling();
+}
+
+function closeControls(): void {
+  controlsOpen = false;
+  captureTarget = null;
+  captureMode = null;
+  controlsModal.classList.remove("is-open");
+  controlsModal.setAttribute("aria-hidden", "true");
+  renderBindings();
+}
+
+function renderBindings(): void {
+  bindingRows.innerHTML = inputNames
+    .map((name) => {
+      const binding = controlBindings[name];
+      const isKeyCapture = captureTarget === name && captureMode === "key";
+      const isPadCapture = captureTarget === name && captureMode === "pad";
+      return `
+        <div class="binding-row" data-binding-row="${name}">
+          <strong>${inputLabels[name]}</strong>
+          <button data-bind="key" data-input="${name}" type="button">${isKeyCapture ? "Press key" : labelKey(binding.key)}</button>
+          <button data-bind="pad" data-input="${name}" type="button">${isPadCapture ? "Press pad" : labelPad(binding.pad)}</button>
+        </div>
+      `;
+    })
+    .join("");
+  captureReadout.textContent =
+    captureTarget && captureMode
+      ? `Listening for ${captureMode === "key" ? "keyboard" : "pad"} input: ${inputLabels[captureTarget]}`
+      : "Ready";
+  renderGamepadList();
+}
+
+function labelKey(key: string): string {
+  if (key === " ") {
+    return "Space";
+  }
+  return key.replace("Arrow", "");
+}
+
+function labelPad(binding: PadBinding): string {
+  if (binding.kind === "axis") {
+    return `${binding.code} ${binding.direction === "negative" ? "-" : "+"}`;
+  }
+  return binding.code;
+}
+
+function startGamepadPolling(): void {
+  if (gamepadPollTimer !== null) {
+    return;
+  }
+  void pollGamepads();
+  gamepadPollTimer = window.setInterval(() => void pollGamepads(), 90);
+}
+
+async function pollGamepads(): Promise<void> {
+  const snapshot = await readGamepadSnapshot();
+  lastGamepadSnapshot = snapshot;
+  applyGamepadSnapshot(snapshot);
+  if (controlsOpen) {
+    renderGamepadList();
+  }
+}
+
+async function readGamepadSnapshot(): Promise<GamepadSnapshot> {
+  if (isTauri && ui.runtime === "tauri") {
+    try {
+      return await invoke<GamepadSnapshot>("gamepad_snapshot");
+    } catch (err) {
+      return browserGamepadSnapshot(String(err));
+    }
+  }
+  if (ui.runtime === "bridge") {
+    try {
+      return await bridgeJson<GamepadSnapshot>("/gamepads", {}, 300);
+    } catch (err) {
+      return browserGamepadSnapshot(String(err));
+    }
+  }
+  return browserGamepadSnapshot(null);
+}
+
+function browserGamepadSnapshot(error: string | null): GamepadSnapshot {
+  const pads = Array.from(navigator.getGamepads?.() ?? [])
+    .filter((pad): pad is Gamepad => Boolean(pad))
+    .map((pad) => ({
+      id: String(pad.index),
+      name: pad.id,
+      controls: browserPadControls(pad),
+    }));
+  return {
+    available: true,
+    error,
+    gamepads: pads,
+  };
+}
+
+function browserPadControls(pad: Gamepad): PadControl[] {
+  const buttonNames = [
+    "South",
+    "East",
+    "West",
+    "North",
+    "LeftTrigger",
+    "RightTrigger",
+    "LeftTrigger2",
+    "RightTrigger2",
+    "Select",
+    "Start",
+    "LeftThumb",
+    "RightThumb",
+    "DPadUp",
+    "DPadDown",
+    "DPadLeft",
+    "DPadRight",
+    "Mode",
+  ];
+  const controls: PadControl[] = [];
+  pad.buttons.forEach((button, index) => {
+    const code = buttonNames[index] ?? `Button${index}`;
+    controls.push({
+      id: code,
+      label: code,
+      pressed: button.pressed || button.value > 0.55,
+      value: button.value,
+      kind: "button",
+    });
+  });
+  const axisNames = ["LeftStickX", "LeftStickY", "RightStickX", "RightStickY"];
+  pad.axes.forEach((value, index) => {
+    const code = axisNames[index] ?? `Axis${index}`;
+    controls.push({
+      id: `${code}-negative`,
+      label: `${code} -`,
+      pressed: value < -0.45,
+      value,
+      kind: "axis",
+      direction: "negative",
+    });
+    controls.push({
+      id: `${code}-positive`,
+      label: `${code} +`,
+      pressed: value > 0.45,
+      value,
+      kind: "axis",
+      direction: "positive",
+    });
+  });
+  return controls;
+}
+
+function applyGamepadSnapshot(snapshot: GamepadSnapshot): void {
+  const next = emptyInputState();
+  for (const pad of snapshot.gamepads) {
+    for (const control of pad.controls) {
+      if (!control.pressed) {
+        continue;
+      }
+      if (captureTarget && captureMode === "pad") {
+        controlBindings[captureTarget].pad = {
+          kind: control.kind,
+          code: control.kind === "axis" ? control.id.replace(/-(negative|positive)$/, "") : control.id,
+          direction: control.direction,
+        };
+        storeBindings();
+        captureTarget = null;
+        captureMode = null;
+        renderBindings();
+      }
+      for (const name of inputNames) {
+        if (padMatches(control, controlBindings[name].pad)) {
+          next[name] = true;
+        }
+      }
+    }
+  }
+  let changed = false;
+  for (const name of inputNames) {
+    changed ||= gamepadState[name] !== next[name];
+    gamepadState[name] = next[name];
+  }
+  if (changed) {
+    recomputeInputState();
+  }
+}
+
+function padMatches(control: PadControl, binding: PadBinding): boolean {
+  if (control.kind !== binding.kind) {
+    return false;
+  }
+  if (binding.kind === "axis") {
+    const code = control.id.replace(/-(negative|positive)$/, "");
+    return code === binding.code && control.direction === binding.direction;
+  }
+  return control.id === binding.code;
+}
+
+function renderGamepadList(): void {
+  if (!lastGamepadSnapshot.available) {
+    gamepadList.innerHTML = `<span>Gilrs unavailable</span>`;
+    return;
+  }
+  if (lastGamepadSnapshot.gamepads.length === 0) {
+    gamepadList.innerHTML = `<span>${lastGamepadSnapshot.error ? "Browser fallback" : "No pad detected"}</span>`;
+    return;
+  }
+  gamepadList.innerHTML = lastGamepadSnapshot.gamepads
+    .map((pad) => {
+      const active = pad.controls.filter((control) => control.pressed).slice(0, 6);
+      return `
+        <div class="gamepad-device">
+          <strong>${escapeHtml(pad.name)}</strong>
+          <span>${active.length ? active.map((control) => escapeHtml(control.label)).join(", ") : "Idle"}</span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
 
 async function chooseDesktopRom(): Promise<void> {
   const selected = await open({

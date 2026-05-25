@@ -11,6 +11,7 @@ use std::env;
 
 use euther_oxide::savestate::{ArgonSummary, SlotSummary};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
+use gilrs::{Axis, Button, Gilrs};
 use serde::Serialize;
 use tauri::{Manager, State, ipc::Response};
 
@@ -26,6 +27,7 @@ struct AppState {
     native_running: Arc<AtomicBool>,
     native_audio_volume: Arc<AtomicU32>,
     native_audio: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>>,
+    gamepads: Arc<Mutex<GamepadReader>>,
 }
 
 impl Default for AppState {
@@ -39,8 +41,14 @@ impl Default for AppState {
             native_running: Arc::default(),
             native_audio_volume: Arc::new(AtomicU32::new(1000)),
             native_audio: Arc::default(),
+            gamepads: Arc::new(Mutex::new(GamepadReader::new())),
         }
     }
+}
+
+struct GamepadReader {
+    gilrs: Option<Gilrs>,
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -157,6 +165,33 @@ struct StateSlotResult {
 struct LoadStateResult {
     frame: FrameResult,
     states: StateSlotsResult,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GamepadSnapshot {
+    available: bool,
+    error: Option<String>,
+    gamepads: Vec<GamepadDevice>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GamepadDevice {
+    id: String,
+    name: String,
+    controls: Vec<GamepadControl>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GamepadControl {
+    id: String,
+    label: String,
+    pressed: bool,
+    value: Option<f32>,
+    kind: &'static str,
+    direction: Option<&'static str>,
 }
 
 #[derive(Serialize, serde::Deserialize)]
@@ -446,6 +481,119 @@ fn set_input(state: State<'_, AppState>, input: InputState) -> Result<(), String
     pad.set_pressed(euther_oxide::controller::Controller::START, input.start);
     Ok(())
 }
+
+#[tauri::command]
+fn gamepad_snapshot(state: State<'_, AppState>) -> Result<GamepadSnapshot, String> {
+    let mut gamepads = state.gamepads.lock().map_err(|err| err.to_string())?;
+    Ok(gamepads.snapshot())
+}
+
+impl GamepadReader {
+    fn new() -> Self {
+        match Gilrs::new() {
+            Ok(gilrs) => Self {
+                gilrs: Some(gilrs),
+                error: None,
+            },
+            Err(err) => Self {
+                gilrs: None,
+                error: Some(err.to_string()),
+            },
+        }
+    }
+
+    fn snapshot(&mut self) -> GamepadSnapshot {
+        let Some(gilrs) = self.gilrs.as_mut() else {
+            return GamepadSnapshot {
+                available: false,
+                error: self.error.clone(),
+                gamepads: Vec::new(),
+            };
+        };
+
+        while gilrs.next_event().is_some() {}
+
+        let gamepads = gilrs
+            .gamepads()
+            .map(|(id, gamepad)| GamepadDevice {
+                id: format!("{id:?}"),
+                name: gamepad.name().to_string(),
+                controls: gamepad_controls(&gamepad),
+            })
+            .collect();
+
+        GamepadSnapshot {
+            available: true,
+            error: None,
+            gamepads,
+        }
+    }
+}
+
+fn gamepad_controls(gamepad: &gilrs::Gamepad<'_>) -> Vec<GamepadControl> {
+    let mut controls = Vec::new();
+    for (button, label) in GAMEPAD_BUTTONS {
+        let pressed = gamepad.is_pressed(*button);
+        let value = gamepad.button_data(*button).map(|data| data.value());
+        controls.push(GamepadControl {
+            id: (*label).to_string(),
+            label: (*label).to_string(),
+            pressed,
+            value,
+            kind: "button",
+            direction: None,
+        });
+    }
+    for (axis, label) in GAMEPAD_AXES {
+        let value = gamepad.value(*axis);
+        controls.push(GamepadControl {
+            id: format!("{label}-negative"),
+            label: format!("{label} -"),
+            pressed: value < -0.45,
+            value: Some(value),
+            kind: "axis",
+            direction: Some("negative"),
+        });
+        controls.push(GamepadControl {
+            id: format!("{label}-positive"),
+            label: format!("{label} +"),
+            pressed: value > 0.45,
+            value: Some(value),
+            kind: "axis",
+            direction: Some("positive"),
+        });
+    }
+    controls
+}
+
+const GAMEPAD_BUTTONS: &[(Button, &str)] = &[
+    (Button::South, "South"),
+    (Button::East, "East"),
+    (Button::North, "North"),
+    (Button::West, "West"),
+    (Button::LeftTrigger, "LeftTrigger"),
+    (Button::RightTrigger, "RightTrigger"),
+    (Button::LeftTrigger2, "LeftTrigger2"),
+    (Button::RightTrigger2, "RightTrigger2"),
+    (Button::Select, "Select"),
+    (Button::Start, "Start"),
+    (Button::Mode, "Mode"),
+    (Button::LeftThumb, "LeftThumb"),
+    (Button::RightThumb, "RightThumb"),
+    (Button::DPadUp, "DPadUp"),
+    (Button::DPadDown, "DPadDown"),
+    (Button::DPadLeft, "DPadLeft"),
+    (Button::DPadRight, "DPadRight"),
+];
+
+const GAMEPAD_AXES: &[(Axis, &str)] = &[
+    (Axis::LeftStickX, "LeftStickX"),
+    (Axis::LeftStickY, "LeftStickY"),
+    (Axis::RightStickX, "RightStickX"),
+    (Axis::RightStickY, "RightStickY"),
+    (Axis::LeftZ, "LeftZ"),
+    (Axis::RightZ, "RightZ"),
+];
 
 #[tauri::command]
 fn list_state_slots(state: State<'_, AppState>) -> Result<StateSlotsResult, String> {
@@ -1242,6 +1390,7 @@ fn main() {
             set_audio_volume,
             reset_emulator,
             set_input,
+            gamepad_snapshot,
             list_state_slots,
             save_state_slot,
             load_state_slot

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="Controller binding guide">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#020915"/>
+      <stop offset="0.52" stop-color="#06111f"/>
+      <stop offset="1" stop-color="#120513"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" x2="1">
+      <stop offset="0" stop-color="#00a7ff"/>
+      <stop offset="1" stop-color="#23d7ff"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="0" x2="1">
+      <stop offset="0" stop-color="#ff66b7"/>
+      <stop offset="1" stop-color="#ff1490"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <g opacity=".28" stroke="#123154" stroke-width="1">
+    <path d="M0 650h1600M0 700h1600M0 750h1600M0 800h1600M120 0v900M240 0v900M360 0v900M480 0v900M600 0v900M720 0v900M840 0v900M960 0v900M1080 0v900M1200 0v900M1320 0v900M1440 0v900"/>
+  </g>
+  <g fill="none" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M34 44h506l38 38h440l38-38h510l24 24v764l-24 24h-510l-38-38H578l-38 38H34L10 832V68z" stroke="url(#cyan)" stroke-width="3"/>
+    <path d="M1048 44h518l24 24v764l-24 24h-518" stroke="url(#pink)" stroke-width="4"/>
+  </g>
+  <g filter="url(#glow)">
+    <g fill="#050c19" stroke="url(#cyan)" stroke-width="3">
+      <path d="M88 156h330l22 22v92l-22 22H88l-20-20v-96z"/>
+      <path d="M88 456h250l20 20v82l-20 20H88l-20-20v-82z"/>
+      <path d="M88 588h250l20 20v82l-20 20H88l-20-20v-82z"/>
+      <path d="M672 120h256l20 20v72l-20 20H672l-20-20v-72z"/>
+    </g>
+    <g fill="#070818" stroke="url(#pink)" stroke-width="3">
+      <path d="M1240 112h270l20 20v72l-20 20h-270l-20-20v-72z"/>
+      <path d="M1240 232h270l20 20v72l-20 20h-270l-20-20v-72z"/>
+      <path d="M1240 352h270l20 20v72l-20 20h-270l-20-20v-72z"/>
+      <path d="M1240 472h270l20 20v72l-20 20h-270l-20-20v-72z"/>
+      <path d="M1240 592h270l20 20v72l-20 20h-270l-20-20v-72z"/>
+      <path d="M1240 712h270l20 20v72l-20 20h-270l-20-20v-72z"/>
+    </g>
+  </g>
+  <g transform="translate(450 278)">
+    <path d="M154 92c54-38 124-42 196-34h230c72-8 142-4 196 34 42 30 70 116 94 214 24 94 0 144-58 154-46 8-96-30-126-78-24-38-50-52-94-48H338c-44-4-70 10-94 48-30 48-80 86-126 78-58-10-82-60-58-154 24-98 52-184 94-214z" fill="#101115" stroke="#46484f" stroke-width="5"/>
+    <path d="M174 178h56v-54h70v54h56v70h-56v56h-70v-56h-56z" fill="#030405" stroke="#2a2d34" stroke-width="5"/>
+    <circle cx="290" cy="348" r="60" fill="#050608" stroke="#272a30" stroke-width="16"/>
+    <circle cx="642" cy="348" r="60" fill="#050608" stroke="#272a30" stroke-width="16"/>
+    <circle cx="764" cy="150" r="36" fill="#050609" stroke="#242936" stroke-width="5"/>
+    <circle cx="822" cy="214" r="36" fill="#050609" stroke="#242936" stroke-width="5"/>
+    <circle cx="704" cy="214" r="36" fill="#050609" stroke="#242936" stroke-width="5"/>
+    <circle cx="764" cy="278" r="36" fill="#050609" stroke="#242936" stroke-width="5"/>
+    <rect x="398" y="134" width="116" height="38" rx="14" fill="#15171c" stroke="#30333a" stroke-width="4"/>
+    <rect x="428" y="224" width="76" height="28" rx="14" fill="#031729" stroke="#25d8ff" stroke-width="4"/>
+    <text x="456" y="246" text-anchor="middle" font-family="Inter,Arial" font-size="22" font-weight="800" fill="#e9fbff">START</text>
+    <text x="764" y="160" text-anchor="middle" font-family="Inter,Arial" font-size="30" font-weight="900" fill="#3bd7ff">X</text>
+    <text x="822" y="224" text-anchor="middle" font-family="Inter,Arial" font-size="30" font-weight="900" fill="#d764ff">Z</text>
+    <text x="704" y="224" text-anchor="middle" font-family="Inter,Arial" font-size="30" font-weight="900" fill="#3bd7ff">Y</text>
+    <text x="764" y="288" text-anchor="middle" font-family="Inter,Arial" font-size="30" font-weight="900" fill="#ffd04a">B</text>
+  </g>
+  <g fill="none" stroke-width="3" filter="url(#glow)">
+    <path d="M438 252 590 360" stroke="#23d7ff"/>
+    <path d="M356 496 510 428" stroke="#23d7ff"/>
+    <path d="M358 632 500 568" stroke="#23d7ff"/>
+    <path d="M810 232v224" stroke="#23d7ff"/>
+    <path d="M994 360 1198 152" stroke="#ff66b7"/>
+    <path d="M1020 408 1198 272" stroke="#ff66b7"/>
+    <path d="M1048 452 1198 392" stroke="#ff66b7"/>
+    <path d="M982 532 1198 512" stroke="#ff66b7"/>
+    <path d="M1022 580 1198 632" stroke="#ff66b7"/>
+    <path d="M962 536 1198 752" stroke="#ff66b7"/>
+  </g>
+</svg>

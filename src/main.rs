@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
+use gilrs::{Axis, Button, Gilrs};
 use serde::{Deserialize, Serialize};
 
 fn main() {
@@ -443,6 +444,33 @@ struct BridgeSlot {
     label: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GamepadSnapshot {
+    available: bool,
+    error: Option<String>,
+    gamepads: Vec<GamepadDevice>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GamepadDevice {
+    id: String,
+    name: String,
+    controls: Vec<GamepadControl>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GamepadControl {
+    id: String,
+    label: String,
+    pressed: bool,
+    value: Option<f32>,
+    kind: &'static str,
+    direction: Option<&'static str>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeInput {
@@ -481,6 +509,12 @@ struct HttpRequest {
 struct BridgeState {
     emulator: Arc<Mutex<Emulator>>,
     next_frame_due: Arc<Mutex<Instant>>,
+    gamepads: Arc<Mutex<GamepadReader>>,
+}
+
+struct GamepadReader {
+    gilrs: Option<Gilrs>,
+    error: Option<String>,
 }
 
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
@@ -488,6 +522,7 @@ fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let state = BridgeState {
         emulator: Arc::new(Mutex::new(emulator)),
         next_frame_due: Arc::new(Mutex::new(Instant::now())),
+        gamepads: Arc::new(Mutex::new(GamepadReader::new())),
     };
     println!("EutherOxide web bridge listening on http://{addr}");
     println!("Open http://127.0.0.1:5173/?bridge=http://{addr}");
@@ -613,6 +648,13 @@ fn handle_bridge_request(stream: &mut TcpStream, state: &BridgeState) -> io::Res
             let mut emulator = lock_bridge_emulator(state)?;
             apply_bridge_input(&mut emulator, input);
             send_empty(stream, 204)
+        }
+        ("GET", "/gamepads") => {
+            let mut gamepads = state
+                .gamepads
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            send_json(stream, &gamepads.snapshot())
         }
         ("GET", "/states") => {
             let emulator = lock_bridge_emulator(state)?;
@@ -1190,6 +1232,113 @@ fn apply_bridge_input(emulator: &mut Emulator, input: BridgeInput) {
     pad.set_pressed(euther_oxide::controller::Controller::BUTTON_C, input.c);
     pad.set_pressed(euther_oxide::controller::Controller::START, input.start);
 }
+
+impl GamepadReader {
+    fn new() -> Self {
+        match Gilrs::new() {
+            Ok(gilrs) => Self {
+                gilrs: Some(gilrs),
+                error: None,
+            },
+            Err(err) => Self {
+                gilrs: None,
+                error: Some(err.to_string()),
+            },
+        }
+    }
+
+    fn snapshot(&mut self) -> GamepadSnapshot {
+        let Some(gilrs) = self.gilrs.as_mut() else {
+            return GamepadSnapshot {
+                available: false,
+                error: self.error.clone(),
+                gamepads: Vec::new(),
+            };
+        };
+
+        while gilrs.next_event().is_some() {}
+
+        let gamepads = gilrs
+            .gamepads()
+            .map(|(id, gamepad)| GamepadDevice {
+                id: format!("{id:?}"),
+                name: gamepad.name().to_string(),
+                controls: gamepad_controls(&gamepad),
+            })
+            .collect();
+
+        GamepadSnapshot {
+            available: true,
+            error: None,
+            gamepads,
+        }
+    }
+}
+
+fn gamepad_controls(gamepad: &gilrs::Gamepad<'_>) -> Vec<GamepadControl> {
+    let mut controls = Vec::new();
+    for (button, label) in GAMEPAD_BUTTONS {
+        let pressed = gamepad.is_pressed(*button);
+        let value = gamepad.button_data(*button).map(|data| data.value());
+        controls.push(GamepadControl {
+            id: (*label).to_string(),
+            label: (*label).to_string(),
+            pressed,
+            value,
+            kind: "button",
+            direction: None,
+        });
+    }
+    for (axis, label) in GAMEPAD_AXES {
+        let value = gamepad.value(*axis);
+        controls.push(GamepadControl {
+            id: format!("{label}-negative"),
+            label: format!("{label} -"),
+            pressed: value < -0.45,
+            value: Some(value),
+            kind: "axis",
+            direction: Some("negative"),
+        });
+        controls.push(GamepadControl {
+            id: format!("{label}-positive"),
+            label: format!("{label} +"),
+            pressed: value > 0.45,
+            value: Some(value),
+            kind: "axis",
+            direction: Some("positive"),
+        });
+    }
+    controls
+}
+
+const GAMEPAD_BUTTONS: &[(Button, &str)] = &[
+    (Button::South, "South"),
+    (Button::East, "East"),
+    (Button::North, "North"),
+    (Button::West, "West"),
+    (Button::LeftTrigger, "LeftTrigger"),
+    (Button::RightTrigger, "RightTrigger"),
+    (Button::LeftTrigger2, "LeftTrigger2"),
+    (Button::RightTrigger2, "RightTrigger2"),
+    (Button::Select, "Select"),
+    (Button::Start, "Start"),
+    (Button::Mode, "Mode"),
+    (Button::LeftThumb, "LeftThumb"),
+    (Button::RightThumb, "RightThumb"),
+    (Button::DPadUp, "DPadUp"),
+    (Button::DPadDown, "DPadDown"),
+    (Button::DPadLeft, "DPadLeft"),
+    (Button::DPadRight, "DPadRight"),
+];
+
+const GAMEPAD_AXES: &[(Axis, &str)] = &[
+    (Axis::LeftStickX, "LeftStickX"),
+    (Axis::LeftStickY, "LeftStickY"),
+    (Axis::RightStickX, "RightStickX"),
+    (Axis::RightStickY, "RightStickY"),
+    (Axis::LeftZ, "LeftZ"),
+    (Axis::RightZ, "RightZ"),
+];
 
 fn title_from_header(header: Option<&RomHeader>) -> String {
     header

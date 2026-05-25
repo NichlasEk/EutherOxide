@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 bincode = "2.0.1"
+gilrs = "0.11.1"
 z80-emu = { path = "/home/nichlas/jgenesis/cpu/z80-emu", features = ["bincode"] }
 wgpu = { version = "24.0", optional = true }
 winit = { version = "0.30", optional = true }
