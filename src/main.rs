@@ -8,6 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use argon2::password_hash::SaltString;
+use argon2::{
+    Argon2, PasswordHasher,
+    password_hash::{PasswordHash, PasswordVerifier},
+};
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use gilrs::{Axis, Button, Gilrs};
@@ -28,6 +33,8 @@ fn run() -> io::Result<()> {
     let mut list_states = false;
     let mut vdp_summary = false;
     let mut web_bridge = false;
+    let mut host_server = false;
+    let mut host_hash_password: Option<String> = None;
     let mut perf = false;
     let mut frames_was_set = false;
     let mut rom_path: Option<String> = None;
@@ -83,6 +90,18 @@ fn run() -> io::Result<()> {
             "--web-bridge" => {
                 web_bridge = true;
             }
+            "--host-server" => {
+                host_server = true;
+            }
+            "--host-hash-password" => {
+                let Some(value) = args.next() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--host-hash-password needs a password value",
+                    ));
+                };
+                host_hash_password = Some(value);
+            }
             "--perf" => {
                 perf = true;
             }
@@ -107,6 +126,11 @@ fn run() -> io::Result<()> {
         }
     }
 
+    if let Some(password) = host_hash_password {
+        println!("{}", hash_host_password(&password)?);
+        return Ok(());
+    }
+
     let mut emulator = Emulator::new();
     if let Some(rom_path) = rom_path.as_deref() {
         emulator.load_rom_file(rom_path)?;
@@ -125,7 +149,7 @@ fn run() -> io::Result<()> {
         } else {
             println!("Loaded ROM | reset PC ${:06X}", emulator.cpu.pc);
         }
-    } else if web_bridge {
+    } else if web_bridge || host_server {
         println!("No ROM loaded; bridge will accept browser uploads at /load");
     } else {
         print_usage();
@@ -148,6 +172,11 @@ fn run() -> io::Result<()> {
 
     if web_bridge {
         serve_web_bridge(emulator, "127.0.0.1:32161")?;
+        return Ok(());
+    }
+
+    if host_server {
+        serve_host_server(emulator)?;
         return Ok(());
     }
 
@@ -237,7 +266,7 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--host-server] [--host-hash-password PASSWORD]"
     );
 }
 
@@ -540,6 +569,32 @@ struct GamepadReader {
     error: Option<String>,
 }
 
+#[derive(Clone)]
+struct HostState {
+    bridge: BridgeState,
+    config: HostConfig,
+    users: Arc<Vec<HostUser>>,
+    sessions: Arc<Mutex<Vec<HostSession>>>,
+}
+
+#[derive(Clone)]
+struct HostConfig {
+    bind: String,
+    rom_dir: Option<String>,
+}
+
+#[derive(Clone)]
+struct HostUser {
+    name: String,
+    password_hash: String,
+}
+
+struct HostSession {
+    token: String,
+    user: String,
+    updated_unix_ms: u64,
+}
+
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     let state = BridgeState {
@@ -565,9 +620,250 @@ fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn serve_host_server(emulator: Emulator) -> io::Result<()> {
+    let config = load_host_config()?;
+    if let Some(rom_dir) = config.rom_dir.as_deref() {
+        let canonical = validate_rom_root(rom_dir)?;
+        write_rom_dir_setting(&canonical)?;
+    }
+    let users = Arc::new(load_host_users()?);
+    let listener = TcpListener::bind(&config.bind)?;
+    let state = HostState {
+        bridge: BridgeState {
+            emulator: Arc::new(Mutex::new(emulator)),
+            next_frame_due: Arc::new(Mutex::new(Instant::now())),
+            gamepads: Arc::new(Mutex::new(GamepadReader::new())),
+        },
+        config,
+        users,
+        sessions: Arc::new(Mutex::new(Vec::new())),
+    };
+    println!(
+        "EutherHost reaction chamber listening on http://{}",
+        state.config.bind
+    );
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                let state = state.clone();
+                thread::spawn(move || {
+                    if let Err(err) = handle_host_request(&mut stream, &state) {
+                        let _ = send_error(&mut stream, 500, &err.to_string());
+                    }
+                });
+            }
+            Err(err) => eprintln!("host accept error: {err}"),
+        }
+    }
+    Ok(())
+}
+
+fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let request = read_http_request(stream)?;
+    if request.method == "OPTIONS" {
+        return send_empty(stream, 204);
+    }
+    let path = request.path.split('?').next().unwrap_or(&request.path);
+    match (request.method.as_str(), path) {
+        ("GET", "/login") => send_login_page(stream, None),
+        ("POST", "/api/login") => host_login(stream, state, &request),
+        ("POST", "/api/logout") => host_logout(stream, state, &request),
+        ("GET", "/api/auth/status") => {
+            if let Some(user) = authenticated_user(state, &request)? {
+                send_json(
+                    stream,
+                    &serde_json::json!({ "authenticated": true, "user": user }),
+                )
+            } else {
+                send_json(stream, &serde_json::json!({ "authenticated": false }))
+            }
+        }
+        _ => {
+            if authenticated_user(state, &request)?.is_none() {
+                return if path.starts_with("/api/") {
+                    send_error(stream, 401, "login required")
+                } else {
+                    send_login_page(stream, None)
+                };
+            }
+            if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
+                return send_host_static(stream, path);
+            }
+            handle_bridge_route(stream, &state.bridge, request)
+        }
+    }
+}
+
+fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) -> io::Result<()> {
+    let form = parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+    let username = form
+        .iter()
+        .find_map(|(name, value)| (name == "username").then_some(value.as_str()))
+        .unwrap_or_default();
+    let password = form
+        .iter()
+        .find_map(|(name, value)| (name == "password").then_some(value.as_str()))
+        .unwrap_or_default();
+    let Some(user) = state.users.iter().find(|user| user.name == username) else {
+        return send_login_page(stream, Some("Unknown reagent"));
+    };
+    if !verify_password(password, &user.password_hash) {
+        return send_login_page(stream, Some("Reaction key rejected"));
+    }
+    let token = random_token()?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    sessions.push(HostSession {
+        token: token.clone(),
+        user: user.name.clone(),
+        updated_unix_ms: unix_ms_now(),
+    });
+    send_response_with_headers(
+        stream,
+        303,
+        "text/plain; charset=utf-8",
+        b"",
+        &[
+            ("Location", "/"),
+            (
+                "Set-Cookie",
+                &format!("euther_session={token}; HttpOnly; SameSite=Lax; Path=/"),
+            ),
+        ],
+    )
+}
+
+fn host_logout(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) -> io::Result<()> {
+    if let Some(token) = session_token(request) {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        sessions.retain(|session| session.token != token);
+    }
+    send_response_with_headers(
+        stream,
+        303,
+        "text/plain; charset=utf-8",
+        b"",
+        &[
+            ("Location", "/login"),
+            (
+                "Set-Cookie",
+                "euther_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+            ),
+        ],
+    )
+}
+
+fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
+    let Some(token) = session_token(request) else {
+        return Ok(None);
+    };
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let now = unix_ms_now();
+    sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < 24 * 60 * 60 * 1000);
+    if let Some(session) = sessions.iter_mut().find(|session| session.token == token) {
+        session.updated_unix_ms = now;
+        return Ok(Some(session.user.clone()));
+    }
+    Ok(None)
+}
+
+fn session_token(request: &HttpRequest) -> Option<String> {
+    header_value(request, "cookie").and_then(|cookies| {
+        cookies.split(';').find_map(|cookie| {
+            let (name, value) = cookie.trim().split_once('=')?;
+            (name == "euther_session").then(|| value.to_string())
+        })
+    })
+}
+
+fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let relative = if path == "/" || path == "/index.html" {
+        PathBuf::from("index.html")
+    } else {
+        PathBuf::from(path.trim_start_matches('/'))
+    };
+    if relative
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return send_error(stream, 404, "not found");
+    }
+    let file_path = PathBuf::from("dist").join(relative);
+    let bytes = fs::read(&file_path)?;
+    let content_type = match file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    send_response(stream, 200, content_type, &bytes)
+}
+
+fn send_login_page(stream: &mut TcpStream, error: Option<&str>) -> io::Result<()> {
+    let error_html = error
+        .map(|error| format!("<p class=\"error\">{}</p>", html_escape(error)))
+        .unwrap_or_default();
+    let body = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EutherHost Login</title>
+  <style>
+    :root {{ color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #050806; color: #edf6dd; }}
+    body {{ min-height: 100vh; margin: 0; display: grid; place-items: center; background: radial-gradient(circle at 20% 10%, rgba(90,134,69,.28), transparent 28%), linear-gradient(135deg,#060706,#15120d 55%,#08120e); }}
+    main {{ width: min(420px, calc(100vw - 32px)); display: grid; gap: 18px; padding: 24px; border: 1px solid rgba(210,238,177,.18); border-radius: 8px; background: rgba(10,17,12,.84); box-shadow: 0 24px 90px rgba(0,0,0,.42); }}
+    h1 {{ margin: 0; font-size: 1.5rem; }}
+    p {{ margin: 0; color: #9fbe91; font-weight: 800; text-transform: uppercase; font-size: .76rem; letter-spacing: .08em; }}
+    form {{ display: grid; gap: 12px; }}
+    input, button {{ min-height: 44px; border-radius: 8px; font: inherit; }}
+    input {{ border: 1px solid rgba(207,240,178,.18); background: rgba(5,11,8,.86); color: #edf6dd; padding: 0 12px; }}
+    button {{ border: 1px solid rgba(247,101,82,.58); background: linear-gradient(135deg, rgba(128,43,33,.82), rgba(80,88,35,.72)); color: #fff4c6; font-weight: 900; cursor: pointer; }}
+    .error {{ color: #ff9a8f; text-transform: none; letter-spacing: 0; }}
+  </style>
+</head>
+<body>
+  <main>
+    <p>EutherHost Reaction Gate</p>
+    <h1>Private Alkene Chamber</h1>
+    {error_html}
+    <form method="post" action="/api/login">
+      <input name="username" autocomplete="username" placeholder="User" required />
+      <input name="password" type="password" autocomplete="current-password" placeholder="Password" required />
+      <button type="submit">Bond Session</button>
+    </form>
+  </main>
+</body>
+</html>"#
+    );
+    send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
+}
+
 fn handle_bridge_request(stream: &mut TcpStream, state: &BridgeState) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     let request = read_http_request(stream)?;
+    handle_bridge_route(stream, state, request)
+}
+
+fn handle_bridge_route(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    request: HttpRequest,
+) -> io::Result<()> {
     if request.method == "OPTIONS" {
         return send_empty(stream, 204);
     }
@@ -888,9 +1184,21 @@ fn send_response(
     content_type: &str,
     body: &[u8],
 ) -> io::Result<()> {
+    send_response_with_headers(stream, status, content_type, body, &[])
+}
+
+fn send_response_with_headers(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    headers: &[(&str, &str)],
+) -> io::Result<()> {
     let reason = match status {
         200 => "OK",
+        303 => "See Other",
         204 => "No Content",
+        401 => "Unauthorized",
         404 => "Not Found",
         _ => "Error",
     };
@@ -904,9 +1212,13 @@ fn send_response(
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\r\n",
+         Connection: close\r\n",
         body.len()
     )?;
+    for (name, value) in headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    write!(stream, "\r\n")?;
     stream.write_all(body)
 }
 
@@ -1310,6 +1622,140 @@ fn apply_bridge_input(emulator: &mut Emulator, input: BridgeInput) {
     pad.set_pressed(euther_oxide::controller::Controller::BUTTON_B, input.b);
     pad.set_pressed(euther_oxide::controller::Controller::BUTTON_C, input.c);
     pad.set_pressed(euther_oxide::controller::Controller::START, input.start);
+}
+
+fn load_host_config() -> io::Result<HostConfig> {
+    ensure_host_dir()?;
+    let path = host_config_path();
+    if !path.exists() {
+        fs::write(&path, "bind = \"127.0.0.1:32162\"\nrom_dir = \"\"\n")?;
+    }
+    let contents = fs::read_to_string(&path)?;
+    let bind = parse_toml_string(&contents, "bind")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "127.0.0.1:32162".to_string());
+    let rom_dir = parse_toml_string(&contents, "rom_dir").filter(|value| !value.is_empty());
+    Ok(HostConfig { bind, rom_dir })
+}
+
+fn load_host_users() -> io::Result<Vec<HostUser>> {
+    ensure_host_dir()?;
+    let path = host_users_path();
+    if !path.exists() {
+        fs::write(
+            &path,
+            "# Add users as TOML tables. Generate an Argon2 hash with a password tool.\n\
+             # [[user]]\n\
+             # name = \"nichlas\"\n\
+             # password_hash = \"$argon2id$v=19$...\"\n",
+        )?;
+    }
+    let contents = fs::read_to_string(&path)?;
+    let mut users = Vec::new();
+    let mut name = None;
+    let mut password_hash = None;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with("[[user]]") {
+            if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
+                users.push(HostUser {
+                    name,
+                    password_hash,
+                });
+            }
+            continue;
+        }
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(value) = parse_toml_assignment(line, "name") {
+            name = Some(value);
+        } else if let Some(value) = parse_toml_assignment(line, "password_hash") {
+            password_hash = Some(value);
+        }
+    }
+    if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
+        users.push(HostUser {
+            name,
+            password_hash,
+        });
+    }
+    if users.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no EutherHost users configured in .euther-host/users.toml",
+        ));
+    }
+    Ok(users)
+}
+
+fn ensure_host_dir() -> io::Result<()> {
+    fs::create_dir_all(host_dir())
+}
+
+fn host_dir() -> PathBuf {
+    PathBuf::from(".euther-host")
+}
+
+fn host_config_path() -> PathBuf {
+    host_dir().join("config.toml")
+}
+
+fn host_users_path() -> PathBuf {
+    host_dir().join("users.toml")
+}
+
+fn verify_password(password: &str, hash: &str) -> bool {
+    let Ok(parsed_hash) = PasswordHash::new(hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
+}
+
+fn hash_host_password(password: &str) -> io::Result<String> {
+    let mut salt_bytes = [0u8; 16];
+    File::open("/dev/urandom")?.read_exact(&mut salt_bytes)?;
+    let salt =
+        SaltString::encode_b64(&salt_bytes).map_err(|err| io::Error::other(err.to_string()))?;
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|err| io::Error::other(err.to_string()))
+}
+
+fn random_token() -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn parse_urlencoded_form(value: &str) -> io::Result<Vec<(String, String)>> {
+    value
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            Ok((percent_decode(name)?, percent_decode(value)?))
+        })
+        .collect()
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn parse_toml_assignment(line: &str, key: &str) -> Option<String> {
+    let (name, value) = line.split_once('=')?;
+    if name.trim() != key {
+        return None;
+    }
+    let value = value.trim().trim_matches('"');
+    Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
 }
 
 fn read_rom_dir_setting() -> io::Result<Option<String>> {

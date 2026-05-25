@@ -4,6 +4,7 @@
 /node_modules/
 /dist/
 .euther-bridge/
+.euther-host/
 **/*.rs.bk
 *.argon
 *.srm

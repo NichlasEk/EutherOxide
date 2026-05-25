@@ -226,8 +226,12 @@ type UiState = LoadResult & {
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
+const explicitBridgeBase = new URLSearchParams(window.location.search).get("bridge");
 const bridgeBase =
-  new URLSearchParams(window.location.search).get("bridge") ?? "http://127.0.0.1:32161";
+  explicitBridgeBase ??
+  (window.location.port && window.location.port !== "5173"
+    ? window.location.origin
+    : "http://127.0.0.1:32161");
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
