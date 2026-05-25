@@ -44,7 +44,7 @@ type FrameResult = {
   frame: number;
   width: number;
   height: number;
-  rgba: number[] | Uint8Array<ArrayBuffer>;
+  rgba: number[] | Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>;
   cpuCycles: number;
   cpuSteps: number;
   frameMs: number;
@@ -63,6 +63,7 @@ type FrameAudioResult = {
   frame: FrameResult;
   audio: AudioResult;
   transport: string;
+  videoFormat?: string;
 };
 
 type NativeAudioResult = {
@@ -2358,15 +2359,16 @@ async function tauriFrameAudio(): Promise<FrameAudioResult> {
 function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
   const bytes = new Uint8Array(buffer);
   const magic = String.fromCharCode(bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0, bytes[3] ?? 0);
-  const headerLength = magic === "EOX2" ? 52 : 48;
+  const headerLength = magic === "EOX2" || magic === "EOX3" ? 52 : 48;
   if (
     bytes.length < headerLength ||
-    (magic !== "EOXB" && magic !== "EOX2")
+    (magic !== "EOXB" && magic !== "EOX2" && magic !== "EOX3")
   ) {
     throw new Error("Bad EutherOxide frame/audio packet");
   }
   const view = new DataView(buffer);
-  const hasChannels = magic === "EOX2";
+  const hasChannels = magic === "EOX2" || magic === "EOX3";
+  const isRgb565 = magic === "EOX3";
   const frame = view.getUint32(4, true);
   const width = view.getUint32(8, true);
   const height = view.getUint32(12, true);
@@ -2376,24 +2378,28 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
   const stopped = view.getUint32(28, true) !== 0;
   const sampleRate = view.getUint32(32, true);
   const sampleCount = view.getUint32(36, true);
-  const rgbaLength = view.getUint32(40, true);
+  const videoLength = view.getUint32(40, true);
   const pcmLength = view.getUint32(44, true);
   const channels = hasChannels ? Math.max(1, view.getUint32(48, true)) : 1;
-  const rgbaOffset = headerLength;
-  const pcmOffset = rgbaOffset + rgbaLength;
+  const videoOffset = headerLength;
+  const pcmOffset = videoOffset + videoLength;
+  const expectedVideoLength = isRgb565 ? width * height * 2 : width * height * 4;
   if (
-    rgbaLength !== width * height * 4 ||
+    videoLength !== expectedVideoLength ||
     pcmLength !== sampleCount * channels * 2 ||
     bytes.byteLength !== pcmOffset + pcmLength
   ) {
     throw new Error("EutherOxide frame/audio packet size mismatch");
   }
+  const rgba = isRgb565
+    ? decodeRgb565Frame(bytes.subarray(videoOffset, pcmOffset), width, height)
+    : bytes.subarray(videoOffset, pcmOffset);
   return {
     frame: {
       frame,
       width,
       height,
-      rgba: bytes.subarray(rgbaOffset, pcmOffset),
+      rgba,
       cpuCycles,
       cpuSteps,
       frameMs,
@@ -2406,8 +2412,30 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
       samples: new Int16Array(buffer, pcmOffset, sampleCount * channels) as Int16Array<ArrayBuffer>,
       channels,
     },
-    transport: "BRIDGE PACKET",
+    transport: isRgb565 ? "BRIDGE RGB565 PACKET" : "BRIDGE RGBA PACKET",
+    videoFormat: isRgb565 ? "RGB565" : "RGBA",
   };
+}
+
+function decodeRgb565Frame(
+  data: Uint8Array<ArrayBufferLike>,
+  width: number,
+  height: number,
+): Uint8ClampedArray<ArrayBuffer> {
+  const pixels = new Uint8ClampedArray(width * height * 4) as Uint8ClampedArray<ArrayBuffer>;
+  let output = 0;
+  for (let index = 0; index < data.byteLength; index += 2) {
+    const value = data[index] | (data[index + 1] << 8);
+    const r5 = (value >> 11) & 0x1f;
+    const g6 = (value >> 5) & 0x3f;
+    const b5 = value & 0x1f;
+    pixels[output] = (r5 << 3) | (r5 >> 2);
+    pixels[output + 1] = (g6 << 2) | (g6 >> 4);
+    pixels[output + 2] = (b5 << 3) | (b5 >> 2);
+    pixels[output + 3] = 255;
+    output += 4;
+  }
+  return pixels;
 }
 
 function decodeBridgeAudio(buffer: ArrayBuffer): AudioResult {
@@ -2561,7 +2589,8 @@ async function bridgeStreamLoop(): Promise<void> {
         drawNativeFrame(frameAudio.frame);
         const drawn = performance.now();
         ui.audioLeadMs = await scheduleAudio(frameAudio.audio);
-        ui.transportMode = "BRIDGE STREAM";
+        ui.transportMode =
+          frameAudio.videoFormat === "RGB565" ? "BRIDGE RGB565 STREAM" : "BRIDGE STREAM";
         ui.transportMs = received === 0 ? decoded - started : decoded - before;
         ui.drawMs = drawn - decoded;
         applyBridgeFrame(frameAudio.frame);
@@ -2886,7 +2915,12 @@ function syncScreenGeometry(width: number, height: number): void {
   screenGlass.style.setProperty("--screen-aspect-ratio", `${safeWidth} / ${safeHeight}`);
 }
 
-function framePixels(rgba: number[] | Uint8Array<ArrayBufferLike>): Uint8ClampedArray<ArrayBuffer> {
+function framePixels(
+  rgba: number[] | Uint8Array<ArrayBufferLike> | Uint8ClampedArray<ArrayBufferLike>,
+): Uint8ClampedArray<ArrayBuffer> {
+  if (rgba instanceof Uint8ClampedArray) {
+    return rgba as Uint8ClampedArray<ArrayBuffer>;
+  }
   const bytes = rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba);
   const pixels = new Uint8ClampedArray(bytes.byteLength) as Uint8ClampedArray<ArrayBuffer>;
   pixels.set(bytes);

@@ -1376,31 +1376,42 @@ fn bridge_frame_audio_bytes(
     run: &FrameRun,
     sample_rate: usize,
 ) -> Vec<u8> {
-    let frame = bridge_frame(emulator, run);
+    let (width, height) = emulator.frame_size();
     let channels = 2u32;
     let samples = emulator.render_audio_frame_i16_stereo(sample_rate);
     let sample_frames = samples.len() / channels as usize;
-    let rgba_len = frame.rgba.len();
+    let video_len = width * height * 2;
     let pcm_len = samples.len() * 2;
-    let mut bytes = Vec::with_capacity(52 + rgba_len + pcm_len);
-    bytes.extend_from_slice(b"EOX2");
-    bytes.extend_from_slice(&(frame.frame.min(u32::MAX as u64) as u32).to_le_bytes());
-    bytes.extend_from_slice(&(frame.width as u32).to_le_bytes());
-    bytes.extend_from_slice(&(frame.height as u32).to_le_bytes());
-    bytes.extend_from_slice(&(frame.cpu_cycles.min(u32::MAX as u64) as u32).to_le_bytes());
-    bytes.extend_from_slice(&(frame.cpu_steps.min(u32::MAX as u64) as u32).to_le_bytes());
-    bytes.extend_from_slice(&((frame.frame_ms * 1000.0).max(0.0) as u32).to_le_bytes());
-    bytes.extend_from_slice(&u32::from(frame.stopped).to_le_bytes());
+    let mut bytes = Vec::with_capacity(52 + video_len + pcm_len);
+    bytes.extend_from_slice(b"EOX3");
+    bytes.extend_from_slice(&(emulator.frame_count.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(width as u32).to_le_bytes());
+    bytes.extend_from_slice(&(height as u32).to_le_bytes());
+    bytes.extend_from_slice(&(run.cpu_cycles.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&(run.cpu_steps.min(u32::MAX as u64) as u32).to_le_bytes());
+    bytes.extend_from_slice(&((run.elapsed.as_secs_f64() * 1_000_000.0) as u32).to_le_bytes());
+    bytes.extend_from_slice(&u32::from(run.hit_unsupported_opcode).to_le_bytes());
     bytes.extend_from_slice(&(sample_rate as u32).to_le_bytes());
     bytes.extend_from_slice(&(sample_frames as u32).to_le_bytes());
-    bytes.extend_from_slice(&(rgba_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&(video_len as u32).to_le_bytes());
     bytes.extend_from_slice(&(pcm_len as u32).to_le_bytes());
     bytes.extend_from_slice(&channels.to_le_bytes());
-    bytes.extend_from_slice(&frame.rgba);
+    push_frame_rgb565(&mut bytes, emulator);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
+}
+
+fn push_frame_rgb565(bytes: &mut Vec<u8>, emulator: &Emulator) {
+    let (width, height) = emulator.frame_size();
+    for &pixel in emulator.framebuffer().iter().take(width * height) {
+        let r = ((pixel >> 16) & 0xff) as u16;
+        let g = ((pixel >> 8) & 0xff) as u16;
+        let b = (pixel & 0xff) as u16;
+        let rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+        bytes.extend_from_slice(&rgb565.to_le_bytes());
+    }
 }
 
 fn bridge_frame_without_run(emulator: &Emulator) -> BridgeFrame {
