@@ -1,0 +1,77 @@
+[video]
+shader = "system_regis_crt"
+
+[video.shader_presets]
+available = ["raw_pixels", "system_regis_crt", "md_composite_goblin", "eutherchrome_2094"]
+
+[shader.raw_pixels]
+scanlines = 0.00
+phosphor_glow = 0.00
+rgb_mask = 0.00
+vignette = 0.00
+curvature = 0.00
+noise = 0.00
+chroma_bleed = 0.00
+luma_sharpness = 1.00
+dither_blend = 0.00
+dot_crawl = 0.00
+rf_noise = 0.00
+bloom = 0.00
+highlight_glow = 0.00
+contrast_curve = 1.00
+saturation = 1.00
+glass_shimmer = 0.00
+
+[shader.system_regis_crt]
+scanlines = 0.28
+phosphor_glow = 0.18
+rgb_mask = 0.22
+vignette = 0.12
+curvature = 0.00
+noise = 0.00
+chroma_bleed = 0.00
+luma_sharpness = 1.00
+dither_blend = 0.00
+dot_crawl = 0.00
+rf_noise = 0.00
+bloom = 0.00
+highlight_glow = 0.00
+contrast_curve = 1.00
+saturation = 1.00
+glass_shimmer = 0.00
+
+[shader.md_composite_goblin]
+chroma_bleed = 0.35
+luma_sharpness = 0.72
+dither_blend = 0.50
+dot_crawl = 0.18
+rf_noise = 0.08
+scanlines = 0.18
+phosphor_glow = 0.08
+rgb_mask = 0.10
+vignette = 0.08
+curvature = 0.00
+noise = 0.00
+bloom = 0.00
+highlight_glow = 0.00
+contrast_curve = 1.00
+saturation = 1.04
+glass_shimmer = 0.00
+
+[shader.eutherchrome_2094]
+bloom = 0.16
+highlight_glow = 0.22
+contrast_curve = 1.08
+saturation = 1.10
+glass_shimmer = 0.05
+scanlines = 0.12
+phosphor_glow = 0.10
+rgb_mask = 0.08
+vignette = 0.10
+curvature = 0.00
+noise = 0.00
+chroma_bleed = 0.00
+luma_sharpness = 1.00
+dither_blend = 0.00
+dot_crawl = 0.00
+rf_noise = 0.00

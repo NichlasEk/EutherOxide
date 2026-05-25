@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WEB_BUILD_ID } from "./build-info";
+import shaderToml from "./shaders.toml?raw";
 import "./styles.css";
 
 const controllerGuideUrl = new URL("./controller-bindings.svg", import.meta.url).href;
@@ -127,6 +128,32 @@ type GamepadSnapshot = {
   gamepads: GamepadDevice[];
 };
 
+type ShaderParamName =
+  | "scanlines"
+  | "phosphor_glow"
+  | "rgb_mask"
+  | "vignette"
+  | "curvature"
+  | "noise"
+  | "chroma_bleed"
+  | "luma_sharpness"
+  | "dither_blend"
+  | "dot_crawl"
+  | "rf_noise"
+  | "bloom"
+  | "highlight_glow"
+  | "contrast_curve"
+  | "saturation"
+  | "glass_shimmer";
+
+type ShaderParams = Record<ShaderParamName, number>;
+
+type ShaderConfig = {
+  selected: string;
+  available: string[];
+  presets: Record<string, ShaderParams>;
+};
+
 type StateSlot = {
   slot: number;
   occupied: boolean;
@@ -188,6 +215,7 @@ const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
 const bindingsStorageKey = "eutheroxide-input-bindings";
+const shaderStorageKey = "eutheroxide-video-shader";
 let audioVolume = readStoredVolume();
 const audioTargetLeadSeconds = 0.055;
 const audioMinimumLeadSeconds = 0.018;
@@ -227,6 +255,45 @@ const defaultBindings: Record<InputName, ControlBinding> = {
   start: { key: "Enter", pad: { kind: "button", code: "Start" } },
 };
 let controlBindings = readStoredBindings();
+const shaderParamNames: ShaderParamName[] = [
+  "scanlines",
+  "phosphor_glow",
+  "rgb_mask",
+  "vignette",
+  "curvature",
+  "noise",
+  "chroma_bleed",
+  "luma_sharpness",
+  "dither_blend",
+  "dot_crawl",
+  "rf_noise",
+  "bloom",
+  "highlight_glow",
+  "contrast_curve",
+  "saturation",
+  "glass_shimmer",
+];
+const shaderParamLabels: Record<ShaderParamName, string> = {
+  scanlines: "Scanlines",
+  phosphor_glow: "Phosphor",
+  rgb_mask: "RGB Mask",
+  vignette: "Vignette",
+  curvature: "Curvature",
+  noise: "Noise",
+  chroma_bleed: "Chroma",
+  luma_sharpness: "Luma Sharp",
+  dither_blend: "Dither",
+  dot_crawl: "Dot Crawl",
+  rf_noise: "RF Noise",
+  bloom: "Bloom",
+  highlight_glow: "Highlight",
+  contrast_curve: "Contrast",
+  saturation: "Saturation",
+  glass_shimmer: "Glass",
+};
+const shaderConfig = parseShaderConfig(shaderToml);
+let selectedShader = readStoredShader(shaderConfig);
+let activeShaderParams = cloneShaderParams(shaderConfig.presets[selectedShader]);
 
 const ui: UiState = {
   loaded: false,
@@ -259,9 +326,11 @@ let romDisplayName = "reaction.argon";
 let romHash = 0xC0FFEE;
 let webStateSlots: Array<WebStateSnapshot | null> = [null, null, null];
 let stepping = false;
+let shaderRenderer: ShaderRenderer | null = null;
 let nativeStatusPolling = false;
 let videoCanvas: HTMLCanvasElement;
 let videoContext: CanvasRenderingContext2D;
+let shaderCanvas: HTMLCanvasElement;
 let lastInputJson = JSON.stringify(inputState);
 let lastBrowserFile: File | null = null;
 let bridgeRetryTimer: number | null = null;
@@ -388,6 +457,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="screen-vessel">
         <div class="screen-glass" id="screen-glass">
           <canvas id="video" width="320" height="224"></canvas>
+          <canvas id="shader-video" width="320" height="224"></canvas>
           <div class="scanlines"></div>
           <div class="oxidation-ring"></div>
         </div>
@@ -406,6 +476,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="metric hero-metric">
         <span>Status</span>
         <strong id="status-text">IDLE</strong>
+      </div>
+      <div class="shader-drawer" id="shader-drawer">
+        <button id="shader-toggle" class="shader-toggle" type="button">
+          <span>Shaders</span>
+          <strong id="shader-mode">System Regis CRT</strong>
+        </button>
+        <div class="shader-panel" id="shader-panel">
+          <select id="shader-select" aria-label="video shader"></select>
+          <div id="shader-controls" class="shader-controls"></div>
+        </div>
       </div>
       <div class="metric-grid">
         <div class="metric"><span>Frame</span><strong id="frame-count">0</strong></div>
@@ -466,9 +546,15 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
 videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
 videoContext = videoCanvas.getContext("2d", { alpha: false })!;
+shaderCanvas = document.querySelector<HTMLCanvasElement>("#shader-video")!;
 
 const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
 const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
+const shaderDrawer = document.querySelector<HTMLDivElement>("#shader-drawer")!;
+const shaderToggle = document.querySelector<HTMLButtonElement>("#shader-toggle")!;
+const shaderSelect = document.querySelector<HTMLSelectElement>("#shader-select")!;
+const shaderMode = document.querySelector<HTMLElement>("#shader-mode")!;
+const shaderControls = document.querySelector<HTMLDivElement>("#shader-controls")!;
 const romInput = document.querySelector<HTMLInputElement>("#rom-input")!;
 const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
@@ -490,10 +576,33 @@ const buildProfileButtons = Array.from(
 );
 
 volumeSlider.value = Math.round(audioVolume * 100).toString();
+initializeShaderControls();
 updateVolumeUi();
 applyAudioVolume();
 volumeSlider.addEventListener("input", () => {
   setAudioVolume(Number(volumeSlider.value) / 100);
+});
+
+shaderSelect.addEventListener("change", () => {
+  setActiveShader(shaderSelect.value);
+});
+
+shaderToggle.addEventListener("click", () => {
+  shaderDrawer.classList.toggle("is-open");
+});
+
+shaderControls.addEventListener("input", (event) => {
+  const input = (event.target as HTMLElement).closest<HTMLInputElement>("[data-shader-param]");
+  if (!input) {
+    return;
+  }
+  const param = input.dataset.shaderParam as ShaderParamName;
+  activeShaderParams[param] = Number(input.value);
+  const value = shaderControls.querySelector<HTMLElement>(`[data-shader-value="${param}"]`);
+  if (value) {
+    value.textContent = activeShaderParams[param].toFixed(2);
+  }
+  renderShaderFrame();
 });
 
 romDrop.addEventListener("click", async (event) => {
@@ -1017,6 +1126,377 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
+
+function initializeShaderControls(): void {
+  shaderSelect.innerHTML = shaderConfig.available
+    .map((name) => `<option value="${name}">${shaderDisplayName(name)}</option>`)
+    .join("");
+  shaderSelect.value = selectedShader;
+  renderShaderControls();
+}
+
+function setActiveShader(name: string): void {
+  selectedShader = shaderConfig.presets[name] ? name : shaderConfig.selected;
+  activeShaderParams = cloneShaderParams(shaderConfig.presets[selectedShader]);
+  window.localStorage.setItem(shaderStorageKey, selectedShader);
+  renderShaderControls();
+  renderShaderFrame();
+}
+
+function renderShaderControls(): void {
+  shaderSelect.value = selectedShader;
+  shaderMode.textContent = shaderDisplayName(selectedShader);
+  shaderControls.innerHTML = shaderParamNames
+    .map((param) => {
+      const value = activeShaderParams[param];
+      const max = param === "contrast_curve" || param === "saturation" || param === "luma_sharpness"
+        ? "1.60"
+        : "1.00";
+      const min = param === "contrast_curve" || param === "saturation" || param === "luma_sharpness"
+        ? "0.40"
+        : "0.00";
+      return `
+        <label class="shader-control">
+          <span>${shaderParamLabels[param]}</span>
+          <input data-shader-param="${param}" type="range" min="${min}" max="${max}" step="0.01" value="${value.toFixed(2)}" />
+          <strong data-shader-value="${param}">${value.toFixed(2)}</strong>
+        </label>
+      `;
+    })
+    .join("");
+}
+
+function renderShaderFrame(): void {
+  if (!shaderRenderer) {
+    shaderCanvas.classList.add("is-disabled");
+    return;
+  }
+  shaderCanvas.width = videoCanvas.width;
+  shaderCanvas.height = videoCanvas.height;
+  shaderRenderer.render(videoCanvas, activeShaderParams, performance.now() / 1000);
+}
+
+function readStoredShader(config: ShaderConfig): string {
+  const stored = window.localStorage.getItem(shaderStorageKey);
+  if (stored && config.presets[stored]) {
+    return stored;
+  }
+  return config.presets[config.selected] ? config.selected : "raw_pixels";
+}
+
+function cloneShaderParams(params: ShaderParams): ShaderParams {
+  return { ...params };
+}
+
+function defaultShaderParams(): ShaderParams {
+  return {
+    scanlines: 0,
+    phosphor_glow: 0,
+    rgb_mask: 0,
+    vignette: 0,
+    curvature: 0,
+    noise: 0,
+    chroma_bleed: 0,
+    luma_sharpness: 1,
+    dither_blend: 0,
+    dot_crawl: 0,
+    rf_noise: 0,
+    bloom: 0,
+    highlight_glow: 0,
+    contrast_curve: 1,
+    saturation: 1,
+    glass_shimmer: 0,
+  };
+}
+
+function parseShaderConfig(source: string): ShaderConfig {
+  const presets: Record<string, ShaderParams> = {};
+  let selected = "system_regis_crt";
+  let available: string[] = ["raw_pixels", "system_regis_crt"];
+  let section = "";
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const sectionMatch = line.match(/^\[(.+)]$/);
+    if (sectionMatch) {
+      section = sectionMatch[1];
+      if (section.startsWith("shader.")) {
+        presets[section.slice("shader.".length)] = defaultShaderParams();
+      }
+      continue;
+    }
+    const [rawKey, ...rawValueParts] = line.split("=");
+    if (!rawKey || rawValueParts.length === 0) {
+      continue;
+    }
+    const key = rawKey.trim();
+    const value = rawValueParts.join("=").trim().replace(/,$/, "");
+    if (section === "video" && key === "shader") {
+      selected = value.replaceAll('"', "");
+      continue;
+    }
+    if (section === "video.shader_presets" && key === "available") {
+      available = parseTomlArray(value);
+      continue;
+    }
+    if (section.startsWith("shader.")) {
+      const preset = section.slice("shader.".length);
+      if (shaderParamNames.includes(key as ShaderParamName)) {
+        presets[preset][key as ShaderParamName] = Number(value);
+      }
+    }
+  }
+  if (!presets.raw_pixels) {
+    presets.raw_pixels = defaultShaderParams();
+  }
+  available = available.filter((name) => Boolean(presets[name]));
+  if (!available.includes("raw_pixels")) {
+    available.unshift("raw_pixels");
+  }
+  return { selected, available, presets };
+}
+
+function parseTomlArray(value: string): string[] {
+  return value
+    .replace(/^\[/, "")
+    .replace(/]$/, "")
+    .split(",")
+    .map((item) => item.trim().replaceAll('"', ""))
+    .filter(Boolean);
+}
+
+function shaderDisplayName(name: string): string {
+  return name
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+class ShaderRenderer {
+  private constructor(
+    private readonly canvas: HTMLCanvasElement,
+    private readonly gl: WebGLRenderingContext,
+    private readonly program: WebGLProgram,
+    private readonly texture: WebGLTexture,
+    private readonly uniforms: Record<string, WebGLUniformLocation>,
+  ) {}
+
+  static create(canvas: HTMLCanvasElement): ShaderRenderer | null {
+    const gl = canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      preserveDrawingBuffer: false,
+    });
+    if (!gl) {
+      return null;
+    }
+    const vertex = compileShader(gl, gl.VERTEX_SHADER, SHADER_VERTEX);
+    const fragment = compileShader(gl, gl.FRAGMENT_SHADER, SHADER_FRAGMENT);
+    const program = gl.createProgram();
+    const texture = gl.createTexture();
+    const buffer = gl.createBuffer();
+    if (!vertex || !fragment || !program || !texture || !buffer) {
+      return null;
+    }
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.warn(gl.getProgramInfoLog(program));
+      return null;
+    }
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
+    const position = gl.getAttribLocation(program, "aPosition");
+    const uv = gl.getAttribLocation(program, "aUv");
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(uv);
+    gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 16, 8);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const uniformNames = [
+      "uFrame",
+      "uSourceSize",
+      "uTime",
+      ...shaderParamNames.map((param) => `u_${param}`),
+    ];
+    const uniforms = Object.fromEntries(
+      uniformNames.map((name) => [name, gl.getUniformLocation(program, name)]),
+    ) as Record<string, WebGLUniformLocation | null>;
+    if (Object.values(uniforms).some((uniform) => !uniform)) {
+      return null;
+    }
+    gl.uniform1i(uniforms.uFrame, 0);
+    return new ShaderRenderer(
+      canvas,
+      gl,
+      program,
+      texture,
+      uniforms as Record<string, WebGLUniformLocation>,
+    );
+  }
+
+  render(source: HTMLCanvasElement, params: ShaderParams, time: number): void {
+    const gl = this.gl;
+    if (this.canvas.width !== source.width || this.canvas.height !== source.height) {
+      this.canvas.width = source.width;
+      this.canvas.height = source.height;
+    }
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.useProgram(this.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.uniform2f(this.uniforms.uSourceSize, source.width, source.height);
+    gl.uniform1f(this.uniforms.uTime, time);
+    for (const param of shaderParamNames) {
+      gl.uniform1f(this.uniforms[`u_${param}`], params[param]);
+    }
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+
+function compileShader(
+  gl: WebGLRenderingContext,
+  type: number,
+  source: string,
+): WebGLShader | null {
+  const shader = gl.createShader(type);
+  if (!shader) {
+    return null;
+  }
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.warn(gl.getShaderInfoLog(shader));
+    return null;
+  }
+  return shader;
+}
+
+const SHADER_VERTEX = `
+attribute vec2 aPosition;
+attribute vec2 aUv;
+varying vec2 vUv;
+
+void main() {
+  vUv = aUv;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+const SHADER_FRAGMENT = `
+precision mediump float;
+
+uniform sampler2D uFrame;
+uniform vec2 uSourceSize;
+uniform float uTime;
+uniform float u_scanlines;
+uniform float u_phosphor_glow;
+uniform float u_rgb_mask;
+uniform float u_vignette;
+uniform float u_curvature;
+uniform float u_noise;
+uniform float u_chroma_bleed;
+uniform float u_luma_sharpness;
+uniform float u_dither_blend;
+uniform float u_dot_crawl;
+uniform float u_rf_noise;
+uniform float u_bloom;
+uniform float u_highlight_glow;
+uniform float u_contrast_curve;
+uniform float u_saturation;
+uniform float u_glass_shimmer;
+varying vec2 vUv;
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+vec3 saturateColor(vec3 color, float saturation) {
+  float luma = dot(color, vec3(0.299, 0.587, 0.114));
+  return mix(vec3(luma), color, saturation);
+}
+
+vec3 sampleFrame(vec2 uv) {
+  return texture2D(uFrame, clamp(uv, vec2(0.0), vec2(1.0))).rgb;
+}
+
+void main() {
+  vec2 uv = vUv;
+  vec2 centered = uv * 2.0 - 1.0;
+  float curve = dot(centered, centered) * u_curvature * 0.075;
+  uv = uv + centered * curve;
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+
+  vec2 texel = 1.0 / uSourceSize;
+  vec2 bleed = vec2(texel.x * 2.5 * u_chroma_bleed, 0.0);
+  vec3 color = sampleFrame(uv);
+  color.r = mix(color.r, sampleFrame(uv + bleed).r, u_chroma_bleed);
+  color.b = mix(color.b, sampleFrame(uv - bleed).b, u_chroma_bleed);
+
+  vec3 blur = (
+    sampleFrame(uv + vec2(texel.x, 0.0)) +
+    sampleFrame(uv - vec2(texel.x, 0.0)) +
+    sampleFrame(uv + vec2(0.0, texel.y)) +
+    sampleFrame(uv - vec2(0.0, texel.y))
+  ) * 0.25;
+  color = mix(blur, color, u_luma_sharpness);
+
+  float checker = mod(floor(uv.x * uSourceSize.x) + floor(uv.y * uSourceSize.y), 2.0);
+  color = mix(color, mix(color, blur, 0.7), u_dither_blend * checker);
+
+  float scan = 0.5 + 0.5 * sin(uv.y * uSourceSize.y * 3.14159265);
+  color *= 1.0 - u_scanlines * (1.0 - scan);
+
+  float maskIndex = mod(floor(uv.x * uSourceSize.x * 3.0), 3.0);
+  vec3 mask = vec3(
+    maskIndex < 1.0 ? 1.0 : 1.0 - u_rgb_mask,
+    maskIndex >= 1.0 && maskIndex < 2.0 ? 1.0 : 1.0 - u_rgb_mask,
+    maskIndex >= 2.0 ? 1.0 : 1.0 - u_rgb_mask
+  );
+  color *= mask;
+
+  float bright = max(max(color.r, color.g), color.b);
+  vec3 glow = blur * (u_phosphor_glow + u_bloom * smoothstep(0.55, 1.0, bright));
+  color += glow;
+
+  vec3 highlight = color * color * vec3(0.75, 0.95, 1.25);
+  color += highlight * u_highlight_glow * smoothstep(0.58, 0.95, bright);
+
+  float crawl = sin((uv.x * uSourceSize.x + uv.y * 2.0 + uTime * 55.0) * 3.14159265);
+  color += crawl * u_dot_crawl * 0.035;
+
+  float grain = hash(floor(uv * uSourceSize) + uTime * 60.0) - 0.5;
+  color += grain * (u_noise + u_rf_noise) * 0.12;
+
+  color = saturateColor(color, u_saturation);
+  color = pow(max(color, vec3(0.0)), vec3(1.0 / max(u_contrast_curve, 0.01)));
+
+  float vig = smoothstep(1.22, 0.18, length(centered));
+  color *= mix(1.0, vig, u_vignette);
+
+  float shimmer = sin((uv.y * 90.0) + uTime * 1.7) * u_glass_shimmer * 0.035;
+  color += shimmer;
+
+  gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+}
+`;
 
 async function chooseDesktopRom(): Promise<void> {
   const selected = await open({
@@ -2049,6 +2529,7 @@ function drawNativeFrame(frame: FrameResult): void {
     frame.height,
   );
   videoContext.putImageData(image, 0, 0);
+  renderShaderFrame();
 }
 
 function syncScreenGeometry(width: number, height: number): void {
@@ -2258,6 +2739,7 @@ function drawSyntheticFrame(): void {
   videoContext.fillStyle = "#dff7c1";
   videoContext.font = "14px ui-monospace, SFMono-Regular, Menlo, monospace";
   videoContext.fillText(ui.loaded ? ui.timing : "C-O CORE", 24, 36);
+  renderShaderFrame();
 }
 
 async function syncInput(): Promise<void> {
@@ -2749,6 +3231,8 @@ function startMoleculeField(): void {
   window.requestAnimationFrame(draw);
 }
 
+shaderRenderer = ShaderRenderer.create(shaderCanvas);
+screenGlass.classList.toggle("has-shader", Boolean(shaderRenderer));
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
