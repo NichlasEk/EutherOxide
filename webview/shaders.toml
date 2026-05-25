@@ -2,7 +2,7 @@
 shader = "system_regis_crt"
 
 [video.shader_presets]
-available = ["raw_pixels", "system_regis_crt", "md_composite_goblin", "eutherchrome_2094"]
+available = ["raw_pixels", "sharp_pixels", "system_regis_crt", "md_composite_goblin", "eutherchrome_2094"]
 
 [shader.raw_pixels]
 scanlines = 0.00
@@ -20,6 +20,24 @@ bloom = 0.00
 highlight_glow = 0.00
 contrast_curve = 1.00
 saturation = 1.00
+glass_shimmer = 0.00
+
+[shader.sharp_pixels]
+scanlines = 0.00
+phosphor_glow = 0.00
+rgb_mask = 0.00
+vignette = 0.04
+curvature = 0.00
+noise = 0.00
+chroma_bleed = 0.00
+luma_sharpness = 1.34
+dither_blend = 0.00
+dot_crawl = 0.00
+rf_noise = 0.00
+bloom = 0.00
+highlight_glow = 0.04
+contrast_curve = 1.04
+saturation = 1.03
 glass_shimmer = 0.00
 
 [shader.system_regis_crt]

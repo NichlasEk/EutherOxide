@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -486,6 +488,29 @@ fn set_input(state: State<'_, AppState>, input: InputState) -> Result<(), String
 fn gamepad_snapshot(state: State<'_, AppState>) -> Result<GamepadSnapshot, String> {
     let mut gamepads = state.gamepads.lock().map_err(|err| err.to_string())?;
     Ok(gamepads.snapshot())
+}
+
+#[tauri::command]
+fn read_shader_config_toml() -> Result<Option<String>, String> {
+    match fs::read_to_string(shader_config_path()) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+#[tauri::command]
+fn save_shader_config_toml(toml: String) -> Result<(), String> {
+    fs::create_dir_all(bridge_control_dir()).map_err(|err| err.to_string())?;
+    fs::write(shader_config_path(), toml).map_err(|err| err.to_string())
+}
+
+fn bridge_control_dir() -> PathBuf {
+    PathBuf::from(".euther-bridge")
+}
+
+fn shader_config_path() -> PathBuf {
+    bridge_control_dir().join("shaders.toml")
 }
 
 impl GamepadReader {
@@ -1391,6 +1416,8 @@ fn main() {
             reset_emulator,
             set_input,
             gamepad_snapshot,
+            read_shader_config_toml,
+            save_shader_config_toml,
             list_state_slots,
             save_state_slot,
             load_state_slot

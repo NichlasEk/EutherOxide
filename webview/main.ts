@@ -216,6 +216,7 @@ const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
 const bindingsStorageKey = "eutheroxide-input-bindings";
 const shaderStorageKey = "eutheroxide-video-shader";
+const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 let audioVolume = readStoredVolume();
 const audioTargetLeadSeconds = 0.055;
 const audioMinimumLeadSeconds = 0.018;
@@ -291,7 +292,7 @@ const shaderParamLabels: Record<ShaderParamName, string> = {
   saturation: "Saturation",
   glass_shimmer: "Glass",
 };
-const shaderConfig = parseShaderConfig(shaderToml);
+let shaderConfig = parseShaderConfig(readStoredShaderConfigSource());
 let selectedShader = readStoredShader(shaderConfig);
 let activeShaderParams = cloneShaderParams(shaderConfig.presets[selectedShader]);
 
@@ -352,6 +353,8 @@ let controlsOpen = false;
 let captureTarget: InputName | null = null;
 let captureMode: "key" | "pad" | null = null;
 let gamepadPollTimer: number | null = null;
+let shaderSaveTimer: number | null = null;
+let shaderConfigLoadAttempted = false;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -577,6 +580,7 @@ const buildProfileButtons = Array.from(
 
 volumeSlider.value = Math.round(audioVolume * 100).toString();
 initializeShaderControls();
+void loadShaderConfigFile();
 updateVolumeUi();
 applyAudioVolume();
 volumeSlider.addEventListener("input", () => {
@@ -598,11 +602,13 @@ shaderControls.addEventListener("input", (event) => {
   }
   const param = input.dataset.shaderParam as ShaderParamName;
   activeShaderParams[param] = Number(input.value);
+  shaderConfig.presets[selectedShader][param] = activeShaderParams[param];
   const value = shaderControls.querySelector<HTMLElement>(`[data-shader-value="${param}"]`);
   if (value) {
     value.textContent = activeShaderParams[param].toFixed(2);
   }
   renderShaderFrame();
+  scheduleShaderConfigSave();
 });
 
 romDrop.addEventListener("click", async (event) => {
@@ -1137,10 +1143,12 @@ function initializeShaderControls(): void {
 
 function setActiveShader(name: string): void {
   selectedShader = shaderConfig.presets[name] ? name : shaderConfig.selected;
+  shaderConfig.selected = selectedShader;
   activeShaderParams = cloneShaderParams(shaderConfig.presets[selectedShader]);
   window.localStorage.setItem(shaderStorageKey, selectedShader);
   renderShaderControls();
   renderShaderFrame();
+  scheduleShaderConfigSave();
 }
 
 function renderShaderControls(): void {
@@ -1182,6 +1190,116 @@ function readStoredShader(config: ShaderConfig): string {
     return stored;
   }
   return config.presets[config.selected] ? config.selected : "raw_pixels";
+}
+
+function readStoredShaderConfigSource(): string {
+  return window.localStorage.getItem(shaderConfigStorageKey) ?? shaderToml;
+}
+
+async function loadShaderConfigFile(): Promise<void> {
+  if (shaderConfigLoadAttempted) {
+    return;
+  }
+  if (!isTauri && ui.runtime !== "bridge") {
+    return;
+  }
+  shaderConfigLoadAttempted = true;
+  const toml = await readShaderConfigToml();
+  if (!toml) {
+    return;
+  }
+  applyShaderConfigToml(toml);
+}
+
+async function readShaderConfigToml(): Promise<string | null> {
+  if (isTauri) {
+    try {
+      return await invoke<string | null>("read_shader_config_toml");
+    } catch {
+      return null;
+    }
+  }
+  if (ui.runtime === "bridge") {
+    try {
+      const response = await bridgeRequest("/shader-config", {}, 300);
+      if (response.status === 204) {
+        return null;
+      }
+      return await response.text();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function applyShaderConfigToml(toml: string): void {
+  const next = parseShaderConfig(toml);
+  shaderConfig = next;
+  selectedShader = next.presets[next.selected] ? next.selected : readStoredShader(next);
+  activeShaderParams = cloneShaderParams(next.presets[selectedShader]);
+  window.localStorage.setItem(shaderConfigStorageKey, serializeShaderConfig(next));
+  window.localStorage.setItem(shaderStorageKey, selectedShader);
+  initializeShaderControls();
+  renderShaderFrame();
+}
+
+function scheduleShaderConfigSave(): void {
+  const toml = serializeShaderConfig(shaderConfig);
+  window.localStorage.setItem(shaderConfigStorageKey, toml);
+  window.localStorage.setItem(shaderStorageKey, selectedShader);
+  if (shaderSaveTimer !== null) {
+    window.clearTimeout(shaderSaveTimer);
+  }
+  shaderSaveTimer = window.setTimeout(() => {
+    shaderSaveTimer = null;
+    void saveShaderConfigToml(toml);
+  }, 250);
+}
+
+async function saveShaderConfigToml(toml: string): Promise<void> {
+  if (isTauri) {
+    try {
+      await invoke("save_shader_config_toml", { toml });
+    } catch {
+      pushTrace("Shader TOML save missed");
+    }
+    return;
+  }
+  if (ui.runtime === "bridge") {
+    try {
+      await bridgeRequest("/shader-config", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: toml,
+      });
+    } catch {
+      pushTrace("Shader TOML save missed");
+    }
+  }
+}
+
+function serializeShaderConfig(config: ShaderConfig): string {
+  const lines = [
+    "[video]",
+    `shader = "${config.selected}"`,
+    "",
+    "[video.shader_presets]",
+    `available = [${config.available.map((name) => `"${name}"`).join(", ")}]`,
+    "",
+  ];
+  for (const name of config.available) {
+    const preset = config.presets[name];
+    if (!preset) {
+      continue;
+    }
+    lines.push(`[shader.${name}]`);
+    for (const param of shaderParamNames) {
+      lines.push(`${param} = ${preset[param].toFixed(2)}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 function cloneShaderParams(params: ShaderParams): ShaderParams {
@@ -1456,7 +1574,10 @@ void main() {
     sampleFrame(uv + vec2(0.0, texel.y)) +
     sampleFrame(uv - vec2(0.0, texel.y))
   ) * 0.25;
-  color = mix(blur, color, u_luma_sharpness);
+  float soften = clamp(1.0 - u_luma_sharpness, 0.0, 1.0);
+  float sharpen = clamp(u_luma_sharpness - 1.0, 0.0, 0.8);
+  color = mix(color, blur, soften);
+  color += (color - blur) * sharpen;
 
   float checker = mod(floor(uv.x * uSourceSize.x) + floor(uv.y * uSourceSize.y), 2.0);
   color = mix(color, mix(color, blur, 0.7), u_dither_blend * checker);
@@ -1649,6 +1770,7 @@ async function connectBridge(announce = true): Promise<boolean> {
     ui.status = ui.loaded ? "BRIDGE READY" : "BRIDGE IDLE";
     ui.lastError = "";
     await refreshBuildStatus(false);
+    await loadShaderConfigFile();
     document.querySelector("#rom-name")!.textContent = ui.loaded
       ? result.title
       : "Load Mega Drive";

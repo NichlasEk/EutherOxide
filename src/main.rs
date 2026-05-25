@@ -656,6 +656,23 @@ fn handle_bridge_request(stream: &mut TcpStream, state: &BridgeState) -> io::Res
                 .map_err(|err| io::Error::other(err.to_string()))?;
             send_json(stream, &gamepads.snapshot())
         }
+        ("GET", "/shader-config") => match fs::read_to_string(shader_config_path()) {
+            Ok(contents) => send_response(
+                stream,
+                200,
+                "text/plain; charset=utf-8",
+                contents.as_bytes(),
+            ),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                send_response(stream, 204, "text/plain; charset=utf-8", &[])
+            }
+            Err(err) => Err(err),
+        },
+        ("POST", "/shader-config") => {
+            ensure_bridge_control_dir()?;
+            fs::write(shader_config_path(), &request.body)?;
+            send_empty(stream, 204)
+        }
         ("GET", "/states") => {
             let emulator = lock_bridge_emulator(state)?;
             if emulator.rom_path.is_none() {
@@ -1208,6 +1225,10 @@ fn profile_path() -> PathBuf {
 
 fn build_status_path() -> PathBuf {
     bridge_control_dir().join("build-status")
+}
+
+fn shader_config_path() -> PathBuf {
+    bridge_control_dir().join("shaders.toml")
 }
 
 fn release_binary_path() -> PathBuf {
