@@ -484,7 +484,8 @@ h2 {
 
 .screen-vessel {
   display: grid;
-  place-items: center;
+  justify-items: center;
+  align-items: start;
   align-self: stretch;
   justify-self: stretch;
   min-height: 0;
