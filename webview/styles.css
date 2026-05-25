@@ -615,6 +615,29 @@ h2 {
   white-space: nowrap;
 }
 
+.mobile-toggle {
+  flex: none;
+  min-height: 38px;
+  padding: 0 12px;
+  border-color: rgba(46, 199, 255, 0.24);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(0, 167, 255, 0.16), rgba(98, 218, 168, 0.1)),
+    rgba(4, 13, 14, 0.78);
+  color: #dff7ff;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mobile-toggle.is-active {
+  border-color: rgba(245, 215, 125, 0.52);
+  background:
+    linear-gradient(135deg, rgba(119, 82, 28, 0.7), rgba(15, 46, 34, 0.8)),
+    rgba(4, 13, 14, 0.9);
+  color: #fff4c6;
+}
+
 .screen-vessel {
   display: grid;
   justify-items: center;
@@ -1107,6 +1130,131 @@ h2 {
   color: #9bdcff;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.76rem;
+}
+
+.mobile-pad {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  display: none;
+  grid-template-columns: minmax(130px, 1fr) minmax(92px, 0.68fr) minmax(130px, 1fr);
+  align-items: end;
+  gap: 12px;
+  padding: 10px max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  background:
+    linear-gradient(0deg, rgba(3, 8, 6, 0.96), rgba(3, 8, 6, 0.74) 72%, transparent),
+    repeating-linear-gradient(90deg, rgba(207, 240, 178, 0.04) 0 1px, transparent 1px 18px);
+  pointer-events: none;
+}
+
+.mobile-pad button {
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.mobile-pad-cluster {
+  display: grid;
+  gap: 8px;
+}
+
+.mobile-dpad {
+  grid-template-columns: repeat(3, minmax(0, 58px));
+  grid-template-areas:
+    ". up ."
+    "left down right";
+  justify-content: start;
+  align-items: center;
+}
+
+.mobile-actions {
+  grid-template-columns: repeat(2, minmax(0, 62px));
+  grid-template-areas:
+    ". c"
+    "a b";
+  justify-content: end;
+  align-items: center;
+}
+
+.mobile-system {
+  display: grid;
+  gap: 7px;
+  align-self: center;
+}
+
+.mobile-pad .pad-key,
+.mobile-command {
+  min-height: 56px;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.mobile-pad .mobile-start,
+.mobile-command {
+  min-height: 42px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.mobile-play-mode {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.mobile-play-mode .oxide-shell {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100dvh;
+  height: 100dvh;
+  padding: 8px 8px 190px;
+}
+
+.mobile-play-mode .control-rail,
+.mobile-play-mode .telemetry-panel,
+.mobile-play-mode .reaction-strip {
+  display: none;
+}
+
+.mobile-play-mode .reactor-stage {
+  min-height: 0;
+  padding: 8px;
+  gap: 8px;
+}
+
+.mobile-play-mode .stage-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.mobile-play-mode .stage-tools {
+  gap: 7px;
+}
+
+.mobile-play-mode .build-console,
+.mobile-play-mode .runtime-chip {
+  display: none;
+}
+
+.mobile-play-mode h2 {
+  max-width: calc(100vw - 126px);
+  font-size: 1rem;
+}
+
+.mobile-play-mode .screen-vessel {
+  align-items: center;
+  padding: 6px;
+}
+
+.mobile-play-mode .screen-glass {
+  width: min(100%, calc((100dvh - 252px) * var(--screen-aspect-value, 1.428571)));
+  max-height: calc(100dvh - 252px);
+}
+
+.mobile-play-mode .mobile-pad {
+  display: grid;
 }
 
 @media (max-width: 1100px) {

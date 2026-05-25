@@ -1383,7 +1383,7 @@ fn bridge_frame_audio_bytes(
     let video_len = width * height * 2;
     let pcm_len = samples.len() * 2;
     let mut bytes = Vec::with_capacity(52 + video_len + pcm_len);
-    bytes.extend_from_slice(b"EOX3");
+    bytes.extend_from_slice(b"EOX4");
     bytes.extend_from_slice(&(emulator.frame_count.min(u32::MAX as u64) as u32).to_le_bytes());
     bytes.extend_from_slice(&(width as u32).to_le_bytes());
     bytes.extend_from_slice(&(height as u32).to_le_bytes());
@@ -1396,10 +1396,10 @@ fn bridge_frame_audio_bytes(
     bytes.extend_from_slice(&(video_len as u32).to_le_bytes());
     bytes.extend_from_slice(&(pcm_len as u32).to_le_bytes());
     bytes.extend_from_slice(&channels.to_le_bytes());
-    push_frame_rgb565(&mut bytes, emulator);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
+    push_frame_rgb565(&mut bytes, emulator);
     bytes
 }
 

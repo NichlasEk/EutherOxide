@@ -66,6 +66,12 @@ type FrameAudioResult = {
   videoFormat?: string;
 };
 
+type DecodedFrameAudioPacket = FrameAudioResult & {
+  videoBytes?: Uint8Array<ArrayBufferLike>;
+  videoOffset?: number;
+  videoLength?: number;
+};
+
 type NativeAudioResult = {
   active: boolean;
   queuedMs: number;
@@ -239,10 +245,17 @@ const volumeStorageKey = "eutheroxide-audio-volume";
 const bindingsStorageKey = "eutheroxide-input-bindings";
 const shaderStorageKey = "eutheroxide-video-shader";
 const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
+const mobileModeStorageKey = "eutheroxide-mobile-mode";
 let audioVolume = readStoredVolume();
-const audioTargetLeadSeconds = 0.055;
-const audioMinimumLeadSeconds = 0.018;
-const audioMaximumLeadSeconds = 0.16;
+const localAudioTargetLeadSeconds = 0.055;
+const localAudioMinimumLeadSeconds = 0.018;
+const localAudioMaximumLeadSeconds = 0.16;
+const bridgeAudioTargetLeadSeconds = 0.14;
+const bridgeAudioMinimumLeadSeconds = 0.08;
+const bridgeAudioMaximumLeadSeconds = 0.65;
+const mobileBridgeAudioTargetLeadSeconds = 0.24;
+const mobileBridgeAudioMinimumLeadSeconds = 0.16;
+const mobileBridgeAudioMaximumLeadSeconds = 1.0;
 const inputState: InputState = {
   up: false,
   down: false,
@@ -380,6 +393,7 @@ let captureMode: "key" | "pad" | null = null;
 let gamepadPollTimer: number | null = null;
 let shaderSaveTimer: number | null = null;
 let shaderConfigLoadAttempted = false;
+let mobileMode = readStoredMobileMode();
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -494,6 +508,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="release-build" class="build-button" type="button">Build</button>
             <span id="build-lamp" class="build-lamp is-cold" title="Release binary not armed"></span>
           </div>
+          <button id="mobile-toggle" class="mobile-toggle" type="button" aria-pressed="false">Mobile</button>
           <div class="runtime-chip" id="runtime-chip">WEB VIEW</div>
         </div>
       </header>
@@ -556,6 +571,25 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </aside>
   </main>
+  <div class="mobile-pad" id="mobile-pad" aria-label="mobile controller">
+    <div class="mobile-pad-cluster mobile-dpad">
+      <button data-pad="up" class="pad-key pad-up" type="button">U</button>
+      <button data-pad="left" class="pad-key pad-left" type="button">L</button>
+      <button data-pad="right" class="pad-key pad-right" type="button">R</button>
+      <button data-pad="down" class="pad-key pad-down" type="button">D</button>
+    </div>
+    <div class="mobile-system">
+      <button data-mobile-command="play" class="mobile-command primary-action" type="button">Play</button>
+      <button data-pad="start" class="pad-key mobile-start" type="button">Start</button>
+      <button data-mobile-command="reset" class="mobile-command" type="button">Reset</button>
+      <button data-mobile-command="controls" class="mobile-command" type="button">Bind</button>
+    </div>
+    <div class="mobile-pad-cluster mobile-actions">
+      <button data-pad="a" class="pad-key action-a" type="button">A</button>
+      <button data-pad="b" class="pad-key action-b" type="button">B</button>
+      <button data-pad="c" class="pad-key action-c" type="button">C</button>
+    </div>
+  </div>
   <div id="controls-modal" class="controls-modal" aria-hidden="true">
     <div class="controls-dialog" role="dialog" aria-modal="true" aria-labelledby="controls-title">
       <header class="controls-dialog-head">
@@ -613,6 +647,8 @@ const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
 const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
+const mobileToggle = document.querySelector<HTMLButtonElement>("#mobile-toggle")!;
+const mobilePlay = document.querySelector<HTMLButtonElement>('[data-mobile-command="play"]')!;
 const releaseBuild = document.querySelector<HTMLButtonElement>("#release-build")!;
 const buildLamp = document.querySelector<HTMLSpanElement>("#build-lamp")!;
 const controlsOpenButton = document.querySelector<HTMLButtonElement>("#controls-open")!;
@@ -632,8 +668,13 @@ void loadShaderConfigFile();
 void loadRomDirSetting();
 updateVolumeUi();
 applyAudioVolume();
+applyMobileMode();
 volumeSlider.addEventListener("input", () => {
   setAudioVolume(Number(volumeSlider.value) / 100);
+});
+
+mobileToggle.addEventListener("click", () => {
+  setMobileMode(!mobileMode);
 });
 
 shaderSelect.addEventListener("change", () => {
@@ -858,6 +899,19 @@ document.querySelectorAll<HTMLButtonElement>("[data-pad]").forEach((button) => {
   button.addEventListener("pointerup", () => set(false));
   button.addEventListener("pointercancel", () => set(false));
   button.addEventListener("pointerleave", () => set(false));
+});
+
+document.querySelectorAll<HTMLButtonElement>("[data-mobile-command]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const command = button.dataset.mobileCommand;
+    if (command === "play") {
+      playToggle.click();
+    } else if (command === "reset") {
+      resetCore.click();
+    } else if (command === "controls") {
+      openControls();
+    }
+  });
 });
 
 controlsOpenButton.addEventListener("click", () => openControls());
@@ -2356,19 +2410,23 @@ async function tauriFrameAudio(): Promise<FrameAudioResult> {
   }
 }
 
-function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
+function decodeBridgeFrameAudio(
+  buffer: ArrayBuffer,
+  deferVideo = false,
+): DecodedFrameAudioPacket {
   const bytes = new Uint8Array(buffer);
   const magic = String.fromCharCode(bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0, bytes[3] ?? 0);
-  const headerLength = magic === "EOX2" || magic === "EOX3" ? 52 : 48;
+  const headerLength = magic === "EOX2" || magic === "EOX3" || magic === "EOX4" ? 52 : 48;
   if (
     bytes.length < headerLength ||
-    (magic !== "EOXB" && magic !== "EOX2" && magic !== "EOX3")
+    (magic !== "EOXB" && magic !== "EOX2" && magic !== "EOX3" && magic !== "EOX4")
   ) {
     throw new Error("Bad EutherOxide frame/audio packet");
   }
   const view = new DataView(buffer);
-  const hasChannels = magic === "EOX2" || magic === "EOX3";
-  const isRgb565 = magic === "EOX3";
+  const hasChannels = magic === "EOX2" || magic === "EOX3" || magic === "EOX4";
+  const isRgb565 = magic === "EOX3" || magic === "EOX4";
+  const isAudioFirst = magic === "EOX4";
   const frame = view.getUint32(4, true);
   const width = view.getUint32(8, true);
   const height = view.getUint32(12, true);
@@ -2381,19 +2439,22 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
   const videoLength = view.getUint32(40, true);
   const pcmLength = view.getUint32(44, true);
   const channels = hasChannels ? Math.max(1, view.getUint32(48, true)) : 1;
-  const videoOffset = headerLength;
-  const pcmOffset = videoOffset + videoLength;
+  const pcmOffset = isAudioFirst ? headerLength : headerLength + videoLength;
+  const videoOffset = isAudioFirst ? headerLength + pcmLength : headerLength;
+  const videoEnd = videoOffset + videoLength;
   const expectedVideoLength = isRgb565 ? width * height * 2 : width * height * 4;
   if (
     videoLength !== expectedVideoLength ||
     pcmLength !== sampleCount * channels * 2 ||
-    bytes.byteLength !== pcmOffset + pcmLength
+    bytes.byteLength !== headerLength + videoLength + pcmLength
   ) {
     throw new Error("EutherOxide frame/audio packet size mismatch");
   }
-  const rgba = isRgb565
-    ? decodeRgb565Frame(bytes.subarray(videoOffset, pcmOffset), width, height)
-    : bytes.subarray(videoOffset, pcmOffset);
+  const rgba = deferVideo && isAudioFirst
+    ? new Uint8ClampedArray(0) as Uint8ClampedArray<ArrayBuffer>
+    : isRgb565
+      ? decodeRgb565Frame(bytes.subarray(videoOffset, videoEnd), width, height)
+      : bytes.subarray(videoOffset, videoEnd);
   return {
     frame: {
       frame,
@@ -2413,8 +2474,27 @@ function decodeBridgeFrameAudio(buffer: ArrayBuffer): FrameAudioResult {
       channels,
     },
     transport: isRgb565 ? "BRIDGE RGB565 PACKET" : "BRIDGE RGBA PACKET",
-    videoFormat: isRgb565 ? "RGB565" : "RGBA",
+    videoFormat: isAudioFirst ? "RGB565_AUDIO_FIRST" : isRgb565 ? "RGB565" : "RGBA",
+    videoBytes: deferVideo && isAudioFirst ? bytes : undefined,
+    videoOffset: deferVideo && isAudioFirst ? videoOffset : undefined,
+    videoLength: deferVideo && isAudioFirst ? videoLength : undefined,
   };
+}
+
+function finishDeferredVideoFrame(packet: DecodedFrameAudioPacket): void {
+  if (
+    packet.videoFormat !== "RGB565_AUDIO_FIRST" ||
+    !packet.videoBytes ||
+    packet.videoOffset === undefined ||
+    packet.videoLength === undefined
+  ) {
+    return;
+  }
+  packet.frame.rgba = decodeRgb565Frame(
+    packet.videoBytes.subarray(packet.videoOffset, packet.videoOffset + packet.videoLength),
+    packet.frame.width,
+    packet.frame.height,
+  );
 }
 
 function decodeRgb565Frame(
@@ -2572,6 +2652,10 @@ async function bridgeStreamLoop(): Promise<void> {
         continue;
       }
       pending = appendBytes(pending, read.value);
+      let latestFrameAudio: DecodedFrameAudioPacket | null = null;
+      const audioBatch: AudioResult[] = [];
+      let batchCount = 0;
+      const before = performance.now();
       while (pending.byteLength >= 4) {
         const view = new DataView(pending.buffer, pending.byteOffset, pending.byteLength);
         const packetLength = view.getUint32(0, true);
@@ -2583,20 +2667,32 @@ async function bridgeStreamLoop(): Promise<void> {
         if (generation !== bridgeStreamGeneration || !ui.playing || ui.runtime !== "bridge") {
           break;
         }
-        const before = performance.now();
-        const frameAudio = decodeBridgeFrameAudio(packet.buffer);
-        const decoded = performance.now();
-        drawNativeFrame(frameAudio.frame);
-        const drawn = performance.now();
-        ui.audioLeadMs = await scheduleAudio(frameAudio.audio);
-        ui.transportMode =
-          frameAudio.videoFormat === "RGB565" ? "BRIDGE RGB565 STREAM" : "BRIDGE STREAM";
-        ui.transportMs = received === 0 ? decoded - started : decoded - before;
-        ui.drawMs = drawn - decoded;
-        applyBridgeFrame(frameAudio.frame);
-        renderUi();
+        const frameAudio = decodeBridgeFrameAudio(packet.buffer, true);
+        if (frameAudio.videoFormat === "RGB565_AUDIO_FIRST") {
+          audioBatch.push(frameAudio.audio);
+        }
+        latestFrameAudio = frameAudio;
+        batchCount += 1;
         received += 1;
-        if (frameAudio.frame.stopped) {
+      }
+      if (latestFrameAudio) {
+        if (audioBatch.length > 0) {
+          ui.audioLeadMs = await scheduleAudioBatch(audioBatch);
+        }
+        finishDeferredVideoFrame(latestFrameAudio);
+        const decoded = performance.now();
+        drawNativeFrame(latestFrameAudio.frame);
+        const drawn = performance.now();
+        if (latestFrameAudio.videoFormat !== "RGB565_AUDIO_FIRST") {
+          ui.audioLeadMs = await scheduleAudio(latestFrameAudio.audio);
+        }
+        ui.transportMode =
+          latestFrameAudio.videoFormat?.startsWith("RGB565") ? "BRIDGE RGB565 STREAM" : "BRIDGE STREAM";
+        ui.transportMs = received === batchCount ? decoded - started : decoded - before;
+        ui.drawMs = drawn - decoded;
+        applyBridgeFrame(latestFrameAudio.frame);
+        renderUi();
+        if (latestFrameAudio.frame.stopped) {
           ui.playing = false;
           playToggle.textContent = "Play";
           pushTrace("CPU reached unsupported reaction");
@@ -2774,6 +2870,32 @@ function clampVolume(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function readStoredMobileMode(): boolean {
+  const stored = localStorage.getItem(mobileModeStorageKey);
+  if (stored === "1") {
+    return true;
+  }
+  if (stored === "0") {
+    return false;
+  }
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function setMobileMode(enabled: boolean): void {
+  mobileMode = enabled;
+  localStorage.setItem(mobileModeStorageKey, enabled ? "1" : "0");
+  resetScheduledAudio();
+  applyMobileMode();
+}
+
+function applyMobileMode(): void {
+  document.body.classList.toggle("mobile-play-mode", mobileMode);
+  mobileToggle.classList.toggle("is-active", mobileMode);
+  mobileToggle.setAttribute("aria-pressed", mobileMode ? "true" : "false");
+  mobileToggle.textContent = mobileMode ? "Desk" : "Mobile";
+  ui.audioLeadMs = 0;
+}
+
 function setAudioVolume(value: number): void {
   audioVolume = clampVolume(value);
   localStorage.setItem(volumeStorageKey, audioVolume.toString());
@@ -2825,6 +2947,40 @@ async function ensureAudio(): Promise<AudioContext | null> {
   return audioContext;
 }
 
+async function scheduleAudioBatch(batch: AudioResult[]): Promise<number> {
+  if (batch.length === 0) {
+    return 0;
+  }
+  if (batch.length === 1) {
+    return scheduleAudio(batch[0]);
+  }
+  const sampleRate = batch[0].sampleRate;
+  const channels = Math.max(1, Math.floor(batch[0].channels ?? 1));
+  let sampleCount = 0;
+  for (const audio of batch) {
+    if (audio.sampleRate !== sampleRate || Math.max(1, Math.floor(audio.channels ?? 1)) !== channels) {
+      return scheduleAudio(batch[batch.length - 1]);
+    }
+    sampleCount += audio.samples.length;
+  }
+  const samples = new Int16Array(sampleCount);
+  let offset = 0;
+  for (const audio of batch) {
+    const source =
+      audio.samples instanceof Int16Array
+        ? audio.samples
+        : Int16Array.from(audio.samples);
+    samples.set(source, offset);
+    offset += source.length;
+  }
+  return scheduleAudio({
+    frame: batch[batch.length - 1].frame,
+    sampleRate,
+    samples,
+    channels,
+  });
+}
+
 async function scheduleAudio(audio: AudioResult): Promise<number> {
   const samples =
     audio.samples instanceof Int16Array
@@ -2856,6 +3012,7 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
   if (!context) {
     return 0;
   }
+  const timing = audioLeadTiming();
   const outputChannels = channels === 1 ? 1 : 2;
   const buffer = context.createBuffer(outputChannels, frameCount, audio.sampleRate);
   if (channels === 1) {
@@ -2874,11 +3031,11 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
   }
 
   const now = context.currentTime;
-  if (audioCursor > now + audioMaximumLeadSeconds) {
+  if (audioCursor > now + timing.maximum) {
     resetScheduledAudio();
-    audioCursor = now + audioTargetLeadSeconds;
-  } else if (audioCursor < now + audioMinimumLeadSeconds) {
-    audioCursor = now + audioTargetLeadSeconds;
+    audioCursor = now + timing.target;
+  } else if (audioCursor < now + timing.minimum) {
+    audioCursor = now + timing.target;
   }
   const source = context.createBufferSource();
   source.buffer = buffer;
@@ -2889,6 +3046,28 @@ async function scheduleAudio(audio: AudioResult): Promise<number> {
   const leadMs = Math.max(0, (audioCursor - now) * 1000);
   audioCursor += buffer.duration;
   return leadMs;
+}
+
+function audioLeadTiming(): { target: number; minimum: number; maximum: number } {
+  if (ui.runtime === "bridge") {
+    if (mobileMode) {
+      return {
+        target: mobileBridgeAudioTargetLeadSeconds,
+        minimum: mobileBridgeAudioMinimumLeadSeconds,
+        maximum: mobileBridgeAudioMaximumLeadSeconds,
+      };
+    }
+    return {
+      target: bridgeAudioTargetLeadSeconds,
+      minimum: bridgeAudioMinimumLeadSeconds,
+      maximum: bridgeAudioMaximumLeadSeconds,
+    };
+  }
+  return {
+    target: localAudioTargetLeadSeconds,
+    minimum: localAudioMinimumLeadSeconds,
+    maximum: localAudioMaximumLeadSeconds,
+  };
 }
 
 function drawNativeFrame(frame: FrameResult): void {
@@ -3368,6 +3547,8 @@ function renderUi(): void {
   playToggle.disabled = !ui.loaded;
   stepFrame.disabled = !ui.loaded;
   resetCore.disabled = !ui.loaded;
+  mobilePlay.disabled = !ui.loaded;
+  mobilePlay.textContent = ui.playing ? "Pause" : "Play";
   screenGlass.classList.toggle("is-native-frame", ui.loaded && ui.runtime !== "web");
   renderBuildControls();
   renderStateSlots();
