@@ -6,6 +6,7 @@ pub mod m68k;
 pub mod paprium;
 pub mod rom;
 pub mod savestate;
+pub mod svp;
 pub mod vdp;
 pub mod z80;
 

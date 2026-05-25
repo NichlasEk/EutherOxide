@@ -298,7 +298,13 @@ impl M68k {
         if (opcode & 0xf000) == 0x9000 {
             return self.add_sub(bus, opcode, true);
         }
-        if (opcode & 0xf100) == 0xb100 && ((opcode >> 6) & 0x03) != 0x03 {
+        if is_cmpm_opcode(opcode) {
+            return self.cmp(bus, opcode);
+        }
+        if (opcode & 0xf100) == 0xb100
+            && ((opcode >> 6) & 0x03) != 0x03
+            && ((opcode >> 3) & 0x07) != 0x01
+        {
             return self.eor_register(bus, opcode);
         }
         if (opcode & 0xf000) == 0xb000 {
@@ -687,7 +693,7 @@ impl M68k {
         let ea_reg = (opcode & 0x07) as u8;
         let opmode = (opcode >> 6) & 0x07;
 
-        if (opcode & 0xf138) == 0xb108 && ((opcode >> 6) & 0x03) != 0x03 {
+        if is_cmpm_opcode(opcode) {
             let size = match (opcode >> 6) & 0x03 {
                 0 => Size::Byte,
                 1 => Size::Word,
@@ -709,7 +715,7 @@ impl M68k {
             );
             let result = dest.wrapping_sub(source);
             self.set_add_sub_flags(dest, source, result, size, true, true);
-            return Ok(self.finish(12));
+            return Ok(self.finish(if size == Size::Long { 20 } else { 12 }));
         }
 
         let size = if opmode == 0x03 || opmode == 0x07 {
@@ -1714,6 +1720,10 @@ fn size_from_bits(bits: u16) -> Option<Size> {
         2 => Some(Size::Long),
         _ => None,
     }
+}
+
+fn is_cmpm_opcode(opcode: u16) -> bool {
+    (opcode & 0xf138) == 0xb108 && ((opcode >> 6) & 0x03) != 0x03
 }
 
 fn sign_extend(value: u32, bits: u32) -> u32 {

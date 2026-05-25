@@ -179,6 +179,7 @@ impl Emulator {
                 Ok(step_cycles) => {
                     cycles += step_cycles as u64;
                     steps += 1;
+                    self.bus.tick_cartridge_override(step_cycles as u32);
                     self.bus.ym_frame_cycle = cycles;
                     if self.bus.take_z80_reset_request() {
                         self.z80.reset();
@@ -186,6 +187,7 @@ impl Emulator {
                     let dma_wait_cycles = self.bus.take_dma_wait_cycles();
                     if dma_wait_cycles != 0 {
                         cycles += u64::from(dma_wait_cycles);
+                        self.bus.tick_cartridge_override(dma_wait_cycles);
                         self.z80_pending_cycles += f64::from(dma_wait_cycles) * z80_ratio;
                     }
                     self.z80_pending_cycles += f64::from(step_cycles) * z80_ratio;

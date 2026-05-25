@@ -1,6 +1,7 @@
 use crate::audio::{Psg, Ym2612, Ym2612Snapshot};
 use crate::controller::Controller;
 use crate::paprium::{PapriumBusOverride, PapriumSnapshot};
+use crate::svp::{SvpBusOverride, SvpSnapshot};
 use crate::vdp::{Vdp, VdpDmaMode, VdpSnapshot};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,6 +21,113 @@ struct SramInfo {
     end: u32,
     access: SramAccess,
     eeprom: bool,
+}
+
+fn default_dma_open_bus_word() -> u16 {
+    0xffff
+}
+
+#[derive(Clone, Debug)]
+enum CartridgeOverride {
+    Paprium(PapriumBusOverride),
+    Svp(SvpBusOverride),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum CartridgeOverrideSnapshot {
+    Paprium(PapriumSnapshot),
+    Svp(SvpSnapshot),
+}
+
+impl CartridgeOverride {
+    fn reset(&mut self) {
+        match self {
+            Self::Paprium(cartridge) => cartridge.reset(),
+            Self::Svp(cartridge) => cartridge.reset(),
+        }
+    }
+
+    fn flush_nvram(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Paprium(cartridge) => cartridge.flush_nvram(),
+            Self::Svp(_) => Ok(()),
+        }
+    }
+
+    fn read_byte(&mut self, address: u32) -> Option<u8> {
+        match self {
+            Self::Paprium(cartridge) => {
+                PapriumBusOverride::handles(address).then(|| cartridge.read_byte(address))
+            }
+            Self::Svp(cartridge) => {
+                SvpBusOverride::handles(address).then(|| cartridge.read_byte(address))
+            }
+        }
+    }
+
+    fn read_word(&mut self, address: u32) -> Option<u16> {
+        match self {
+            Self::Paprium(cartridge) => {
+                PapriumBusOverride::handles(address).then(|| cartridge.read_word(address))
+            }
+            Self::Svp(cartridge) => {
+                SvpBusOverride::handles(address).then(|| cartridge.read_word(address))
+            }
+        }
+    }
+
+    fn write_byte(&mut self, address: u32, value: u8) -> bool {
+        match self {
+            Self::Paprium(cartridge) if PapriumBusOverride::handles(address) => {
+                cartridge.write_byte(address, value);
+                true
+            }
+            Self::Svp(cartridge) if SvpBusOverride::handles(address) => {
+                cartridge.write_byte(address, value);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn write_word(&mut self, address: u32, value: u16) -> bool {
+        match self {
+            Self::Paprium(cartridge) if PapriumBusOverride::handles(address) => {
+                cartridge.write_word(address, value);
+                true
+            }
+            Self::Svp(cartridge) if SvpBusOverride::handles(address) => {
+                cartridge.write_word(address, value);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn tick(&mut self, m68k_cycles: u32) {
+        if let Self::Svp(cartridge) = self {
+            cartridge.tick(m68k_cycles);
+        }
+    }
+
+    fn is_svp(&self) -> bool {
+        matches!(self, Self::Svp(_))
+    }
+
+    fn paprium_save_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Paprium(cartridge) => cartridge.save_path(),
+            Self::Svp(_) => None,
+        }
+    }
+
+    fn snapshot(&self) -> CartridgeOverrideSnapshot {
+        match self {
+            Self::Paprium(cartridge) => CartridgeOverrideSnapshot::Paprium(cartridge.snapshot()),
+            Self::Svp(cartridge) => CartridgeOverrideSnapshot::Svp(cartridge.snapshot()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -50,7 +158,8 @@ pub struct M68kBus {
     sram_dirty: bool,
     sram_path: Option<PathBuf>,
     sram_rom_limit: Option<usize>,
-    cartridge_override: Option<PapriumBusOverride>,
+    cartridge_override: Option<CartridgeOverride>,
+    dma_open_bus_word: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,7 +200,9 @@ pub struct M68kBusSnapshot {
     #[serde(default)]
     sram_rom_limit: Option<usize>,
     #[serde(default)]
-    cartridge_override: Option<PapriumSnapshot>,
+    cartridge_override: Option<CartridgeOverrideSnapshot>,
+    #[serde(default = "default_dma_open_bus_word")]
+    dma_open_bus_word: u16,
 }
 
 impl Default for M68kBus {
@@ -161,6 +272,7 @@ impl M68kBus {
             sram_path: None,
             sram_rom_limit: None,
             cartridge_override: None,
+            dma_open_bus_word: 0xffff,
         }
     }
 
@@ -175,6 +287,7 @@ impl M68kBus {
         self.frame_cycle = 0;
         self.ym_frame_cycle = 0;
         self.dma_wait_cycles = 0;
+        self.dma_open_bus_word = 0xffff;
         self.z80_bus_requested = false;
         self.z80_reset_asserted = true;
         self.z80_reset_requested = true;
@@ -192,6 +305,7 @@ impl M68kBus {
         let _ = self.flush_sram();
         let _ = self.flush_cartridge_override();
         self.rom = rom;
+        self.dma_open_bus_word = 0xffff;
         self.rom_mask = if self.rom.len().is_power_of_two() {
             Some(self.rom.len() - 1)
         } else {
@@ -208,7 +322,7 @@ impl M68kBus {
     pub fn paprium_save_path(&self) -> Option<&std::path::Path> {
         self.cartridge_override
             .as_ref()
-            .and_then(PapriumBusOverride::save_path)
+            .and_then(CartridgeOverride::paprium_save_path)
     }
 
     pub fn flush_sram(&mut self) -> std::io::Result<()> {
@@ -269,7 +383,8 @@ impl M68kBus {
             cartridge_override: self
                 .cartridge_override
                 .as_ref()
-                .map(PapriumBusOverride::snapshot),
+                .map(CartridgeOverride::snapshot),
+            dma_open_bus_word: self.dma_open_bus_word,
         }
     }
 
@@ -309,12 +424,25 @@ impl M68kBus {
         self.sram_dirty = snapshot.sram_dirty;
         self.sram_path = snapshot.sram_path;
         self.sram_rom_limit = snapshot.sram_rom_limit;
-        self.cartridge_override = snapshot.cartridge_override.map(|cartridge_snapshot| {
-            let mut cartridge =
-                PapriumBusOverride::new(&self.rom, cartridge_snapshot.save_path.as_deref());
-            cartridge.restore_snapshot(cartridge_snapshot);
-            cartridge
-        });
+        self.dma_open_bus_word = snapshot.dma_open_bus_word;
+        self.cartridge_override =
+            snapshot
+                .cartridge_override
+                .map(|cartridge_snapshot| match cartridge_snapshot {
+                    CartridgeOverrideSnapshot::Paprium(cartridge_snapshot) => {
+                        let mut cartridge = PapriumBusOverride::new(
+                            &self.rom,
+                            cartridge_snapshot.save_path.as_deref(),
+                        );
+                        cartridge.restore_snapshot(cartridge_snapshot);
+                        CartridgeOverride::Paprium(cartridge)
+                    }
+                    CartridgeOverrideSnapshot::Svp(cartridge_snapshot) => {
+                        let mut cartridge = SvpBusOverride::new(&self.rom);
+                        cartridge.restore_snapshot(cartridge_snapshot);
+                        CartridgeOverride::Svp(cartridge)
+                    }
+                });
     }
 
     pub fn load(&mut self, address: u32, bytes: &[u8]) {
@@ -660,6 +788,12 @@ impl M68kBus {
         cycles
     }
 
+    pub fn tick_cartridge_override(&mut self, m68k_cycles: u32) {
+        if let Some(cartridge) = &mut self.cartridge_override {
+            cartridge.tick(m68k_cycles);
+        }
+    }
+
     pub fn z80_read_byte(&mut self, address: u16) -> u8 {
         match address {
             0x0000..=0x3fff => self.z80_ram[address as usize & 0x1fff],
@@ -715,7 +849,11 @@ impl M68kBus {
 
     fn configure_cartridge_override(&mut self, rom_path: Option<&std::path::Path>) {
         self.cartridge_override = if PapriumBusOverride::paprium_rom(&self.rom) {
-            Some(PapriumBusOverride::new(&self.rom, rom_path))
+            Some(CartridgeOverride::Paprium(PapriumBusOverride::new(
+                &self.rom, rom_path,
+            )))
+        } else if SvpBusOverride::svp_rom(&self.rom) {
+            Some(CartridgeOverride::Svp(SvpBusOverride::new(&self.rom)))
         } else {
             None
         };
@@ -723,36 +861,26 @@ impl M68kBus {
 
     fn cartridge_override_read_byte(&mut self, address: u32) -> Option<u8> {
         let cartridge = self.cartridge_override.as_mut()?;
-        PapriumBusOverride::handles(address).then(|| cartridge.read_byte(address))
+        cartridge.read_byte(address)
     }
 
     fn cartridge_override_read_word(&mut self, address: u32) -> Option<u16> {
         let cartridge = self.cartridge_override.as_mut()?;
-        PapriumBusOverride::handles(address).then(|| cartridge.read_word(address))
+        cartridge.read_word(address)
     }
 
     fn cartridge_override_write_byte(&mut self, address: u32, value: u8) -> bool {
         let Some(cartridge) = self.cartridge_override.as_mut() else {
             return false;
         };
-        if PapriumBusOverride::handles(address) {
-            cartridge.write_byte(address, value);
-            true
-        } else {
-            false
-        }
+        cartridge.write_byte(address, value)
     }
 
     fn cartridge_override_write_word(&mut self, address: u32, value: u16) -> bool {
         let Some(cartridge) = self.cartridge_override.as_mut() else {
             return false;
         };
-        if PapriumBusOverride::handles(address) {
-            cartridge.write_word(address, value);
-            true
-        } else {
-            false
-        }
+        cartridge.write_word(address, value)
     }
 
     fn write_z80_bank_register(&mut self, value: u8) {
@@ -974,8 +1102,20 @@ impl M68kBus {
                 let target = self.vdp.dma_target_address();
                 let start_source = source;
                 let mut nonzero_words = 0;
+                let svp_dma_delay = self
+                    .cartridge_override
+                    .as_ref()
+                    .is_some_and(CartridgeOverride::is_svp);
                 for _ in 0..length {
-                    let value = self.read_word(source);
+                    let fetched = self.read_word(source);
+                    let value = if svp_dma_delay && source <= 0x003f_ffff {
+                        let delayed = self.dma_open_bus_word;
+                        self.dma_open_bus_word = fetched;
+                        delayed
+                    } else {
+                        self.dma_open_bus_word = fetched;
+                        fetched
+                    };
                     if target < 0xc000 && value != 0 {
                         nonzero_words += 1;
                     }

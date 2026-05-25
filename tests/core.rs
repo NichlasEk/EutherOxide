@@ -1,6 +1,7 @@
 use euther_oxide::audio::{GenesisAudioFilter, Psg, Ym2612};
 use euther_oxide::rom::{SystemRegion, TimingMode, normalize_rom_bytes, parse_header};
 use euther_oxide::savestate::{argon_path_for_rom, load_slot_for_emulator, save_slot_for_emulator};
+use euther_oxide::svp::SvpBusOverride;
 use euther_oxide::z80::Z80;
 use euther_oxide::{Emulator, M68k, M68kBus};
 use std::fs;
@@ -125,6 +126,30 @@ fn cpu_cmpa_word_uses_sign_extended_32_bit_operand() {
     assert!(cpu.flag_z());
     cpu.step(&mut bus).unwrap();
     assert_eq!(cpu.pc, 0x108);
+}
+
+#[test]
+fn cpu_cmpm_postincrement_compares_without_writing_memory() {
+    let mut bus = M68kBus::new();
+    let mut cpu = M68k::new();
+    reset_to(&mut cpu, &mut bus, 0x100);
+    load_program(&mut bus, 0x100, &[0xb50b]); // CMPM.B (A3)+,(A2)+
+    cpu.set_address_register(2, 0x00ff_fb00);
+    cpu.set_address_register(3, 0x00ff_fb80);
+    cpu.set_sr(cpu.sr() | 0x0010);
+    bus.write_byte(0x00ff_fb00, 0x12);
+    bus.write_byte(0x00ff_fb80, 0x10);
+
+    cpu.step(&mut bus).unwrap();
+
+    assert_eq!(cpu.a()[2], 0x00ff_fb01);
+    assert_eq!(cpu.a()[3], 0x00ff_fb81);
+    assert_eq!(bus.read_byte(0x00ff_fb00), 0x12);
+    assert_eq!(bus.read_byte(0x00ff_fb80), 0x10);
+    assert!(cpu.flag_x());
+    assert!(!cpu.flag_c());
+    assert!(!cpu.flag_z());
+    assert!(!cpu.flag_n());
 }
 
 #[test]
@@ -1373,6 +1398,60 @@ fn paprium_override_persists_nvram_beside_rom() {
 
     let _ = fs::remove_file(&srm_path);
     let _ = fs::remove_file(&rom_path);
+}
+
+#[test]
+fn svp_override_maps_dram_and_status_registers() {
+    let mut rom = vec![0xff; 0x20_0000];
+    rom[0x180..0x187].copy_from_slice(b"MK-1229");
+    assert!(SvpBusOverride::svp_rom(&rom));
+
+    let mut bus = M68kBus::new();
+    bus.load_rom(rom);
+
+    bus.write_word(0x00a1_5000, 0x1234);
+    assert_eq!(bus.read_word(0x00a1_5000), 0x1234);
+    assert_eq!(bus.read_word(0x00a1_5004), 0x0002);
+
+    bus.write_word(0x0030_0000, 0xabcd);
+    assert_eq!(bus.read_word(0x0030_0000), 0xabcd);
+    bus.write_byte(0x0030_0001, 0x55);
+    assert_eq!(bus.read_word(0x0030_0000), 0xab55);
+}
+
+#[test]
+fn svp_vdp_dma_uses_previous_dma_open_bus_word() {
+    let mut rom = vec![0xff; 0x20_0000];
+    rom[0x180..0x187].copy_from_slice(b"MK-1229");
+    rom[0x0200] = 0x12;
+    rom[0x0201] = 0x34;
+    rom[0x0202] = 0x56;
+    rom[0x0203] = 0x78;
+
+    let mut bus = M68kBus::new();
+    bus.load_rom(rom);
+    const VDP_CONTROL: u32 = 0x00c0_0004;
+
+    bus.write_word(VDP_CONTROL, 0x8110);
+    bus.write_word(VDP_CONTROL, 0x9301);
+    bus.write_word(VDP_CONTROL, 0x9400);
+    bus.write_word(VDP_CONTROL, 0x9500);
+    bus.write_word(VDP_CONTROL, 0x9601);
+    bus.write_word(VDP_CONTROL, 0x9700);
+    bus.write_word(VDP_CONTROL, 0x4000);
+    bus.write_word(VDP_CONTROL, 0x0080);
+
+    assert_eq!(&bus.vdp.vram[0..2], &[0xff, 0xff]);
+
+    bus.write_word(VDP_CONTROL, 0x9301);
+    bus.write_word(VDP_CONTROL, 0x9400);
+    bus.write_word(VDP_CONTROL, 0x9501);
+    bus.write_word(VDP_CONTROL, 0x9601);
+    bus.write_word(VDP_CONTROL, 0x9700);
+    bus.write_word(VDP_CONTROL, 0x4002);
+    bus.write_word(VDP_CONTROL, 0x0080);
+
+    assert_eq!(&bus.vdp.vram[2..4], &[0x12, 0x34]);
 }
 
 #[test]
