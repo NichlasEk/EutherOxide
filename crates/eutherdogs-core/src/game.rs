@@ -241,6 +241,10 @@ impl Game {
         }
     }
 
+    pub fn high_score_entry(&self, name: impl Into<String>, mission: i32) -> crate::HighScoreEntry {
+        crate::HighScoreEntry::new(name, mission, self.summary())
+    }
+
     fn apply_player_input(&mut self, input: PlayerInput, dt: FixedStep) {
         let Some(character_index) = self
             .characters
@@ -1003,5 +1007,20 @@ mod tests {
         }
         assert!(game.progress().score >= 125);
         assert!(game.progress().cash >= 30);
+    }
+
+    #[test]
+    fn high_score_entry_uses_mission_summary() {
+        let mut game = Game::default();
+        game.progress.score = 1234;
+        game.progress.kills = 7;
+        game.progress.elapsed_ticks = 88;
+        let entry = game.high_score_entry("Tech", 3);
+
+        assert_eq!(entry.name, "Tech");
+        assert_eq!(entry.score, 1234);
+        assert_eq!(entry.kills, 7);
+        assert_eq!(entry.mission, 3);
+        assert!(!entry.completed);
     }
 }

@@ -4,6 +4,7 @@ pub mod command;
 pub mod direction;
 pub mod entity;
 pub mod game;
+pub mod highscore;
 pub mod mobile;
 pub mod player;
 pub mod rng;
@@ -17,5 +18,6 @@ pub use game::{
     AudioEvent, FixedStep, Game, MissionProgress, MissionRules, MissionStatus, MissionSummary,
     PlayerInput, RenderSnapshot,
 };
+pub use highscore::{HighScoreEntry, HighScoreTable};
 pub use mobile::{MobileInput, TouchButtons, VirtualStick};
 pub use weapon::{AnimationMode, Weapon, WeaponId};
