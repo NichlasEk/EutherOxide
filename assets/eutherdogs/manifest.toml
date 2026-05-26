@@ -83,6 +83,7 @@ consultation_wall = "tiles/walls/consultation_wall.png"
 security_glass_wall = "tiles/walls/security_glass_wall.png"
 security_glass_wall_cap = "tiles/walls/security_glass_wall_cap.png"
 security_glass_wall_face = "tiles/walls/security_glass_wall_face.png"
+security_glass_wall_column = "tiles/walls/security_glass_wall_column.png"
 
 [tiles.props]
 corrupt_med_cabinet = "tiles/props/corrupt_med_cabinet.png"
