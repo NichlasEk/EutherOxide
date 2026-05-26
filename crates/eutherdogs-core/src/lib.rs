@@ -13,6 +13,9 @@ pub mod world;
 pub use assets::{AssetId, AssetKind};
 pub use command::PlayerCommand;
 pub use direction::Direction;
-pub use game::{AudioEvent, FixedStep, Game, PlayerInput, RenderSnapshot};
+pub use game::{
+    AudioEvent, FixedStep, Game, MissionProgress, MissionRules, MissionStatus, MissionSummary,
+    PlayerInput, RenderSnapshot,
+};
 pub use mobile::{MobileInput, TouchButtons, VirtualStick};
 pub use weapon::{AnimationMode, Weapon, WeaponId};

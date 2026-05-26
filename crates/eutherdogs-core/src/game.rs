@@ -39,12 +39,42 @@ pub enum MissionStatus {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MissionProgress {
+    pub elapsed_ticks: u32,
+    pub score: i32,
+    pub cash: i32,
     pub kills: i32,
     pub targets_destroyed: i32,
     pub objects_collected: i32,
     pub shots_fired: i32,
     pub hits: i32,
     pub damage_taken: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MissionRules {
+    pub player_count: usize,
+    pub minimum_kills: i32,
+    pub time_limit_ticks: Option<u32>,
+}
+
+impl Default for MissionRules {
+    fn default() -> Self {
+        Self {
+            player_count: 1,
+            minimum_kills: 0,
+            time_limit_ticks: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MissionSummary {
+    pub status: MissionStatus,
+    pub progress: MissionProgress,
+    pub targets_left: i32,
+    pub objects_left: i32,
+    pub minimum_kills: i32,
+    pub time_remaining_ticks: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +89,7 @@ pub struct Game {
     status: MissionStatus,
     progress: MissionProgress,
     mission_goal_count: i32,
+    rules: MissionRules,
 }
 
 impl Default for Game {
@@ -78,12 +109,22 @@ impl Default for Game {
             status: MissionStatus::Running,
             progress: MissionProgress::default(),
             mission_goal_count: 0,
+            rules: MissionRules::default(),
         }
     }
 }
 
 impl Game {
     pub fn new_mission(seed: u64, params: WorldParams, mission: MissionSpec) -> Self {
+        Self::new_mission_with_rules(seed, params, mission, MissionRules::default())
+    }
+
+    pub fn new_mission_with_rules(
+        seed: u64,
+        params: WorldParams,
+        mission: MissionSpec,
+        rules: MissionRules,
+    ) -> Self {
         let world = World::build(seed, params, mission);
         let mut game = Self {
             world,
@@ -96,13 +137,22 @@ impl Game {
             status: MissionStatus::Running,
             progress: MissionProgress::default(),
             mission_goal_count: 0,
+            rules,
         };
         game.mission_goal_count =
             game.world.stats().targets_left + game.world.stats().objects_to_collect;
-        if let Some((x, y)) = first_spawn_point(&game.world) {
-            game.characters
-                .push(Character::player(0, x, y, AssetId::NightShiftTech));
-            game.next_character_id = 1;
+        let player_count = game.rules.player_count.clamp(1, 2);
+        for player in 0..player_count {
+            if let Some((x, y)) = spawn_point_at(&game.world, player) {
+                let sprite = if player == 0 {
+                    AssetId::NightShiftTech
+                } else {
+                    AssetId::NeonPharmacist
+                };
+                game.characters
+                    .push(Character::player(player as u32, x, y, sprite));
+                game.next_character_id = player as u32 + 1;
+            }
         }
         game.spawn_hostiles((mission.mission + 4).max(4) as usize);
         game
@@ -132,6 +182,7 @@ impl Game {
         if self.status != MissionStatus::Running {
             return;
         }
+        self.progress.elapsed_ticks = self.progress.elapsed_ticks.saturating_add(dt.ticks);
         for character in &mut self.characters {
             character.weapon_cooldown = character.weapon_cooldown.saturating_sub(dt.ticks as u8);
         }
@@ -174,6 +225,20 @@ impl Game {
 
     pub const fn progress(&self) -> MissionProgress {
         self.progress
+    }
+
+    pub fn summary(&self) -> MissionSummary {
+        MissionSummary {
+            status: self.status,
+            progress: self.progress,
+            targets_left: self.world.stats().targets_left,
+            objects_left: self.world.stats().objects_to_collect,
+            minimum_kills: self.rules.minimum_kills,
+            time_remaining_ticks: self
+                .rules
+                .time_limit_ticks
+                .map(|limit| limit.saturating_sub(self.progress.elapsed_ticks)),
+        }
     }
 
     fn apply_player_input(&mut self, input: PlayerInput, dt: FixedStep) {
@@ -269,7 +334,13 @@ impl Game {
             } else if let Some(hit_index) = bullet_hits_character(&self.characters, &bullet) {
                 let damage = weapon.power as i32;
                 self.damage_character(hit_index, damage);
-                self.apply_area_damage(bullet.x, bullet.y, weapon.radius, damage / 2, bullet.owner_faction);
+                self.apply_area_damage(
+                    bullet.x,
+                    bullet.y,
+                    weapon.radius,
+                    damage / 2,
+                    bullet.owner_faction,
+                );
             } else if bullet_hits_wall(&self.world, &bullet) {
                 let old_targets = self.world.stats().targets_left;
                 let hit_tile = self
@@ -277,7 +348,18 @@ impl Game {
                     .damage_structure_at_pixel(bullet.x, bullet.y, weapon.power as i32);
                 let new_targets = self.world.stats().targets_left;
                 self.progress.targets_destroyed += old_targets - new_targets;
-                self.apply_area_damage(bullet.x, bullet.y, weapon.radius, weapon.power as i32 / 2, bullet.owner_faction);
+                if old_targets > new_targets {
+                    let destroyed = old_targets - new_targets;
+                    self.progress.score += 250 * destroyed;
+                    self.progress.cash += 50 * destroyed;
+                }
+                self.apply_area_damage(
+                    bullet.x,
+                    bullet.y,
+                    weapon.radius,
+                    weapon.power as i32 / 2,
+                    bullet.owner_faction,
+                );
                 self.audio_events.push(AudioEvent::Sfx(match hit_tile {
                     Some(tile) if tile.is_destructible() => AssetId::ImpactHeavy,
                     _ => AssetId::ImpactLight,
@@ -290,15 +372,6 @@ impl Game {
     }
 
     fn move_hostiles(&mut self, dt: FixedStep) {
-        let Some((player_x, player_y)) = self
-            .characters
-            .iter()
-            .find(|character| character.faction == Faction::Player && character.alive)
-            .map(|character| (character.x, character.y))
-        else {
-            return;
-        };
-
         let hostile_indices = self
             .characters
             .iter()
@@ -309,16 +382,21 @@ impl Game {
 
         for index in hostile_indices {
             let (x, y) = (self.characters[index].x, self.characters[index].y);
+            let Some((player_index, player_x, player_y)) = self.nearest_living_player(x, y) else {
+                return;
+            };
             if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
                 && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
             {
-                self.hurt_player(0, 2 * dt.ticks as i32);
+                self.hurt_player_index(player_index, 2 * dt.ticks as i32);
                 continue;
             }
 
             let direction = direction_toward(x, y, player_x, player_y);
             self.characters[index].direction = direction;
-            if (x - player_x).abs().max((y - player_y).abs()) < 220 && self.has_line_of_sight(x, y, player_x, player_y) {
+            if (x - player_x).abs().max((y - player_y).abs()) < 220
+                && self.has_line_of_sight(x, y, player_x, player_y)
+            {
                 self.fire_weapon(index);
             } else {
                 self.move_character(index, direction, dt);
@@ -333,6 +411,10 @@ impl Game {
         if hit.armor <= 0 {
             hit.alive = false;
             self.progress.kills += i32::from(hit.faction == Faction::HostileCustomer);
+            if hit.faction == Faction::HostileCustomer {
+                self.progress.score += 100;
+                self.progress.cash += 25;
+            }
             self.audio_events
                 .push(AudioEvent::Sfx(AssetId::CustomerDefeated));
         } else {
@@ -340,7 +422,14 @@ impl Game {
         }
     }
 
-    fn apply_area_damage(&mut self, x: i32, y: i32, radius: i32, damage: i32, owner_faction: Faction) {
+    fn apply_area_damage(
+        &mut self,
+        x: i32,
+        y: i32,
+        radius: i32,
+        damage: i32,
+        owner_faction: Faction,
+    ) {
         if radius <= 0 || damage <= 0 {
             return;
         }
@@ -362,12 +451,11 @@ impl Game {
         }
     }
 
-    fn hurt_player(&mut self, player_index: usize, damage: i32) {
+    fn hurt_player_index(&mut self, character_index: usize, damage: i32) {
         let Some(character) = self
             .characters
-            .iter_mut()
+            .get_mut(character_index)
             .filter(|character| character.faction == Faction::Player && character.alive)
-            .nth(player_index)
         else {
             return;
         };
@@ -400,13 +488,25 @@ impl Game {
                     character.add_weapon_ammo(crate::weapon::WeaponId::LabelPrinter, 80);
                     character.switch_weapon();
                 }
-                Tile::Prescription => character.add_weapon_ammo(crate::weapon::WeaponId::RxCannon, 4),
-                Tile::Folder => character.add_weapon_ammo(crate::weapon::WeaponId::CapsuleLauncher, 3),
-                Tile::DataWafer => character.add_weapon_ammo(crate::weapon::WeaponId::NeonPriorAuth, 8),
-                _ => self.progress.objects_collected += 1,
+                Tile::Prescription => {
+                    character.add_weapon_ammo(crate::weapon::WeaponId::RxCannon, 4)
+                }
+                Tile::Folder => {
+                    character.add_weapon_ammo(crate::weapon::WeaponId::CapsuleLauncher, 3)
+                }
+                Tile::DataWafer => {
+                    character.add_weapon_ammo(crate::weapon::WeaponId::NeonPriorAuth, 8)
+                }
+                _ => {
+                    self.progress.objects_collected += 1;
+                    self.progress.score += 25;
+                    self.progress.cash += 5;
+                }
             }
             if matches!(tile, Tile::Prescription | Tile::Folder | Tile::DataWafer) {
                 self.progress.objects_collected += 1;
+                self.progress.score += 25;
+                self.progress.cash += 5;
             }
             self.audio_events.push(AudioEvent::Sfx(AssetId::PickupRx));
         }
@@ -419,6 +519,14 @@ impl Game {
 
     fn update_status(&mut self) {
         if self
+            .rules
+            .time_limit_ticks
+            .is_some_and(|limit| self.progress.elapsed_ticks >= limit)
+        {
+            self.status = MissionStatus::Lost;
+            return;
+        }
+        if self
             .characters
             .iter()
             .filter(|character| character.faction == Faction::Player)
@@ -428,8 +536,10 @@ impl Game {
         } else if self.mission_goal_count > 0
             && self.world.stats().targets_left == 0
             && self.world.stats().objects_to_collect == 0
+            && self.progress.kills >= self.rules.minimum_kills
             && self.players_on_exit()
         {
+            self.progress.score += self.summary().time_remaining_ticks.unwrap_or(0) as i32;
             self.status = MissionStatus::Won;
         }
     }
@@ -456,6 +566,15 @@ impl Game {
             }
         }
         true
+    }
+
+    fn nearest_living_player(&self, x: i32, y: i32) -> Option<(usize, i32, i32)> {
+        self.characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| character.faction == Faction::Player && character.alive)
+            .min_by_key(|(_, character)| (character.x - x).abs() + (character.y - y).abs())
+            .map(|(index, character)| (index, character.x, character.y))
     }
 }
 
@@ -499,11 +618,15 @@ fn direction_toward(x: i32, y: i32, target_x: i32, target_y: i32) -> Direction {
     }
 }
 
-fn first_spawn_point(world: &World) -> Option<(i32, i32)> {
+fn spawn_point_at(world: &World, offset: usize) -> Option<(i32, i32)> {
+    let mut found = 0;
     for y in 1..world.height() - 1 {
         for x in 1..world.width() - 1 {
             if !world.blocks_walk(x, y) {
-                return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
+                if found == offset {
+                    return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
+                }
+                found += 1;
             }
         }
     }
@@ -789,5 +912,96 @@ mod tests {
         game.world.set_tile(1, 1, Tile::ServiceElevator);
         game.tick(&[], FixedStep { ticks: 1 });
         assert_eq!(game.status(), super::MissionStatus::Won);
+    }
+
+    #[test]
+    fn new_mission_can_spawn_two_players() {
+        let game = Game::new_mission_with_rules(
+            99,
+            WorldParams::default(),
+            MissionSpec::default(),
+            super::MissionRules {
+                player_count: 2,
+                ..super::MissionRules::default()
+            },
+        );
+        assert_eq!(
+            game.characters()
+                .iter()
+                .filter(|character| character.faction == crate::entity::Faction::Player)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn mission_timer_can_fail_running_mission() {
+        let mut game = Game::new_mission_with_rules(
+            5,
+            WorldParams::default(),
+            MissionSpec::default(),
+            super::MissionRules {
+                time_limit_ticks: Some(2),
+                ..super::MissionRules::default()
+            },
+        );
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Running);
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Lost);
+        assert_eq!(game.summary().time_remaining_ticks, Some(0));
+    }
+
+    #[test]
+    fn minimum_kills_gate_mission_win() {
+        let mut game = Game::default();
+        game.mission_goal_count = 1;
+        game.rules.minimum_kills = 1;
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.world.set_tile(1, 1, Tile::ServiceElevator);
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Running);
+
+        game.progress.kills = 1;
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Won);
+    }
+
+    #[test]
+    fn scoring_tracks_kills_and_pickups() {
+        let mut game = Game::default();
+        game.world.set_tile(1, 1, Tile::Prescription);
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        let mut hostile = crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH + 32,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::AngryCustomer,
+        );
+        hostile.armor = 10;
+        game.characters.push(hostile);
+        game.tick(&[], FixedStep { ticks: 1 });
+        game.tick(
+            &[PlayerInput {
+                player_index: 0,
+                command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+            }],
+            FixedStep { ticks: 1 },
+        );
+        for _ in 0..4 {
+            game.tick(&[], FixedStep { ticks: 1 });
+        }
+        assert!(game.progress().score >= 125);
+        assert!(game.progress().cash >= 30);
     }
 }
