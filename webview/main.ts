@@ -3246,6 +3246,17 @@ function dogsProjectileAsset(bullet: DogsCoreBullet): string | null {
   return dogsAsset("sprites.projectiles", projectileMap[bullet.weapon] ?? "cyan_rx_bolt");
 }
 
+function dogsWeaponAsset(weapon: string | null | undefined): string | null {
+  return weapon ? dogsAsset("sprites.weapons", weapon) : null;
+}
+
+function dogsWeaponIconMarkup(weapon: string | null | undefined, label: string): string {
+  const url = dogsWeaponAsset(weapon);
+  return url
+    ? `<img class="eutherdogs-weapon-icon" src="${url}" alt="${label}" />`
+    : `<span class="eutherdogs-weapon-icon is-empty" aria-hidden="true"></span>`;
+}
+
 function drawDogsImage(
   url: string | null,
   x: number,
@@ -3317,12 +3328,14 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   const armor = Math.max(0, hero?.armor ?? 0);
   const healthPercent = Math.min(100, Math.max(8, armor));
   const clock = dogsClockSource(frame.summary);
+  const weaponIcon = dogsWeaponAsset(hero?.activeWeapon);
   eutherDogsRxLeft.textContent = String(frame.summary.objectsLeft);
   eutherDogsTargetsLeft.textContent = String(frame.summary.targetsLeft);
   eutherDogsCash.textContent = `$${frame.summary.cash}`;
   eutherDogsClockLabel.textContent = clock.label;
   eutherDogsClock.textContent = formatDogsClock(clock.ticks);
   eutherDogsWeapon.textContent = weapon;
+  eutherDogsWeapon.style.setProperty("--dogs-active-weapon", weaponIcon ? `url("${weaponIcon}")` : "none");
   eutherDogsAlert.textContent = status === "RUNNING" ? "Open" : status;
   eutherDogsHealthFill.style.width = `${healthPercent}%`;
   eutherDogsLamp.classList.toggle("is-hot", frame.summary.targetsLeft > 0 && frame.summary.status === "running");
@@ -3448,6 +3461,7 @@ function renderDogsMenu(): void {
     .map((item) => {
       return `
         <button class="eutherdogs-store-item ${item.active ? "is-equipped" : ""}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
+          ${dogsWeaponIconMarkup(item.weapon, item.label)}
           <span>
             <strong>${item.label}</strong>
             <small>${item.detail}</small>

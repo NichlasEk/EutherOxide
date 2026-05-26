@@ -205,7 +205,7 @@ button:disabled {
 
 .eutherdogs-vitals {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 24px 24px minmax(0, 1fr);
   grid-template-rows: 17px 17px;
   align-items: center;
   column-gap: 7px;
@@ -225,6 +225,7 @@ button:disabled {
 }
 
 .eutherdogs-health {
+  grid-column: 2 / 4;
   align-self: end;
   height: 12px;
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -242,8 +243,22 @@ button:disabled {
 }
 
 .eutherdogs-vitals strong {
+  grid-column: 2 / 4;
+  position: relative;
+  padding-left: 27px;
   color: #ffef6e;
   font-size: 0.62rem;
+}
+
+.eutherdogs-vitals strong::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -3px;
+  width: 22px;
+  height: 22px;
+  background: var(--dogs-active-weapon, none) center / contain no-repeat;
+  image-rendering: pixelated;
 }
 
 .eutherdogs-console.is-alert .eutherdogs-console-top {
@@ -332,13 +347,25 @@ button:disabled {
 
 .eutherdogs-store-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   min-height: 48px;
   padding: 7px 9px;
   border-radius: 0;
   text-align: left;
+}
+
+.eutherdogs-weapon-icon {
+  width: 32px;
+  height: 32px;
+  image-rendering: pixelated;
+  object-fit: contain;
+}
+
+.eutherdogs-weapon-icon.is-empty {
+  border: 1px solid rgba(39, 242, 255, 0.18);
+  background: rgba(0, 4, 7, 0.62);
 }
 
 .eutherdogs-store-item span {
