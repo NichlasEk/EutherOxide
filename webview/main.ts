@@ -3241,6 +3241,9 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
   const prefix = tile === "door" ? "security_glass_wall" : "pharmacy_wall";
   const horizontalRun = left || right;
   const verticalRun = up || down;
+  if (horizontalRun && verticalRun) {
+    return dogsAsset("tiles.walls", `${prefix}_junction`) ?? dogsAsset("tiles.walls", prefix);
+  }
   if (verticalRun && !horizontalRun) {
     return dogsAsset("tiles.walls", `${prefix}_column`) ?? dogsAsset("tiles.walls", prefix);
   }
