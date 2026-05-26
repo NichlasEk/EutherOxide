@@ -567,6 +567,15 @@ fn run_eutherdogs_frame(
 }
 
 #[tauri::command]
+fn purchase_eutherdogs_item(
+    state: State<'_, AppState>,
+    purchase: euther_oxide::eutherdogs::EutherDogsPurchase,
+) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
+    let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
+    dogs.purchase(purchase).map_err(|err| format!("{err:?}"))
+}
+
+#[tauri::command]
 fn gamepad_snapshot(state: State<'_, AppState>) -> Result<GamepadSnapshot, String> {
     let mut gamepads = state.gamepads.lock().map_err(|err| err.to_string())?;
     Ok(gamepads.snapshot())
@@ -1645,6 +1654,7 @@ fn main() {
             start_eutherdogs,
             reset_eutherdogs,
             run_eutherdogs_frame,
+            purchase_eutherdogs_item,
             gamepad_snapshot,
             read_shader_config_toml,
             save_shader_config_toml,

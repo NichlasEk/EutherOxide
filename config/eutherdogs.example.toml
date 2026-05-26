@@ -11,7 +11,7 @@ highscore_limit = 10
 
 [player.1]
 name = "Night Tech"
-cash = 0
+cash = 500
 score = 0
 armor = 100
 lives = 3
@@ -27,7 +27,7 @@ ammo = 12
 
 [player.2]
 name = "Neon Pharmacist"
-cash = 0
+cash = 500
 score = 0
 armor = 100
 lives = 3
@@ -36,6 +36,37 @@ active_weapon = "scanner_blaster"
 [[player.2.weapons]]
 id = "scanner_blaster"
 ammo = -1
+
+[[store]]
+id = "label_printer"
+label = "Label Printer"
+price = 125
+detail = "Fast short-range sticker burst"
+weapon = "label_printer"
+ammo = 80
+
+[[store]]
+id = "sterilizer_spray"
+label = "Sterilizer Spray"
+price = 175
+detail = "Wide cone for queue control"
+weapon = "sterilizer_spray"
+ammo = 70
+
+[[store]]
+id = "capsule_launcher"
+label = "Capsule Launcher"
+price = 250
+detail = "Slow explosive capsule dose"
+weapon = "capsule_launcher"
+ammo = 12
+
+[[store]]
+id = "coat_reinforcement"
+label = "Coat Reinforcement"
+price = 100
+detail = "Add 25 white-coat armor"
+armor = 25
 
 [scoring]
 enemy_kill_score = 100

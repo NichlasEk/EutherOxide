@@ -15,13 +15,13 @@ pub mod world;
 pub use assets::{AssetId, AssetKind};
 pub use command::PlayerCommand;
 pub use config::{
-    ConfigError, ConfigHighScoreEntry, ConfigScoring, ConfigSettings, ConfigWeaponSlot,
+    ConfigError, ConfigHighScoreEntry, ConfigScoring, ConfigSettings, ConfigStoreItem, ConfigWeaponSlot,
     ConfigWorld, EutherDogsConfig, PlayerConfig,
 };
 pub use direction::Direction;
 pub use game::{
     AudioEvent, FixedStep, Game, MissionProgress, MissionRules, MissionStatus, MissionSummary,
-    PlayerInput, RenderSnapshot, ScoringRules,
+    PlayerInput, PurchaseError, RenderSnapshot, ScoringRules,
 };
 pub use highscore::{HighScoreEntry, HighScoreTable};
 pub use mobile::{MobileInput, TouchButtons, VirtualStick};

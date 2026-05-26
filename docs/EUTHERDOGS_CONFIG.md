@@ -14,6 +14,7 @@ Important conventions:
 - `ammo = -1` means infinite ammo.
 - `time_limit_ticks = 0` means no timer.
 - Weapon IDs should match `assets/eutherdogs/manifest.toml` keys where possible.
+- `[[store]]` entries define RX Store inventory. `weapon` adds/refills a weapon, `ammo` sets the refill amount, and `armor` adds coat armor.
 - High score entries should preserve the fields used by `HighScoreEntry`.
 - `target_count` and `object_count` define generated mission goals.
 - `highscore_limit` controls how many entries the editable table keeps.
@@ -29,6 +30,7 @@ Runtime support:
 
 - `EutherDogsConfig::from_toml_str` parses and validates the file.
 - `Game::new_mission_from_config` starts a mission from seed, world settings, mission goals, scoring, player stats, lives, armor, weapons, ammo, and active weapon.
+- `Game::purchase_store_item` spends mission cash and applies configured RX Store weapon/ammo/armor effects.
 - `EutherDogsConfig::high_score_table` converts the editable entries into the sorted runtime table.
 - The CLI demo can load an edited file with `cargo run --bin euther-oxide -- --eutherdogs-demo --eutherdogs-config config/eutherdogs.example.toml`.
 

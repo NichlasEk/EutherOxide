@@ -1163,6 +1163,19 @@ fn handle_bridge_route(
                 .map_err(|err| io::Error::other(err.to_string()))?;
             send_json(stream, &dogs.tick(input))
         }
+        ("POST", "/eutherdogs/purchase") => {
+            let purchase: euther_oxide::eutherdogs::EutherDogsPurchase =
+                serde_json::from_slice(&request.body)
+                    .map_err(|err| invalid_request(err.to_string()))?;
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            let frame = dogs
+                .purchase(purchase)
+                .map_err(|err| invalid_request(format!("{err:?}")))?;
+            send_json(stream, &frame)
+        }
         ("GET", "/gamepads") => {
             let mut gamepads = state
                 .gamepads

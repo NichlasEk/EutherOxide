@@ -2,6 +2,7 @@ use crate::{
     assets::AssetId,
     collision::position_ok,
     command::PlayerCommand,
+    config::ConfigStoreItem,
     direction::Direction,
     entity::{Bullet, Character, Faction},
     rng::Lcg,
@@ -36,6 +37,14 @@ pub enum MissionStatus {
     Running,
     Won,
     Lost,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PurchaseError {
+    UnknownItem,
+    NotEnoughCash { price: i32, cash: i32 },
+    InvalidWeapon(String),
+    PlayerMissing,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -282,6 +291,53 @@ impl Game {
 
     pub fn high_score_entry(&self, name: impl Into<String>, mission: i32) -> crate::HighScoreEntry {
         crate::HighScoreEntry::new(name, mission, self.summary())
+    }
+
+    pub fn purchase_store_item(
+        &mut self,
+        store: &[ConfigStoreItem],
+        item_id: &str,
+        player_index: usize,
+    ) -> Result<(), PurchaseError> {
+        let item = store
+            .iter()
+            .find(|item| item.id == item_id)
+            .ok_or(PurchaseError::UnknownItem)?;
+        let price = item.price.max(0);
+        if self.progress.cash < price {
+            return Err(PurchaseError::NotEnoughCash {
+                price,
+                cash: self.progress.cash,
+            });
+        }
+        let character_index = self
+            .characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| character.faction == Faction::Player)
+            .nth(player_index)
+            .map(|(index, _)| index)
+            .ok_or(PurchaseError::PlayerMissing)?;
+        let weapon = item
+            .weapon
+            .as_deref()
+            .map(|weapon| WeaponId::from_key(weapon).ok_or_else(|| PurchaseError::InvalidWeapon(weapon.to_string())))
+            .transpose()?;
+        self.progress.cash -= price;
+        let character = &mut self.characters[character_index];
+        if item.armor > 0 {
+            character.armor = character.armor.saturating_add(item.armor);
+        }
+        if let Some(weapon) = weapon {
+            character.add_weapon_ammo(weapon, item.ammo);
+            character.active_weapon = character
+                .weapons
+                .iter()
+                .position(|slot| slot.weapon == weapon)
+                .unwrap_or(character.active_weapon);
+            character.weapon = weapon;
+        }
+        Ok(())
     }
 
     fn apply_player_input(&mut self, input: PlayerInput, dt: FixedStep) {
@@ -1075,6 +1131,37 @@ mod tests {
         }
         assert!(game.progress().score >= 125);
         assert!(game.progress().cash >= 30);
+    }
+
+    #[test]
+    fn store_purchase_spends_cash_and_adds_loadout() {
+        let mut game = Game::default();
+        game.progress.cash = 200;
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        let store = vec![crate::config::ConfigStoreItem {
+            id: "label_printer".to_string(),
+            label: "Label Printer".to_string(),
+            price: 125,
+            detail: String::new(),
+            weapon: Some(crate::weapon::WeaponId::LabelPrinter.key().to_string()),
+            ammo: 80,
+            armor: 0,
+        }];
+
+        game.purchase_store_item(&store, "label_printer", 0).unwrap();
+
+        assert_eq!(game.progress.cash, 75);
+        let player = game.characters().iter().find(|character| character.id == 0).unwrap();
+        assert_eq!(player.active_weapon_id(), crate::weapon::WeaponId::LabelPrinter);
+        assert!(player
+            .weapons
+            .iter()
+            .any(|slot| slot.weapon == crate::weapon::WeaponId::LabelPrinter && slot.ammo == 80));
     }
 
     #[test]

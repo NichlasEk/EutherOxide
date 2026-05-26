@@ -277,6 +277,14 @@ type DogsCoreSummary = {
   timeRemainingTicks?: number | null;
 };
 
+type DogsStoreItem = {
+  id: string;
+  label: string;
+  price: number;
+  detail: string;
+  affordable: boolean;
+};
+
 type DogsCoreFrame = {
   frame: number;
   width: number;
@@ -289,17 +297,11 @@ type DogsCoreFrame = {
   characters: DogsCoreActor[];
   bullets: DogsCoreBullet[];
   summary: DogsCoreSummary;
+  store: DogsStoreItem[];
   highscoreCount: number;
 };
 
 type DogsMenuMode = "store" | "briefing" | null;
-
-type DogsStoreItem = {
-  id: string;
-  label: string;
-  price: number;
-  detail: string;
-};
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
@@ -312,12 +314,6 @@ const bridgeBase =
     ? window.location.origin
     : "http://127.0.0.1:32161");
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
-const dogsStoreItems: DogsStoreItem[] = [
-  { id: "label_printer", label: "Label Printer", price: 125, detail: "Fast short-range sticker burst" },
-  { id: "sterilizer_spray", label: "Sterilizer Spray", price: 175, detail: "Wide cone for queue control" },
-  { id: "capsule_launcher", label: "Capsule Launcher", price: 250, detail: "Slow explosive capsule dose" },
-  { id: "rx_cannon", label: "Rx Cannon Refill", price: 300, detail: "Heavy prior-auth argument" },
-];
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
@@ -1072,7 +1068,7 @@ eutherDogsStartShift.addEventListener("click", () => {
 eutherDogsMenuBody.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
   if (!button || button.disabled) return;
-  pushTrace(`RX Store selected ${button.dataset.storeItem ?? "item"}; purchase API pending`);
+  void purchaseDogsStoreItem(button.dataset.storeItem ?? "");
 });
 
 releaseBuild.addEventListener("click", async () => {
@@ -3303,6 +3299,7 @@ function hideDogsMenu(): void {
 
 function renderDogsMenu(): void {
   const cash = dogsCurrentCash();
+  const storeItems = dogsFrame?.store ?? [];
   eutherDogsMenuCash.textContent = `$${cash}`;
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
@@ -3322,11 +3319,10 @@ function renderDogsMenu(): void {
   }
   eutherDogsMenuKicker.textContent = "RX Store";
   eutherDogsMenuTitle.textContent = "Counter Before Chaos";
-  eutherDogsMenuBody.innerHTML = dogsStoreItems
+  eutherDogsMenuBody.innerHTML = storeItems
     .map((item) => {
-      const affordable = cash >= item.price;
       return `
-        <button class="eutherdogs-store-item" data-store-item="${item.id}" type="button" ${affordable ? "" : "disabled"}>
+        <button class="eutherdogs-store-item" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
           <span>
             <strong>${item.label}</strong>
             <small>${item.detail}</small>
@@ -3336,6 +3332,18 @@ function renderDogsMenu(): void {
       `;
     })
     .join("");
+}
+
+async function purchaseDogsStoreItem(itemId: string): Promise<void> {
+  if (!itemId) return;
+  try {
+    dogsFrame = await purchaseDogsCoreItem(itemId);
+    drawDogsFrame(dogsFrame);
+    renderDogsMenu();
+    pushTrace(`RX Store purchased ${itemId}`);
+  } catch (err) {
+    pushTrace(`RX Store denied ${itemId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function clampVolume(value: number): number {
@@ -3490,6 +3498,17 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   return await bridgeJson<DogsCoreFrame>("/eutherdogs/frame", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+async function purchaseDogsCoreItem(itemId: string): Promise<DogsCoreFrame> {
+  const purchase = { itemId, player: playerPort };
+  if (isTauri) {
+    return await invoke<DogsCoreFrame>("purchase_eutherdogs_item", { purchase });
+  }
+  return await bridgeJson<DogsCoreFrame>("/eutherdogs/purchase", {
+    method: "POST",
+    body: JSON.stringify(purchase),
   });
 }
 

@@ -15,6 +15,7 @@ use crate::{
 pub struct EutherDogsConfig {
     pub settings: ConfigSettings,
     pub player: BTreeMap<String, PlayerConfig>,
+    pub store: Vec<ConfigStoreItem>,
     pub scoring: ConfigScoring,
     pub world: ConfigWorld,
     pub highscores: Vec<ConfigHighScoreEntry>,
@@ -50,6 +51,18 @@ pub struct PlayerConfig {
 pub struct ConfigWeaponSlot {
     pub id: String,
     pub ammo: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigStoreItem {
+    pub id: String,
+    pub label: String,
+    pub price: i32,
+    pub detail: String,
+    pub weapon: Option<String>,
+    pub ammo: i32,
+    pub armor: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -92,6 +105,7 @@ pub enum ConfigError {
     Toml(toml::de::Error),
     TomlSerialize(toml::ser::Error),
     UnknownWeapon { player: usize, weapon: String },
+    UnknownStoreWeapon { item: String, weapon: String },
 }
 
 impl EutherDogsConfig {
@@ -152,6 +166,16 @@ impl EutherDogsConfig {
             player.weapon_slots(player_number)?;
             player.active_weapon_index(player_number)?;
         }
+        for item in &self.store {
+            if let Some(weapon) = &item.weapon {
+                if WeaponId::from_key(weapon).is_none() {
+                    return Err(ConfigError::UnknownStoreWeapon {
+                        item: item.id.clone(),
+                        weapon: weapon.clone(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -200,6 +224,7 @@ impl Default for EutherDogsConfig {
         Self {
             settings: ConfigSettings::default(),
             player,
+            store: default_store_items(),
             scoring: ConfigScoring::default(),
             world: ConfigWorld::default(),
             highscores: Vec::new(),
@@ -244,6 +269,61 @@ impl Default for PlayerConfig {
             ],
         }
     }
+}
+
+impl Default for ConfigStoreItem {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            label: String::new(),
+            price: 0,
+            detail: String::new(),
+            weapon: None,
+            ammo: 0,
+            armor: 0,
+        }
+    }
+}
+
+fn default_store_items() -> Vec<ConfigStoreItem> {
+    vec![
+        ConfigStoreItem {
+            id: "label_printer".to_string(),
+            label: "Label Printer".to_string(),
+            price: 125,
+            detail: "Fast short-range sticker burst".to_string(),
+            weapon: Some(WeaponId::LabelPrinter.key().to_string()),
+            ammo: 80,
+            armor: 0,
+        },
+        ConfigStoreItem {
+            id: "sterilizer_spray".to_string(),
+            label: "Sterilizer Spray".to_string(),
+            price: 175,
+            detail: "Wide cone for queue control".to_string(),
+            weapon: Some(WeaponId::SterilizerSpray.key().to_string()),
+            ammo: 70,
+            armor: 0,
+        },
+        ConfigStoreItem {
+            id: "capsule_launcher".to_string(),
+            label: "Capsule Launcher".to_string(),
+            price: 250,
+            detail: "Slow explosive capsule dose".to_string(),
+            weapon: Some(WeaponId::CapsuleLauncher.key().to_string()),
+            ammo: 12,
+            armor: 0,
+        },
+        ConfigStoreItem {
+            id: "coat_reinforcement".to_string(),
+            label: "Coat Reinforcement".to_string(),
+            price: 100,
+            detail: "Add 25 white-coat armor".to_string(),
+            weapon: None,
+            ammo: 0,
+            armor: 25,
+        },
+    ]
 }
 
 impl Default for ConfigScoring {
@@ -317,6 +397,9 @@ impl fmt::Display for ConfigError {
             Self::UnknownWeapon { player, weapon } => {
                 write!(f, "unknown weapon `{weapon}` in player {player} config")
             }
+            Self::UnknownStoreWeapon { item, weapon } => {
+                write!(f, "unknown weapon `{weapon}` in store item `{item}`")
+            }
         }
     }
 }
@@ -334,6 +417,7 @@ mod tests {
 
         assert_eq!(config.seed(), 0xC0FFEE);
         assert_eq!(config.mission_rules().player_count, 1);
+        assert!(!config.store.is_empty());
         assert_eq!(config.high_score_table().entries()[0].name, "ANON");
     }
 

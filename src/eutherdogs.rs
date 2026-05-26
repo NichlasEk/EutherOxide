@@ -1,6 +1,6 @@
 pub use eutherdogs_core::{
     ConfigError, EutherDogsConfig, FixedStep, Game, MobileInput, PlayerCommand, PlayerInput,
-    TouchButtons, VirtualStick,
+    PurchaseError, TouchButtons, VirtualStick,
     world::{
         CHARACTER_HEIGHT, CHARACTER_WIDTH, MissionSpec, TILE_HEIGHT, TILE_WIDTH, Tile, WorldParams,
     },
@@ -28,6 +28,13 @@ pub struct EutherDogsInput {
     pub start: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EutherDogsPurchase {
+    pub item_id: String,
+    pub player: Option<u8>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EutherDogsFrame {
@@ -42,7 +49,18 @@ pub struct EutherDogsFrame {
     pub characters: Vec<EutherDogsActor>,
     pub bullets: Vec<EutherDogsBullet>,
     pub summary: EutherDogsSummary,
+    pub store: Vec<EutherDogsStoreItem>,
     pub highscore_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EutherDogsStoreItem {
+    pub id: String,
+    pub label: String,
+    pub price: i32,
+    pub detail: String,
+    pub affordable: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -141,9 +159,22 @@ impl EutherDogsRuntime {
         self.snapshot()
     }
 
+    pub fn purchase(
+        &mut self,
+        purchase: EutherDogsPurchase,
+    ) -> Result<EutherDogsFrame, PurchaseError> {
+        self.game.purchase_store_item(
+            &self.config.store,
+            &purchase.item_id,
+            purchase.player.unwrap_or(1).saturating_sub(1) as usize,
+        )?;
+        Ok(self.snapshot())
+    }
+
     pub fn snapshot(&self) -> EutherDogsFrame {
         eutherdogs_frame(
             &self.game,
+            &self.config,
             self.frame,
             self.config.high_score_table().entries().len(),
         )
@@ -159,7 +190,12 @@ pub fn demo_config() -> EutherDogsConfig {
         .expect("bundled EutherDogs config parses")
 }
 
-pub fn eutherdogs_frame(game: &Game, frame: u64, highscore_count: usize) -> EutherDogsFrame {
+pub fn eutherdogs_frame(
+    game: &Game,
+    config: &EutherDogsConfig,
+    frame: u64,
+    highscore_count: usize,
+) -> EutherDogsFrame {
     let summary = game.summary();
     EutherDogsFrame {
         frame,
@@ -237,8 +273,24 @@ pub fn eutherdogs_frame(game: &Game, frame: u64, highscore_count: usize) -> Euth
             minimum_kills: summary.minimum_kills,
             time_remaining_ticks: summary.time_remaining_ticks,
         },
+        store: game_store_items(game, config),
         highscore_count,
     }
+}
+
+fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsStoreItem> {
+    let cash = game.summary().progress.cash;
+    config
+        .store
+        .iter()
+        .map(|item| EutherDogsStoreItem {
+            id: item.id.clone(),
+            label: item.label.clone(),
+            price: item.price,
+            detail: item.detail.clone(),
+            affordable: cash >= item.price.max(0),
+        })
+        .collect()
 }
 
 fn tile_key(tile: Tile) -> &'static str {
