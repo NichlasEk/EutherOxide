@@ -3697,6 +3697,88 @@ function dogsAmmoLabel(ammo: number | null | undefined): string {
   return ammo < 0 ? "INF" : String(ammo);
 }
 
+const dogsStoreCatalog: Array<Pick<DogsStoreItem, "id" | "label" | "price" | "detail" | "weapon" | "ammo" | "armor">> = [
+  {
+    id: "label_printer",
+    label: "Label Printer",
+    price: 125,
+    detail: "Fast short-range sticker burst",
+    weapon: "label_printer",
+    ammo: 80,
+    armor: 0,
+  },
+  {
+    id: "sterilizer_spray",
+    label: "Sterilizer Spray",
+    price: 175,
+    detail: "Wide cone for queue control",
+    weapon: "sterilizer_spray",
+    ammo: 70,
+    armor: 0,
+  },
+  {
+    id: "capsule_launcher",
+    label: "Capsule Launcher",
+    price: 250,
+    detail: "Slow explosive capsule dose",
+    weapon: "capsule_launcher",
+    ammo: 12,
+    armor: 0,
+  },
+  {
+    id: "autoinjector",
+    label: "Autoinjector",
+    price: 210,
+    detail: "Single-dose dart with rude bedside manner",
+    weapon: "autoinjector",
+    ammo: 24,
+    armor: 0,
+  },
+  {
+    id: "needlegun",
+    label: "Needlegun",
+    price: 275,
+    detail: "Rapid insurance-approved acupuncture",
+    weapon: "needlegun",
+    ammo: 120,
+    armor: 0,
+  },
+  {
+    id: "handsanitizer_flamethrower",
+    label: "Handsanitizer Flamethrower",
+    price: 325,
+    detail: "Kills 99.9% of queue escalation",
+    weapon: "handsanitizer_flamethrower",
+    ammo: 90,
+    armor: 0,
+  },
+  {
+    id: "coat_reinforcement",
+    label: "Coat Reinforcement",
+    price: 100,
+    detail: "Add 25 white-coat armor",
+    weapon: null,
+    ammo: 0,
+    armor: 25,
+  },
+];
+
+function dogsVisibleStoreItems(frame: DogsCoreFrame | null, cash: number, hero: DogsCoreActor | null): DogsStoreItem[] {
+  const byId = new Map((frame?.store ?? []).map((item) => [item.id, item]));
+  for (const item of dogsStoreCatalog) {
+    if (byId.has(item.id)) continue;
+    const active = Boolean(item.weapon && hero?.activeWeapon === item.weapon);
+    byId.set(item.id, {
+      ...item,
+      owned: active,
+      currentAmmo: active ? hero?.ammo : null,
+      active,
+      affordable: cash >= item.price,
+    });
+  }
+  return dogsStoreCatalog.map((item) => byId.get(item.id)).filter((item): item is DogsStoreItem => Boolean(item));
+}
+
 function dogsStoreItemMeta(item: DogsStoreItem): string {
   if (item.armor > 0) {
     return `Coat +${item.armor}`;
@@ -3731,8 +3813,8 @@ function hideDogsMenu(): void {
 
 function renderDogsMenu(): void {
   const cash = dogsCurrentCash();
-  const storeItems = dogsFrame?.store ?? [];
   const hero = dogsCurrentHero();
+  const storeItems = dogsVisibleStoreItems(dogsFrame, cash, hero);
   eutherDogsMenuCash.textContent = `$${cash}`;
   eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
