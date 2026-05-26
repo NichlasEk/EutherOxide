@@ -1113,6 +1113,10 @@ eutherDogsBriefingOpen.addEventListener("click", () => {
 
 eutherDogsStartShift.addEventListener("click", () => {
   if (dogsMenuMode === "result") {
+    if (dogsFrame?.summary.status === "won") {
+      showDogsMenu("staff");
+      return;
+    }
     void retryDogsShift();
     return;
   }
@@ -3261,6 +3265,16 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
   return dogsAsset("tiles.walls", prefix);
 }
 
+function dogsExitReady(summary: DogsCoreSummary): boolean {
+  return (
+    summary.status === "won" ||
+    (summary.status === "running" &&
+      summary.targetsLeft <= 0 &&
+      summary.objectsLeft <= 0 &&
+      summary.kills >= summary.minimumKills)
+  );
+}
+
 function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
   const staffId = dogsFrame?.characters.filter((entry) => entry.faction === "player").length === 1
     ? selectedDogsStaff
@@ -3442,6 +3456,38 @@ function drawDogsImageFrame(
   }
 }
 
+function drawDogsExitPortal(x: number, y: number, width: number, height: number, active: boolean, tick: number): void {
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  const radius = Math.max(4, Math.min(width, height) * (active ? 0.42 : 0.3));
+  const pulse = (Math.sin(tick / (active ? 5 : 18)) + 1) / 2;
+  dogsContext.save();
+  dogsContext.globalCompositeOperation = "lighter";
+  dogsContext.shadowColor = active ? "#b6ff2d" : "#46f7c8";
+  dogsContext.shadowBlur = active ? 18 : 7;
+  dogsContext.strokeStyle = active ? `rgba(190, 255, 45, ${0.72 + pulse * 0.24})` : `rgba(57, 247, 200, ${0.22 + pulse * 0.16})`;
+  dogsContext.lineWidth = Math.max(1, width * 0.065);
+  dogsContext.beginPath();
+  dogsContext.ellipse(cx, cy, radius, radius * 0.7, tick / 16, 0.2, Math.PI * 1.62);
+  dogsContext.stroke();
+  dogsContext.strokeStyle = active ? `rgba(57, 247, 200, ${0.65 + pulse * 0.25})` : `rgba(255, 228, 60, ${0.2 + pulse * 0.12})`;
+  dogsContext.lineWidth = Math.max(1, width * 0.04);
+  dogsContext.beginPath();
+  dogsContext.ellipse(cx, cy, radius * 0.62, radius * 0.42, -tick / 12, Math.PI * 0.35, Math.PI * 1.95);
+  dogsContext.stroke();
+  if (active) {
+    const spokes = 5;
+    for (let i = 0; i < spokes; i += 1) {
+      const angle = tick / 10 + (Math.PI * 2 * i) / spokes;
+      const px = cx + Math.cos(angle) * radius * 0.65;
+      const py = cy + Math.sin(angle) * radius * 0.45;
+      dogsContext.fillStyle = i % 2 === 0 ? "rgba(194, 255, 45, 0.85)" : "rgba(57, 247, 200, 0.75)";
+      dogsContext.fillRect(px - width * 0.025, py - height * 0.025, width * 0.05, height * 0.05);
+    }
+  }
+  dogsContext.restore();
+}
+
 function applyEutherDogsCssAssets(): void {
   const plannedAssets: Record<string, string> = {
     "--dogs-shift-console": "shift_console_background",
@@ -3554,7 +3600,12 @@ function renderDogsMenu(): void {
   eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
-  eutherDogsStartShift.textContent = dogsMenuMode === "result" ? "Retry shift" : "Start shift";
+  eutherDogsStartShift.textContent =
+    dogsMenuMode === "result" && dogsFrame?.summary.status === "won"
+      ? "Main menu"
+      : dogsMenuMode === "result"
+        ? "Retry shift"
+        : "Start shift";
   eutherDogsMenu.classList.toggle("is-staff", dogsMenuMode === "staff");
   eutherDogsMenu.classList.toggle("is-store", dogsMenuMode === "store");
   if (dogsMenuMode === "staff") {
@@ -3903,6 +3954,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const firstTileY = Math.max(0, Math.floor(cameraY / frame.tileHeight));
   const lastTileX = Math.min(frame.width - 1, Math.ceil((cameraX + viewW) / frame.tileWidth));
   const lastTileY = Math.min(frame.height - 1, Math.ceil((cameraY + viewH) / frame.tileHeight));
+  const exitReady = dogsExitReady(frame.summary);
   for (let y = firstTileY; y <= lastTileY; y += 1) {
     for (let x = firstTileX; x <= lastTileX; x += 1) {
       const tile = frame.tiles[y * frame.width + x] ?? "floor";
@@ -3912,6 +3964,9 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       const tileH = Math.ceil(frame.tileHeight * scale);
       const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
       drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
+      if (tile === "service_elevator") {
+        drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, frame.frame);
+      }
     }
   }
   dogsContext.fillStyle = "rgba(0, 0, 0, 0.32)";
