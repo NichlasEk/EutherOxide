@@ -22,6 +22,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[derive(Clone)]
 struct AppState {
     emulator: Arc<Mutex<Option<Emulator>>>,
+    eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
     bridge_url: Arc<Mutex<String>>,
     native_surface_rect: Arc<Mutex<Option<NativeSurfaceRect>>>,
     native_frame: Arc<Mutex<Option<NativeFrameImage>>>,
@@ -36,6 +37,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             emulator: Arc::default(),
+            eutherdogs: Arc::new(Mutex::new(euther_oxide::eutherdogs::EutherDogsRuntime::demo())),
             bridge_url: Arc::default(),
             native_surface_rect: Arc::default(),
             native_frame: Arc::default(),
@@ -535,6 +537,33 @@ fn set_input(state: State<'_, AppState>, input: InputState) -> Result<(), String
     pad.set_pressed(euther_oxide::controller::Controller::BUTTON_C, input.c);
     pad.set_pressed(euther_oxide::controller::Controller::START, input.start);
     Ok(())
+}
+
+#[tauri::command]
+fn start_eutherdogs(
+    state: State<'_, AppState>,
+) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
+    let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
+    *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo();
+    Ok(dogs.snapshot())
+}
+
+#[tauri::command]
+fn reset_eutherdogs(
+    state: State<'_, AppState>,
+) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
+    let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
+    dogs.reset().map_err(|err| err.to_string())?;
+    Ok(dogs.snapshot())
+}
+
+#[tauri::command]
+fn run_eutherdogs_frame(
+    state: State<'_, AppState>,
+    input: euther_oxide::eutherdogs::EutherDogsInput,
+) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
+    let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
+    Ok(dogs.tick(input))
 }
 
 #[tauri::command]
@@ -1613,6 +1642,9 @@ fn main() {
             set_audio_volume,
             reset_emulator,
             set_input,
+            start_eutherdogs,
+            reset_eutherdogs,
+            run_eutherdogs_frame,
             gamepad_snapshot,
             read_shader_config_toml,
             save_shader_config_toml,

@@ -166,6 +166,10 @@ impl World {
         (x < self.width && y < self.height).then(|| self.tiles[y * self.width + x])
     }
 
+    pub fn tiles(&self) -> &[Tile] {
+        &self.tiles
+    }
+
     pub fn set_tile(&mut self, x: usize, y: usize, tile: Tile) -> bool {
         if let Some(index) = self.index(x, y) {
             self.tiles[index] = tile;

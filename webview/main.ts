@@ -232,35 +232,58 @@ type UiState = LoadResult & {
   build: BridgeBuildStatus;
 };
 
-type DogsTile = "floor" | "wall" | "target" | "pickup" | "exit" | "prop";
-
-type DogsActor = {
+type DogsCoreActor = {
+  id: number;
+  faction: "player" | "hostile_customer" | string;
   x: number;
   y: number;
-  hp: number;
+  armor: number;
+  lives: number;
   alive: boolean;
+  activeWeapon: string;
+  ammo: number;
 };
 
-type DogsBullet = {
+type DogsCoreBullet = {
+  id: number;
   x: number;
   y: number;
   dx: number;
   dy: number;
-  owner: "player" | "enemy";
-  ttl: number;
+  ownerFaction: "player" | "hostile_customer" | string;
+  weapon: string;
 };
 
-type DogsState = {
-  width: number;
-  height: number;
-  tiles: DogsTile[];
-  player: DogsActor & { score: number; cash: number; weapon: number; ammo: number[] };
-  enemies: DogsActor[];
-  bullets: DogsBullet[];
+type DogsCoreSummary = {
+  status: "running" | "won" | "lost" | string;
+  elapsedTicks: number;
+  score: number;
+  cash: number;
+  kills: number;
+  targetsDestroyed: number;
+  objectsCollected: number;
+  shotsFired: number;
+  hits: number;
+  damageTaken: number;
   targetsLeft: number;
   objectsLeft: number;
-  status: "RUNNING" | "WON" | "LOST";
-  ticks: number;
+  minimumKills: number;
+  timeRemainingTicks?: number | null;
+};
+
+type DogsCoreFrame = {
+  frame: number;
+  width: number;
+  height: number;
+  tileWidth: number;
+  tileHeight: number;
+  characterWidth: number;
+  characterHeight: number;
+  tiles: string[];
+  characters: DogsCoreActor[];
+  bullets: DogsCoreBullet[];
+  summary: DogsCoreSummary;
+  highscoreCount: number;
 };
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
@@ -433,7 +456,7 @@ let shaderSaveTimer: number | null = null;
 let shaderConfigLoadAttempted = false;
 let mobileMode = readStoredMobileMode();
 let dogsMode = false;
-let dogsState: DogsState = createDogsState(0xC0FFEE);
+let dogsFrame: DogsCoreFrame | null = null;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -934,7 +957,7 @@ eutherDogsToggle.addEventListener("click", () => {
   if (dogsMode) {
     leaveDogsMode();
   } else {
-    enterDogsMode();
+    void enterDogsMode();
   }
 });
 
@@ -2896,7 +2919,7 @@ async function advanceFrame(): Promise<void> {
   stepping = true;
   try {
     if (dogsMode) {
-      runDogsFrame();
+      await runDogsFrame();
     } else if (isTauri && ui.runtime === "tauri" && ui.loaded) {
       const fetchStart = performance.now();
       const frame = await tauriNativeFrame();
@@ -3007,15 +3030,21 @@ function applyMobileMode(): void {
   ui.audioLeadMs = 0;
 }
 
-function enterDogsMode(): void {
+async function enterDogsMode(): Promise<void> {
   dogsMode = true;
-  dogsState = createDogsState(0xC0FFEE);
   resetScheduledAudio();
   stopBridgeStream();
+  try {
+    dogsFrame = await startDogsCore();
+  } catch (err) {
+    dogsMode = false;
+    pushTrace(`EutherDogs core failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
   Object.assign(ui, {
     loaded: true,
     playing: false,
-    runtime: "web" as const,
+    runtime: isTauri ? ("tauri" as const) : ui.runtime === "bridge" ? ("bridge" as const) : ("web" as const),
     title: "EutherDogs",
     region: "RX",
     timing: "60HZ",
@@ -3033,9 +3062,9 @@ function enterDogsMode(): void {
   playToggle.textContent = "Play";
   document.body.classList.add("eutherdogs-mode");
   eutherDogsToggle.classList.add("is-active");
-  drawDogsFrame();
+  drawDogsFrame(dogsFrame);
   renderUi();
-  pushTrace("EutherDogs shift started");
+  pushTrace("EutherDogs Rust core started");
 }
 
 function leaveDogsMode(): void {
@@ -3052,254 +3081,146 @@ function leaveDogsMode(): void {
 }
 
 function resetDogsMode(): void {
-  dogsState = createDogsState(0xC0FFEE);
   ui.playing = false;
   ui.frame = 0;
   ui.status = "DOGS RESET";
   playToggle.textContent = "Play";
-  drawDogsFrame();
-  renderUi();
+  void resetDogsCore()
+    .then((frame) => {
+      dogsFrame = frame;
+      drawDogsFrame(frame);
+      renderUi();
+    })
+    .catch((err) => {
+      ui.status = "DOGS ERROR";
+      ui.lastError = err instanceof Error ? err.message : String(err);
+      renderUi();
+    });
 }
 
-function createDogsState(seed: number): DogsState {
-  const width = 40;
-  const height = 28;
-  const tiles = Array<DogsTile>(width * height).fill("floor");
-  let rng = seed >>> 0;
-  const next = () => {
-    rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
-    return rng;
-  };
-  const set = (x: number, y: number, tile: DogsTile) => {
-    if (x >= 0 && y >= 0 && x < width && y < height) {
-      tiles[y * width + x] = tile;
-    }
-  };
-  for (let x = 0; x < width; x += 1) {
-    set(x, 0, "wall");
-    set(x, height - 1, "wall");
-  }
-  for (let y = 0; y < height; y += 1) {
-    set(0, y, "wall");
-    set(width - 1, y, "wall");
-  }
-  for (let i = 0; i < 115; i += 1) {
-    const x = 2 + (next() % (width - 4));
-    const y = 2 + (next() % (height - 4));
-    set(x, y, next() % 5 === 0 ? "prop" : "wall");
-  }
-  for (let i = 0; i < 8; i += 1) {
-    set(2 + (next() % (width - 4)), 2 + (next() % (height - 4)), "pickup");
-  }
-  for (let i = 0; i < 5; i += 1) {
-    set(2 + (next() % (width - 4)), 2 + (next() % (height - 4)), "target");
-  }
-  set(width - 3, height - 3, "exit");
-  for (let y = 1; y < 5; y += 1) {
-    for (let x = 1; x < 7; x += 1) {
-      set(x, y, "floor");
-    }
-  }
-  return {
-    width,
-    height,
-    tiles,
-    player: { x: 2, y: 2, hp: 100, alive: true, score: 0, cash: 0, weapon: 0, ammo: [-1, 12] },
-    enemies: [
-      { x: 30, y: 4, hp: 35, alive: true },
-      { x: 24, y: 18, hp: 35, alive: true },
-      { x: 10, y: 20, hp: 35, alive: true },
-      { x: 34, y: 22, hp: 35, alive: true },
-    ],
-    bullets: [],
-    targetsLeft: tiles.filter((tile) => tile === "target").length,
-    objectsLeft: tiles.filter((tile) => tile === "pickup").length,
-    status: "RUNNING",
-    ticks: 0,
-  };
-}
-
-function runDogsFrame(): void {
+async function runDogsFrame(): Promise<void> {
   const started = performance.now();
-  stepDogsState();
-  drawDogsFrame();
+  dogsFrame = await runDogsCoreFrame();
+  drawDogsFrame(dogsFrame);
   const done = performance.now();
-  ui.frame += 1;
-  ui.cpuCycles = dogsState.enemies.filter((enemy) => enemy.alive).length;
-  ui.cpuSteps = dogsState.bullets.length;
+  ui.frame = dogsFrame.frame;
+  ui.cpuCycles = dogsFrame.characters.filter((actor) => actor.faction !== "player" && actor.alive).length;
+  ui.cpuSteps = dogsFrame.bullets.length;
   ui.frameMs = 16.67;
   ui.transportMs = 0;
   ui.drawMs = done - started;
   ui.audioLeadMs = 0;
-  ui.status = `DOGS ${dogsState.status}`;
-  if (dogsState.status !== "RUNNING") {
+  ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
+  if (dogsFrame.summary.status !== "running") {
     ui.playing = false;
     playToggle.textContent = "Play";
   }
 }
 
-function stepDogsState(): void {
-  if (dogsState.status !== "RUNNING") {
-    return;
+async function startDogsCore(): Promise<DogsCoreFrame> {
+  if (isTauri) {
+    return await invoke<DogsCoreFrame>("start_eutherdogs");
   }
-  dogsState.ticks += 1;
-  let dx = 0;
-  let dy = 0;
-  if (inputState.left) dx -= 1;
-  if (inputState.right) dx += 1;
-  if (inputState.up) dy -= 1;
-  if (inputState.down) dy += 1;
-  moveDogsActor(dogsState.player, dx, dy);
-  if ((inputState.a || inputState.b) && dogsState.ticks % 8 === 0) {
-    dogsFire("player", dx || 1, dy);
+  if (ui.runtime !== "bridge") {
+    await connectBridge(false);
   }
-  if (inputState.c && dogsState.ticks % 12 === 0) {
-    dogsState.player.weapon = (dogsState.player.weapon + 1) % dogsState.player.ammo.length;
+  if (ui.runtime === "bridge") {
+    return await bridgeJson<DogsCoreFrame>("/eutherdogs/start", { method: "POST" });
   }
-  dogsCollect();
-  for (const enemy of dogsState.enemies) {
-    if (!enemy.alive) continue;
-    const ex = Math.sign(dogsState.player.x - enemy.x);
-    const ey = Math.sign(dogsState.player.y - enemy.y);
-    if (Math.abs(dogsState.player.x - enemy.x) <= 1 && Math.abs(dogsState.player.y - enemy.y) <= 1) {
-      dogsState.player.hp -= 1;
-    } else if (dogsState.ticks % 2 === 0) {
-      moveDogsActor(enemy, ex, ey);
-    }
-    if (dogsState.ticks % 40 === 0) {
-      dogsFire("enemy", ex || -1, ey, enemy);
-    }
-  }
-  moveDogsBullets();
-  if (dogsState.player.hp <= 0) {
-    dogsState.player.alive = false;
-    dogsState.status = "LOST";
-  } else if (
-    dogsState.targetsLeft === 0 &&
-    dogsState.objectsLeft === 0 &&
-    dogsTileAt(dogsState.player.x, dogsState.player.y) === "exit"
-  ) {
-    dogsState.status = "WON";
-  }
+  throw new Error("starta web bridge eller Tauri for Rust-core demo");
 }
 
-function moveDogsActor(actor: DogsActor, dx: number, dy: number): void {
-  const nx = actor.x + Math.sign(dx);
-  const ny = actor.y + Math.sign(dy);
-  if (!dogsBlocks(nx, actor.y)) actor.x = nx;
-  if (!dogsBlocks(actor.x, ny)) actor.y = ny;
-}
-
-function dogsFire(owner: "player" | "enemy", dx: number, dy: number, source?: DogsActor): void {
-  const actor = owner === "player" ? dogsState.player : source;
-  if (!actor || (owner === "player" && dogsState.player.ammo[dogsState.player.weapon] === 0)) return;
-  if (owner === "player" && dogsState.player.ammo[dogsState.player.weapon] > 0) {
-    dogsState.player.ammo[dogsState.player.weapon] -= 1;
+async function resetDogsCore(): Promise<DogsCoreFrame> {
+  if (isTauri) {
+    return await invoke<DogsCoreFrame>("reset_eutherdogs");
   }
-  dogsState.bullets.push({ x: actor.x, y: actor.y, dx: Math.sign(dx) || 1, dy: Math.sign(dy), owner, ttl: 36 });
+  return await bridgeJson<DogsCoreFrame>("/eutherdogs/reset", { method: "POST" });
 }
 
-function moveDogsBullets(): void {
-  const kept: DogsBullet[] = [];
-  for (const bullet of dogsState.bullets) {
-    bullet.x += bullet.dx;
-    bullet.y += bullet.dy;
-    bullet.ttl -= 1;
-    const tile = dogsTileAt(bullet.x, bullet.y);
-    if (bullet.ttl <= 0 || tile === "wall") continue;
-    if (tile === "target" && bullet.owner === "player") {
-      setDogsTile(bullet.x, bullet.y, "floor");
-      dogsState.targetsLeft = Math.max(0, dogsState.targetsLeft - 1);
-      dogsState.player.score += 250;
-      dogsState.player.cash += 50;
-      continue;
-    }
-    const actors = bullet.owner === "player" ? dogsState.enemies : [dogsState.player];
-    const hit = actors.find((actor) => actor.alive && actor.x === bullet.x && actor.y === bullet.y);
-    if (hit) {
-      hit.hp -= bullet.owner === "player" ? 20 : 8;
-      if (hit.hp <= 0) {
-        hit.alive = false;
-        if (bullet.owner === "player") {
-          dogsState.player.score += 100;
-          dogsState.player.cash += 25;
-        }
-      }
-      continue;
-    }
-    kept.push(bullet);
+async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
+  const input = { ...inputState, player: playerPort };
+  if (isTauri) {
+    return await invoke<DogsCoreFrame>("run_eutherdogs_frame", { input });
   }
-  dogsState.bullets = kept;
+  return await bridgeJson<DogsCoreFrame>("/eutherdogs/frame", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
-function dogsCollect(): void {
-  if (dogsTileAt(dogsState.player.x, dogsState.player.y) !== "pickup") return;
-  setDogsTile(dogsState.player.x, dogsState.player.y, "floor");
-  dogsState.objectsLeft = Math.max(0, dogsState.objectsLeft - 1);
-  dogsState.player.score += 25;
-  dogsState.player.cash += 5;
-  dogsState.player.ammo[1] += 2;
-}
-
-function dogsTileAt(x: number, y: number): DogsTile {
-  if (x < 0 || y < 0 || x >= dogsState.width || y >= dogsState.height) return "wall";
-  return dogsState.tiles[y * dogsState.width + x];
-}
-
-function setDogsTile(x: number, y: number, tile: DogsTile): void {
-  if (x >= 0 && y >= 0 && x < dogsState.width && y < dogsState.height) {
-    dogsState.tiles[y * dogsState.width + x] = tile;
-  }
-}
-
-function dogsBlocks(x: number, y: number): boolean {
-  const tile = dogsTileAt(x, y);
-  return tile === "wall" || tile === "prop" || tile === "target";
-}
-
-function drawDogsFrame(): void {
-  const tileW = dogsCanvas.width / dogsState.width;
-  const tileH = dogsCanvas.height / dogsState.height;
+function drawDogsFrame(frame: DogsCoreFrame | null): void {
   dogsContext.fillStyle = "#07100d";
   dogsContext.fillRect(0, 0, dogsCanvas.width, dogsCanvas.height);
-  const colors: Record<DogsTile, string> = {
+  if (!frame) return;
+
+  const worldW = frame.width * frame.tileWidth;
+  const worldH = frame.height * frame.tileHeight;
+  const player = frame.characters.find((actor) => actor.faction === "player" && actor.alive) ?? frame.characters[0];
+  const scale = Math.max(0.18, Math.min(dogsCanvas.width / 640, dogsCanvas.height / 448));
+  const viewW = dogsCanvas.width / scale;
+  const viewH = dogsCanvas.height / scale;
+  const cameraX = Math.max(0, Math.min(worldW - viewW, (player?.x ?? 0) - viewW / 2));
+  const cameraY = Math.max(0, Math.min(worldH - viewH, (player?.y ?? 0) - viewH / 2));
+  const colors: Record<string, string> = {
     floor: "#dfe8dc",
+    sterile_floor: "#dfe8dc",
+    neon_floor: "#2ff7dc",
+    warning_floor: "#f7d852",
+    fan_floor: "#9fb2aa",
     wall: "#263630",
-    target: "#ff37c8",
-    pickup: "#39f7c8",
-    exit: "#f7d852",
-    prop: "#65716b",
+    door: "#374a42",
+    corrupt_med_cabinet: "#ff37c8",
+    hacked_vending_unit: "#65716b",
+    recall_crate: "#7f6b46",
+    shipping_box: "#8b7658",
+    service_elevator: "#f7d852",
+    prescription: "#39f7c8",
+    folder: "#60c5ff",
+    data_wafer: "#9c7dff",
+    circuit_board: "#39f767",
+    pill_sample: "#ffffff",
+    lab_coat_armor: "#cfefff",
+    hazard_sleeves: "#ffef7a",
+    pill_splitter: "#ff9bd9",
+    scorch_mark: "#1b211e",
+    spilled_syrup: "#70ffe8",
   };
-  for (let y = 0; y < dogsState.height; y += 1) {
-    for (let x = 0; x < dogsState.width; x += 1) {
-      dogsContext.fillStyle = colors[dogsTileAt(x, y)];
-      dogsContext.fillRect(x * tileW, y * tileH, Math.ceil(tileW), Math.ceil(tileH));
+  const firstTileX = Math.max(0, Math.floor(cameraX / frame.tileWidth));
+  const firstTileY = Math.max(0, Math.floor(cameraY / frame.tileHeight));
+  const lastTileX = Math.min(frame.width - 1, Math.ceil((cameraX + viewW) / frame.tileWidth));
+  const lastTileY = Math.min(frame.height - 1, Math.ceil((cameraY + viewH) / frame.tileHeight));
+  for (let y = firstTileY; y <= lastTileY; y += 1) {
+    for (let x = firstTileX; x <= lastTileX; x += 1) {
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      dogsContext.fillStyle = colors[tile] ?? "#65716b";
+      dogsContext.fillRect(
+        Math.floor((x * frame.tileWidth - cameraX) * scale),
+        Math.floor((y * frame.tileHeight - cameraY) * scale),
+        Math.ceil(frame.tileWidth * scale),
+        Math.ceil(frame.tileHeight * scale),
+      );
     }
   }
-  dogsContext.fillStyle = "#1a1f1c";
-  dogsContext.globalAlpha = 0.12;
-  for (let x = 0; x < dogsCanvas.width; x += tileW) dogsContext.fillRect(x, 0, 1, dogsCanvas.height);
-  for (let y = 0; y < dogsCanvas.height; y += tileH) dogsContext.fillRect(0, y, dogsCanvas.width, 1);
-  dogsContext.globalAlpha = 1;
-  for (const enemy of dogsState.enemies) {
-    if (!enemy.alive) continue;
-    dogsContext.fillStyle = "#f04444";
-    dogsContext.fillRect(enemy.x * tileW, enemy.y * tileH, tileW, tileH);
+  for (const actor of frame.characters) {
+    if (!actor.alive) continue;
+    const x = Math.floor((actor.x - cameraX) * scale);
+    const y = Math.floor((actor.y - cameraY) * scale);
+    dogsContext.fillStyle = actor.faction === "player" ? "#ffffff" : "#f04444";
+    dogsContext.fillRect(x, y, Math.ceil(frame.characterWidth * scale), Math.ceil(frame.characterHeight * scale));
+    if (actor.faction === "player") {
+      dogsContext.fillStyle = "#27f2ff";
+      dogsContext.fillRect(x + 2, y + 2, Math.max(1, Math.ceil(frame.characterWidth * scale) - 4), Math.max(1, Math.ceil(frame.characterHeight * scale) - 4));
+    }
   }
-  dogsContext.fillStyle = "#101014";
-  for (const bullet of dogsState.bullets) {
-    dogsContext.fillRect(bullet.x * tileW + tileW * 0.35, bullet.y * tileH + tileH * 0.35, tileW * 0.3, tileH * 0.3);
-  }
-  if (dogsState.player.alive) {
-    dogsContext.fillStyle = "#ffffff";
-    dogsContext.fillRect(dogsState.player.x * tileW, dogsState.player.y * tileH, tileW, tileH);
-    dogsContext.fillStyle = "#27f2ff";
-    dogsContext.fillRect(dogsState.player.x * tileW + 2, dogsState.player.y * tileH + 2, tileW - 4, tileH - 4);
+  for (const bullet of frame.bullets) {
+    dogsContext.fillStyle = bullet.ownerFaction === "player" ? "#101014" : "#ff3030";
+    dogsContext.fillRect(Math.floor((bullet.x - cameraX) * scale), Math.floor((bullet.y - cameraY) * scale), 3, 3);
   }
   const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
   if (hud) {
-    const ammo = dogsState.player.ammo[dogsState.player.weapon];
-    hud.textContent = `HP ${dogsState.player.hp} | $${dogsState.player.cash} | SCORE ${dogsState.player.score} | RX ${dogsState.objectsLeft} | TARGETS ${dogsState.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${dogsState.status}`;
+    const hero = frame.characters.find((actor) => actor.faction === "player");
+    const ammo = hero?.ammo ?? -1;
+    hud.textContent = `HP ${hero?.armor ?? 0} | $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | TARGETS ${frame.summary.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
   }
 }
 
@@ -3740,6 +3661,9 @@ async function syncInput(): Promise<void> {
     return;
   }
   lastInputJson = next;
+  if (dogsMode) {
+    return;
+  }
   if (isTauri && ui.runtime === "tauri" && ui.loaded) {
     try {
       await invoke("set_input", { input: inputState });

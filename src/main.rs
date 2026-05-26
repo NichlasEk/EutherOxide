@@ -33,6 +33,7 @@ fn run() -> io::Result<()> {
     let mut list_states = false;
     let mut vdp_summary = false;
     let mut web_bridge = false;
+    let mut web_bridge_addr = "127.0.0.1:32161".to_string();
     let mut host_server = false;
     let mut host_hash_password: Option<String> = None;
     let mut eutherdogs_demo = false;
@@ -91,6 +92,15 @@ fn run() -> io::Result<()> {
             }
             "--web-bridge" => {
                 web_bridge = true;
+            }
+            "--web-bridge-addr" => {
+                let Some(value) = args.next() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--web-bridge-addr needs a bind address",
+                    ));
+                };
+                web_bridge_addr = value;
             }
             "--host-server" => {
                 host_server = true;
@@ -190,7 +200,7 @@ fn run() -> io::Result<()> {
     }
 
     if web_bridge {
-        serve_web_bridge(emulator, "127.0.0.1:32161")?;
+        serve_web_bridge(emulator, &web_bridge_addr)?;
         return Ok(());
     }
 
@@ -285,7 +295,7 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--host-server] [--host-hash-password PASSWORD] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--web-bridge-addr HOST:PORT] [--host-server] [--host-hash-password PASSWORD] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
     );
 }
 
@@ -621,6 +631,7 @@ struct BridgeState {
     subscriber_count: Arc<Mutex<usize>>,
     runner_active: Arc<Mutex<bool>>,
     gamepads: Arc<Mutex<GamepadReader>>,
+    eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
 }
 
 struct BridgePlayerLease {
@@ -696,6 +707,9 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         subscriber_count: Arc::new(Mutex::new(0)),
         runner_active: Arc::new(Mutex::new(false)),
         gamepads: Arc::new(Mutex::new(GamepadReader::new())),
+        eutherdogs: Arc::new(Mutex::new(
+            euther_oxide::eutherdogs::EutherDogsRuntime::demo(),
+        )),
     }
 }
 
@@ -1118,6 +1132,36 @@ fn handle_bridge_route(
             let mut emulator = lock_bridge_emulator(state)?;
             apply_bridge_input(&mut emulator, input);
             send_empty(stream, 204)
+        }
+        ("POST", "/eutherdogs/start") => {
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo();
+            send_json(stream, &dogs.snapshot())
+        }
+        ("POST", "/eutherdogs/reset") => {
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            dogs.reset()
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &dogs.snapshot())
+        }
+        ("POST", "/eutherdogs/frame") => {
+            let input = if request.body.is_empty() {
+                euther_oxide::eutherdogs::EutherDogsInput::default()
+            } else {
+                serde_json::from_slice(&request.body)
+                    .map_err(|err| invalid_request(err.to_string()))?
+            };
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            send_json(stream, &dogs.tick(input))
         }
         ("GET", "/gamepads") => {
             let mut gamepads = state

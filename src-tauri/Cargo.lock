@@ -910,6 +910,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "bincode",
+ "eutherdogs-core",
  "gilrs",
  "log",
  "serde",
@@ -933,6 +934,14 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "webkit2gtk",
+]
+
+[[package]]
+name = "eutherdogs-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml 0.8.2",
 ]
 
 [[package]]
