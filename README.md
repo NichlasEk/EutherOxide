@@ -32,5 +32,7 @@ npm run tauri dev
 
 `npm run dev` starts the TypeScript WebView as a browser app. `npm run tauri dev`
 starts the same UI inside Tauri 2 with native Rust emulator commands.
+To open straight into the EutherDogs demo through a bridge, start the bridge and
+visit the printed URL with `&eutherdogs=1`.
 
 The core is intentionally dependency-free so it can build offline and stay portable.

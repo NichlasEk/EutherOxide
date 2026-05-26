@@ -294,7 +294,9 @@ type DogsCoreFrame = {
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
-const explicitBridgeBase = new URLSearchParams(window.location.search).get("bridge");
+const pageParams = new URLSearchParams(window.location.search);
+const explicitBridgeBase = pageParams.get("bridge");
+const autoStartEutherDogs = pageParams.get("eutherdogs") === "1";
 const bridgeBase =
   explicitBridgeBase ??
   (window.location.port && window.location.port !== "5173"
@@ -599,6 +601,40 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <canvas id="shader-video" width="320" height="224"></canvas>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
           <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
+          <div id="eutherdogs-console" class="eutherdogs-console" aria-hidden="true">
+            <div class="eutherdogs-console-top">
+              <div class="eutherdogs-logo"></div>
+              <div class="eutherdogs-shift">
+                <span>Night shift</span>
+                <strong id="eutherdogs-alert">Open</strong>
+              </div>
+            </div>
+            <div class="eutherdogs-dispensary">
+              <div>
+                <span>RX left</span>
+                <strong id="eutherdogs-rx-left">0</strong>
+              </div>
+              <div>
+                <span>Queue</span>
+                <strong id="eutherdogs-targets-left">0</strong>
+              </div>
+              <div>
+                <span>Copay</span>
+                <strong id="eutherdogs-cash">$0</strong>
+              </div>
+              <div>
+                <span>Clock</span>
+                <strong id="eutherdogs-clock">--</strong>
+              </div>
+            </div>
+            <div class="eutherdogs-vitals">
+              <span id="eutherdogs-lamp" class="eutherdogs-lamp"></span>
+              <div class="eutherdogs-health">
+                <span id="eutherdogs-health-fill"></span>
+              </div>
+              <strong id="eutherdogs-weapon">Scanner</strong>
+            </div>
+          </div>
           <div class="scanlines"></div>
           <div class="oxidation-ring"></div>
         </div>
@@ -736,6 +772,15 @@ const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const eutherDogsToggle = document.querySelector<HTMLButtonElement>("#eutherdogs-toggle")!;
 const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
 const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
+const eutherDogsConsole = document.querySelector<HTMLDivElement>("#eutherdogs-console")!;
+const eutherDogsAlert = document.querySelector<HTMLElement>("#eutherdogs-alert")!;
+const eutherDogsRxLeft = document.querySelector<HTMLElement>("#eutherdogs-rx-left")!;
+const eutherDogsTargetsLeft = document.querySelector<HTMLElement>("#eutherdogs-targets-left")!;
+const eutherDogsCash = document.querySelector<HTMLElement>("#eutherdogs-cash")!;
+const eutherDogsClock = document.querySelector<HTMLElement>("#eutherdogs-clock")!;
+const eutherDogsLamp = document.querySelector<HTMLSpanElement>("#eutherdogs-lamp")!;
+const eutherDogsHealthFill = document.querySelector<HTMLSpanElement>("#eutherdogs-health-fill")!;
+const eutherDogsWeapon = document.querySelector<HTMLElement>("#eutherdogs-weapon")!;
 const mobileToggle = document.querySelector<HTMLButtonElement>("#mobile-toggle")!;
 const mobilePlay = document.querySelector<HTMLButtonElement>('[data-mobile-command="play"]')!;
 const releaseBuild = document.querySelector<HTMLButtonElement>("#release-build")!;
@@ -755,6 +800,7 @@ const playerPortButtons = Array.from(
 );
 
 volumeSlider.value = Math.round(audioVolume * 100).toString();
+applyEutherDogsCssAssets();
 initializeShaderControls();
 void loadShaderConfigFile();
 void loadRomDirSetting();
@@ -3118,6 +3164,52 @@ function drawDogsImage(
   }
 }
 
+function applyEutherDogsCssAssets(): void {
+  const plannedAssets: Record<string, string> = {
+    "--dogs-shift-console": "shift_console_background",
+    "--dogs-staff-roster": "staff_roster_background",
+    "--dogs-dispensary": "dispensary_background",
+    "--dogs-briefing": "shift_briefing_background",
+    "--dogs-logo": "eutherdogs_logo",
+    "--dogs-lamp-off": "selector_lamp_off",
+    "--dogs-lamp-on": "selector_lamp_on",
+    "--dogs-hud-bar": "hud_health_bar",
+    "--dogs-map-overlay": "security_map_overlay",
+  };
+  for (const [property, key] of Object.entries(plannedAssets)) {
+    const url = dogsAsset("ui.planned", key);
+    if (url) {
+      document.documentElement.style.setProperty(property, `url("${url}")`);
+    }
+  }
+}
+
+function formatDogsClock(ticks: number | null | undefined): string {
+  if (!Number.isFinite(ticks ?? NaN)) return "--";
+  const totalSeconds = Math.max(0, Math.ceil((ticks ?? 0) / 60));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function updateDogsConsole(frame: DogsCoreFrame): void {
+  const hero = frame.characters.find((actor) => actor.faction === "player");
+  const status = frame.summary.status.toUpperCase();
+  const weapon = hero?.activeWeapon.replaceAll("_", " ") ?? "scanner";
+  const armor = Math.max(0, hero?.armor ?? 0);
+  const healthPercent = Math.min(100, Math.max(8, armor));
+  eutherDogsRxLeft.textContent = String(frame.summary.objectsLeft);
+  eutherDogsTargetsLeft.textContent = String(frame.summary.targetsLeft);
+  eutherDogsCash.textContent = `$${frame.summary.cash}`;
+  eutherDogsClock.textContent = formatDogsClock(frame.summary.timeRemainingTicks);
+  eutherDogsWeapon.textContent = weapon;
+  eutherDogsAlert.textContent = status === "RUNNING" ? "Open" : status;
+  eutherDogsHealthFill.style.width = `${healthPercent}%`;
+  eutherDogsLamp.classList.toggle("is-hot", frame.summary.targetsLeft > 0 && frame.summary.status === "running");
+  eutherDogsConsole.classList.toggle("is-alert", frame.summary.targetsLeft > 0);
+  eutherDogsConsole.classList.toggle("is-closed", frame.summary.status !== "running");
+}
+
 function clampVolume(value: number): number {
   if (!Number.isFinite(value)) {
     return 0.8;
@@ -3182,6 +3274,7 @@ async function enterDogsMode(): Promise<void> {
   });
   playToggle.textContent = "Play";
   document.body.classList.add("eutherdogs-mode");
+  eutherDogsConsole.setAttribute("aria-hidden", "false");
   eutherDogsToggle.classList.add("is-active");
   drawDogsFrame(dogsFrame);
   renderUi();
@@ -3196,6 +3289,7 @@ function leaveDogsMode(): void {
   ui.status = "IDLE";
   playToggle.textContent = "Play";
   document.body.classList.remove("eutherdogs-mode");
+  eutherDogsConsole.setAttribute("aria-hidden", "true");
   eutherDogsToggle.classList.remove("is-active");
   drawSyntheticFrame();
   renderUi();
@@ -3347,6 +3441,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const ammo = hero?.ammo ?? -1;
     hud.textContent = `HP ${hero?.armor ?? 0} | $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | TARGETS ${frame.summary.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
   }
+  updateDogsConsole(frame);
 }
 
 function readStoredPlayerPort(): PlayerPort {
@@ -4282,5 +4377,9 @@ renderUi();
 startMoleculeField();
 void (async () => {
   await connectBridge();
-  await restoreCachedRom();
+  if (autoStartEutherDogs) {
+    await enterDogsMode();
+  } else {
+    await restoreCachedRom();
+  }
 })();
