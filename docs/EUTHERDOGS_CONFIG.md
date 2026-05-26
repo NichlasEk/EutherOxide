@@ -15,6 +15,8 @@ Important conventions:
 - `time_limit_ticks = 0` means no timer.
 - Weapon IDs should match `assets/eutherdogs/manifest.toml` keys where possible.
 - High score entries should preserve the fields used by `HighScoreEntry`.
+- `target_count` and `object_count` define generated mission goals.
+- `highscore_limit` controls how many entries the editable table keeps.
 
 Recommended future load order:
 
@@ -23,4 +25,11 @@ Recommended future load order:
 3. User config from EutherOxide data dir, for example `~/.local/share/euther-oxide/eutherdogs.toml`.
 4. Runtime state/save files.
 
-The next implementation step for this file is a small parser/serializer layer. Keep it outside the pure simulation loop so invalid config can be reported cleanly before starting a mission.
+Runtime support:
+
+- `EutherDogsConfig::from_toml_str` parses and validates the file.
+- `Game::new_mission_from_config` starts a mission from seed, world settings, mission goals, scoring, player stats, lives, armor, weapons, ammo, and active weapon.
+- `EutherDogsConfig::high_score_table` converts the editable entries into the sorted runtime table.
+- The CLI demo can load an edited file with `cargo run --bin euther-oxide -- --eutherdogs-demo --eutherdogs-config config/eutherdogs.example.toml`.
+
+The next implementation step is persistence: load the user config from the EutherOxide data dir, save updated high scores back to a user-writable TOML file, and expose the active values in the web UI.

@@ -5,6 +5,7 @@ use crate::{
     direction::Direction,
     entity::{Bullet, Character, Faction},
     rng::Lcg,
+    weapon::WeaponId,
     world::{MissionSpec, Tile, World, WorldParams, TILE_HEIGHT, TILE_WIDTH},
 };
 
@@ -55,6 +56,18 @@ pub struct MissionRules {
     pub player_count: usize,
     pub minimum_kills: i32,
     pub time_limit_ticks: Option<u32>,
+    pub scoring: ScoringRules,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScoringRules {
+    pub enemy_kill_score: i32,
+    pub enemy_kill_cash: i32,
+    pub target_score: i32,
+    pub target_cash: i32,
+    pub pickup_score: i32,
+    pub pickup_cash: i32,
+    pub time_bonus_divisor: i32,
 }
 
 impl Default for MissionRules {
@@ -63,6 +76,21 @@ impl Default for MissionRules {
             player_count: 1,
             minimum_kills: 0,
             time_limit_ticks: None,
+            scoring: ScoringRules::default(),
+        }
+    }
+}
+
+impl Default for ScoringRules {
+    fn default() -> Self {
+        Self {
+            enemy_kill_score: 100,
+            enemy_kill_cash: 25,
+            target_score: 250,
+            target_cash: 50,
+            pickup_score: 25,
+            pickup_cash: 5,
+            time_bonus_divisor: 1,
         }
     }
 }
@@ -156,6 +184,17 @@ impl Game {
         }
         game.spawn_hostiles((mission.mission + 4).max(4) as usize);
         game
+    }
+
+    pub fn new_mission_from_config(config: &crate::config::EutherDogsConfig) -> Result<Self, crate::config::ConfigError> {
+        let mut game = Self::new_mission_with_rules(
+            config.seed(),
+            config.world_params(),
+            config.mission_spec(),
+            config.mission_rules(),
+        );
+        game.apply_player_config(config)?;
+        Ok(game)
     }
 
     pub fn spawn_hostiles(&mut self, count: usize) {
@@ -354,8 +393,8 @@ impl Game {
                 self.progress.targets_destroyed += old_targets - new_targets;
                 if old_targets > new_targets {
                     let destroyed = old_targets - new_targets;
-                    self.progress.score += 250 * destroyed;
-                    self.progress.cash += 50 * destroyed;
+                    self.progress.score += self.rules.scoring.target_score * destroyed;
+                    self.progress.cash += self.rules.scoring.target_cash * destroyed;
                 }
                 self.apply_area_damage(
                     bullet.x,
@@ -416,8 +455,8 @@ impl Game {
             hit.alive = false;
             self.progress.kills += i32::from(hit.faction == Faction::HostileCustomer);
             if hit.faction == Faction::HostileCustomer {
-                self.progress.score += 100;
-                self.progress.cash += 25;
+                self.progress.score += self.rules.scoring.enemy_kill_score;
+                self.progress.cash += self.rules.scoring.enemy_kill_cash;
             }
             self.audio_events
                 .push(AudioEvent::Sfx(AssetId::CustomerDefeated));
@@ -503,14 +542,14 @@ impl Game {
                 }
                 _ => {
                     self.progress.objects_collected += 1;
-                    self.progress.score += 25;
-                    self.progress.cash += 5;
+                    self.progress.score += self.rules.scoring.pickup_score;
+                    self.progress.cash += self.rules.scoring.pickup_cash;
                 }
             }
             if matches!(tile, Tile::Prescription | Tile::Folder | Tile::DataWafer) {
                 self.progress.objects_collected += 1;
-                self.progress.score += 25;
-                self.progress.cash += 5;
+                self.progress.score += self.rules.scoring.pickup_score;
+                self.progress.cash += self.rules.scoring.pickup_cash;
             }
             self.audio_events.push(AudioEvent::Sfx(AssetId::PickupRx));
         }
@@ -543,9 +582,38 @@ impl Game {
             && self.progress.kills >= self.rules.minimum_kills
             && self.players_on_exit()
         {
-            self.progress.score += self.summary().time_remaining_ticks.unwrap_or(0) as i32;
+            let time_bonus = self.summary().time_remaining_ticks.unwrap_or(0) as i32;
+            let divisor = self.rules.scoring.time_bonus_divisor.max(1);
+            self.progress.score += time_bonus / divisor;
             self.status = MissionStatus::Won;
         }
+    }
+
+    fn apply_player_config(&mut self, config: &crate::config::EutherDogsConfig) -> Result<(), crate::config::ConfigError> {
+        for (player_index, character) in self
+            .characters
+            .iter_mut()
+            .filter(|character| character.faction == Faction::Player)
+            .enumerate()
+        {
+            let Some(player) = config.player_config(player_index + 1) else {
+                continue;
+            };
+            character.armor = player.armor.max(1);
+            character.lives = player.lives.max(1);
+            character.weapons = player.weapon_slots(player_index + 1)?;
+            character.active_weapon = player.active_weapon_index(player_index + 1)?;
+            character.weapon = character
+                .weapons
+                .get(character.active_weapon)
+                .map(|slot| slot.weapon)
+                .unwrap_or(WeaponId::ScannerBlaster);
+            if player.score != 0 || player.cash != 0 {
+                self.progress.score += player.score;
+                self.progress.cash += player.cash;
+            }
+        }
+        Ok(())
     }
 
     fn players_on_exit(&self) -> bool {

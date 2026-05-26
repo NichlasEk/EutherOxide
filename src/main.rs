@@ -36,6 +36,7 @@ fn run() -> io::Result<()> {
     let mut host_server = false;
     let mut host_hash_password: Option<String> = None;
     let mut eutherdogs_demo = false;
+    let mut eutherdogs_config: Option<PathBuf> = None;
     let mut perf = false;
     let mut frames_was_set = false;
     let mut rom_path: Option<String> = None;
@@ -97,6 +98,15 @@ fn run() -> io::Result<()> {
             "--eutherdogs-demo" => {
                 eutherdogs_demo = true;
             }
+            "--eutherdogs-config" => {
+                let Some(value) = args.next() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--eutherdogs-config needs a TOML path",
+                    ));
+                };
+                eutherdogs_config = Some(PathBuf::from(value));
+            }
             "--host-hash-password" => {
                 let Some(value) = args.next() else {
                     return Err(io::Error::new(
@@ -136,7 +146,7 @@ fn run() -> io::Result<()> {
     }
 
     if eutherdogs_demo {
-        run_eutherdogs_demo();
+        run_eutherdogs_demo(eutherdogs_config.as_deref())?;
         return Ok(());
     }
 
@@ -275,12 +285,20 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--host-server] [--host-hash-password PASSWORD] [--eutherdogs-demo]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--host-server] [--host-hash-password PASSWORD] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
     );
 }
 
-fn run_eutherdogs_demo() {
-    let mut game = euther_oxide::eutherdogs::demo_game();
+fn run_eutherdogs_demo(config_path: Option<&std::path::Path>) -> io::Result<()> {
+    let config = if let Some(path) = config_path {
+        let contents = fs::read_to_string(path)?;
+        euther_oxide::eutherdogs::EutherDogsConfig::from_toml_str(&contents)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))?
+    } else {
+        euther_oxide::eutherdogs::demo_config()
+    };
+    let mut game = euther_oxide::eutherdogs::Game::new_mission_from_config(&config)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))?;
     for _ in 0..12 {
         game.tick(
             &[euther_oxide::eutherdogs::PlayerInput {
@@ -294,13 +312,15 @@ fn run_eutherdogs_demo() {
         );
     }
     println!(
-        "EutherDogs demo: world={}x{} characters={} bullets={} audio_events={}",
+        "EutherDogs demo: world={}x{} characters={} bullets={} audio_events={} highscores={}",
         game.world().width(),
         game.world().height(),
         game.characters().len(),
         game.bullets().len(),
-        game.drain_audio_events().len()
+        game.drain_audio_events().len(),
+        config.high_score_table().entries().len()
     );
+    Ok(())
 }
 
 fn parse_slot(flag: &str, value: &str) -> io::Result<usize> {

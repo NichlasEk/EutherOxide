@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod collision;
 pub mod command;
+pub mod config;
 pub mod direction;
 pub mod entity;
 pub mod game;
@@ -13,10 +14,14 @@ pub mod world;
 
 pub use assets::{AssetId, AssetKind};
 pub use command::PlayerCommand;
+pub use config::{
+    ConfigError, ConfigHighScoreEntry, ConfigScoring, ConfigSettings, ConfigWeaponSlot,
+    ConfigWorld, EutherDogsConfig, PlayerConfig,
+};
 pub use direction::Direction;
 pub use game::{
     AudioEvent, FixedStep, Game, MissionProgress, MissionRules, MissionStatus, MissionSummary,
-    PlayerInput, RenderSnapshot,
+    PlayerInput, RenderSnapshot, ScoringRules,
 };
 pub use highscore::{HighScoreEntry, HighScoreTable};
 pub use mobile::{MobileInput, TouchButtons, VirtualStick};

@@ -187,6 +187,37 @@ impl Weapon {
 }
 
 impl WeaponId {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::RxCannon => "rx_cannon",
+            Self::ScannerBlaster => "scanner_blaster",
+            Self::LabelPrinter => "label_printer",
+            Self::SterilizerSpray => "sterilizer_spray",
+            Self::CapsuleLauncher => "capsule_launcher",
+            Self::CouponPistol => "coupon_pistol",
+            Self::ReceiptGun => "receipt_gun",
+            Self::NeonPriorAuth => "neon_prior_auth",
+            Self::TurboPriorAuth => "turbo_prior_auth",
+            Self::FormularyZapper => "formulary_zapper",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "rx_cannon" => Some(Self::RxCannon),
+            "scanner_blaster" => Some(Self::ScannerBlaster),
+            "label_printer" => Some(Self::LabelPrinter),
+            "sterilizer_spray" => Some(Self::SterilizerSpray),
+            "capsule_launcher" => Some(Self::CapsuleLauncher),
+            "coupon_pistol" => Some(Self::CouponPistol),
+            "receipt_gun" => Some(Self::ReceiptGun),
+            "neon_prior_auth" => Some(Self::NeonPriorAuth),
+            "turbo_prior_auth" => Some(Self::TurboPriorAuth),
+            "formulary_zapper" => Some(Self::FormularyZapper),
+            _ => None,
+        }
+    }
+
     pub const fn index(self) -> usize {
         match self {
             Self::RxCannon => 0,

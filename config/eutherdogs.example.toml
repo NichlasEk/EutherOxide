@@ -1,10 +1,13 @@
 [settings]
 player_count = 1
 starting_mission = 1
+target_count = 6
+object_count = 8
 difficulty = "normal"
 minimum_kills = 0
 time_limit_ticks = 0 # 0 means no timer
 friendly_fire = false
+highscore_limit = 10
 
 [player.1]
 name = "Night Tech"
