@@ -275,7 +275,7 @@ button:disabled {
 
 .eutherdogs-menu {
   position: absolute;
-  inset: 48px 20px 34px;
+  inset: 34px 8px 20px;
   z-index: 6;
   display: none;
   pointer-events: none;
@@ -290,7 +290,7 @@ button:disabled {
 .eutherdogs-menu-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(660px, 100%);
+  width: min(760px, 100%);
   max-height: 100%;
   border: 1px solid rgba(39, 242, 255, 0.42);
   background:
@@ -356,7 +356,7 @@ button:disabled {
   display: grid;
   gap: 7px;
   min-height: 0;
-  padding: 9px;
+  padding: 8px;
   overflow: auto;
 }
 
@@ -364,17 +364,17 @@ button:disabled {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  min-height: 48px;
-  padding: 7px 9px;
+  gap: 9px;
+  min-height: 44px;
+  padding: 6px 8px;
   border-radius: 0;
   text-align: left;
 }
 
 .eutherdogs-armory-layout {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 142px minmax(0, 1fr);
+  gap: 8px;
   min-height: 0;
 }
 
@@ -426,7 +426,7 @@ button:disabled {
 .eutherdogs-store-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -456,13 +456,13 @@ button:disabled {
 
 .eutherdogs-store-item strong {
   color: #ffffff;
-  font-size: 0.74rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
 }
 
 .eutherdogs-store-item small {
   color: #9ee9de;
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-weight: 800;
 }
 
