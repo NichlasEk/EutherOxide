@@ -528,6 +528,7 @@ let dogsActorFacings = new Map<string, DogsActorFacing>();
 let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
 let dogsPreviousAudioFrame: DogsCoreFrame | null = null;
+let dogsSawHostileQueue = false;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -3272,10 +3273,12 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
 
 function dogsQueueLeft(frame: DogsCoreFrame | null | undefined): number {
   if (!frame) return 0;
-  const hostileCount = frame.characters.filter((actor) => actor.faction === "hostile_customer" && actor.alive).length;
-  return hostileCount > 0 || frame.characters.some((actor) => actor.faction === "hostile_customer")
-    ? hostileCount
-    : frame.summary.targetsLeft;
+  const hostileActors = frame.characters.filter((actor) => actor.faction === "hostile_customer");
+  if (hostileActors.length > 0) {
+    dogsSawHostileQueue = true;
+    return hostileActors.filter((actor) => actor.alive).length;
+  }
+  return dogsSawHostileQueue ? 0 : frame.summary.targetsLeft;
 }
 
 function dogsExitReady(frame: DogsCoreFrame): boolean {
@@ -3917,6 +3920,7 @@ function leaveDogsMode(): void {
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
+  dogsSawHostileQueue = false;
   ui.playing = false;
   ui.loaded = false;
   ui.title = "No ROM";
@@ -3976,6 +3980,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
+  dogsSawHostileQueue = false;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
