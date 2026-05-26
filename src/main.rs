@@ -35,6 +35,7 @@ fn run() -> io::Result<()> {
     let mut web_bridge = false;
     let mut host_server = false;
     let mut host_hash_password: Option<String> = None;
+    let mut eutherdogs_demo = false;
     let mut perf = false;
     let mut frames_was_set = false;
     let mut rom_path: Option<String> = None;
@@ -93,6 +94,9 @@ fn run() -> io::Result<()> {
             "--host-server" => {
                 host_server = true;
             }
+            "--eutherdogs-demo" => {
+                eutherdogs_demo = true;
+            }
             "--host-hash-password" => {
                 let Some(value) = args.next() else {
                     return Err(io::Error::new(
@@ -128,6 +132,11 @@ fn run() -> io::Result<()> {
 
     if let Some(password) = host_hash_password {
         println!("{}", hash_host_password(&password)?);
+        return Ok(());
+    }
+
+    if eutherdogs_demo {
+        run_eutherdogs_demo();
         return Ok(());
     }
 
@@ -266,7 +275,31 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--host-server] [--host-hash-password PASSWORD]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--host-server] [--host-hash-password PASSWORD] [--eutherdogs-demo]"
+    );
+}
+
+fn run_eutherdogs_demo() {
+    let mut game = euther_oxide::eutherdogs::demo_game();
+    for _ in 0..12 {
+        game.tick(
+            &[euther_oxide::eutherdogs::PlayerInput {
+                player_index: 0,
+                command: euther_oxide::eutherdogs::PlayerCommand::from_bits(
+                    euther_oxide::eutherdogs::PlayerCommand::RIGHT
+                        | euther_oxide::eutherdogs::PlayerCommand::SHOOT,
+                ),
+            }],
+            euther_oxide::eutherdogs::FixedStep { ticks: 1 },
+        );
+    }
+    println!(
+        "EutherDogs demo: world={}x{} characters={} bullets={} audio_events={}",
+        game.world().width(),
+        game.world().height(),
+        game.characters().len(),
+        game.bullets().len(),
+        game.drain_audio_events().len()
     );
 }
 

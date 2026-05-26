@@ -2,6 +2,7 @@ pub mod audio;
 pub mod bus;
 pub mod controller;
 pub mod emulator;
+pub mod eutherdogs;
 pub mod m68k;
 pub mod paprium;
 pub mod rom;

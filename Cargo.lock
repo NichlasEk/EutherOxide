@@ -466,6 +466,7 @@ dependencies = [
  "argon2",
  "bincode",
  "bytemuck",
+ "eutherdogs-core",
  "gilrs",
  "log",
  "pollster",
@@ -475,6 +476,10 @@ dependencies = [
  "winit",
  "z80-emu",
 ]
+
+[[package]]
+name = "eutherdogs-core"
+version = "0.1.0"
 
 [[package]]
 name = "find-msvc-tools"

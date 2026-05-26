@@ -1,0 +1,108 @@
+[meta]
+title = "Pharmacy Cyberpunk"
+tile_size = [32, 24]
+character_size = [32, 32]
+projectile_size = [16, 16]
+source_policy = "New assets only; original Cyberdogs graphics and sounds are not used."
+
+[sprites.heroes]
+night_shift_tech = "sprites/heroes/night_shift_tech.png"
+neon_pharmacist = "sprites/heroes/neon_pharmacist.png"
+compliance_runner = "sprites/heroes/compliance_runner.png"
+
+[sprites.enemies]
+angry_customer = "sprites/enemies/angry_customer.png"
+claim_denier = "sprites/enemies/claim_denier.png"
+inventory_drone = "sprites/enemies/inventory_drone.png"
+recall_enforcer = "sprites/enemies/recall_enforcer.png"
+black_market_courier = "sprites/enemies/black_market_courier.png"
+district_manager = "sprites/enemies/district_manager.png"
+
+[sprites.weapons]
+rx_cannon = "sprites/weapons/rx_cannon.png"
+scanner_blaster = "sprites/weapons/scanner_blaster.png"
+label_printer = "sprites/weapons/label_printer.png"
+sterilizer_spray = "sprites/weapons/sterilizer_spray.png"
+capsule_launcher = "sprites/weapons/capsule_launcher.png"
+coupon_pistol = "sprites/weapons/coupon_pistol.png"
+receipt_gun = "sprites/weapons/receipt_gun.png"
+neon_prior_auth = "sprites/weapons/neon_prior_auth.png"
+turbo_prior_auth = "sprites/weapons/turbo_prior_auth.png"
+formulary_zapper = "sprites/weapons/formulary_zapper.png"
+
+[sprites.projectiles]
+cyan_rx_bolt = "sprites/projectiles/cyan_rx_bolt.png"
+red_denial_bolt = "sprites/projectiles/red_denial_bolt.png"
+label_shred = "sprites/projectiles/label_shred.png"
+sterilizer_cloud = "sprites/projectiles/sterilizer_cloud.png"
+capsule_grenade = "sprites/projectiles/capsule_grenade.png"
+green_auth_laser = "sprites/projectiles/green_auth_laser.png"
+yellow_warning_laser = "sprites/projectiles/yellow_warning_laser.png"
+power_pill = "sprites/projectiles/power_pill.png"
+zapper_arc = "sprites/projectiles/zapper_arc.png"
+
+[sprites.effects]
+explosion_01 = "sprites/effects/explosion_01.png"
+explosion_02 = "sprites/effects/explosion_02.png"
+explosion_03 = "sprites/effects/explosion_03.png"
+explosion_04 = "sprites/effects/explosion_04.png"
+explosion_05 = "sprites/effects/explosion_05.png"
+death_stamp = "sprites/effects/death_stamp.png"
+scorch_mark = "sprites/effects/scorch_mark.png"
+spilled_syrup = "sprites/effects/spilled_syrup.png"
+
+[tiles.floor]
+sterile_tile = "tiles/floor/sterile_tile.png"
+neon_floor = "tiles/floor/neon_floor.png"
+warning_floor = "tiles/floor/warning_floor.png"
+fan_floor = "tiles/floor/fan_floor.png"
+
+[tiles.walls]
+pharmacy_wall = "tiles/walls/pharmacy_wall.png"
+neon_shelf_wall = "tiles/walls/neon_shelf_wall.png"
+consultation_wall = "tiles/walls/consultation_wall.png"
+security_glass_wall = "tiles/walls/security_glass_wall.png"
+
+[tiles.props]
+corrupt_med_cabinet = "tiles/props/corrupt_med_cabinet.png"
+hacked_vending_unit = "tiles/props/hacked_vending_unit.png"
+recall_crate = "tiles/props/recall_crate.png"
+shipping_box = "tiles/props/shipping_box.png"
+service_elevator = "tiles/props/service_elevator.png"
+
+[items]
+prescription = "sprites/items/prescription.png"
+folder = "sprites/items/folder.png"
+data_wafer = "sprites/items/data_wafer.png"
+circuit_board = "sprites/items/circuit_board.png"
+pill_sample = "sprites/items/pill_sample.png"
+lab_coat_armor = "sprites/items/lab_coat_armor.png"
+hazard_sleeves = "sprites/items/hazard_sleeves.png"
+pill_splitter = "sprites/items/pill_splitter.png"
+
+[ui]
+icon_player = "ui/icons/icon_player.png"
+icon_target = "ui/icons/icon_target.png"
+icon_prescription = "ui/icons/icon_prescription.png"
+icon_cash = "ui/icons/icon_cash.png"
+menu_panel = "ui/menus/menu_panel.png"
+
+[audio.sfx]
+impact_heavy = "audio/sfx/impact_heavy.wav"
+customer_defeated = "audio/sfx/customer_defeated.wav"
+rx_cannon = "audio/sfx/rx_cannon.wav"
+capsule_launcher = "audio/sfx/capsule_launcher.wav"
+pickup_rx = "audio/sfx/pickup_rx.wav"
+scanner_blaster = "audio/sfx/scanner_blaster.wav"
+label_printer_burst = "audio/sfx/label_printer_burst.wav"
+weapon_switch = "audio/sfx/weapon_switch.wav"
+sterilizer_spray = "audio/sfx/sterilizer_spray.wav"
+neon_laser = "audio/sfx/neon_laser.wav"
+impact_light = "audio/sfx/impact_light.wav"
+pill_splitter = "audio/sfx/pill_splitter.wav"
+
+[audio.music]
+menu = "audio/music/menu_loop.wav"
+mission_01 = "audio/music/mission_01_loop.wav"
+success = "audio/music/success_loop.wav"
+failure = "audio/music/failure_loop.wav"

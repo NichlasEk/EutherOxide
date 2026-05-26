@@ -2,6 +2,8 @@
 
 EutherOxide is a headless Rust Mega Drive core built from the local EutherDrive and EutherMaster references.
 
+EutherDogs is now part of EutherOxide. It is a new Rust game core inspired by the old Cyberdogs source, rebuilt with a pharmacy cyberpunk theme, new placeholder assets, and a renderer-independent simulation layer for further development inside this repo.
+
 Current scope:
 
 - Mega Drive ROM normalization, SMD deinterleave, header/region detection.
@@ -10,12 +12,14 @@ Current scope:
 - VDP register/data/control path, CRAM/VRAM/VSRAM writes, interrupts, HV counter, and a fast scroll-plane renderer.
 - PSG and pragmatic YM2612 synthesis paths for headless audio jobs.
 - CLI for loading a ROM, running frames, and dumping a PPM frame.
+- EutherDogs core under `crates/eutherdogs-core`, with placeholder assets under `assets/eutherdogs`.
 
 Run:
 
 ```sh
 cargo test
 cargo run --release -- path/to/game.md --frames 1 --dump frame.ppm
+cargo run --bin euther-oxide -- --eutherdogs-demo
 ```
 
 UI:
