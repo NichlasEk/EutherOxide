@@ -1,6 +1,6 @@
 pub use eutherdogs_core::{
-    ConfigError, EutherDogsConfig, FixedStep, Game, MobileInput, PlayerCommand, PlayerInput,
-    PurchaseError, TouchButtons, VirtualStick,
+    ConfigError, ConfigStoreItem, EutherDogsConfig, FixedStep, Game, MobileInput, PlayerCommand,
+    PlayerInput, PurchaseError, TouchButtons, VirtualStick, WeaponId,
     world::{
         CHARACTER_HEIGHT, CHARACTER_WIDTH, MissionSpec, TILE_HEIGHT, TILE_WIDTH, Tile, WorldParams,
     },
@@ -184,8 +184,9 @@ impl EutherDogsRuntime {
         &mut self,
         purchase: EutherDogsPurchase,
     ) -> Result<EutherDogsFrame, PurchaseError> {
+        let store = complete_store_items(&self.config.store);
         self.game.purchase_store_item(
-            &self.config.store,
+            &store,
             &purchase.item_id,
             purchase.player.unwrap_or(1).saturating_sub(1) as usize,
         )?;
@@ -333,9 +334,8 @@ fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsSto
         .characters()
         .iter()
         .find(|character| character.faction == eutherdogs_core::entity::Faction::Player);
-    config
-        .store
-        .iter()
+    complete_store_items(&config.store)
+        .into_iter()
         .map(|item| {
             let weapon = item
                 .weapon
@@ -349,11 +349,11 @@ fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsSto
                 .is_some_and(|(weapon, player)| player.active_weapon_id() == weapon);
             let owned = item.armor > 0 || slot.is_some();
             EutherDogsStoreItem {
-                id: item.id.clone(),
-                label: item.label.clone(),
+                id: item.id,
+                label: item.label,
                 price: item.price,
-                detail: item.detail.clone(),
-                weapon: item.weapon.clone(),
+                detail: item.detail,
+                weapon: item.weapon,
                 ammo: item.ammo,
                 armor: item.armor,
                 owned,
@@ -363,6 +363,97 @@ fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsSto
             }
         })
         .collect()
+}
+
+fn complete_store_items(store: &[ConfigStoreItem]) -> Vec<ConfigStoreItem> {
+    let mut items = store.to_vec();
+    for item in standard_store_items() {
+        if !items.iter().any(|existing| existing.id == item.id) {
+            items.push(item);
+        }
+    }
+    items
+}
+
+fn standard_store_items() -> Vec<ConfigStoreItem> {
+    vec![
+        store_weapon_item(
+            "label_printer",
+            "Label Printer",
+            125,
+            "Fast short-range sticker burst",
+            WeaponId::LabelPrinter,
+            80,
+        ),
+        store_weapon_item(
+            "sterilizer_spray",
+            "Sterilizer Spray",
+            175,
+            "Wide cone for queue control",
+            WeaponId::SterilizerSpray,
+            70,
+        ),
+        store_weapon_item(
+            "capsule_launcher",
+            "Capsule Launcher",
+            250,
+            "Slow explosive capsule dose",
+            WeaponId::CapsuleLauncher,
+            12,
+        ),
+        store_weapon_item(
+            "autoinjector",
+            "Autoinjector",
+            210,
+            "Single-dose dart with rude bedside manner",
+            WeaponId::Autoinjector,
+            24,
+        ),
+        store_weapon_item(
+            "needlegun",
+            "Needlegun",
+            275,
+            "Rapid insurance-approved acupuncture",
+            WeaponId::Needlegun,
+            120,
+        ),
+        store_weapon_item(
+            "handsanitizer_flamethrower",
+            "Handsanitizer Flamethrower",
+            325,
+            "Kills 99.9% of queue escalation",
+            WeaponId::HandSanitizerFlamethrower,
+            90,
+        ),
+        ConfigStoreItem {
+            id: "coat_reinforcement".to_string(),
+            label: "Coat Reinforcement".to_string(),
+            price: 100,
+            detail: "Add 25 white-coat armor".to_string(),
+            weapon: None,
+            ammo: 0,
+            armor: 25,
+        },
+    ]
+}
+
+fn store_weapon_item(
+    id: &str,
+    label: &str,
+    price: i32,
+    detail: &str,
+    weapon: WeaponId,
+    ammo: i32,
+) -> ConfigStoreItem {
+    ConfigStoreItem {
+        id: id.to_string(),
+        label: label.to_string(),
+        price,
+        detail: detail.to_string(),
+        weapon: Some(weapon.key().to_string()),
+        ammo,
+        armor: 0,
+    }
 }
 
 fn tile_key(tile: Tile) -> &'static str {
@@ -389,6 +480,32 @@ fn tile_key(tile: Tile) -> &'static str {
         Tile::PillSplitter => "pill_splitter",
         Tile::ScorchMark => "scorch_mark",
         Tile::SpilledSyrup => "spilled_syrup",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_backfills_missing_store_items_for_purchase() {
+        let mut runtime = EutherDogsRuntime::demo();
+        runtime.config.store.retain(|item| item.id != "autoinjector");
+
+        let frame = runtime
+            .purchase(EutherDogsPurchase {
+                item_id: "autoinjector".to_string(),
+                player: Some(1),
+            })
+            .unwrap();
+
+        let hero = frame
+            .characters
+            .iter()
+            .find(|character| character.faction == "player")
+            .unwrap();
+        assert_eq!(hero.active_weapon, "autoinjector");
+        assert!(frame.store.iter().any(|item| item.id == "autoinjector" && item.active));
     }
 }
 
