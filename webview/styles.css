@@ -178,6 +178,14 @@ button:disabled {
   white-space: nowrap;
 }
 
+.eutherdogs-dispensary strong {
+  margin-top: 2px;
+  padding: 1px 5px 2px;
+  border: 1px solid rgba(39, 242, 255, 0.16);
+  background: rgba(0, 4, 7, 0.82);
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.46);
+}
+
 .eutherdogs-dispensary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -187,7 +195,7 @@ button:disabled {
 
 .eutherdogs-dispensary div {
   min-width: 0;
-  padding: 0 5px;
+  padding: 0 5px 2px;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
 }
 

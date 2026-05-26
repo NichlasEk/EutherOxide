@@ -623,7 +623,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <strong id="eutherdogs-cash">$0</strong>
               </div>
               <div>
-                <span>Clock</span>
+                <span id="eutherdogs-clock-label">Elapsed</span>
                 <strong id="eutherdogs-clock">--</strong>
               </div>
             </div>
@@ -777,6 +777,7 @@ const eutherDogsAlert = document.querySelector<HTMLElement>("#eutherdogs-alert")
 const eutherDogsRxLeft = document.querySelector<HTMLElement>("#eutherdogs-rx-left")!;
 const eutherDogsTargetsLeft = document.querySelector<HTMLElement>("#eutherdogs-targets-left")!;
 const eutherDogsCash = document.querySelector<HTMLElement>("#eutherdogs-cash")!;
+const eutherDogsClockLabel = document.querySelector<HTMLElement>("#eutherdogs-clock-label")!;
 const eutherDogsClock = document.querySelector<HTMLElement>("#eutherdogs-clock")!;
 const eutherDogsLamp = document.querySelector<HTMLSpanElement>("#eutherdogs-lamp")!;
 const eutherDogsHealthFill = document.querySelector<HTMLSpanElement>("#eutherdogs-health-fill")!;
@@ -3192,16 +3193,24 @@ function formatDogsClock(ticks: number | null | undefined): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function dogsClockSource(summary: DogsCoreSummary): { label: string; ticks: number | null | undefined } {
+  return summary.timeRemainingTicks == null
+    ? { label: "Elapsed", ticks: summary.elapsedTicks }
+    : { label: "Deadline", ticks: summary.timeRemainingTicks };
+}
+
 function updateDogsConsole(frame: DogsCoreFrame): void {
   const hero = frame.characters.find((actor) => actor.faction === "player");
   const status = frame.summary.status.toUpperCase();
   const weapon = hero?.activeWeapon.replaceAll("_", " ") ?? "scanner";
   const armor = Math.max(0, hero?.armor ?? 0);
   const healthPercent = Math.min(100, Math.max(8, armor));
+  const clock = dogsClockSource(frame.summary);
   eutherDogsRxLeft.textContent = String(frame.summary.objectsLeft);
   eutherDogsTargetsLeft.textContent = String(frame.summary.targetsLeft);
   eutherDogsCash.textContent = `$${frame.summary.cash}`;
-  eutherDogsClock.textContent = formatDogsClock(frame.summary.timeRemainingTicks);
+  eutherDogsClockLabel.textContent = clock.label;
+  eutherDogsClock.textContent = formatDogsClock(clock.ticks);
   eutherDogsWeapon.textContent = weapon;
   eutherDogsAlert.textContent = status === "RUNNING" ? "Open" : status;
   eutherDogsHealthFill.style.width = `${healthPercent}%`;
@@ -3439,7 +3448,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   if (hud) {
     const hero = frame.characters.find((actor) => actor.faction === "player");
     const ammo = hero?.ammo ?? -1;
-    hud.textContent = `HP ${hero?.armor ?? 0} | $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | TARGETS ${frame.summary.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
+    hud.textContent = `COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE ${frame.summary.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
   }
   updateDogsConsole(frame);
 }
