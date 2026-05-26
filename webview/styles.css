@@ -290,7 +290,7 @@ button:disabled {
 .eutherdogs-menu-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(520px, 100%);
+  width: min(660px, 100%);
   max-height: 100%;
   border: 1px solid rgba(39, 242, 255, 0.42);
   background:
@@ -300,6 +300,21 @@ button:disabled {
   box-shadow:
     inset 0 0 36px rgba(255, 48, 208, 0.1),
     0 18px 60px rgba(0, 0, 0, 0.46);
+}
+
+.eutherdogs-menu.is-staff .eutherdogs-menu-panel {
+  background:
+    linear-gradient(180deg, rgba(3, 8, 7, 0.36), rgba(2, 5, 5, 0.68)),
+    var(--dogs-staff-roster, none),
+    #061009;
+  background-size: cover;
+}
+
+.eutherdogs-menu.is-store .eutherdogs-menu-panel {
+  background:
+    linear-gradient(180deg, rgba(4, 10, 12, 0.84), rgba(3, 6, 8, 0.92)),
+    var(--dogs-dispensary, none);
+  background-size: cover;
 }
 
 .eutherdogs-menu-panel header,
@@ -354,6 +369,65 @@ button:disabled {
   padding: 7px 9px;
   border-radius: 0;
   text-align: left;
+}
+
+.eutherdogs-armory-layout {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.eutherdogs-inventory-panel {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(39, 242, 255, 0.18);
+  background: rgba(0, 5, 7, 0.74);
+}
+
+.eutherdogs-inventory-panel .eutherdogs-weapon-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.eutherdogs-inventory-panel strong,
+.eutherdogs-inventory-panel span,
+.eutherdogs-inventory-panel em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherdogs-inventory-panel strong {
+  color: #ffffff;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.eutherdogs-inventory-panel span {
+  color: #9ee9de;
+  font-size: 0.62rem;
+  font-weight: 850;
+}
+
+.eutherdogs-inventory-panel em {
+  margin-top: 4px;
+  color: #ffef6e;
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.eutherdogs-store-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
 }
 
 .eutherdogs-weapon-icon {
@@ -420,22 +494,47 @@ button:disabled {
 .eutherdogs-staff-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  align-items: end;
+  gap: 24px;
+  min-height: 250px;
+  padding: 26px 48px 18px;
 }
 
 .eutherdogs-staff-card {
   display: grid;
-  gap: 5px;
-  align-content: start;
-  min-height: 142px;
+  justify-items: center;
+  gap: 6px;
+  align-content: end;
+  min-height: 210px;
   padding: 10px;
   border-radius: 0;
-  text-align: left;
+  text-align: center;
+  background: transparent;
+  box-shadow: none;
 }
 
 .eutherdogs-staff-card.is-selected {
-  border-color: rgba(255, 239, 110, 0.58);
-  background: rgba(45, 39, 7, 0.78);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.eutherdogs-selector-lamp {
+  width: 28px;
+  height: 28px;
+  background: var(--dogs-lamp-off, none) center / contain no-repeat;
+  image-rendering: pixelated;
+}
+
+.eutherdogs-staff-card.is-selected .eutherdogs-selector-lamp {
+  background-image: var(--dogs-lamp-on, none);
+}
+
+.eutherdogs-staff-sprite {
+  width: 52px;
+  height: 52px;
+  image-rendering: pixelated;
+  object-fit: contain;
 }
 
 .eutherdogs-staff-card span,
@@ -455,6 +554,7 @@ button:disabled {
 .eutherdogs-staff-card strong {
   color: #ffffff;
   font-size: 0.86rem;
+  text-shadow: 0 2px 0 #000;
   text-transform: uppercase;
 }
 

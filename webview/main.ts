@@ -3257,6 +3257,17 @@ function dogsWeaponIconMarkup(weapon: string | null | undefined, label: string):
     : `<span class="eutherdogs-weapon-icon is-empty" aria-hidden="true"></span>`;
 }
 
+function dogsStaffAsset(staff: DogsStaffOption): string | null {
+  return dogsAsset("sprites.heroes", staff.id === 1 ? "night_shift_tech" : "neon_pharmacist");
+}
+
+function dogsStaffSpriteMarkup(staff: DogsStaffOption): string {
+  const url = dogsStaffAsset(staff);
+  return url
+    ? `<img class="eutherdogs-staff-sprite" src="${url}" alt="${staff.name}" />`
+    : `<span class="eutherdogs-staff-sprite is-empty" aria-hidden="true"></span>`;
+}
+
 function drawDogsImage(
   url: string | null,
   x: number,
@@ -3400,6 +3411,8 @@ function renderDogsMenu(): void {
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
   eutherDogsStartShift.textContent = dogsMenuMode === "result" ? "Retry shift" : "Start shift";
+  eutherDogsMenu.classList.toggle("is-staff", dogsMenuMode === "staff");
+  eutherDogsMenu.classList.toggle("is-store", dogsMenuMode === "store");
   if (dogsMenuMode === "staff") {
     eutherDogsMenuKicker.textContent = "Staff Select";
     eutherDogsMenuTitle.textContent = "Choose Counter Liability";
@@ -3409,6 +3422,8 @@ function renderDogsMenu(): void {
           .map(
             (staff) => `
               <button class="eutherdogs-staff-card ${selectedDogsStaff === staff.id ? "is-selected" : ""}" data-staff-id="${staff.id}" type="button">
+                <span class="eutherdogs-selector-lamp"></span>
+                ${dogsStaffSpriteMarkup(staff)}
                 <span>${staff.role}</span>
                 <strong>${staff.name}</strong>
                 <small>Coat ${staff.armor} | Cash $${staff.cash}</small>
@@ -3458,20 +3473,36 @@ function renderDogsMenu(): void {
   eutherDogsMenuKicker.textContent = "RX Store";
   eutherDogsMenuTitle.textContent = `Counter | Coat ${hero?.armor ?? 0} | ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}`;
   eutherDogsMenuBody.innerHTML = storeItems
-    .map((item) => {
-      return `
-        <button class="eutherdogs-store-item ${item.active ? "is-equipped" : ""}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
-          ${dogsWeaponIconMarkup(item.weapon, item.label)}
-          <span>
-            <strong>${item.label}</strong>
-            <small>${item.detail}</small>
-            <small>${dogsStoreItemMeta(item)}</small>
-          </span>
-          <em>${dogsStoreActionLabel(item)}</em>
-        </button>
-      `;
-    })
-    .join("");
+    ? `
+      <div class="eutherdogs-armory-layout">
+        <aside class="eutherdogs-inventory-panel">
+          ${hero ? dogsWeaponIconMarkup(hero.activeWeapon, hero.activeWeapon) : ""}
+          <strong>${dogsStaffOptions.find((staff) => staff.id === selectedDogsStaff)?.name ?? "Staff"}</strong>
+          <span>Coat ${hero?.armor ?? 0}</span>
+          <span>Active ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}</span>
+          <span>Ammo ${dogsAmmoLabel(hero?.ammo)}</span>
+          <em>Cash $${cash}</em>
+        </aside>
+        <div class="eutherdogs-store-grid">
+          ${storeItems
+            .map((item) => {
+              return `
+                <button class="eutherdogs-store-item ${item.active ? "is-equipped" : ""}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
+                  ${dogsWeaponIconMarkup(item.weapon, item.label)}
+                  <span>
+                    <strong>${item.label}</strong>
+                    <small>${item.detail}</small>
+                    <small>${dogsStoreItemMeta(item)}</small>
+                  </span>
+                  <em>${dogsStoreActionLabel(item)}</em>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
+    `
+    : "";
 }
 
 async function purchaseDogsStoreItem(itemId: string): Promise<void> {
