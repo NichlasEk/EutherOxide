@@ -243,6 +243,7 @@ type DogsCoreActor = {
   faction: "player" | "hostile_customer" | string;
   x: number;
   y: number;
+  direction: string;
   armor: number;
   lives: number;
   alive: boolean;
@@ -516,6 +517,7 @@ let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
 const dogsImageCache = new Map<string, HTMLImageElement>();
+let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -3219,12 +3221,49 @@ function dogsTileAsset(tile: string): string | null {
   return entry ? dogsAsset(entry[0], entry[1]) : null;
 }
 
+function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
+  const staffId = dogsFrame?.characters.filter((entry) => entry.faction === "player").length === 1
+    ? selectedDogsStaff
+    : actor.id === 0
+      ? 1
+      : 2;
+  if (staffId === 2 && actor.armor > 100) {
+    return animated ? "steelcoat_pharmacist_walk" : "steelcoat_pharmacist";
+  }
+  if (staffId === 2) {
+    return animated ? "neon_pharmacist_walk" : "neon_pharmacist";
+  }
+  return animated ? "night_shift_tech_walk" : "night_shift_tech";
+}
+
 function dogsActorAsset(actor: DogsCoreActor): string | null {
   if (actor.faction === "player") {
-    return dogsAsset("sprites.heroes", actor.id === 0 ? "night_shift_tech" : "neon_pharmacist");
+    return dogsAsset("sprites.heroes", dogsHeroKey(actor, false));
   }
   const enemies = ["angry_customer", "claim_denier", "inventory_drone", "recall_enforcer", "black_market_courier"];
   return dogsAsset("sprites.enemies", enemies[actor.id % enemies.length]);
+}
+
+function dogsActorSheetAsset(actor: DogsCoreActor): string | null {
+  if (actor.faction !== "player") return null;
+  return dogsAsset("sprites.heroes", dogsHeroKey(actor, true));
+}
+
+function dogsActorDirectionRow(actor: DogsCoreActor): number {
+  switch (actor.direction) {
+    case "up":
+    case "up_left":
+    case "up_right":
+      return 3;
+    case "left":
+    case "down_left":
+      return 1;
+    case "right":
+    case "down_right":
+      return 2;
+    default:
+      return 0;
+  }
 }
 
 function dogsProjectileAsset(bullet: DogsCoreBullet): string | null {
@@ -3292,6 +3331,39 @@ function drawDogsImage(
   }
   if (image.complete && image.naturalWidth > 0) {
     dogsContext.drawImage(image, x, y, width, height);
+  } else {
+    dogsContext.fillStyle = fallbackColor;
+    dogsContext.fillRect(x, y, width, height);
+  }
+}
+
+function drawDogsImageFrame(
+  url: string | null,
+  sourceX: number,
+  sourceY: number,
+  sourceWidth: number,
+  sourceHeight: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fallbackColor: string,
+): void {
+  if (!url) {
+    drawDogsImage(null, x, y, width, height, fallbackColor);
+    return;
+  }
+  let image = dogsImageCache.get(url);
+  if (!image) {
+    image = new Image();
+    image.onload = () => {
+      if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
+    };
+    image.src = url;
+    dogsImageCache.set(url, image);
+  }
+  if (image.complete && image.naturalWidth > 0) {
+    dogsContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
   } else {
     dogsContext.fillStyle = fallbackColor;
     dogsContext.fillRect(x, y, width, height);
@@ -3669,6 +3741,7 @@ async function runDogsFrame(): Promise<void> {
 
 async function startDogsCore(): Promise<DogsCoreFrame> {
   const start = { staff: selectedDogsStaff };
+  dogsPreviousActorPositions = new Map();
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
@@ -3764,6 +3837,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       drawDogsImage(dogsTileAsset(tile), tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
     }
   }
+  const nextActorPositions = new Map<string, { x: number; y: number }>();
   for (const actor of frame.characters) {
     if (!actor.alive) continue;
     const spriteW = Math.max(8, Math.ceil(32 * scale));
@@ -3772,8 +3846,30 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const bodyH = frame.characterHeight * scale;
     const x = Math.floor((actor.x - cameraX) * scale - (spriteW - bodyW) / 2);
     const y = Math.floor((actor.y - cameraY) * scale - Math.max(0, spriteH - bodyH));
-    drawDogsImage(dogsActorAsset(actor), x, y, spriteW, spriteH, actor.faction === "player" ? "#27f2ff" : "#f04444");
+    const actorKey = `${actor.faction}:${actor.id}`;
+    const previous = dogsPreviousActorPositions.get(actorKey);
+    const moving = Boolean(previous && (previous.x !== actor.x || previous.y !== actor.y));
+    nextActorPositions.set(actorKey, { x: actor.x, y: actor.y });
+    if (actor.faction === "player") {
+      const frameColumn = moving ? Math.floor(frame.frame / 8) % 3 : 1;
+      const frameRow = dogsActorDirectionRow(actor);
+      drawDogsImageFrame(
+        dogsActorSheetAsset(actor),
+        frameColumn * 32,
+        frameRow * 32,
+        32,
+        32,
+        x,
+        y,
+        spriteW,
+        spriteH,
+        "#27f2ff",
+      );
+    } else {
+      drawDogsImage(dogsActorAsset(actor), x, y, spriteW, spriteH, "#f04444");
+    }
   }
+  dogsPreviousActorPositions = nextActorPositions;
   for (const bullet of frame.bullets) {
     const projectileSize = Math.max(4, Math.ceil(16 * scale));
     drawDogsImage(

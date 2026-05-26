@@ -82,6 +82,7 @@ pub struct EutherDogsActor {
     pub faction: &'static str,
     pub x: i32,
     pub y: i32,
+    pub direction: &'static str,
     pub armor: i32,
     pub lives: i32,
     pub alive: bool,
@@ -256,6 +257,7 @@ pub fn eutherdogs_frame(
                     },
                     x: character.x,
                     y: character.y,
+                    direction: direction_key(character.direction),
                     armor: character.armor,
                     lives: character.lives,
                     alive: character.alive,
@@ -367,5 +369,18 @@ fn tile_key(tile: Tile) -> &'static str {
         Tile::PillSplitter => "pill_splitter",
         Tile::ScorchMark => "scorch_mark",
         Tile::SpilledSyrup => "spilled_syrup",
+    }
+}
+
+fn direction_key(direction: eutherdogs_core::direction::Direction) -> &'static str {
+    match direction {
+        eutherdogs_core::direction::Direction::Up => "up",
+        eutherdogs_core::direction::Direction::UpRight => "up_right",
+        eutherdogs_core::direction::Direction::Right => "right",
+        eutherdogs_core::direction::Direction::DownRight => "down_right",
+        eutherdogs_core::direction::Direction::Down => "down",
+        eutherdogs_core::direction::Direction::DownLeft => "down_left",
+        eutherdogs_core::direction::Direction::Left => "left",
+        eutherdogs_core::direction::Direction::UpLeft => "up_left",
     }
 }

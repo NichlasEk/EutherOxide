@@ -7,7 +7,11 @@ source_policy = "New assets only; original Cyberdogs graphics and sounds are not
 
 [sprites.heroes]
 night_shift_tech = "sprites/heroes/night_shift_tech.png"
+night_shift_tech_walk = "sprites/heroes/night_shift_tech_walk.png"
 neon_pharmacist = "sprites/heroes/neon_pharmacist.png"
+neon_pharmacist_walk = "sprites/heroes/neon_pharmacist_walk.png"
+steelcoat_pharmacist = "sprites/heroes/steelcoat_pharmacist.png"
+steelcoat_pharmacist_walk = "sprites/heroes/steelcoat_pharmacist_walk.png"
 compliance_runner = "sprites/heroes/compliance_runner.png"
 
 [sprites.enemies]
