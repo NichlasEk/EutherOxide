@@ -2750,7 +2750,7 @@ async function bridgeStreamLoop(): Promise<void> {
   } catch (error) {
     if (ui.playing && ui.runtime === "bridge" && !bridgeRestarting) {
       ui.lastError = String(error);
-      if (ui.lastError.toLowerCase().includes("bridge player busy")) {
+      if (ui.lastError.toLowerCase().includes("busy")) {
         ui.playing = false;
         playToggle.textContent = "Play";
         ui.status = "BUSY";

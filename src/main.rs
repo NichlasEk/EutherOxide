@@ -565,6 +565,8 @@ struct BridgeState {
     player_slots: Arc<Mutex<[Option<BridgePlayerLease>; 2]>>,
     driver_client: Arc<Mutex<Option<BridgePlayerLease>>>,
     latest_packet: Arc<(Mutex<Option<BridgePacketSnapshot>>, Condvar)>,
+    subscriber_count: Arc<Mutex<usize>>,
+    runner_active: Arc<Mutex<bool>>,
     gamepads: Arc<Mutex<GamepadReader>>,
 }
 
@@ -638,6 +640,8 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         player_slots: Arc::new(Mutex::new([None, None])),
         driver_client: Arc::new(Mutex::new(None)),
         latest_packet: Arc::new((Mutex::new(None), Condvar::new())),
+        subscriber_count: Arc::new(Mutex::new(0)),
+        runner_active: Arc::new(Mutex::new(false)),
         gamepads: Arc::new(Mutex::new(GamepadReader::new())),
     }
 }
@@ -1337,31 +1341,6 @@ fn claim_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<bool>
     }
 }
 
-fn touch_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<()> {
-    let mut driver = state
-        .driver_client
-        .lock()
-        .map_err(|err| io::Error::other(err.to_string()))?;
-    if let Some(lease) = driver.as_mut().filter(|lease| lease.client_id == client_id) {
-        lease.updated = Instant::now();
-    }
-    Ok(())
-}
-
-fn release_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<()> {
-    let mut driver = state
-        .driver_client
-        .lock()
-        .map_err(|err| io::Error::other(err.to_string()))?;
-    if driver
-        .as_ref()
-        .is_some_and(|lease| lease.client_id == client_id)
-    {
-        *driver = None;
-    }
-    Ok(())
-}
-
 fn publish_bridge_packet(
     state: &BridgeState,
     bytes: Vec<u8>,
@@ -1379,6 +1358,89 @@ fn publish_bridge_packet(
     });
     condvar.notify_all();
     Ok(())
+}
+
+fn add_bridge_subscriber(state: &BridgeState) -> io::Result<()> {
+    let mut count = state
+        .subscriber_count
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *count += 1;
+    Ok(())
+}
+
+fn remove_bridge_subscriber(state: &BridgeState) -> io::Result<()> {
+    let mut count = state
+        .subscriber_count
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *count = count.saturating_sub(1);
+    Ok(())
+}
+
+fn bridge_subscriber_count(state: &BridgeState) -> io::Result<usize> {
+    state
+        .subscriber_count
+        .lock()
+        .map(|count| *count)
+        .map_err(|err| io::Error::other(err.to_string()))
+}
+
+fn ensure_bridge_runner(state: &BridgeState) -> io::Result<()> {
+    let mut active = state
+        .runner_active
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if *active {
+        return Ok(());
+    }
+    *active = true;
+    let state = state.clone();
+    thread::spawn(move || {
+        if let Err(err) = bridge_runner_loop(&state) {
+            eprintln!("bridge runner error: {err}");
+        }
+        if let Ok(mut active) = state.runner_active.lock() {
+            *active = false;
+        }
+    });
+    Ok(())
+}
+
+fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
+    let mut idle_since: Option<Instant> = None;
+    loop {
+        if bridge_subscriber_count(state)? == 0 {
+            let now = Instant::now();
+            if idle_since.is_none() {
+                idle_since = Some(now);
+            }
+            if idle_since
+                .is_some_and(|started| now.duration_since(started) > Duration::from_secs(1))
+            {
+                break Ok(());
+            }
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        idle_since = None;
+        pace_bridge_frame(state)?;
+        let (packet, frame, stopped) = {
+            let mut emulator = lock_bridge_emulator(state)?;
+            if emulator.bus.rom.is_empty() {
+                break Ok(());
+            }
+            let run = emulator.run_frame();
+            let stopped = run.hit_unsupported_opcode;
+            let packet = bridge_frame_audio_bytes(&mut emulator, &run, 44_100);
+            let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
+            (packet, frame, stopped)
+        };
+        publish_bridge_packet(state, packet, frame, stopped)?;
+        if stopped {
+            break Ok(());
+        }
+    }
 }
 
 fn pace_bridge_frame(state: &BridgeState) -> io::Result<()> {
@@ -1557,46 +1619,15 @@ fn bridge_stream_frame_audio(
 
     stream.set_nodelay(true)?;
     send_stream_header(stream, "application/octet-stream")?;
-    let result = if claim_bridge_driver(state, &client_id)? {
-        bridge_stream_driver(stream, state, &client_id, player_index)
-    } else {
-        bridge_stream_viewer(stream, state, &client_id, player_index)
-    };
+    add_bridge_subscriber(state)?;
+    ensure_bridge_runner(state)?;
+    let result = bridge_stream_subscriber(stream, state, &client_id, player_index);
+    remove_bridge_subscriber(state)?;
     release_bridge_player(state, &client_id, player_index)?;
-    release_bridge_driver(state, &client_id)?;
     result
 }
 
-fn bridge_stream_driver(
-    stream: &mut TcpStream,
-    state: &BridgeState,
-    client_id: &str,
-    player_index: usize,
-) -> io::Result<()> {
-    loop {
-        touch_bridge_player(state, client_id, player_index)?;
-        touch_bridge_driver(state, client_id)?;
-        pace_bridge_frame(state)?;
-        let (packet, frame, stopped) = {
-            let mut emulator = lock_bridge_emulator(state)?;
-            if emulator.bus.rom.is_empty() {
-                break Ok(());
-            }
-            let run = emulator.run_frame();
-            let stopped = run.hit_unsupported_opcode;
-            let packet = bridge_frame_audio_bytes(&mut emulator, &run, 44_100);
-            let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
-            (packet, frame, stopped)
-        };
-        publish_bridge_packet(state, packet.clone(), frame, stopped)?;
-        write_stream_packet(stream, &packet)?;
-        if stopped {
-            break Ok(());
-        }
-    }
-}
-
-fn bridge_stream_viewer(
+fn bridge_stream_subscriber(
     stream: &mut TcpStream,
     state: &BridgeState,
     client_id: &str,
