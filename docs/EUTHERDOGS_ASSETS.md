@@ -62,6 +62,9 @@ Placeholder art is intentionally simple and should keep the final file names. Re
 | `neon_prior_auth` | `assets/eutherdogs/sprites/weapons/neon_prior_auth.png` | Laser weapon | `placeholder` |
 | `turbo_prior_auth` | `assets/eutherdogs/sprites/weapons/turbo_prior_auth.png` | Fast laser | `placeholder` |
 | `formulary_zapper` | `assets/eutherdogs/sprites/weapons/formulary_zapper.png` | Electric area weapon | `placeholder` |
+| `autoinjector` | `assets/eutherdogs/sprites/weapons/autoinjector.png` | Single-dose dart weapon | `placeholder` |
+| `needlegun` | `assets/eutherdogs/sprites/weapons/needlegun.png` | Rapid needle stream | `placeholder` |
+| `handsanitizer_flamethrower` | `assets/eutherdogs/sprites/weapons/handsanitizer_flamethrower.png` | Short range flame/area weapon | `placeholder` |
 
 ## Projectiles
 
@@ -76,6 +79,9 @@ Placeholder art is intentionally simple and should keep the final file names. Re
 | `yellow_warning_laser` | `assets/eutherdogs/sprites/projectiles/yellow_warning_laser.png` | `placeholder` |
 | `power_pill` | `assets/eutherdogs/sprites/projectiles/power_pill.png` | `placeholder` |
 | `zapper_arc` | `assets/eutherdogs/sprites/projectiles/zapper_arc.png` | `placeholder` |
+| `injector_dart` | `assets/eutherdogs/sprites/projectiles/injector_dart.png` | `placeholder` |
+| `needle_stream` | `assets/eutherdogs/sprites/projectiles/needle_stream.png` | `placeholder` |
+| `sanitizer_flame` | `assets/eutherdogs/sprites/projectiles/sanitizer_flame.png` | `placeholder` |
 
 ## Tiles And Props
 

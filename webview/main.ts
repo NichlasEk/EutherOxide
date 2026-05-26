@@ -3239,6 +3239,9 @@ function dogsProjectileAsset(bullet: DogsCoreBullet): string | null {
     neon_prior_auth: "green_auth_laser",
     turbo_prior_auth: "yellow_warning_laser",
     formulary_zapper: "zapper_arc",
+    autoinjector: "injector_dart",
+    needlegun: "needle_stream",
+    handsanitizer_flamethrower: "sanitizer_flame",
   };
   return dogsAsset("sprites.projectiles", projectileMap[bullet.weapon] ?? "cyan_rx_bolt");
 }

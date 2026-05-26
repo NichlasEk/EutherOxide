@@ -62,6 +62,30 @@ weapon = "capsule_launcher"
 ammo = 12
 
 [[store]]
+id = "autoinjector"
+label = "Autoinjector"
+price = 210
+detail = "Single-dose dart with rude bedside manner"
+weapon = "autoinjector"
+ammo = 24
+
+[[store]]
+id = "needlegun"
+label = "Needlegun"
+price = 275
+detail = "Rapid insurance-approved acupuncture"
+weapon = "needlegun"
+ammo = 120
+
+[[store]]
+id = "handsanitizer_flamethrower"
+label = "Handsanitizer Flamethrower"
+price = 325
+detail = "Kills 99.9% of queue escalation"
+weapon = "handsanitizer_flamethrower"
+ammo = 90
+
+[[store]]
 id = "coat_reinforcement"
 label = "Coat Reinforcement"
 price = 100

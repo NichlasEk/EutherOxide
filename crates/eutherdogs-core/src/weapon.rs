@@ -19,6 +19,9 @@ pub enum WeaponId {
     NeonPriorAuth,
     TurboPriorAuth,
     FormularyZapper,
+    Autoinjector,
+    Needlegun,
+    HandSanitizerFlamethrower,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,7 +38,7 @@ pub struct Weapon {
     pub sound: AssetId,
 }
 
-pub const WEAPONS: [Weapon; 10] = [
+pub const WEAPONS: [Weapon; 13] = [
     Weapon::new(
         WeaponId::RxCannon,
         "Rx Cannon",
@@ -156,6 +159,42 @@ pub const WEAPONS: [Weapon; 10] = [
         AnimationMode::Sequence,
         AssetId::NeonLaser,
     ),
+    Weapon::new(
+        WeaponId::Autoinjector,
+        "Autoinjector",
+        45,
+        18,
+        24,
+        12,
+        2,
+        9,
+        AnimationMode::None,
+        AssetId::ImpactLight,
+    ),
+    Weapon::new(
+        WeaponId::Needlegun,
+        "Needlegun",
+        90,
+        5,
+        4,
+        15,
+        0,
+        10,
+        AnimationMode::None,
+        AssetId::LabelPrinterBurst,
+    ),
+    Weapon::new(
+        WeaponId::HandSanitizerFlamethrower,
+        "Handsanitizer Flamethrower",
+        28,
+        6,
+        13,
+        4,
+        12,
+        11,
+        AnimationMode::Random,
+        AssetId::SterilizerSpray,
+    ),
 ];
 
 impl Weapon {
@@ -199,6 +238,9 @@ impl WeaponId {
             Self::NeonPriorAuth => "neon_prior_auth",
             Self::TurboPriorAuth => "turbo_prior_auth",
             Self::FormularyZapper => "formulary_zapper",
+            Self::Autoinjector => "autoinjector",
+            Self::Needlegun => "needlegun",
+            Self::HandSanitizerFlamethrower => "handsanitizer_flamethrower",
         }
     }
 
@@ -214,6 +256,9 @@ impl WeaponId {
             "neon_prior_auth" => Some(Self::NeonPriorAuth),
             "turbo_prior_auth" => Some(Self::TurboPriorAuth),
             "formulary_zapper" => Some(Self::FormularyZapper),
+            "autoinjector" => Some(Self::Autoinjector),
+            "needlegun" => Some(Self::Needlegun),
+            "handsanitizer_flamethrower" => Some(Self::HandSanitizerFlamethrower),
             _ => None,
         }
     }
@@ -230,6 +275,9 @@ impl WeaponId {
             Self::NeonPriorAuth => 7,
             Self::TurboPriorAuth => 8,
             Self::FormularyZapper => 9,
+            Self::Autoinjector => 10,
+            Self::Needlegun => 11,
+            Self::HandSanitizerFlamethrower => 12,
         }
     }
 

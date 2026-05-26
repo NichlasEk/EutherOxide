@@ -29,6 +29,9 @@ receipt_gun = "sprites/weapons/receipt_gun.png"
 neon_prior_auth = "sprites/weapons/neon_prior_auth.png"
 turbo_prior_auth = "sprites/weapons/turbo_prior_auth.png"
 formulary_zapper = "sprites/weapons/formulary_zapper.png"
+autoinjector = "sprites/weapons/autoinjector.png"
+needlegun = "sprites/weapons/needlegun.png"
+handsanitizer_flamethrower = "sprites/weapons/handsanitizer_flamethrower.png"
 
 [sprites.projectiles]
 cyan_rx_bolt = "sprites/projectiles/cyan_rx_bolt.png"
@@ -40,6 +43,9 @@ green_auth_laser = "sprites/projectiles/green_auth_laser.png"
 yellow_warning_laser = "sprites/projectiles/yellow_warning_laser.png"
 power_pill = "sprites/projectiles/power_pill.png"
 zapper_arc = "sprites/projectiles/zapper_arc.png"
+injector_dart = "sprites/projectiles/injector_dart.png"
+needle_stream = "sprites/projectiles/needle_stream.png"
+sanitizer_flame = "sprites/projectiles/sanitizer_flame.png"
 
 [sprites.effects]
 explosion_01 = "sprites/effects/explosion_01.png"
