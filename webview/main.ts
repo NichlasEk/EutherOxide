@@ -3224,6 +3224,33 @@ function dogsTileAsset(tile: string): string | null {
   return entry ? dogsAsset(entry[0], entry[1]) : null;
 }
 
+function dogsTileAt(frame: DogsCoreFrame, x: number, y: number): string {
+  if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return "void";
+  return frame.tiles[y * frame.width + x] ?? "floor";
+}
+
+function dogsWallTile(tile: string): boolean {
+  return tile === "wall" || tile === "door";
+}
+
+function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string): string | null {
+  const up = dogsWallTile(dogsTileAt(frame, x, y - 1));
+  const down = dogsWallTile(dogsTileAt(frame, x, y + 1));
+  const left = dogsWallTile(dogsTileAt(frame, x - 1, y));
+  const right = dogsWallTile(dogsTileAt(frame, x + 1, y));
+  const prefix = tile === "door" ? "security_glass_wall" : "pharmacy_wall";
+  if (!up && !down && !left && !right && tile !== "door") {
+    return dogsAsset("tiles.walls", "pharmacy_wall_column");
+  }
+  if (!down) {
+    return dogsAsset("tiles.walls", `${prefix}_face`);
+  }
+  if (!up) {
+    return dogsAsset("tiles.walls", `${prefix}_cap`);
+  }
+  return dogsAsset("tiles.walls", prefix);
+}
+
 function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
   const staffId = dogsFrame?.characters.filter((entry) => entry.faction === "player").length === 1
     ? selectedDogsStaff
@@ -3870,7 +3897,20 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       const tileY = Math.floor((y * frame.tileHeight - cameraY) * scale);
       const tileW = Math.ceil(frame.tileWidth * scale);
       const tileH = Math.ceil(frame.tileHeight * scale);
-      drawDogsImage(dogsTileAsset(tile), tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
+      const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
+      drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
+    }
+  }
+  dogsContext.fillStyle = "rgba(0, 0, 0, 0.32)";
+  for (let y = firstTileY; y <= lastTileY; y += 1) {
+    for (let x = firstTileX; x <= lastTileX; x += 1) {
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      if (!dogsWallTile(tile) || dogsWallTile(dogsTileAt(frame, x, y + 1))) continue;
+      const shadowX = Math.floor((x * frame.tileWidth - cameraX + 3) * scale);
+      const shadowY = Math.floor(((y + 1) * frame.tileHeight - cameraY - 3) * scale);
+      const shadowW = Math.ceil((frame.tileWidth - 4) * scale);
+      const shadowH = Math.max(2, Math.ceil(7 * scale));
+      dogsContext.fillRect(shadowX, shadowY, shadowW, shadowH);
     }
   }
   const nextActorPositions = new Map<string, { x: number; y: number }>();
