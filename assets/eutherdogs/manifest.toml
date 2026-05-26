@@ -136,6 +136,9 @@ sterilizer_spray = "audio/sfx/sterilizer_spray.wav"
 neon_laser = "audio/sfx/neon_laser.wav"
 impact_light = "audio/sfx/impact_light.wav"
 pill_splitter = "audio/sfx/pill_splitter.wav"
+portal_idle = "audio/sfx/portal_idle.wav"
+portal_ready = "audio/sfx/portal_ready.wav"
+portal_enter = "audio/sfx/portal_enter.wav"
 
 [audio.music]
 menu = "audio/music/menu_loop.wav"

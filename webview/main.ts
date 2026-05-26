@@ -306,6 +306,7 @@ type DogsCoreFrame = {
   bullets: DogsCoreBullet[];
   summary: DogsCoreSummary;
   store: DogsStoreItem[];
+  audioEvents?: string[];
   highscoreCount: number;
 };
 
@@ -521,8 +522,11 @@ let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
 const dogsImageCache = new Map<string, HTMLImageElement>();
+const dogsSfxCache = new Map<string, AudioBuffer>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
 let dogsActorFacings = new Map<string, DogsActorFacing>();
+let dogsLastExitReady = false;
+let dogsLastPortalHumFrame = -9999;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -3373,6 +3377,10 @@ function dogsWeaponAsset(weapon: string | null | undefined): string | null {
   return weapon ? dogsAsset("sprites.weapons", weapon) : null;
 }
 
+function dogsSfxAsset(sound: string | null | undefined): string | null {
+  return sound ? dogsAsset("audio.sfx", sound) : null;
+}
+
 function dogsWeaponIconMarkup(weapon: string | null | undefined, label: string): string {
   const url = dogsWeaponAsset(weapon);
   return url
@@ -3486,6 +3494,53 @@ function drawDogsExitPortal(x: number, y: number, width: number, height: number,
     }
   }
   dogsContext.restore();
+}
+
+function processDogsAudio(frame: DogsCoreFrame): void {
+  for (const event of frame.audioEvents ?? []) {
+    void playDogsSfx(event);
+  }
+  const exitReady = dogsExitReady(frame.summary);
+  if (exitReady && !dogsLastExitReady) {
+    void playDogsSfx("portal_ready");
+  }
+  if (frame.summary.status === "won" && dogsLastExitReady) {
+    void playDogsSfx("portal_enter");
+  } else if (frame.summary.status === "running" && frame.frame - dogsLastPortalHumFrame >= (exitReady ? 90 : 150)) {
+    dogsLastPortalHumFrame = frame.frame;
+    void playDogsSfx("portal_idle", exitReady ? 0.34 : 0.16);
+  }
+  dogsLastExitReady = exitReady;
+}
+
+async function playDogsSfx(sound: string, gain = 0.55): Promise<void> {
+  try {
+    const url = dogsSfxAsset(sound);
+    if (!url) return;
+    const context = await ensureAudio();
+    if (!context) return;
+    let buffer = dogsSfxCache.get(url);
+    if (!buffer) {
+      const response = await fetch(url);
+      const bytes = await response.arrayBuffer();
+      buffer = await context.decodeAudioData(bytes.slice(0));
+      dogsSfxCache.set(url, buffer);
+    }
+    const source = context.createBufferSource();
+    const sfxGain = context.createGain();
+    sfxGain.gain.value = Math.max(0, Math.min(1, gain));
+    source.buffer = buffer;
+    source.connect(sfxGain);
+    sfxGain.connect(audioGain ?? context.destination);
+    activeAudioSources.add(source);
+    source.onended = () => {
+      activeAudioSources.delete(source);
+      sfxGain.disconnect();
+    };
+    source.start();
+  } catch {
+    pushTrace(`EutherDogs SFX skipped: ${sound}`);
+  }
 }
 
 function applyEutherDogsCssAssets(): void {
@@ -3704,6 +3759,7 @@ async function purchaseDogsStoreItem(itemId: string): Promise<void> {
   if (!itemId) return;
   try {
     dogsFrame = await purchaseDogsCoreItem(itemId);
+    processDogsAudio(dogsFrame);
     drawDogsFrame(dogsFrame);
     renderDogsMenu();
     pushTrace(`RX Store purchased ${itemId}`);
@@ -3716,6 +3772,8 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
   selectedDogsStaff = staff;
   try {
     dogsFrame = await startDogsCore();
+    dogsLastExitReady = dogsExitReady(dogsFrame.summary);
+    dogsLastPortalHumFrame = -9999;
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace(`EutherDogs staff selected ${dogsStaffOptions.find((option) => option.id === staff)?.name ?? staff}`);
@@ -3728,6 +3786,8 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
 async function retryDogsShift(): Promise<void> {
   try {
     dogsFrame = await startDogsCore();
+    dogsLastExitReady = dogsExitReady(dogsFrame.summary);
+    dogsLastPortalHumFrame = -9999;
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace("EutherDogs shift retried");
@@ -3803,6 +3863,8 @@ async function enterDogsMode(): Promise<void> {
   document.body.classList.add("eutherdogs-mode");
   eutherDogsConsole.setAttribute("aria-hidden", "false");
   eutherDogsToggle.classList.add("is-active");
+  dogsLastExitReady = dogsExitReady(dogsFrame.summary);
+  dogsLastPortalHumFrame = -9999;
   drawDogsFrame(dogsFrame);
   showDogsMenu("staff");
   renderUi();
@@ -3811,6 +3873,8 @@ async function enterDogsMode(): Promise<void> {
 
 function leaveDogsMode(): void {
   dogsMode = false;
+  dogsLastExitReady = false;
+  dogsLastPortalHumFrame = -9999;
   ui.playing = false;
   ui.loaded = false;
   ui.title = "No ROM";
@@ -3845,6 +3909,7 @@ function resetDogsMode(): void {
 async function runDogsFrame(): Promise<void> {
   const started = performance.now();
   dogsFrame = await runDogsCoreFrame();
+  processDogsAudio(dogsFrame);
   drawDogsFrame(dogsFrame);
   const done = performance.now();
   ui.frame = dogsFrame.frame;
@@ -3866,6 +3931,8 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   const start = { staff: selectedDogsStaff };
   dogsPreviousActorPositions = new Map();
   dogsActorFacings = new Map();
+  dogsLastExitReady = false;
+  dogsLastPortalHumFrame = -9999;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }

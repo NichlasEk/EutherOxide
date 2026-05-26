@@ -56,6 +56,7 @@ pub struct EutherDogsFrame {
     pub bullets: Vec<EutherDogsBullet>,
     pub summary: EutherDogsSummary,
     pub store: Vec<EutherDogsStoreItem>,
+    pub audio_events: Vec<&'static str>,
     pub highscore_count: usize,
 }
 
@@ -175,7 +176,8 @@ impl EutherDogsRuntime {
             FixedStep { ticks: 1 },
         );
         self.frame += 1;
-        self.snapshot()
+        let audio_events = self.game.drain_audio_events();
+        self.snapshot_with_audio_events(&audio_events)
     }
 
     pub fn purchase(
@@ -187,14 +189,23 @@ impl EutherDogsRuntime {
             &purchase.item_id,
             purchase.player.unwrap_or(1).saturating_sub(1) as usize,
         )?;
-        Ok(self.snapshot())
+        let audio_events = self.game.drain_audio_events();
+        Ok(self.snapshot_with_audio_events(&audio_events))
     }
 
     pub fn snapshot(&self) -> EutherDogsFrame {
+        self.snapshot_with_audio_events(&[])
+    }
+
+    fn snapshot_with_audio_events(
+        &self,
+        audio_events: &[eutherdogs_core::AudioEvent],
+    ) -> EutherDogsFrame {
         eutherdogs_frame(
             &self.game,
             &self.config,
             self.frame,
+            audio_events,
             self.config.high_score_table().entries().len(),
         )
     }
@@ -223,6 +234,7 @@ pub fn eutherdogs_frame(
     game: &Game,
     config: &EutherDogsConfig,
     frame: u64,
+    audio_events: &[eutherdogs_core::AudioEvent],
     highscore_count: usize,
 ) -> EutherDogsFrame {
     let summary = game.summary();
@@ -305,6 +317,12 @@ pub fn eutherdogs_frame(
             time_remaining_ticks: summary.time_remaining_ticks,
         },
         store: game_store_items(game, config),
+        audio_events: audio_events
+            .iter()
+            .map(|event| match event {
+                eutherdogs_core::AudioEvent::Sfx(asset) => asset.manifest_key(),
+            })
+            .collect(),
         highscore_count,
     }
 }
