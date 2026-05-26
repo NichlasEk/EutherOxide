@@ -87,6 +87,18 @@ icon_prescription = "ui/icons/icon_prescription.png"
 icon_cash = "ui/icons/icon_cash.png"
 menu_panel = "ui/menus/menu_panel.png"
 
+[ui.planned]
+shift_console_background = "ui/menus/shift_console_background.png"
+staff_roster_background = "ui/menus/staff_roster_background.png"
+dispensary_background = "ui/menus/dispensary_background.png"
+shift_briefing_background = "ui/menus/shift_briefing_background.png"
+eutherdogs_logo = "ui/menus/eutherdogs_logo.png"
+selector_lamp_off = "ui/icons/selector_lamp_off.png"
+selector_lamp_on = "ui/icons/selector_lamp_on.png"
+hud_health_bar = "ui/icons/hud_health_bar.png"
+map_viewport = "ui/icons/map_viewport.png"
+security_map_overlay = "ui/menus/security_map_overlay.png"
+
 [audio.sfx]
 impact_heavy = "audio/sfx/impact_heavy.wav"
 customer_defeated = "audio/sfx/customer_defeated.wav"

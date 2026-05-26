@@ -1,6 +1,6 @@
 # EutherDogs Config
 
-`config/eutherdogs.example.toml` is the intended modding and cheating surface for EutherDogs. It is not wired into runtime loading yet; it defines the shape we should preserve when persistence is added.
+`config/eutherdogs.example.toml` is the intended modding and cheating surface for EutherDogs. It is wired into the Rust core and CLI/web demo startup; persistence to a user-writable config file is still planned.
 
 Goals:
 
