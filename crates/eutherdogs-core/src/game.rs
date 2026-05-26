@@ -191,7 +191,7 @@ impl Game {
                 game.next_character_id = player as u32 + 1;
             }
         }
-        game.spawn_hostiles((mission.mission + 4).max(4) as usize);
+        game.spawn_hostiles(mission.targets.max(mission.mission + 4).max(4) as usize);
         game
     }
 
@@ -279,7 +279,7 @@ impl Game {
         MissionSummary {
             status: self.status,
             progress: self.progress,
-            targets_left: self.world.stats().targets_left,
+            targets_left: self.hostile_queue_left(),
             objects_left: self.world.stats().objects_to_collect,
             minimum_kills: self.rules.minimum_kills,
             time_remaining_ticks: self
@@ -633,7 +633,7 @@ impl Game {
         {
             self.status = MissionStatus::Lost;
         } else if self.mission_goal_count > 0
-            && self.world.stats().targets_left == 0
+            && self.hostile_queue_left() == 0
             && self.world.stats().objects_to_collect == 0
             && self.progress.kills >= self.rules.minimum_kills
             && self.players_on_exit()
@@ -682,6 +682,13 @@ impl Game {
                     character.y + crate::world::CHARACTER_HEIGHT / 2,
                 ) == Some(Tile::ServiceElevator)
             })
+    }
+
+    fn hostile_queue_left(&self) -> i32 {
+        self.characters
+            .iter()
+            .filter(|character| character.faction == Faction::HostileCustomer && character.alive)
+            .count() as i32
     }
 
     fn has_line_of_sight(&self, x: i32, y: i32, target_x: i32, target_y: i32) -> bool {

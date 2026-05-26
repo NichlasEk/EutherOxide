@@ -3498,7 +3498,7 @@ function drawDogsExitPortal(x: number, y: number, width: number, height: number,
 
 function processDogsAudio(frame: DogsCoreFrame): void {
   for (const event of frame.audioEvents ?? []) {
-    void playDogsSfx(event);
+    void playDogsSfx(event, dogsGameplaySfxGain(event));
   }
   const exitReady = dogsExitReady(frame.summary);
   if (exitReady && !dogsLastExitReady) {
@@ -3506,11 +3506,17 @@ function processDogsAudio(frame: DogsCoreFrame): void {
   }
   if (frame.summary.status === "won" && dogsLastExitReady) {
     void playDogsSfx("portal_enter");
-  } else if (frame.summary.status === "running" && frame.frame - dogsLastPortalHumFrame >= (exitReady ? 90 : 150)) {
+  } else if (frame.summary.status === "running" && frame.frame - dogsLastPortalHumFrame >= (exitReady ? 210 : 600)) {
     dogsLastPortalHumFrame = frame.frame;
-    void playDogsSfx("portal_idle", exitReady ? 0.34 : 0.16);
+    void playDogsSfx("portal_idle", exitReady ? 0.14 : 0.045);
   }
   dogsLastExitReady = exitReady;
+}
+
+function dogsGameplaySfxGain(sound: string): number {
+  if (sound === "customer_defeated" || sound === "impact_heavy") return 0.95;
+  if (sound === "pickup_rx" || sound === "weapon_switch") return 0.82;
+  return 0.88;
 }
 
 async function playDogsSfx(sound: string, gain = 0.55): Promise<void> {
