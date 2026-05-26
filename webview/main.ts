@@ -3422,6 +3422,17 @@ function dogsWeaponIconMarkup(weapon: string | null | undefined, label: string):
     : `<span class="eutherdogs-weapon-icon is-empty" aria-hidden="true"></span>`;
 }
 
+function dogsStoreItemIconMarkup(item: DogsStoreItem): string {
+  const url = item.weapon
+    ? dogsWeaponAsset(item.weapon)
+    : item.armor > 0
+      ? dogsAsset("items", "lab_coat_armor")
+      : null;
+  return url
+    ? `<img class="eutherdogs-weapon-icon" src="${url}" alt="${item.label}" />`
+    : `<span class="eutherdogs-weapon-icon is-empty" aria-hidden="true"></span>`;
+}
+
 function dogsStaffAsset(staff: DogsStaffOption): string | null {
   return dogsAsset("sprites.heroes", staff.id === 1 ? "night_shift_tech" : "neon_pharmacist");
 }
@@ -3810,7 +3821,7 @@ function renderDogsMenu(): void {
             .map((item) => {
               return `
                 <button class="eutherdogs-store-item ${item.active ? "is-equipped" : ""}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
-                  ${dogsWeaponIconMarkup(item.weapon, item.label)}
+                  ${dogsStoreItemIconMarkup(item)}
                   <span>
                     <strong>${item.label}</strong>
                     <small>${item.detail}</small>

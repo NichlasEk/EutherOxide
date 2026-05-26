@@ -362,35 +362,35 @@ button:disabled {
 
 .eutherdogs-store-item {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
-  min-height: 44px;
-  padding: 6px 8px;
+  gap: 7px;
+  min-height: 36px;
+  padding: 4px 6px;
   border-radius: 0;
   text-align: left;
 }
 
 .eutherdogs-armory-layout {
   display: grid;
-  grid-template-columns: 142px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 136px minmax(0, 1fr);
+  gap: 7px;
   min-height: 0;
 }
 
 .eutherdogs-inventory-panel {
   display: grid;
   align-content: start;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid rgba(39, 242, 255, 0.18);
   background: rgba(0, 5, 7, 0.74);
 }
 
 .eutherdogs-inventory-panel .eutherdogs-weapon-icon {
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
 }
 
 .eutherdogs-inventory-panel strong,
@@ -426,13 +426,13 @@ button:disabled {
 .eutherdogs-store-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 
 .eutherdogs-weapon-icon {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   image-rendering: pixelated;
   object-fit: contain;
 }
@@ -456,19 +456,19 @@ button:disabled {
 
 .eutherdogs-store-item strong {
   color: #ffffff;
-  font-size: 0.7rem;
+  font-size: 0.62rem;
   text-transform: uppercase;
 }
 
 .eutherdogs-store-item small {
   color: #9ee9de;
-  font-size: 0.58rem;
+  font-size: 0.52rem;
   font-weight: 800;
 }
 
 .eutherdogs-store-item em {
   color: #ffef6e;
-  font-size: 0.78rem;
+  font-size: 0.66rem;
   font-style: normal;
   font-weight: 950;
   text-align: right;
