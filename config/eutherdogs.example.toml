@@ -1,0 +1,62 @@
+[settings]
+player_count = 1
+starting_mission = 1
+difficulty = "normal"
+minimum_kills = 0
+time_limit_ticks = 0 # 0 means no timer
+friendly_fire = false
+
+[player.1]
+name = "Night Tech"
+cash = 0
+score = 0
+armor = 100
+lives = 3
+active_weapon = "scanner_blaster"
+
+[[player.1.weapons]]
+id = "scanner_blaster"
+ammo = -1 # -1 means infinite
+
+[[player.1.weapons]]
+id = "rx_cannon"
+ammo = 12
+
+[player.2]
+name = "Neon Pharmacist"
+cash = 0
+score = 0
+armor = 100
+lives = 3
+active_weapon = "scanner_blaster"
+
+[[player.2.weapons]]
+id = "scanner_blaster"
+ammo = -1
+
+[scoring]
+enemy_kill_score = 100
+enemy_kill_cash = 25
+target_score = 250
+target_cash = 50
+pickup_score = 25
+pickup_cash = 5
+time_bonus_divisor = 1
+
+[world]
+seed = 12648430
+wall_count = 28
+wall_length = 12
+room_count = 14
+detail_density = 24
+
+[[highscores]]
+name = "ANON"
+score = 1000
+cash = 100
+mission = 1
+kills = 10
+targets_destroyed = 3
+objects_collected = 5
+elapsed_ticks = 3600
+completed = true

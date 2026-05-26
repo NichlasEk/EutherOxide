@@ -232,6 +232,37 @@ type UiState = LoadResult & {
   build: BridgeBuildStatus;
 };
 
+type DogsTile = "floor" | "wall" | "target" | "pickup" | "exit" | "prop";
+
+type DogsActor = {
+  x: number;
+  y: number;
+  hp: number;
+  alive: boolean;
+};
+
+type DogsBullet = {
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  owner: "player" | "enemy";
+  ttl: number;
+};
+
+type DogsState = {
+  width: number;
+  height: number;
+  tiles: DogsTile[];
+  player: DogsActor & { score: number; cash: number; weapon: number; ammo: number[] };
+  enemies: DogsActor[];
+  bullets: DogsBullet[];
+  targetsLeft: number;
+  objectsLeft: number;
+  status: "RUNNING" | "WON" | "LOST";
+  ticks: number;
+};
+
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
 const explicitBridgeBase = new URLSearchParams(window.location.search).get("bridge");
@@ -373,6 +404,8 @@ let nativeStatusPolling = false;
 let videoCanvas: HTMLCanvasElement;
 let videoContext: CanvasRenderingContext2D;
 let shaderCanvas: HTMLCanvasElement;
+let dogsCanvas: HTMLCanvasElement;
+let dogsContext: CanvasRenderingContext2D;
 let lastInputJson = JSON.stringify(inputState);
 let lastBrowserFile: File | null = null;
 let bridgeRetryTimer: number | null = null;
@@ -399,6 +432,8 @@ let gamepadPollTimer: number | null = null;
 let shaderSaveTimer: number | null = null;
 let shaderConfigLoadAttempted = false;
 let mobileMode = readStoredMobileMode();
+let dogsMode = false;
+let dogsState: DogsState = createDogsState(0xC0FFEE);
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -448,6 +483,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button id="play-toggle" class="primary-action" type="button">Play</button>
           <button id="step-frame" type="button">Step</button>
           <button id="reset-core" type="button">Reset</button>
+          <button id="eutherdogs-toggle" type="button">EutherDogs</button>
         </div>
       </div>
 
@@ -530,6 +566,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="screen-glass" id="screen-glass">
           <canvas id="video" width="320" height="224"></canvas>
           <canvas id="shader-video" width="320" height="224"></canvas>
+          <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
+          <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
           <div class="scanlines"></div>
           <div class="oxidation-ring"></div>
         </div>
@@ -642,6 +680,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
 videoContext = videoCanvas.getContext("2d", { alpha: false })!;
 shaderCanvas = document.querySelector<HTMLCanvasElement>("#shader-video")!;
+dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
+dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 
 const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
 const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
@@ -662,6 +702,7 @@ const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
+const eutherDogsToggle = document.querySelector<HTMLButtonElement>("#eutherdogs-toggle")!;
 const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
 const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
 const mobileToggle = document.querySelector<HTMLButtonElement>("#mobile-toggle")!;
@@ -847,6 +888,10 @@ stepFrame.addEventListener("click", async () => {
 });
 
 resetCore.addEventListener("click", async () => {
+  if (dogsMode) {
+    resetDogsMode();
+    return;
+  }
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
   let drewCoreFrame = false;
@@ -883,6 +928,14 @@ resetCore.addEventListener("click", async () => {
   renderUi();
   resetCore.blur();
   window.scrollTo(scrollX, scrollY);
+});
+
+eutherDogsToggle.addEventListener("click", () => {
+  if (dogsMode) {
+    leaveDogsMode();
+  } else {
+    enterDogsMode();
+  }
 });
 
 releaseBuild.addEventListener("click", async () => {
@@ -2842,7 +2895,9 @@ async function advanceFrame(): Promise<void> {
   }
   stepping = true;
   try {
-    if (isTauri && ui.runtime === "tauri" && ui.loaded) {
+    if (dogsMode) {
+      runDogsFrame();
+    } else if (isTauri && ui.runtime === "tauri" && ui.loaded) {
       const fetchStart = performance.now();
       const frame = await tauriNativeFrame();
       const fetchDone = performance.now();
@@ -2950,6 +3005,302 @@ function applyMobileMode(): void {
   mobileToggle.setAttribute("aria-pressed", mobileMode ? "true" : "false");
   mobileToggle.textContent = mobileMode ? "Desk" : "Mobile";
   ui.audioLeadMs = 0;
+}
+
+function enterDogsMode(): void {
+  dogsMode = true;
+  dogsState = createDogsState(0xC0FFEE);
+  resetScheduledAudio();
+  stopBridgeStream();
+  Object.assign(ui, {
+    loaded: true,
+    playing: false,
+    runtime: "web" as const,
+    title: "EutherDogs",
+    region: "RX",
+    timing: "60HZ",
+    resetPc: 0,
+    width: dogsCanvas.width,
+    height: dogsCanvas.height,
+    frame: 0,
+    cpuCycles: 0,
+    cpuSteps: 0,
+    frameMs: 16.67,
+    transportMode: "DOGS CORE",
+    status: "DOGS READY",
+    lastError: "",
+  });
+  playToggle.textContent = "Play";
+  document.body.classList.add("eutherdogs-mode");
+  eutherDogsToggle.classList.add("is-active");
+  drawDogsFrame();
+  renderUi();
+  pushTrace("EutherDogs shift started");
+}
+
+function leaveDogsMode(): void {
+  dogsMode = false;
+  ui.playing = false;
+  ui.loaded = false;
+  ui.title = "No ROM";
+  ui.status = "IDLE";
+  playToggle.textContent = "Play";
+  document.body.classList.remove("eutherdogs-mode");
+  eutherDogsToggle.classList.remove("is-active");
+  drawSyntheticFrame();
+  renderUi();
+}
+
+function resetDogsMode(): void {
+  dogsState = createDogsState(0xC0FFEE);
+  ui.playing = false;
+  ui.frame = 0;
+  ui.status = "DOGS RESET";
+  playToggle.textContent = "Play";
+  drawDogsFrame();
+  renderUi();
+}
+
+function createDogsState(seed: number): DogsState {
+  const width = 40;
+  const height = 28;
+  const tiles = Array<DogsTile>(width * height).fill("floor");
+  let rng = seed >>> 0;
+  const next = () => {
+    rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
+    return rng;
+  };
+  const set = (x: number, y: number, tile: DogsTile) => {
+    if (x >= 0 && y >= 0 && x < width && y < height) {
+      tiles[y * width + x] = tile;
+    }
+  };
+  for (let x = 0; x < width; x += 1) {
+    set(x, 0, "wall");
+    set(x, height - 1, "wall");
+  }
+  for (let y = 0; y < height; y += 1) {
+    set(0, y, "wall");
+    set(width - 1, y, "wall");
+  }
+  for (let i = 0; i < 115; i += 1) {
+    const x = 2 + (next() % (width - 4));
+    const y = 2 + (next() % (height - 4));
+    set(x, y, next() % 5 === 0 ? "prop" : "wall");
+  }
+  for (let i = 0; i < 8; i += 1) {
+    set(2 + (next() % (width - 4)), 2 + (next() % (height - 4)), "pickup");
+  }
+  for (let i = 0; i < 5; i += 1) {
+    set(2 + (next() % (width - 4)), 2 + (next() % (height - 4)), "target");
+  }
+  set(width - 3, height - 3, "exit");
+  for (let y = 1; y < 5; y += 1) {
+    for (let x = 1; x < 7; x += 1) {
+      set(x, y, "floor");
+    }
+  }
+  return {
+    width,
+    height,
+    tiles,
+    player: { x: 2, y: 2, hp: 100, alive: true, score: 0, cash: 0, weapon: 0, ammo: [-1, 12] },
+    enemies: [
+      { x: 30, y: 4, hp: 35, alive: true },
+      { x: 24, y: 18, hp: 35, alive: true },
+      { x: 10, y: 20, hp: 35, alive: true },
+      { x: 34, y: 22, hp: 35, alive: true },
+    ],
+    bullets: [],
+    targetsLeft: tiles.filter((tile) => tile === "target").length,
+    objectsLeft: tiles.filter((tile) => tile === "pickup").length,
+    status: "RUNNING",
+    ticks: 0,
+  };
+}
+
+function runDogsFrame(): void {
+  const started = performance.now();
+  stepDogsState();
+  drawDogsFrame();
+  const done = performance.now();
+  ui.frame += 1;
+  ui.cpuCycles = dogsState.enemies.filter((enemy) => enemy.alive).length;
+  ui.cpuSteps = dogsState.bullets.length;
+  ui.frameMs = 16.67;
+  ui.transportMs = 0;
+  ui.drawMs = done - started;
+  ui.audioLeadMs = 0;
+  ui.status = `DOGS ${dogsState.status}`;
+  if (dogsState.status !== "RUNNING") {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+  }
+}
+
+function stepDogsState(): void {
+  if (dogsState.status !== "RUNNING") {
+    return;
+  }
+  dogsState.ticks += 1;
+  let dx = 0;
+  let dy = 0;
+  if (inputState.left) dx -= 1;
+  if (inputState.right) dx += 1;
+  if (inputState.up) dy -= 1;
+  if (inputState.down) dy += 1;
+  moveDogsActor(dogsState.player, dx, dy);
+  if ((inputState.a || inputState.b) && dogsState.ticks % 8 === 0) {
+    dogsFire("player", dx || 1, dy);
+  }
+  if (inputState.c && dogsState.ticks % 12 === 0) {
+    dogsState.player.weapon = (dogsState.player.weapon + 1) % dogsState.player.ammo.length;
+  }
+  dogsCollect();
+  for (const enemy of dogsState.enemies) {
+    if (!enemy.alive) continue;
+    const ex = Math.sign(dogsState.player.x - enemy.x);
+    const ey = Math.sign(dogsState.player.y - enemy.y);
+    if (Math.abs(dogsState.player.x - enemy.x) <= 1 && Math.abs(dogsState.player.y - enemy.y) <= 1) {
+      dogsState.player.hp -= 1;
+    } else if (dogsState.ticks % 2 === 0) {
+      moveDogsActor(enemy, ex, ey);
+    }
+    if (dogsState.ticks % 40 === 0) {
+      dogsFire("enemy", ex || -1, ey, enemy);
+    }
+  }
+  moveDogsBullets();
+  if (dogsState.player.hp <= 0) {
+    dogsState.player.alive = false;
+    dogsState.status = "LOST";
+  } else if (
+    dogsState.targetsLeft === 0 &&
+    dogsState.objectsLeft === 0 &&
+    dogsTileAt(dogsState.player.x, dogsState.player.y) === "exit"
+  ) {
+    dogsState.status = "WON";
+  }
+}
+
+function moveDogsActor(actor: DogsActor, dx: number, dy: number): void {
+  const nx = actor.x + Math.sign(dx);
+  const ny = actor.y + Math.sign(dy);
+  if (!dogsBlocks(nx, actor.y)) actor.x = nx;
+  if (!dogsBlocks(actor.x, ny)) actor.y = ny;
+}
+
+function dogsFire(owner: "player" | "enemy", dx: number, dy: number, source?: DogsActor): void {
+  const actor = owner === "player" ? dogsState.player : source;
+  if (!actor || (owner === "player" && dogsState.player.ammo[dogsState.player.weapon] === 0)) return;
+  if (owner === "player" && dogsState.player.ammo[dogsState.player.weapon] > 0) {
+    dogsState.player.ammo[dogsState.player.weapon] -= 1;
+  }
+  dogsState.bullets.push({ x: actor.x, y: actor.y, dx: Math.sign(dx) || 1, dy: Math.sign(dy), owner, ttl: 36 });
+}
+
+function moveDogsBullets(): void {
+  const kept: DogsBullet[] = [];
+  for (const bullet of dogsState.bullets) {
+    bullet.x += bullet.dx;
+    bullet.y += bullet.dy;
+    bullet.ttl -= 1;
+    const tile = dogsTileAt(bullet.x, bullet.y);
+    if (bullet.ttl <= 0 || tile === "wall") continue;
+    if (tile === "target" && bullet.owner === "player") {
+      setDogsTile(bullet.x, bullet.y, "floor");
+      dogsState.targetsLeft = Math.max(0, dogsState.targetsLeft - 1);
+      dogsState.player.score += 250;
+      dogsState.player.cash += 50;
+      continue;
+    }
+    const actors = bullet.owner === "player" ? dogsState.enemies : [dogsState.player];
+    const hit = actors.find((actor) => actor.alive && actor.x === bullet.x && actor.y === bullet.y);
+    if (hit) {
+      hit.hp -= bullet.owner === "player" ? 20 : 8;
+      if (hit.hp <= 0) {
+        hit.alive = false;
+        if (bullet.owner === "player") {
+          dogsState.player.score += 100;
+          dogsState.player.cash += 25;
+        }
+      }
+      continue;
+    }
+    kept.push(bullet);
+  }
+  dogsState.bullets = kept;
+}
+
+function dogsCollect(): void {
+  if (dogsTileAt(dogsState.player.x, dogsState.player.y) !== "pickup") return;
+  setDogsTile(dogsState.player.x, dogsState.player.y, "floor");
+  dogsState.objectsLeft = Math.max(0, dogsState.objectsLeft - 1);
+  dogsState.player.score += 25;
+  dogsState.player.cash += 5;
+  dogsState.player.ammo[1] += 2;
+}
+
+function dogsTileAt(x: number, y: number): DogsTile {
+  if (x < 0 || y < 0 || x >= dogsState.width || y >= dogsState.height) return "wall";
+  return dogsState.tiles[y * dogsState.width + x];
+}
+
+function setDogsTile(x: number, y: number, tile: DogsTile): void {
+  if (x >= 0 && y >= 0 && x < dogsState.width && y < dogsState.height) {
+    dogsState.tiles[y * dogsState.width + x] = tile;
+  }
+}
+
+function dogsBlocks(x: number, y: number): boolean {
+  const tile = dogsTileAt(x, y);
+  return tile === "wall" || tile === "prop" || tile === "target";
+}
+
+function drawDogsFrame(): void {
+  const tileW = dogsCanvas.width / dogsState.width;
+  const tileH = dogsCanvas.height / dogsState.height;
+  dogsContext.fillStyle = "#07100d";
+  dogsContext.fillRect(0, 0, dogsCanvas.width, dogsCanvas.height);
+  const colors: Record<DogsTile, string> = {
+    floor: "#dfe8dc",
+    wall: "#263630",
+    target: "#ff37c8",
+    pickup: "#39f7c8",
+    exit: "#f7d852",
+    prop: "#65716b",
+  };
+  for (let y = 0; y < dogsState.height; y += 1) {
+    for (let x = 0; x < dogsState.width; x += 1) {
+      dogsContext.fillStyle = colors[dogsTileAt(x, y)];
+      dogsContext.fillRect(x * tileW, y * tileH, Math.ceil(tileW), Math.ceil(tileH));
+    }
+  }
+  dogsContext.fillStyle = "#1a1f1c";
+  dogsContext.globalAlpha = 0.12;
+  for (let x = 0; x < dogsCanvas.width; x += tileW) dogsContext.fillRect(x, 0, 1, dogsCanvas.height);
+  for (let y = 0; y < dogsCanvas.height; y += tileH) dogsContext.fillRect(0, y, dogsCanvas.width, 1);
+  dogsContext.globalAlpha = 1;
+  for (const enemy of dogsState.enemies) {
+    if (!enemy.alive) continue;
+    dogsContext.fillStyle = "#f04444";
+    dogsContext.fillRect(enemy.x * tileW, enemy.y * tileH, tileW, tileH);
+  }
+  dogsContext.fillStyle = "#101014";
+  for (const bullet of dogsState.bullets) {
+    dogsContext.fillRect(bullet.x * tileW + tileW * 0.35, bullet.y * tileH + tileH * 0.35, tileW * 0.3, tileH * 0.3);
+  }
+  if (dogsState.player.alive) {
+    dogsContext.fillStyle = "#ffffff";
+    dogsContext.fillRect(dogsState.player.x * tileW, dogsState.player.y * tileH, tileW, tileH);
+    dogsContext.fillStyle = "#27f2ff";
+    dogsContext.fillRect(dogsState.player.x * tileW + 2, dogsState.player.y * tileH + 2, tileW - 4, tileH - 4);
+  }
+  const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
+  if (hud) {
+    const ammo = dogsState.player.ammo[dogsState.player.weapon];
+    hud.textContent = `HP ${dogsState.player.hp} | $${dogsState.player.cash} | SCORE ${dogsState.player.score} | RX ${dogsState.objectsLeft} | TARGETS ${dogsState.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${dogsState.status}`;
+  }
 }
 
 function readStoredPlayerPort(): PlayerPort {
