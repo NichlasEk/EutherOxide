@@ -307,7 +307,7 @@ type DogsCoreFrame = {
   highscoreCount: number;
 };
 
-type DogsMenuMode = "staff" | "store" | "briefing" | null;
+type DogsMenuMode = "staff" | "store" | "briefing" | "result" | null;
 
 type DogsStaffOption = {
   id: 1 | 2;
@@ -1105,6 +1105,10 @@ eutherDogsBriefingOpen.addEventListener("click", () => {
 });
 
 eutherDogsStartShift.addEventListener("click", () => {
+  if (dogsMenuMode === "result") {
+    void retryDogsShift();
+    return;
+  }
   hideDogsMenu();
 });
 
@@ -3379,6 +3383,7 @@ function renderDogsMenu(): void {
   eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
+  eutherDogsStartShift.textContent = dogsMenuMode === "result" ? "Retry shift" : "Start shift";
   if (dogsMenuMode === "staff") {
     eutherDogsMenuKicker.textContent = "Staff Select";
     eutherDogsMenuTitle.textContent = "Choose Counter Liability";
@@ -3411,6 +3416,25 @@ function renderDogsMenu(): void {
         <div><span>Defuse</span><strong>${summary?.targetsLeft ?? 0} angry customers</strong></div>
         <div><span>Policy</span><strong>No refunds after laser contact</strong></div>
         <div><span>Uniform</span><strong>White coat, zero patience</strong></div>
+      </div>
+    `;
+    return;
+  }
+  if (dogsMenuMode === "result") {
+    const summary = dogsFrame?.summary;
+    const won = summary?.status === "won";
+    eutherDogsMenuKicker.textContent = won ? "Shift Closed" : "Shift Failed";
+    eutherDogsMenuTitle.textContent = won ? "Receipts Balanced" : "Counter Incident Report";
+    eutherDogsMenuBody.innerHTML = `
+      <div class="eutherdogs-result-grid">
+        <div><span>Status</span><strong>${summary?.status.toUpperCase() ?? "UNKNOWN"}</strong></div>
+        <div><span>Score</span><strong>${summary?.score ?? 0}</strong></div>
+        <div><span>Cash</span><strong>$${summary?.cash ?? 0}</strong></div>
+        <div><span>Kills</span><strong>${summary?.kills ?? 0}</strong></div>
+        <div><span>RX collected</span><strong>${summary?.objectsCollected ?? 0}</strong></div>
+        <div><span>Targets</span><strong>${summary?.targetsDestroyed ?? 0}</strong></div>
+        <div><span>Shots / hits</span><strong>${summary?.shotsFired ?? 0} / ${summary?.hits ?? 0}</strong></div>
+        <div><span>Damage taken</span><strong>${summary?.damageTaken ?? 0}</strong></div>
       </div>
     `;
     return;
@@ -3454,6 +3478,18 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
     pushTrace(`EutherDogs staff selected ${dogsStaffOptions.find((option) => option.id === staff)?.name ?? staff}`);
   } catch (err) {
     pushTrace(`EutherDogs staff select failed: ${err instanceof Error ? err.message : String(err)}`);
+    renderDogsMenu();
+  }
+}
+
+async function retryDogsShift(): Promise<void> {
+  try {
+    dogsFrame = await startDogsCore();
+    drawDogsFrame(dogsFrame);
+    showDogsMenu("store");
+    pushTrace("EutherDogs shift retried");
+  } catch (err) {
+    pushTrace(`EutherDogs retry failed: ${err instanceof Error ? err.message : String(err)}`);
     renderDogsMenu();
   }
 }
@@ -3579,6 +3615,7 @@ async function runDogsFrame(): Promise<void> {
   if (dogsFrame.summary.status !== "running") {
     ui.playing = false;
     playToggle.textContent = "Play";
+    showDogsMenu("result");
   }
 }
 
