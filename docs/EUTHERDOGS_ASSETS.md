@@ -117,16 +117,16 @@ Placeholder art is intentionally simple and should keep the final file names. Re
 | `icon_prescription` | `assets/eutherdogs/ui/icons/icon_prescription.png` | HUD/pickup icon | `placeholder` |
 | `icon_cash` | `assets/eutherdogs/ui/icons/icon_cash.png` | Cash/copay icon | `placeholder` |
 | `menu_panel` | `assets/eutherdogs/ui/menus/menu_panel.png` | Generic temporary panel | `placeholder` |
-| `shift_console_background` | `assets/eutherdogs/ui/menus/shift_console_background.png` | Main menu pharmacy steel wall | `needs-art` |
-| `staff_roster_background` | `assets/eutherdogs/ui/menus/staff_roster_background.png` | Hero/staff selection background | `needs-art` |
-| `dispensary_background` | `assets/eutherdogs/ui/menus/dispensary_background.png` | Armory/pharmacy counter background | `needs-art` |
-| `shift_briefing_background` | `assets/eutherdogs/ui/menus/shift_briefing_background.png` | Mission briefing room background | `needs-art` |
-| `eutherdogs_logo` | `assets/eutherdogs/ui/menus/eutherdogs_logo.png` | Metallic pharmacy-cyberpunk logo | `needs-art` |
-| `selector_lamp_off` | `assets/eutherdogs/ui/icons/selector_lamp_off.png` | Round inactive hardware selector | `needs-art` |
-| `selector_lamp_on` | `assets/eutherdogs/ui/icons/selector_lamp_on.png` | Red active selector lamp | `needs-art` |
-| `hud_health_bar` | `assets/eutherdogs/ui/icons/hud_health_bar.png` | Minimal HUD health/coat bar | `needs-art` |
-| `map_viewport` | `assets/eutherdogs/ui/icons/map_viewport.png` | Bright rectangle for map view | `needs-art` |
-| `security_map_overlay` | `assets/eutherdogs/ui/menus/security_map_overlay.png` | Purple/cyan security map overlay | `needs-art` |
+| `shift_console_background` | `assets/eutherdogs/ui/menus/shift_console_background.png` | Main menu pharmacy steel wall | `placeholder` |
+| `staff_roster_background` | `assets/eutherdogs/ui/menus/staff_roster_background.png` | Hero/staff selection background | `placeholder` |
+| `dispensary_background` | `assets/eutherdogs/ui/menus/dispensary_background.png` | Armory/pharmacy counter background | `placeholder` |
+| `shift_briefing_background` | `assets/eutherdogs/ui/menus/shift_briefing_background.png` | Mission briefing room background | `placeholder` |
+| `eutherdogs_logo` | `assets/eutherdogs/ui/menus/eutherdogs_logo.png` | Metallic pharmacy-cyberpunk logo | `placeholder` |
+| `selector_lamp_off` | `assets/eutherdogs/ui/icons/selector_lamp_off.png` | Round inactive hardware selector | `placeholder` |
+| `selector_lamp_on` | `assets/eutherdogs/ui/icons/selector_lamp_on.png` | Red active selector lamp | `placeholder` |
+| `hud_health_bar` | `assets/eutherdogs/ui/icons/hud_health_bar.png` | Minimal HUD health/coat bar | `placeholder` |
+| `map_viewport` | `assets/eutherdogs/ui/icons/map_viewport.png` | Bright rectangle for map view | `placeholder` |
+| `security_map_overlay` | `assets/eutherdogs/ui/menus/security_map_overlay.png` | Purple/cyan security map overlay | `placeholder` |
 
 ## Audio
 

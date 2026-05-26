@@ -1,10 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WEB_BUILD_ID } from "./build-info";
+import eutherDogsManifestToml from "../assets/eutherdogs/manifest.toml?raw";
 import shaderToml from "./shaders.toml?raw";
 import "./styles.css";
 
 const controllerGuideUrl = new URL("./controller-bindings.svg", import.meta.url).href;
+const eutherDogsAssetModules = import.meta.glob("../assets/eutherdogs/**/*.{png,wav}", {
+  eager: true,
+  query: "?url",
+  import: "default",
+}) as Record<string, string>;
 
 declare global {
   interface Window {
@@ -294,6 +300,7 @@ const bridgeBase =
   (window.location.port && window.location.port !== "5173"
     ? window.location.origin
     : "http://127.0.0.1:32161");
+const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
@@ -457,6 +464,7 @@ let shaderConfigLoadAttempted = false;
 let mobileMode = readStoredMobileMode();
 let dogsMode = false;
 let dogsFrame: DogsCoreFrame | null = null;
+const dogsImageCache = new Map<string, HTMLImageElement>();
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -2997,6 +3005,119 @@ function readStoredVolume(): number {
   return Number.isFinite(stored) ? clampVolume(stored) : 0.8;
 }
 
+function parseEutherDogsManifest(toml: string, modules: Record<string, string>): Map<string, string> {
+  const byRelativePath = new Map<string, string>();
+  for (const [modulePath, url] of Object.entries(modules)) {
+    byRelativePath.set(modulePath.replace(/^\.\.\/assets\/eutherdogs\//, ""), url);
+  }
+
+  const entries = new Map<string, string>();
+  let section = "";
+  for (const rawLine of toml.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      section = sectionMatch[1];
+      continue;
+    }
+    const valueMatch = line.match(/^([A-Za-z0-9_]+)\s*=\s*"([^"]+)"/);
+    if (!valueMatch) continue;
+    const [, key, relativePath] = valueMatch;
+    const url = byRelativePath.get(relativePath);
+    if (!url) continue;
+    entries.set(`${section}.${key}`, url);
+  }
+  return entries;
+}
+
+function dogsAsset(section: string, key: string): string | null {
+  return eutherDogsAssets.get(`${section}.${key}`) ?? null;
+}
+
+function dogsTileAsset(tile: string): string | null {
+  const tileMap: Record<string, [string, string]> = {
+    floor: ["tiles.floor", "sterile_tile"],
+    sterile_floor: ["tiles.floor", "sterile_tile"],
+    neon_floor: ["tiles.floor", "neon_floor"],
+    warning_floor: ["tiles.floor", "warning_floor"],
+    fan_floor: ["tiles.floor", "fan_floor"],
+    wall: ["tiles.walls", "pharmacy_wall"],
+    door: ["tiles.walls", "security_glass_wall"],
+    corrupt_med_cabinet: ["tiles.props", "corrupt_med_cabinet"],
+    hacked_vending_unit: ["tiles.props", "hacked_vending_unit"],
+    recall_crate: ["tiles.props", "recall_crate"],
+    shipping_box: ["tiles.props", "shipping_box"],
+    service_elevator: ["tiles.props", "service_elevator"],
+    prescription: ["items", "prescription"],
+    folder: ["items", "folder"],
+    data_wafer: ["items", "data_wafer"],
+    circuit_board: ["items", "circuit_board"],
+    pill_sample: ["items", "pill_sample"],
+    lab_coat_armor: ["items", "lab_coat_armor"],
+    hazard_sleeves: ["items", "hazard_sleeves"],
+    pill_splitter: ["items", "pill_splitter"],
+    scorch_mark: ["sprites.effects", "scorch_mark"],
+    spilled_syrup: ["sprites.effects", "spilled_syrup"],
+  };
+  const entry = tileMap[tile];
+  return entry ? dogsAsset(entry[0], entry[1]) : null;
+}
+
+function dogsActorAsset(actor: DogsCoreActor): string | null {
+  if (actor.faction === "player") {
+    return dogsAsset("sprites.heroes", actor.id === 0 ? "night_shift_tech" : "neon_pharmacist");
+  }
+  const enemies = ["angry_customer", "claim_denier", "inventory_drone", "recall_enforcer", "black_market_courier"];
+  return dogsAsset("sprites.enemies", enemies[actor.id % enemies.length]);
+}
+
+function dogsProjectileAsset(bullet: DogsCoreBullet): string | null {
+  const projectileMap: Record<string, string> = {
+    scanner_blaster: "cyan_rx_bolt",
+    coupon_pistol: "red_denial_bolt",
+    receipt_gun: "red_denial_bolt",
+    rx_cannon: "power_pill",
+    label_printer: "label_shred",
+    sterilizer_spray: "sterilizer_cloud",
+    capsule_launcher: "capsule_grenade",
+    neon_prior_auth: "green_auth_laser",
+    turbo_prior_auth: "yellow_warning_laser",
+    formulary_zapper: "zapper_arc",
+  };
+  return dogsAsset("sprites.projectiles", projectileMap[bullet.weapon] ?? "cyan_rx_bolt");
+}
+
+function drawDogsImage(
+  url: string | null,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fallbackColor: string,
+): void {
+  if (!url) {
+    dogsContext.fillStyle = fallbackColor;
+    dogsContext.fillRect(x, y, width, height);
+    return;
+  }
+  let image = dogsImageCache.get(url);
+  if (!image) {
+    image = new Image();
+    image.onload = () => {
+      if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
+    };
+    image.src = url;
+    dogsImageCache.set(url, image);
+  }
+  if (image.complete && image.naturalWidth > 0) {
+    dogsContext.drawImage(image, x, y, width, height);
+  } else {
+    dogsContext.fillStyle = fallbackColor;
+    dogsContext.fillRect(x, y, width, height);
+  }
+}
+
 function clampVolume(value: number): number {
   if (!Number.isFinite(value)) {
     return 0.8;
@@ -3192,29 +3313,33 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   for (let y = firstTileY; y <= lastTileY; y += 1) {
     for (let x = firstTileX; x <= lastTileX; x += 1) {
       const tile = frame.tiles[y * frame.width + x] ?? "floor";
-      dogsContext.fillStyle = colors[tile] ?? "#65716b";
-      dogsContext.fillRect(
-        Math.floor((x * frame.tileWidth - cameraX) * scale),
-        Math.floor((y * frame.tileHeight - cameraY) * scale),
-        Math.ceil(frame.tileWidth * scale),
-        Math.ceil(frame.tileHeight * scale),
-      );
+      const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
+      const tileY = Math.floor((y * frame.tileHeight - cameraY) * scale);
+      const tileW = Math.ceil(frame.tileWidth * scale);
+      const tileH = Math.ceil(frame.tileHeight * scale);
+      drawDogsImage(dogsTileAsset(tile), tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
     }
   }
   for (const actor of frame.characters) {
     if (!actor.alive) continue;
-    const x = Math.floor((actor.x - cameraX) * scale);
-    const y = Math.floor((actor.y - cameraY) * scale);
-    dogsContext.fillStyle = actor.faction === "player" ? "#ffffff" : "#f04444";
-    dogsContext.fillRect(x, y, Math.ceil(frame.characterWidth * scale), Math.ceil(frame.characterHeight * scale));
-    if (actor.faction === "player") {
-      dogsContext.fillStyle = "#27f2ff";
-      dogsContext.fillRect(x + 2, y + 2, Math.max(1, Math.ceil(frame.characterWidth * scale) - 4), Math.max(1, Math.ceil(frame.characterHeight * scale) - 4));
-    }
+    const spriteW = Math.max(8, Math.ceil(32 * scale));
+    const spriteH = Math.max(8, Math.ceil(32 * scale));
+    const bodyW = frame.characterWidth * scale;
+    const bodyH = frame.characterHeight * scale;
+    const x = Math.floor((actor.x - cameraX) * scale - (spriteW - bodyW) / 2);
+    const y = Math.floor((actor.y - cameraY) * scale - Math.max(0, spriteH - bodyH));
+    drawDogsImage(dogsActorAsset(actor), x, y, spriteW, spriteH, actor.faction === "player" ? "#27f2ff" : "#f04444");
   }
   for (const bullet of frame.bullets) {
-    dogsContext.fillStyle = bullet.ownerFaction === "player" ? "#101014" : "#ff3030";
-    dogsContext.fillRect(Math.floor((bullet.x - cameraX) * scale), Math.floor((bullet.y - cameraY) * scale), 3, 3);
+    const projectileSize = Math.max(4, Math.ceil(16 * scale));
+    drawDogsImage(
+      dogsProjectileAsset(bullet),
+      Math.floor((bullet.x - cameraX) * scale - projectileSize / 2),
+      Math.floor((bullet.y - cameraY) * scale - projectileSize / 2),
+      projectileSize,
+      projectileSize,
+      bullet.ownerFaction === "player" ? "#39f7c8" : "#ff3030",
+    );
   }
   const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
   if (hud) {
