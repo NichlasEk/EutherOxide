@@ -311,10 +311,15 @@ button:disabled {
 }
 
 .eutherdogs-menu.is-store .eutherdogs-menu-panel {
+  height: 100%;
   background:
     linear-gradient(180deg, rgba(4, 10, 12, 0.84), rgba(3, 6, 8, 0.92)),
     var(--dogs-dispensary, none);
   background-size: cover;
+}
+
+.eutherdogs-menu.is-store .eutherdogs-menu-body {
+  overflow: hidden;
 }
 
 .eutherdogs-menu-panel header,
@@ -362,11 +367,11 @@ button:disabled {
 
 .eutherdogs-store-item {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 7px;
-  min-height: 36px;
-  padding: 4px 6px;
+  gap: 8px;
+  min-height: 46px;
+  padding: 5px 7px;
   border-radius: 0;
   text-align: left;
 }
@@ -375,7 +380,9 @@ button:disabled {
   display: grid;
   grid-template-columns: 136px minmax(0, 1fr);
   gap: 7px;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .eutherdogs-inventory-panel {
@@ -389,8 +396,8 @@ button:disabled {
 }
 
 .eutherdogs-inventory-panel .eutherdogs-weapon-icon {
-  width: 40px;
-  height: 40px;
+  width: 56px;
+  height: 56px;
 }
 
 .eutherdogs-inventory-panel strong,
@@ -427,12 +434,17 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
+  align-content: start;
   min-width: 0;
+  min-height: 0;
+  padding-right: 4px;
+  overflow-y: auto;
+  scrollbar-color: rgba(39, 242, 255, 0.55) rgba(0, 5, 7, 0.65);
 }
 
 .eutherdogs-weapon-icon {
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   image-rendering: pixelated;
   object-fit: contain;
 }
@@ -456,19 +468,19 @@ button:disabled {
 
 .eutherdogs-store-item strong {
   color: #ffffff;
-  font-size: 0.62rem;
+  font-size: 0.66rem;
   text-transform: uppercase;
 }
 
 .eutherdogs-store-item small {
   color: #9ee9de;
-  font-size: 0.52rem;
+  font-size: 0.54rem;
   font-weight: 800;
 }
 
 .eutherdogs-store-item em {
   color: #ffef6e;
-  font-size: 0.66rem;
+  font-size: 0.68rem;
   font-style: normal;
   font-weight: 950;
   text-align: right;
