@@ -244,6 +244,7 @@ type DogsCoreActor = {
   x: number;
   y: number;
   direction: string;
+  sprite: string;
   armor: number;
   lives: number;
   alive: boolean;
@@ -3242,8 +3243,7 @@ function dogsActorAsset(actor: DogsCoreActor): string | null {
   if (actor.faction === "player") {
     return dogsAsset("sprites.heroes", dogsHeroKey(actor, false));
   }
-  const enemies = ["angry_customer", "claim_denier", "inventory_drone", "recall_enforcer", "black_market_courier"];
-  return dogsAsset("sprites.enemies", enemies[actor.id % enemies.length]);
+  return dogsAsset("sprites.enemies", actor.sprite);
 }
 
 function dogsActorSheetAsset(actor: DogsCoreActor): string | null {
