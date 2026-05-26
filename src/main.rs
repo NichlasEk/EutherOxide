@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{self, Command};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -526,6 +526,7 @@ struct RomDirEntry {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeInput {
+    player: Option<u8>,
     up: bool,
     down: bool,
     left: bool,
@@ -561,7 +562,21 @@ struct HttpRequest {
 struct BridgeState {
     emulator: Arc<Mutex<Emulator>>,
     next_frame_due: Arc<Mutex<Instant>>,
+    player_slots: Arc<Mutex<[Option<BridgePlayerLease>; 2]>>,
+    driver_client: Arc<Mutex<Option<BridgePlayerLease>>>,
+    latest_packet: Arc<(Mutex<Option<BridgePacketSnapshot>>, Condvar)>,
     gamepads: Arc<Mutex<GamepadReader>>,
+}
+
+struct BridgePlayerLease {
+    client_id: String,
+    updated: Instant,
+}
+
+struct BridgePacketSnapshot {
+    frame: u32,
+    bytes: Vec<u8>,
+    stopped: bool,
 }
 
 struct GamepadReader {
@@ -597,11 +612,7 @@ struct HostSession {
 
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
-    let state = BridgeState {
-        emulator: Arc::new(Mutex::new(emulator)),
-        next_frame_due: Arc::new(Mutex::new(Instant::now())),
-        gamepads: Arc::new(Mutex::new(GamepadReader::new())),
-    };
+    let state = new_bridge_state(emulator);
     println!("EutherOxide web bridge listening on http://{addr}");
     println!("Open http://127.0.0.1:5173/?bridge=http://{addr}");
     for stream in listener.incoming() {
@@ -620,6 +631,17 @@ fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn new_bridge_state(emulator: Emulator) -> BridgeState {
+    BridgeState {
+        emulator: Arc::new(Mutex::new(emulator)),
+        next_frame_due: Arc::new(Mutex::new(Instant::now())),
+        player_slots: Arc::new(Mutex::new([None, None])),
+        driver_client: Arc::new(Mutex::new(None)),
+        latest_packet: Arc::new((Mutex::new(None), Condvar::new())),
+        gamepads: Arc::new(Mutex::new(GamepadReader::new())),
+    }
+}
+
 fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     let config = load_host_config()?;
     if let Some(rom_dir) = config.rom_dir.as_deref() {
@@ -629,11 +651,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     let users = Arc::new(load_host_users()?);
     let listener = TcpListener::bind(&config.bind)?;
     let state = HostState {
-        bridge: BridgeState {
-            emulator: Arc::new(Mutex::new(emulator)),
-            next_frame_due: Arc::new(Mutex::new(Instant::now())),
-            gamepads: Arc::new(Mutex::new(GamepadReader::new())),
-        },
+        bridge: new_bridge_state(emulator),
         config,
         users,
         sessions: Arc::new(Mutex::new(Vec::new())),
@@ -900,12 +918,31 @@ fn handle_bridge_route(
             if request.body.is_empty() {
                 return send_error(stream, 400, "empty ROM upload");
             }
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            clear_bridge_player(state)?;
             let mut emulator = lock_bridge_emulator(state)?;
             emulator.load_rom_bytes_with_path_hint(&request.body, upload_rom_name(&request));
             reset_bridge_pacer(state)?;
             send_json(stream, &bridge_status(&emulator))
         }
         ("GET", "/frame") | ("POST", "/frame") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            match claim_bridge_driver(state, &client_id) {
+                Ok(true) => {}
+                Ok(false) => return send_error(stream, 409, "bridge driver busy"),
+                Err(err) => return send_error(stream, 409, &err.to_string()),
+            }
+            if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             pace_bridge_frame(state)?;
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
@@ -915,6 +952,19 @@ fn handle_bridge_route(
             send_json(stream, &bridge_frame(&emulator, &run))
         }
         ("GET", "/frame.bin") | ("POST", "/frame.bin") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            match claim_bridge_driver(state, &client_id) {
+                Ok(true) => {}
+                Ok(false) => return send_error(stream, 409, "bridge driver busy"),
+                Err(err) => return send_error(stream, 409, &err.to_string()),
+            }
+            if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             pace_bridge_frame(state)?;
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
@@ -929,6 +979,19 @@ fn handle_bridge_route(
             )
         }
         ("GET", "/frame-audio.bin") | ("POST", "/frame-audio.bin") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            match claim_bridge_driver(state, &client_id) {
+                Ok(true) => {}
+                Ok(false) => return send_error(stream, 409, "bridge driver busy"),
+                Err(err) => return send_error(stream, 409, &err.to_string()),
+            }
+            if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             pace_bridge_frame(state)?;
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
@@ -942,8 +1005,28 @@ fn handle_bridge_route(
                 &bridge_frame_audio_bytes(&mut emulator, &run, 44_100),
             )
         }
-        ("GET", "/stream-frame-audio.bin") => bridge_stream_frame_audio(stream, state),
+        ("GET", "/stream-frame-audio.bin") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            bridge_stream_frame_audio(stream, state, client_id, player_index)
+        }
         ("GET", "/audio.bin") | ("POST", "/audio.bin") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            match claim_bridge_driver(state, &client_id) {
+                Ok(true) => {}
+                Ok(false) => return send_error(stream, 409, "bridge driver busy"),
+                Err(err) => return send_error(stream, 409, &err.to_string()),
+            }
+            if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 return send_error(stream, 409, "no ROM loaded");
@@ -956,12 +1039,23 @@ fn handle_bridge_route(
             )
         }
         ("POST", "/reset") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
+            clear_bridge_player(state)?;
             let mut emulator = lock_bridge_emulator(state)?;
             emulator.reset();
             reset_bridge_pacer(state)?;
             send_json(stream, &bridge_status(&emulator))
         }
         ("POST", "/input") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             let input: BridgeInput = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             let mut emulator = lock_bridge_emulator(state)?;
@@ -1017,7 +1111,13 @@ fn handle_bridge_route(
         ("POST", "/rom-dir/load") => {
             let relative = query_string_value(&request.path, "path")?
                 .ok_or_else(|| invalid_request("missing path query"))?;
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             let rom_path = resolve_rom_file_path(&relative)?;
+            clear_bridge_player(state)?;
             let mut emulator = lock_bridge_emulator(state)?;
             emulator.load_rom_file(rom_path)?;
             reset_bridge_pacer(state)?;
@@ -1032,6 +1132,11 @@ fn handle_bridge_route(
             send_json(stream, &bridge_slots(summary))
         }
         ("POST", "/state/save") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             let emulator = lock_bridge_emulator(state)?;
             if emulator.rom_path.is_none() {
                 return send_error(stream, 409, ".argon path unavailable for uploaded ROM");
@@ -1041,6 +1146,11 @@ fn handle_bridge_route(
             send_json(stream, &bridge_slots(summary))
         }
         ("POST", "/state/load") => {
+            let client_id = bridge_client_id(&request)?;
+            let player_index = bridge_player_index(&request)?;
+            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+                return send_error(stream, 409, &err.to_string());
+            }
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.rom_path.is_none() {
                 return send_error(stream, 409, ".argon path unavailable for uploaded ROM");
@@ -1073,6 +1183,201 @@ fn reset_bridge_pacer(state: &BridgeState) -> io::Result<()> {
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     *next_frame_due = Instant::now();
+    Ok(())
+}
+
+fn bridge_client_id(request: &HttpRequest) -> io::Result<String> {
+    query_string_value(&request.path, "client")?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_request("missing bridge client id"))
+}
+
+fn bridge_player_index(request: &HttpRequest) -> io::Result<usize> {
+    let player = query_string_value(&request.path, "player")?
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(1);
+    match player {
+        1 | 2 => Ok((player - 1) as usize),
+        _ => Err(invalid_request("player must be 1 or 2")),
+    }
+}
+
+fn claim_bridge_player(
+    state: &BridgeState,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
+    let mut slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let now = Instant::now();
+    for slot in slots.iter_mut() {
+        if slot
+            .as_ref()
+            .is_some_and(|lease| now.duration_since(lease.updated) > Duration::from_secs(8))
+        {
+            *slot = None;
+        }
+    }
+    for (index, slot) in slots.iter_mut().enumerate() {
+        if index != player_index
+            && slot
+                .as_ref()
+                .is_some_and(|lease| lease.client_id == client_id)
+        {
+            *slot = None;
+        }
+    }
+    match slots[player_index].as_mut() {
+        Some(lease) if lease.client_id == client_id => {
+            lease.updated = now;
+            Ok(())
+        }
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("bridge player {} busy", player_index + 1),
+        )),
+        None => {
+            slots[player_index] = Some(BridgePlayerLease {
+                client_id: client_id.to_string(),
+                updated: now,
+            });
+            Ok(())
+        }
+    }
+}
+
+fn touch_bridge_player(
+    state: &BridgeState,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
+    let mut slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(lease) = slots[player_index]
+        .as_mut()
+        .filter(|lease| lease.client_id == client_id)
+    {
+        lease.updated = Instant::now();
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "bridge player lease lost",
+        ))
+    }
+}
+
+fn release_bridge_player(
+    state: &BridgeState,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
+    let mut slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if slots[player_index]
+        .as_ref()
+        .is_some_and(|lease| lease.client_id == client_id)
+    {
+        slots[player_index] = None;
+    }
+    Ok(())
+}
+
+fn clear_bridge_player(state: &BridgeState) -> io::Result<()> {
+    let mut slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *slots = [None, None];
+    let mut driver = state
+        .driver_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *driver = None;
+    let (packet, condvar) = &*state.latest_packet;
+    let mut packet = packet
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *packet = None;
+    condvar.notify_all();
+    Ok(())
+}
+
+fn claim_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<bool> {
+    let mut driver = state
+        .driver_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let now = Instant::now();
+    if driver
+        .as_ref()
+        .is_some_and(|lease| now.duration_since(lease.updated) > Duration::from_secs(8))
+    {
+        *driver = None;
+    }
+    match driver.as_mut() {
+        Some(lease) if lease.client_id == client_id => {
+            lease.updated = now;
+            Ok(true)
+        }
+        Some(_) => Ok(false),
+        None => {
+            *driver = Some(BridgePlayerLease {
+                client_id: client_id.to_string(),
+                updated: now,
+            });
+            Ok(true)
+        }
+    }
+}
+
+fn touch_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<()> {
+    let mut driver = state
+        .driver_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(lease) = driver.as_mut().filter(|lease| lease.client_id == client_id) {
+        lease.updated = Instant::now();
+    }
+    Ok(())
+}
+
+fn release_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<()> {
+    let mut driver = state
+        .driver_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if driver
+        .as_ref()
+        .is_some_and(|lease| lease.client_id == client_id)
+    {
+        *driver = None;
+    }
+    Ok(())
+}
+
+fn publish_bridge_packet(
+    state: &BridgeState,
+    bytes: Vec<u8>,
+    frame: u32,
+    stopped: bool,
+) -> io::Result<()> {
+    let (packet, condvar) = &*state.latest_packet;
+    let mut packet = packet
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *packet = Some(BridgePacketSnapshot {
+        frame,
+        bytes,
+        stopped,
+    });
+    condvar.notify_all();
     Ok(())
 }
 
@@ -1236,35 +1541,105 @@ fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<
     )
 }
 
-fn bridge_stream_frame_audio(stream: &mut TcpStream, state: &BridgeState) -> io::Result<()> {
+fn bridge_stream_frame_audio(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    client_id: String,
+    player_index: usize,
+) -> io::Result<()> {
     {
         let emulator = lock_bridge_emulator(state)?;
         if emulator.bus.rom.is_empty() {
+            release_bridge_player(state, &client_id, player_index)?;
             return send_error(stream, 409, "no ROM loaded");
         }
     }
 
     stream.set_nodelay(true)?;
     send_stream_header(stream, "application/octet-stream")?;
+    let result = if claim_bridge_driver(state, &client_id)? {
+        bridge_stream_driver(stream, state, &client_id, player_index)
+    } else {
+        bridge_stream_viewer(stream, state, &client_id, player_index)
+    };
+    release_bridge_player(state, &client_id, player_index)?;
+    release_bridge_driver(state, &client_id)?;
+    result
+}
+
+fn bridge_stream_driver(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
     loop {
+        touch_bridge_player(state, client_id, player_index)?;
+        touch_bridge_driver(state, client_id)?;
         pace_bridge_frame(state)?;
-        let (packet, stopped) = {
+        let (packet, frame, stopped) = {
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
-                return Ok(());
+                break Ok(());
             }
             let run = emulator.run_frame();
             let stopped = run.hit_unsupported_opcode;
             let packet = bridge_frame_audio_bytes(&mut emulator, &run, 44_100);
-            (packet, stopped)
+            let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
+            (packet, frame, stopped)
         };
-        stream.write_all(&(packet.len() as u32).to_le_bytes())?;
-        stream.write_all(&packet)?;
-        stream.flush()?;
+        publish_bridge_packet(state, packet.clone(), frame, stopped)?;
+        write_stream_packet(stream, &packet)?;
         if stopped {
-            return Ok(());
+            break Ok(());
         }
     }
+}
+
+fn bridge_stream_viewer(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
+    let (packet_lock, condvar) = &*state.latest_packet;
+    let mut last_frame = 0u32;
+    loop {
+        touch_bridge_player(state, client_id, player_index)?;
+        let mut packet = packet_lock
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        while packet
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.frame == last_frame)
+        {
+            let wait = condvar
+                .wait_timeout(packet, Duration::from_secs(2))
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            packet = wait.0;
+            if wait.1.timed_out() {
+                touch_bridge_player(state, client_id, player_index)?;
+            }
+        }
+        let Some(snapshot) = packet.as_ref() else {
+            continue;
+        };
+        let frame = snapshot.frame;
+        let stopped = snapshot.stopped;
+        let bytes = snapshot.bytes.clone();
+        drop(packet);
+        last_frame = frame;
+        write_stream_packet(stream, &bytes)?;
+        if stopped {
+            break Ok(());
+        }
+    }
+}
+
+fn write_stream_packet(stream: &mut TcpStream, packet: &[u8]) -> io::Result<()> {
+    stream.write_all(&(packet.len() as u32).to_le_bytes())?;
+    stream.write_all(packet)?;
+    stream.flush()
 }
 
 fn bridge_status(emulator: &Emulator) -> BridgeStatus {
@@ -1624,7 +1999,11 @@ fn unix_ms_now() -> u64 {
 }
 
 fn apply_bridge_input(emulator: &mut Emulator, input: BridgeInput) {
-    let pad = &mut emulator.bus.controller_a;
+    let pad = if input.player == Some(2) {
+        &mut emulator.bus.controller_b
+    } else {
+        &mut emulator.bus.controller_a
+    };
     pad.set_pressed(euther_oxide::controller::Controller::UP, input.up);
     pad.set_pressed(euther_oxide::controller::Controller::DOWN, input.down);
     pad.set_pressed(euther_oxide::controller::Controller::LEFT, input.left);

@@ -102,6 +102,7 @@ type InputState = {
 };
 
 type InputName = keyof InputState;
+type PlayerPort = 1 | 2;
 
 type PadBinding = {
   kind: "button" | "axis";
@@ -246,6 +247,8 @@ const bindingsStorageKey = "eutheroxide-input-bindings";
 const shaderStorageKey = "eutheroxide-video-shader";
 const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 const mobileModeStorageKey = "eutheroxide-mobile-mode";
+const bridgeClientStorageKey = "eutheroxide-bridge-client-id";
+const playerPortStorageKey = "eutheroxide-player-port";
 let audioVolume = readStoredVolume();
 const localAudioTargetLeadSeconds = 0.055;
 const localAudioMinimumLeadSeconds = 0.018;
@@ -380,6 +383,8 @@ let bridgeStreamGeneration = 0;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
+const bridgeClientId = readBridgeClientId();
+let playerPort: PlayerPort = readStoredPlayerPort();
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
 let audioGain: GainNode | null = null;
@@ -480,6 +485,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <p class="section-label">Pad</p>
           <button id="controls-open" class="mini-action" type="button">Controls</button>
         </div>
+        <div class="player-switch" aria-label="controller port">
+          <button data-player-port="1" type="button">1st Player</button>
+          <button data-player-port="2" type="button">2nd Player</button>
+        </div>
         <div class="pad-grid" aria-label="controller">
           <button data-pad="up" class="pad-key pad-up" type="button">U</button>
           <button data-pad="left" class="pad-key pad-left" type="button">L</button>
@@ -509,6 +518,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <span id="build-lamp" class="build-lamp is-cold" title="Release binary not armed"></span>
           </div>
           <button id="mobile-toggle" class="mobile-toggle" type="button" aria-pressed="false">Mobile</button>
+          <div class="player-switch stage-player-switch" aria-label="controller port">
+            <button data-player-port="1" type="button">1P</button>
+            <button data-player-port="2" type="button">2P</button>
+          </div>
           <div class="runtime-chip" id="runtime-chip">WEB VIEW</div>
         </div>
       </header>
@@ -580,6 +593,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </div>
     <div class="mobile-system">
       <button data-mobile-command="play" class="mobile-command primary-action" type="button">Play</button>
+      <div class="player-switch mobile-player-switch" aria-label="controller port">
+        <button data-player-port="1" type="button">1P</button>
+        <button data-player-port="2" type="button">2P</button>
+      </div>
       <button data-pad="start" class="pad-key mobile-start" type="button">Start</button>
       <button data-mobile-command="reset" class="mobile-command" type="button">Reset</button>
       <button data-mobile-command="controls" class="mobile-command" type="button">Bind</button>
@@ -661,6 +678,9 @@ const captureReadout = document.querySelector<HTMLDivElement>("#capture-readout"
 const buildProfileButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-build-profile]"),
 );
+const playerPortButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-player-port]"),
+);
 
 volumeSlider.value = Math.round(audioVolume * 100).toString();
 initializeShaderControls();
@@ -669,12 +689,19 @@ void loadRomDirSetting();
 updateVolumeUi();
 applyAudioVolume();
 applyMobileMode();
+renderPlayerPort();
 volumeSlider.addEventListener("input", () => {
   setAudioVolume(Number(volumeSlider.value) / 100);
 });
 
 mobileToggle.addEventListener("click", () => {
   setMobileMode(!mobileMode);
+});
+
+playerPortButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setPlayerPort(button.dataset.playerPort === "2" ? 2 : 1);
+  });
 });
 
 shaderSelect.addEventListener("change", () => {
@@ -2323,8 +2350,27 @@ async function bridgeFrameAudio(timeoutMs = 0): Promise<FrameAudioResult> {
   return decodeBridgeFrameAudio(buffer);
 }
 
+function readBridgeClientId(): string {
+  const stored = localStorage.getItem(bridgeClientStorageKey);
+  if (stored) {
+    return stored;
+  }
+  const generated =
+    globalThis.crypto?.randomUUID?.() ??
+    `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(bridgeClientStorageKey, generated);
+  return generated;
+}
+
+function bridgeUrl(path: string): string {
+  const url = new URL(path, bridgeBase);
+  url.searchParams.set("client", bridgeClientId);
+  url.searchParams.set("player", String(playerPort));
+  return url.toString();
+}
+
 async function bridgeStreamRequest(signal: AbortSignal): Promise<Response> {
-  const response = await fetch(`${bridgeBase}/stream-frame-audio.bin`, {
+  const response = await fetch(bridgeUrl("/stream-frame-audio.bin"), {
     method: "GET",
     signal,
   });
@@ -2586,7 +2632,7 @@ async function bridgeRequest(
     if (init.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const response = await fetch(`${bridgeBase}${path}`, {
+    const response = await fetch(bridgeUrl(path), {
       ...init,
       headers,
       signal: controller?.signal,
@@ -2704,9 +2750,19 @@ async function bridgeStreamLoop(): Promise<void> {
   } catch (error) {
     if (ui.playing && ui.runtime === "bridge" && !bridgeRestarting) {
       ui.lastError = String(error);
-      pushTrace("Bridge stream fell back");
-      nextFrameDue = performance.now();
-      void animationLoop();
+      if (ui.lastError.toLowerCase().includes("bridge player busy")) {
+        ui.playing = false;
+        playToggle.textContent = "Play";
+        ui.status = "BUSY";
+        ui.transportMode = "VIEWER";
+        resetScheduledAudio();
+        pushTrace("Bridge player slot occupied");
+        renderUi();
+      } else {
+        pushTrace("Bridge stream fell back");
+        nextFrameDue = performance.now();
+        void animationLoop();
+      }
     }
   } finally {
     if (generation === bridgeStreamGeneration) {
@@ -2894,6 +2950,33 @@ function applyMobileMode(): void {
   mobileToggle.setAttribute("aria-pressed", mobileMode ? "true" : "false");
   mobileToggle.textContent = mobileMode ? "Desk" : "Mobile";
   ui.audioLeadMs = 0;
+}
+
+function readStoredPlayerPort(): PlayerPort {
+  return localStorage.getItem(playerPortStorageKey) === "2" ? 2 : 1;
+}
+
+function setPlayerPort(port: PlayerPort): void {
+  if (playerPort === port) {
+    return;
+  }
+  playerPort = port;
+  localStorage.setItem(playerPortStorageKey, String(port));
+  lastInputJson = "";
+  resetScheduledAudio();
+  if (ui.runtime === "bridge" && ui.playing) {
+    stopBridgeStream();
+    void bridgeStreamLoop();
+  }
+  renderPlayerPort();
+}
+
+function renderPlayerPort(): void {
+  playerPortButtons.forEach((button) => {
+    const selected = Number(button.dataset.playerPort ?? 1) === playerPort;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  });
 }
 
 function setAudioVolume(value: number): void {
@@ -3317,7 +3400,7 @@ async function syncInput(): Promise<void> {
     try {
       await bridgeRequest("/input", {
         method: "POST",
-        body: JSON.stringify(inputState),
+        body: JSON.stringify({ ...inputState, player: playerPort }),
       });
     } catch {
       pushTrace("Core bridge input missed");
@@ -3550,6 +3633,7 @@ function renderUi(): void {
   mobilePlay.disabled = !ui.loaded;
   mobilePlay.textContent = ui.playing ? "Pause" : "Play";
   screenGlass.classList.toggle("is-native-frame", ui.loaded && ui.runtime !== "web");
+  renderPlayerPort();
   renderBuildControls();
   renderStateSlots();
   scheduleNativeSurfaceRectSync();

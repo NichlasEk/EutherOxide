@@ -556,6 +556,41 @@ h2 {
   background: linear-gradient(135deg, rgba(128, 43, 33, 0.82), rgba(80, 88, 35, 0.72));
 }
 
+.player-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(98, 218, 168, 0.18);
+  border-radius: 999px;
+  background: rgba(5, 14, 11, 0.76);
+}
+
+.player-switch button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #9fbe91;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.player-switch button:hover:not(:disabled),
+.player-switch button:active:not(:disabled),
+.player-switch button.is-selected {
+  transform: none;
+  background: linear-gradient(135deg, rgba(98, 218, 168, 0.26), rgba(245, 215, 125, 0.18));
+  color: #f4ffde;
+  box-shadow: none;
+}
+
+.stage-player-switch {
+  flex: none;
+  width: 92px;
+}
+
 .pad-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1183,6 +1218,14 @@ h2 {
   display: grid;
   gap: 7px;
   align-self: center;
+}
+
+.mobile-player-switch {
+  padding: 3px;
+}
+
+.mobile-player-switch button {
+  min-height: 34px;
 }
 
 .mobile-pad .pad-key,
