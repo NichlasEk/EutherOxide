@@ -1134,11 +1134,19 @@ fn handle_bridge_route(
             send_empty(stream, 204)
         }
         ("POST", "/eutherdogs/start") => {
+            let start = if request.body.is_empty() {
+                euther_oxide::eutherdogs::EutherDogsStart { staff: None }
+            } else {
+                serde_json::from_slice(&request.body)
+                    .map_err(|err| invalid_request(err.to_string()))?
+            };
             let mut dogs = state
                 .eutherdogs
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo();
+            *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_staff(
+                start.staff.unwrap_or(1),
+            );
             send_json(stream, &dogs.snapshot())
         }
         ("POST", "/eutherdogs/reset") => {

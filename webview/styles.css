@@ -389,6 +389,60 @@ button:disabled {
   gap: 7px;
 }
 
+.eutherdogs-staff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.eutherdogs-staff-card {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+  min-height: 142px;
+  padding: 10px;
+  border-radius: 0;
+  text-align: left;
+}
+
+.eutherdogs-staff-card.is-selected {
+  border-color: rgba(255, 239, 110, 0.58);
+  background: rgba(45, 39, 7, 0.78);
+}
+
+.eutherdogs-staff-card span,
+.eutherdogs-staff-card small,
+.eutherdogs-staff-card em {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.eutherdogs-staff-card span {
+  color: #92f4ee;
+  font-size: 0.58rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherdogs-staff-card strong {
+  color: #ffffff;
+  font-size: 0.86rem;
+  text-transform: uppercase;
+}
+
+.eutherdogs-staff-card small {
+  color: #d6ffff;
+  font-size: 0.64rem;
+  font-weight: 850;
+}
+
+.eutherdogs-staff-card em {
+  color: #ffef6e;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 850;
+}
+
 .eutherdogs-briefing-grid div {
   min-width: 0;
   padding: 8px;

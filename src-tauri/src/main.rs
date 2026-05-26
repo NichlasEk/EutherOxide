@@ -542,9 +542,12 @@ fn set_input(state: State<'_, AppState>, input: InputState) -> Result<(), String
 #[tauri::command]
 fn start_eutherdogs(
     state: State<'_, AppState>,
+    start: Option<euther_oxide::eutherdogs::EutherDogsStart>,
 ) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
     let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
-    *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo();
+    *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_staff(
+        start.and_then(|start| start.staff).unwrap_or(1),
+    );
     Ok(dogs.snapshot())
 }
 

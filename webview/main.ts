@@ -307,7 +307,17 @@ type DogsCoreFrame = {
   highscoreCount: number;
 };
 
-type DogsMenuMode = "store" | "briefing" | null;
+type DogsMenuMode = "staff" | "store" | "briefing" | null;
+
+type DogsStaffOption = {
+  id: 1 | 2;
+  name: string;
+  role: string;
+  armor: number;
+  cash: number;
+  loadout: string;
+  note: string;
+};
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
@@ -320,6 +330,26 @@ const bridgeBase =
     ? window.location.origin
     : "http://127.0.0.1:32161");
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
+const dogsStaffOptions: DogsStaffOption[] = [
+  {
+    id: 1,
+    name: "Night Tech",
+    role: "Closing shift technician",
+    armor: 100,
+    cash: 500,
+    loadout: "Scanner Blaster, Rx Cannon",
+    note: "Knows where the prior-auth forms are buried.",
+  },
+  {
+    id: 2,
+    name: "Neon Pharmacist",
+    role: "Counter lead",
+    armor: 100,
+    cash: 500,
+    loadout: "Scanner Blaster",
+    note: "Can say 'policy' without blinking.",
+  },
+];
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
@@ -484,6 +514,7 @@ let mobileMode = readStoredMobileMode();
 let dogsMode = false;
 let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
+let selectedDogsStaff: 1 | 2 = 1;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
@@ -664,6 +695,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               </header>
               <div id="eutherdogs-menu-body" class="eutherdogs-menu-body"></div>
               <footer>
+                <button id="eutherdogs-staff-open" type="button">Staff</button>
                 <button id="eutherdogs-store-open" type="button">RX Store</button>
                 <button id="eutherdogs-briefing-open" type="button">Briefing</button>
                 <button id="eutherdogs-start-shift" class="primary-action" type="button">Start shift</button>
@@ -822,6 +854,7 @@ const eutherDogsMenuKicker = document.querySelector<HTMLElement>("#eutherdogs-me
 const eutherDogsMenuTitle = document.querySelector<HTMLElement>("#eutherdogs-menu-title")!;
 const eutherDogsMenuCash = document.querySelector<HTMLElement>("#eutherdogs-menu-cash")!;
 const eutherDogsMenuBody = document.querySelector<HTMLDivElement>("#eutherdogs-menu-body")!;
+const eutherDogsStaffOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-staff-open")!;
 const eutherDogsStoreOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-store-open")!;
 const eutherDogsBriefingOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-briefing-open")!;
 const eutherDogsStartShift = document.querySelector<HTMLButtonElement>("#eutherdogs-start-shift")!;
@@ -1059,6 +1092,10 @@ eutherDogsToggle.addEventListener("click", () => {
   }
 });
 
+eutherDogsStaffOpen.addEventListener("click", () => {
+  showDogsMenu("staff");
+});
+
 eutherDogsStoreOpen.addEventListener("click", () => {
   showDogsMenu("store");
 });
@@ -1072,6 +1109,12 @@ eutherDogsStartShift.addEventListener("click", () => {
 });
 
 eutherDogsMenuBody.addEventListener("click", (event) => {
+  const staffButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-staff-id]");
+  if (staffButton) {
+    const staff = staffButton.dataset.staffId === "2" ? 2 : 1;
+    void selectDogsStaff(staff);
+    return;
+  }
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
   if (!button || button.disabled) return;
   void purchaseDogsStoreItem(button.dataset.storeItem ?? "");
@@ -3333,8 +3376,31 @@ function renderDogsMenu(): void {
   const storeItems = dogsFrame?.store ?? [];
   const hero = dogsCurrentHero();
   eutherDogsMenuCash.textContent = `$${cash}`;
+  eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
+  if (dogsMenuMode === "staff") {
+    eutherDogsMenuKicker.textContent = "Staff Select";
+    eutherDogsMenuTitle.textContent = "Choose Counter Liability";
+    eutherDogsMenuBody.innerHTML = `
+      <div class="eutherdogs-staff-grid">
+        ${dogsStaffOptions
+          .map(
+            (staff) => `
+              <button class="eutherdogs-staff-card ${selectedDogsStaff === staff.id ? "is-selected" : ""}" data-staff-id="${staff.id}" type="button">
+                <span>${staff.role}</span>
+                <strong>${staff.name}</strong>
+                <small>Coat ${staff.armor} | Cash $${staff.cash}</small>
+                <small>${staff.loadout}</small>
+                <em>${staff.note}</em>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    `;
+    return;
+  }
   if (dogsMenuMode === "briefing") {
     const summary = dogsFrame?.summary;
     eutherDogsMenuKicker.textContent = "Briefing";
@@ -3376,6 +3442,19 @@ async function purchaseDogsStoreItem(itemId: string): Promise<void> {
     pushTrace(`RX Store purchased ${itemId}`);
   } catch (err) {
     pushTrace(`RX Store denied ${itemId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function selectDogsStaff(staff: 1 | 2): Promise<void> {
+  selectedDogsStaff = staff;
+  try {
+    dogsFrame = await startDogsCore();
+    drawDogsFrame(dogsFrame);
+    showDogsMenu("store");
+    pushTrace(`EutherDogs staff selected ${dogsStaffOptions.find((option) => option.id === staff)?.name ?? staff}`);
+  } catch (err) {
+    pushTrace(`EutherDogs staff select failed: ${err instanceof Error ? err.message : String(err)}`);
+    renderDogsMenu();
   }
 }
 
@@ -3446,7 +3525,7 @@ async function enterDogsMode(): Promise<void> {
   eutherDogsConsole.setAttribute("aria-hidden", "false");
   eutherDogsToggle.classList.add("is-active");
   drawDogsFrame(dogsFrame);
-  showDogsMenu("store");
+  showDogsMenu("staff");
   renderUi();
   pushTrace("EutherDogs Rust core started");
 }
@@ -3504,14 +3583,18 @@ async function runDogsFrame(): Promise<void> {
 }
 
 async function startDogsCore(): Promise<DogsCoreFrame> {
+  const start = { staff: selectedDogsStaff };
   if (isTauri) {
-    return await invoke<DogsCoreFrame>("start_eutherdogs");
+    return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
   if (ui.runtime !== "bridge") {
     await connectBridge(false);
   }
   if (ui.runtime === "bridge") {
-    return await bridgeJson<DogsCoreFrame>("/eutherdogs/start", { method: "POST" });
+    return await bridgeJson<DogsCoreFrame>("/eutherdogs/start", {
+      method: "POST",
+      body: JSON.stringify(start),
+    });
   }
   throw new Error("starta web bridge eller Tauri for Rust-core demo");
 }

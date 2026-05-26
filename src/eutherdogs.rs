@@ -35,6 +35,12 @@ pub struct EutherDogsPurchase {
     pub player: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EutherDogsStart {
+    pub staff: Option<u8>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EutherDogsFrame {
@@ -128,6 +134,11 @@ impl EutherDogsRuntime {
         Self::from_config(demo_config()).expect("bundled EutherDogs demo config is valid")
     }
 
+    pub fn demo_with_staff(staff: u8) -> Self {
+        Self::from_config(staff_demo_config(staff))
+            .expect("bundled EutherDogs staff config is valid")
+    }
+
     pub fn reset(&mut self) -> Result<(), ConfigError> {
         self.game = Game::new_mission_from_config(&self.config)?;
         self.frame = 0;
@@ -194,6 +205,16 @@ pub fn demo_game() -> Game {
 pub fn demo_config() -> EutherDogsConfig {
     EutherDogsConfig::from_toml_str(include_str!("../config/eutherdogs.example.toml"))
         .expect("bundled EutherDogs config parses")
+}
+
+pub fn staff_demo_config(staff: u8) -> EutherDogsConfig {
+    let mut config = demo_config();
+    let staff_key = staff.clamp(1, 2).to_string();
+    if let Some(player) = config.player.get(&staff_key).cloned() {
+        config.player.insert("1".to_string(), player);
+    }
+    config.settings.player_count = 1;
+    config
 }
 
 pub fn eutherdogs_frame(
