@@ -236,6 +236,13 @@ impl World {
         self.tile(x, y).map_or(true, Tile::blocks_walk)
     }
 
+    pub fn tile_at_pixel(&self, x: i32, y: i32) -> Option<Tile> {
+        if x < 0 || y < 0 {
+            return None;
+        }
+        self.tile((x / TILE_WIDTH) as usize, (y / TILE_HEIGHT) as usize)
+    }
+
     fn index(&self, x: usize, y: usize) -> Option<usize> {
         (x < self.width && y < self.height).then_some(y * self.width + x)
     }
