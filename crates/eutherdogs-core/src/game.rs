@@ -4,6 +4,7 @@ use crate::{
     command::PlayerCommand,
     direction::Direction,
     entity::{Bullet, Character, Faction},
+    rng::Lcg,
     world::{MissionSpec, Tile, World, WorldParams, TILE_HEIGHT, TILE_WIDTH},
 };
 
@@ -29,6 +30,23 @@ pub enum AudioEvent {
     Sfx(crate::assets::AssetId),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MissionStatus {
+    Running,
+    Won,
+    Lost,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MissionProgress {
+    pub kills: i32,
+    pub targets_destroyed: i32,
+    pub objects_collected: i32,
+    pub shots_fired: i32,
+    pub hits: i32,
+    pub damage_taken: i32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Game {
     world: World,
@@ -36,6 +54,11 @@ pub struct Game {
     bullets: Vec<Bullet>,
     audio_events: Vec<AudioEvent>,
     next_bullet_id: u32,
+    next_character_id: u32,
+    rng: Lcg,
+    status: MissionStatus,
+    progress: MissionProgress,
+    mission_goal_count: i32,
 }
 
 impl Default for Game {
@@ -50,6 +73,11 @@ impl Default for Game {
             bullets: Vec::new(),
             audio_events: Vec::new(),
             next_bullet_id: 1,
+            next_character_id: 1,
+            rng: Lcg::new(1),
+            status: MissionStatus::Running,
+            progress: MissionProgress::default(),
+            mission_goal_count: 0,
         }
     }
 }
@@ -63,22 +91,58 @@ impl Game {
             bullets: Vec::new(),
             audio_events: Vec::new(),
             next_bullet_id: 1,
+            next_character_id: 1,
+            rng: Lcg::new(seed ^ 0xE07A_D065),
+            status: MissionStatus::Running,
+            progress: MissionProgress::default(),
+            mission_goal_count: 0,
         };
+        game.mission_goal_count =
+            game.world.stats().targets_left + game.world.stats().objects_to_collect;
         if let Some((x, y)) = first_spawn_point(&game.world) {
             game.characters
                 .push(Character::player(0, x, y, AssetId::NightShiftTech));
+            game.next_character_id = 1;
         }
+        game.spawn_hostiles((mission.mission + 4).max(4) as usize);
         game
     }
 
+    pub fn spawn_hostiles(&mut self, count: usize) {
+        for _ in 0..count {
+            if let Some((x, y)) = random_spawn_point(&self.world, &mut self.rng) {
+                let sprite = match self.rng.range(4) {
+                    0 => AssetId::AngryCustomer,
+                    1 => AssetId::ClaimDenier,
+                    2 => AssetId::InventoryDrone,
+                    _ => AssetId::AngryCustomer,
+                };
+                self.characters.push(Character::hostile_customer(
+                    self.next_character_id,
+                    x,
+                    y,
+                    sprite,
+                ));
+                self.next_character_id += 1;
+            }
+        }
+    }
+
     pub fn tick(&mut self, input: &[PlayerInput], dt: FixedStep) {
+        if self.status != MissionStatus::Running {
+            return;
+        }
         for character in &mut self.characters {
             character.weapon_cooldown = character.weapon_cooldown.saturating_sub(dt.ticks as u8);
         }
         for input in input {
             self.apply_player_input(*input, dt);
         }
+        self.move_hostiles(dt);
         self.move_bullets(dt);
+        self.collect_pickups();
+        self.remove_dead_characters();
+        self.update_status();
     }
 
     pub fn render_snapshot(&self) -> RenderSnapshot {
@@ -102,6 +166,14 @@ impl Game {
 
     pub fn bullets(&self) -> &[Bullet] {
         &self.bullets
+    }
+
+    pub const fn status(&self) -> MissionStatus {
+        self.status
+    }
+
+    pub const fn progress(&self) -> MissionProgress {
+        self.progress
     }
 
     fn apply_player_input(&mut self, input: PlayerInput, dt: FixedStep) {
@@ -149,6 +221,9 @@ impl Game {
 
         let weapon = character.weapon.data();
         let (dx, dy) = character.direction.delta();
+        if dx == 0 && dy == 0 {
+            return;
+        }
         let bullet = Bullet {
             id: self.next_bullet_id,
             x: character.x + crate::world::CHARACTER_WIDTH / 2,
@@ -162,6 +237,7 @@ impl Game {
         self.next_bullet_id += 1;
         character.weapon_cooldown = weapon.rate;
         self.bullets.push(bullet);
+        self.progress.shots_fired += 1;
         self.audio_events.push(AudioEvent::Sfx(weapon.sound));
     }
 
@@ -172,14 +248,133 @@ impl Game {
             bullet.y += bullet.dy * dt.ticks as i32;
             bullet.range -= bullet.dx.abs().max(bullet.dy.abs()) * dt.ticks as i32;
 
-            if bullet.range <= 0 || bullet_hits_wall(&self.world, &bullet) {
+            let weapon = bullet.weapon.data();
+            if bullet.range <= 0 {
                 self.audio_events
                     .push(AudioEvent::Sfx(AssetId::ImpactLight));
+            } else if let Some(hit_index) = bullet_hits_character(&self.characters, &bullet) {
+                let damage = weapon.power as i32;
+                let hit = &mut self.characters[hit_index];
+                hit.armor -= damage;
+                self.progress.hits += 1;
+                if hit.armor <= 0 {
+                    hit.alive = false;
+                    self.progress.kills += i32::from(hit.faction == Faction::HostileCustomer);
+                    self.audio_events
+                        .push(AudioEvent::Sfx(AssetId::CustomerDefeated));
+                } else {
+                    self.audio_events.push(AudioEvent::Sfx(AssetId::ImpactHeavy));
+                }
+            } else if bullet_hits_wall(&self.world, &bullet) {
+                let old_targets = self.world.stats().targets_left;
+                let hit_tile = self
+                    .world
+                    .damage_structure_at_pixel(bullet.x, bullet.y, weapon.power as i32);
+                let new_targets = self.world.stats().targets_left;
+                self.progress.targets_destroyed += old_targets - new_targets;
+                self.audio_events.push(AudioEvent::Sfx(match hit_tile {
+                    Some(tile) if tile.is_destructible() => AssetId::ImpactHeavy,
+                    _ => AssetId::ImpactLight,
+                }));
             } else {
                 kept.push(bullet);
             }
         }
         self.bullets = kept;
+    }
+
+    fn move_hostiles(&mut self, dt: FixedStep) {
+        let Some((player_x, player_y)) = self
+            .characters
+            .iter()
+            .find(|character| character.faction == Faction::Player && character.alive)
+            .map(|character| (character.x, character.y))
+        else {
+            return;
+        };
+
+        let hostile_indices = self
+            .characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| character.faction == Faction::HostileCustomer && character.alive)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        for index in hostile_indices {
+            let (x, y) = (self.characters[index].x, self.characters[index].y);
+            if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
+                && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
+            {
+                self.hurt_player(0, 2 * dt.ticks as i32);
+                continue;
+            }
+
+            let direction = direction_toward(x, y, player_x, player_y);
+            self.move_character(index, direction, dt);
+        }
+    }
+
+    fn hurt_player(&mut self, player_index: usize, damage: i32) {
+        let Some(character) = self
+            .characters
+            .iter_mut()
+            .filter(|character| character.faction == Faction::Player && character.alive)
+            .nth(player_index)
+        else {
+            return;
+        };
+        character.armor -= damage;
+        self.progress.damage_taken += damage;
+        if character.armor <= 0 {
+            character.lives -= 1;
+            if character.lives <= 0 {
+                character.alive = false;
+            } else {
+                character.armor = 100;
+            }
+        }
+    }
+
+    fn collect_pickups(&mut self) {
+        for character in &mut self.characters {
+            if character.faction != Faction::Player || !character.alive {
+                continue;
+            }
+            let tile_x = ((character.x + crate::world::CHARACTER_WIDTH / 2) / TILE_WIDTH) as usize;
+            let tile_y = ((character.y + crate::world::CHARACTER_HEIGHT / 2) / TILE_HEIGHT) as usize;
+            let Some(tile) = self.world.collect_tile(tile_x, tile_y) else {
+                continue;
+            };
+            match tile {
+                Tile::LabCoatArmor => character.armor += 25,
+                Tile::HazardSleeves => character.armor += 50,
+                Tile::PillSplitter => character.weapon = crate::weapon::WeaponId::LabelPrinter,
+                _ => self.progress.objects_collected += 1,
+            }
+            self.audio_events.push(AudioEvent::Sfx(AssetId::PickupRx));
+        }
+    }
+
+    fn remove_dead_characters(&mut self) {
+        self.characters
+            .retain(|character| character.alive || character.faction == Faction::Player);
+    }
+
+    fn update_status(&mut self) {
+        if self
+            .characters
+            .iter()
+            .filter(|character| character.faction == Faction::Player)
+            .all(|character| !character.alive)
+        {
+            self.status = MissionStatus::Lost;
+        } else if self.mission_goal_count > 0
+            && self.world.stats().targets_left == 0
+            && self.world.stats().objects_to_collect == 0
+        {
+            self.status = MissionStatus::Won;
+        }
     }
 }
 
@@ -193,12 +388,53 @@ fn bullet_hits_wall(world: &World, bullet: &Bullet) -> bool {
     )
 }
 
+fn bullet_hits_character(characters: &[Character], bullet: &Bullet) -> Option<usize> {
+    characters
+        .iter()
+        .enumerate()
+        .find(|(_, character)| {
+            character.alive
+                && character.id != bullet.owner
+                && (character.x + crate::world::CHARACTER_WIDTH / 2 - bullet.x).abs()
+                    <= crate::world::CHARACTER_WIDTH
+                && (character.y + crate::world::CHARACTER_HEIGHT / 2 - bullet.y).abs()
+                    <= crate::world::CHARACTER_HEIGHT
+        })
+        .map(|(index, _)| index)
+}
+
+fn direction_toward(x: i32, y: i32, target_x: i32, target_y: i32) -> Direction {
+    match ((target_x - x).signum(), (target_y - y).signum()) {
+        (0, -1) => Direction::Up,
+        (1, -1) => Direction::UpRight,
+        (1, 0) => Direction::Right,
+        (1, 1) => Direction::DownRight,
+        (0, 1) => Direction::Down,
+        (-1, 1) => Direction::DownLeft,
+        (-1, 0) => Direction::Left,
+        (-1, -1) => Direction::UpLeft,
+        _ => Direction::Down,
+    }
+}
+
 fn first_spawn_point(world: &World) -> Option<(i32, i32)> {
     for y in 1..world.height() - 1 {
         for x in 1..world.width() - 1 {
             if !world.blocks_walk(x, y) {
                 return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
             }
+        }
+    }
+    None
+}
+
+fn random_spawn_point(world: &World, rng: &mut Lcg) -> Option<(i32, i32)> {
+    for _ in 0..200 {
+        let x = rng.range(world.width() as i32) as usize;
+        let y = rng.range(world.height() as i32) as usize;
+        if x > 1 && y > 1 && x < world.width() - 1 && y < world.height() - 1 && !world.blocks_walk(x, y)
+        {
+            return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
         }
     }
     None
@@ -215,7 +451,8 @@ mod tests {
     #[test]
     fn new_mission_spawns_player() {
         let game = Game::new_mission(7, WorldParams::default(), MissionSpec::default());
-        assert_eq!(game.characters().len(), 1);
+        assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::Player));
+        assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::HostileCustomer));
     }
 
     #[test]
@@ -298,5 +535,72 @@ mod tests {
         );
         game.tick(&[], FixedStep { ticks: 2 });
         assert!(game.bullets().is_empty());
+    }
+
+    #[test]
+    fn bullet_damage_kills_hostile_customer() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        let mut hostile = crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH + 32,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::AngryCustomer,
+        );
+        hostile.armor = 10;
+        game.characters.push(hostile);
+        game.tick(
+            &[PlayerInput {
+                player_index: 0,
+                command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+            }],
+            FixedStep { ticks: 1 },
+        );
+        for _ in 0..4 {
+            game.tick(&[], FixedStep { ticks: 1 });
+        }
+        assert!(game.progress().hits > 0);
+        assert!(game.progress().kills > 0);
+    }
+
+    #[test]
+    fn collecting_pickup_updates_progress() {
+        let mut game = Game::default();
+        game.world.set_tile(1, 1, Tile::Prescription);
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.progress().objects_collected, 1);
+        assert_eq!(game.world.tile(1, 1), Some(Tile::Floor));
+    }
+
+    #[test]
+    fn hostile_contact_damages_player() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.characters.push(crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH + 10,
+            TILE_HEIGHT + 3,
+            crate::assets::AssetId::AngryCustomer,
+        ));
+        let armor = game.characters()[0].armor;
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert!(game.characters()[0].armor < armor);
+        assert!(game.progress().damage_taken > 0);
     }
 }

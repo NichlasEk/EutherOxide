@@ -20,6 +20,7 @@ pub struct Character {
     pub weapon_cooldown: u8,
     pub sprite: AssetId,
     pub is_target: bool,
+    pub alive: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +50,25 @@ impl Character {
             weapon_cooldown: 0,
             sprite,
             is_target: false,
+            alive: true,
+        }
+    }
+
+    pub const fn hostile_customer(id: u32, x: i32, y: i32, sprite: AssetId) -> Self {
+        Self {
+            id,
+            faction: Faction::HostileCustomer,
+            x,
+            y,
+            speed: 2,
+            direction: Direction::Down,
+            armor: 35,
+            lives: 1,
+            weapon: WeaponId::CouponPistol,
+            weapon_cooldown: 0,
+            sprite,
+            is_target: false,
+            alive: true,
         }
     }
 }

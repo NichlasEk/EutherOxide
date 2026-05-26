@@ -66,6 +66,16 @@ impl Tile {
     pub const fn is_target(self) -> bool {
         matches!(self, Self::CorruptMedCabinet)
     }
+
+    pub const fn is_destructible(self) -> bool {
+        matches!(
+            self,
+            Self::CorruptMedCabinet
+                | Self::HackedVendingUnit
+                | Self::RecallCrate
+                | Self::ShippingBox
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,6 +181,55 @@ impl World {
 
     pub const fn stats(&self) -> MissionBuildStats {
         self.stats
+    }
+
+    pub fn collect_tile(&mut self, x: usize, y: usize) -> Option<Tile> {
+        let tile = self.tile(x, y)?;
+        if tile.is_pickup() {
+            self.set_tile(x, y, Tile::Floor);
+            if self.stats.objects_to_collect > 0
+                && matches!(
+                    tile,
+                    Tile::Prescription
+                        | Tile::Folder
+                        | Tile::DataWafer
+                        | Tile::CircuitBoard
+                        | Tile::PillSample
+                )
+            {
+                self.stats.objects_to_collect -= 1;
+            }
+            Some(tile)
+        } else {
+            None
+        }
+    }
+
+    pub fn damage_structure_at_pixel(&mut self, x: i32, y: i32, damage: i32) -> Option<Tile> {
+        if x < 0 || y < 0 {
+            return None;
+        }
+        let tile_x = (x / TILE_WIDTH) as usize;
+        let tile_y = (y / TILE_HEIGHT) as usize;
+        let tile = self.tile(tile_x, tile_y)?;
+        if !tile.is_destructible() {
+            return None;
+        }
+
+        let index = self.index(tile_x, tile_y)?;
+        let structure = &mut self.structures[index];
+        structure.durability -= damage;
+        if structure.durability > 0 {
+            return Some(tile);
+        }
+
+        let wreckage = structure.wreckage.unwrap_or(Tile::ScorchMark);
+        self.tiles[index] = wreckage;
+        self.structures[index] = Structure::default();
+        if tile.is_target() && self.stats.targets_left > 0 {
+            self.stats.targets_left -= 1;
+        }
+        Some(tile)
     }
 
     pub fn blocks_walk(&self, x: usize, y: usize) -> bool {
@@ -444,7 +503,7 @@ pub const fn world_height() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{MissionSpec, Tile, World, WorldParams};
+    use super::{MissionSpec, Tile, World, WorldParams, TILE_HEIGHT, TILE_WIDTH};
 
     #[test]
     fn generated_world_is_deterministic() {
@@ -494,5 +553,16 @@ mod tests {
         assert!(world.stats().objects_to_collect > 0);
         assert!(tiles.iter().any(|tile| tile.blocks_walk()));
         assert!(tiles.iter().any(|tile| tile.is_pickup()));
+    }
+
+    #[test]
+    fn damaging_destructible_tile_leaves_wreckage() {
+        let mut world = World::new(4, 4, Tile::Floor);
+        world.set_tile(1, 1, Tile::CorruptMedCabinet);
+        assert_eq!(
+            world.damage_structure_at_pixel(TILE_WIDTH + 1, TILE_HEIGHT + 1, 10),
+            Some(Tile::CorruptMedCabinet)
+        );
+        assert_eq!(world.tile(1, 1), Some(Tile::ScorchMark));
     }
 }
