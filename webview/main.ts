@@ -372,6 +372,8 @@ const bridgeAudioMaximumLeadSeconds = 0.65;
 const mobileBridgeAudioTargetLeadSeconds = 0.24;
 const mobileBridgeAudioMinimumLeadSeconds = 0.16;
 const mobileBridgeAudioMaximumLeadSeconds = 1.0;
+const eutherDogsCameraWorldWidth = 430;
+const eutherDogsCameraWorldHeight = 300;
 const inputState: InputState = {
   up: false,
   down: false,
@@ -3865,7 +3867,10 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const worldW = frame.width * frame.tileWidth;
   const worldH = frame.height * frame.tileHeight;
   const player = frame.characters.find((actor) => actor.faction === "player" && actor.alive) ?? frame.characters[0];
-  const scale = Math.max(0.18, Math.min(dogsCanvas.width / 640, dogsCanvas.height / 448));
+  const scale = Math.max(
+    0.18,
+    Math.min(dogsCanvas.width / eutherDogsCameraWorldWidth, dogsCanvas.height / eutherDogsCameraWorldHeight),
+  );
   const viewW = dogsCanvas.width / scale;
   const viewH = dogsCanvas.height / scale;
   const cameraX = Math.max(0, Math.min(worldW - viewW, (player?.x ?? 0) - viewW / 2));
