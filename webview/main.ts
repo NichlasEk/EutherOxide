@@ -292,6 +292,15 @@ type DogsCoreFrame = {
   highscoreCount: number;
 };
 
+type DogsMenuMode = "store" | "briefing" | null;
+
+type DogsStoreItem = {
+  id: string;
+  label: string;
+  price: number;
+  detail: string;
+};
+
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
 const pageParams = new URLSearchParams(window.location.search);
@@ -303,6 +312,12 @@ const bridgeBase =
     ? window.location.origin
     : "http://127.0.0.1:32161");
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
+const dogsStoreItems: DogsStoreItem[] = [
+  { id: "label_printer", label: "Label Printer", price: 125, detail: "Fast short-range sticker burst" },
+  { id: "sterilizer_spray", label: "Sterilizer Spray", price: 175, detail: "Wide cone for queue control" },
+  { id: "capsule_launcher", label: "Capsule Launcher", price: 250, detail: "Slow explosive capsule dose" },
+  { id: "rx_cannon", label: "Rx Cannon Refill", price: 300, detail: "Heavy prior-auth argument" },
+];
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
@@ -466,6 +481,7 @@ let shaderConfigLoadAttempted = false;
 let mobileMode = readStoredMobileMode();
 let dogsMode = false;
 let dogsFrame: DogsCoreFrame | null = null;
+let dogsMenuMode: DogsMenuMode = null;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
@@ -635,6 +651,23 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <strong id="eutherdogs-weapon">Scanner</strong>
             </div>
           </div>
+          <div id="eutherdogs-menu" class="eutherdogs-menu" aria-hidden="true">
+            <div class="eutherdogs-menu-panel">
+              <header>
+                <div>
+                  <span id="eutherdogs-menu-kicker">RX Store</span>
+                  <h3 id="eutherdogs-menu-title">Counter Before Chaos</h3>
+                </div>
+                <strong id="eutherdogs-menu-cash">$0</strong>
+              </header>
+              <div id="eutherdogs-menu-body" class="eutherdogs-menu-body"></div>
+              <footer>
+                <button id="eutherdogs-store-open" type="button">RX Store</button>
+                <button id="eutherdogs-briefing-open" type="button">Briefing</button>
+                <button id="eutherdogs-start-shift" class="primary-action" type="button">Start shift</button>
+              </footer>
+            </div>
+          </div>
           <div class="scanlines"></div>
           <div class="oxidation-ring"></div>
         </div>
@@ -782,6 +815,14 @@ const eutherDogsClock = document.querySelector<HTMLElement>("#eutherdogs-clock")
 const eutherDogsLamp = document.querySelector<HTMLSpanElement>("#eutherdogs-lamp")!;
 const eutherDogsHealthFill = document.querySelector<HTMLSpanElement>("#eutherdogs-health-fill")!;
 const eutherDogsWeapon = document.querySelector<HTMLElement>("#eutherdogs-weapon")!;
+const eutherDogsMenu = document.querySelector<HTMLDivElement>("#eutherdogs-menu")!;
+const eutherDogsMenuKicker = document.querySelector<HTMLElement>("#eutherdogs-menu-kicker")!;
+const eutherDogsMenuTitle = document.querySelector<HTMLElement>("#eutherdogs-menu-title")!;
+const eutherDogsMenuCash = document.querySelector<HTMLElement>("#eutherdogs-menu-cash")!;
+const eutherDogsMenuBody = document.querySelector<HTMLDivElement>("#eutherdogs-menu-body")!;
+const eutherDogsStoreOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-store-open")!;
+const eutherDogsBriefingOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-briefing-open")!;
+const eutherDogsStartShift = document.querySelector<HTMLButtonElement>("#eutherdogs-start-shift")!;
 const mobileToggle = document.querySelector<HTMLButtonElement>("#mobile-toggle")!;
 const mobilePlay = document.querySelector<HTMLButtonElement>('[data-mobile-command="play"]')!;
 const releaseBuild = document.querySelector<HTMLButtonElement>("#release-build")!;
@@ -1014,6 +1055,24 @@ eutherDogsToggle.addEventListener("click", () => {
   } else {
     void enterDogsMode();
   }
+});
+
+eutherDogsStoreOpen.addEventListener("click", () => {
+  showDogsMenu("store");
+});
+
+eutherDogsBriefingOpen.addEventListener("click", () => {
+  showDogsMenu("briefing");
+});
+
+eutherDogsStartShift.addEventListener("click", () => {
+  hideDogsMenu();
+});
+
+eutherDogsMenuBody.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
+  if (!button || button.disabled) return;
+  pushTrace(`RX Store selected ${button.dataset.storeItem ?? "item"}; purchase API pending`);
 });
 
 releaseBuild.addEventListener("click", async () => {
@@ -3217,6 +3276,66 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   eutherDogsLamp.classList.toggle("is-hot", frame.summary.targetsLeft > 0 && frame.summary.status === "running");
   eutherDogsConsole.classList.toggle("is-alert", frame.summary.targetsLeft > 0);
   eutherDogsConsole.classList.toggle("is-closed", frame.summary.status !== "running");
+  if (dogsMenuMode) {
+    renderDogsMenu();
+  }
+}
+
+function dogsCurrentCash(): number {
+  return dogsFrame?.summary.cash ?? 0;
+}
+
+function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
+  dogsMenuMode = mode;
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  stopBridgeStream();
+  renderDogsMenu();
+  eutherDogsMenu.setAttribute("aria-hidden", "false");
+  eutherDogsMenu.classList.add("is-open");
+}
+
+function hideDogsMenu(): void {
+  dogsMenuMode = null;
+  eutherDogsMenu.setAttribute("aria-hidden", "true");
+  eutherDogsMenu.classList.remove("is-open");
+}
+
+function renderDogsMenu(): void {
+  const cash = dogsCurrentCash();
+  eutherDogsMenuCash.textContent = `$${cash}`;
+  eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
+  eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
+  if (dogsMenuMode === "briefing") {
+    const summary = dogsFrame?.summary;
+    eutherDogsMenuKicker.textContent = "Briefing";
+    eutherDogsMenuTitle.textContent = "Night Shift Protocol";
+    eutherDogsMenuBody.innerHTML = `
+      <div class="eutherdogs-briefing-grid">
+        <div><span>Retrieve</span><strong>${summary?.objectsLeft ?? 0} RX objects</strong></div>
+        <div><span>Defuse</span><strong>${summary?.targetsLeft ?? 0} angry customers</strong></div>
+        <div><span>Policy</span><strong>No refunds after laser contact</strong></div>
+        <div><span>Uniform</span><strong>White coat, zero patience</strong></div>
+      </div>
+    `;
+    return;
+  }
+  eutherDogsMenuKicker.textContent = "RX Store";
+  eutherDogsMenuTitle.textContent = "Counter Before Chaos";
+  eutherDogsMenuBody.innerHTML = dogsStoreItems
+    .map((item) => {
+      const affordable = cash >= item.price;
+      return `
+        <button class="eutherdogs-store-item" data-store-item="${item.id}" type="button" ${affordable ? "" : "disabled"}>
+          <span>
+            <strong>${item.label}</strong>
+            <small>${item.detail}</small>
+          </span>
+          <em>$${item.price}</em>
+        </button>
+      `;
+    })
+    .join("");
 }
 
 function clampVolume(value: number): number {
@@ -3286,6 +3405,7 @@ async function enterDogsMode(): Promise<void> {
   eutherDogsConsole.setAttribute("aria-hidden", "false");
   eutherDogsToggle.classList.add("is-active");
   drawDogsFrame(dogsFrame);
+  showDogsMenu("store");
   renderUi();
   pushTrace("EutherDogs Rust core started");
 }
@@ -3299,6 +3419,7 @@ function leaveDogsMode(): void {
   playToggle.textContent = "Play";
   document.body.classList.remove("eutherdogs-mode");
   eutherDogsConsole.setAttribute("aria-hidden", "true");
+  hideDogsMenu();
   eutherDogsToggle.classList.remove("is-active");
   drawSyntheticFrame();
   renderUi();

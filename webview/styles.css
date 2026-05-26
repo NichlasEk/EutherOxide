@@ -258,6 +258,161 @@ button:disabled {
   color: #9cff75;
 }
 
+.eutherdogs-menu {
+  position: absolute;
+  inset: 48px 20px 34px;
+  z-index: 6;
+  display: none;
+  pointer-events: none;
+}
+
+.eutherdogs-menu.is-open {
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+}
+
+.eutherdogs-menu-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(520px, 100%);
+  max-height: 100%;
+  border: 1px solid rgba(39, 242, 255, 0.42);
+  background:
+    linear-gradient(180deg, rgba(4, 10, 12, 0.86), rgba(3, 6, 8, 0.9)),
+    var(--dogs-dispensary, none);
+  background-size: cover;
+  box-shadow:
+    inset 0 0 36px rgba(255, 48, 208, 0.1),
+    0 18px 60px rgba(0, 0, 0, 0.46);
+}
+
+.eutherdogs-menu-panel header,
+.eutherdogs-menu-panel footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px;
+  background: rgba(0, 5, 7, 0.72);
+}
+
+.eutherdogs-menu-panel header span {
+  display: block;
+  color: #92f4ee;
+  font-size: 0.62rem;
+  font-weight: 950;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.eutherdogs-menu-panel h3 {
+  margin: 2px 0 0;
+  color: #ffffff;
+  font-size: 0.92rem;
+  line-height: 1.1;
+}
+
+.eutherdogs-menu-panel header strong {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 239, 110, 0.28);
+  background: rgba(8, 9, 4, 0.78);
+  color: #ffef6e;
+  font-size: 0.82rem;
+}
+
+.eutherdogs-menu-body {
+  display: grid;
+  gap: 7px;
+  min-height: 0;
+  padding: 9px;
+  overflow: auto;
+}
+
+.eutherdogs-store-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 7px 9px;
+  border-radius: 0;
+  text-align: left;
+}
+
+.eutherdogs-store-item span {
+  min-width: 0;
+}
+
+.eutherdogs-store-item strong,
+.eutherdogs-store-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherdogs-store-item strong {
+  color: #ffffff;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+}
+
+.eutherdogs-store-item small {
+  color: #9ee9de;
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.eutherdogs-store-item em {
+  color: #ffef6e;
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.eutherdogs-briefing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.eutherdogs-briefing-grid div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(39, 242, 255, 0.18);
+  background: rgba(0, 5, 7, 0.74);
+}
+
+.eutherdogs-briefing-grid span,
+.eutherdogs-briefing-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.eutherdogs-briefing-grid span {
+  color: #92f4ee;
+  font-size: 0.58rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherdogs-briefing-grid strong {
+  margin-top: 3px;
+  color: #ffffff;
+  font-size: 0.72rem;
+}
+
+.eutherdogs-menu-panel footer button {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 0;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
 .eutherdogs-hud {
   position: absolute;
   left: 10px;
