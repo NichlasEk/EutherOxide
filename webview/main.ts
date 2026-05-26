@@ -309,6 +309,7 @@ type DogsCoreFrame = {
 };
 
 type DogsMenuMode = "staff" | "store" | "briefing" | "result" | null;
+type DogsActorFacing = "down" | "left" | "right" | "up";
 
 type DogsStaffOption = {
   id: 1 | 2;
@@ -518,6 +519,7 @@ let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
+let dogsActorFacings = new Map<string, DogsActorFacing>();
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -3249,18 +3251,42 @@ function dogsActorSheetAsset(actor: DogsCoreActor): string | null {
   return dogsAsset("sprites.heroes", dogsHeroKey(actor, true));
 }
 
-function dogsActorDirectionRow(actor: DogsCoreActor): number {
+function dogsActorDirectionFacing(actor: DogsCoreActor): DogsActorFacing {
   switch (actor.direction) {
     case "up":
     case "up_left":
     case "up_right":
-      return 3;
+      return "up";
     case "left":
     case "down_left":
-      return 1;
+      return "left";
     case "right":
     case "down_right":
+      return "right";
+    default:
+      return "down";
+  }
+}
+
+function dogsFacingFromMovement(dx: number, dy: number, fallback: DogsActorFacing): DogsActorFacing {
+  if (Math.abs(dx) > Math.abs(dy)) {
+    return dx < 0 ? "left" : "right";
+  }
+  if (Math.abs(dy) > 0) {
+    return dy < 0 ? "up" : "down";
+  }
+  return fallback;
+}
+
+function dogsActorFacingRow(facing: DogsActorFacing): number {
+  switch (facing) {
+    case "up":
+      return 3;
+    case "left":
+      return 1;
+    case "right":
       return 2;
+    case "down":
     default:
       return 0;
   }
@@ -3742,6 +3768,7 @@ async function runDogsFrame(): Promise<void> {
 async function startDogsCore(): Promise<DogsCoreFrame> {
   const start = { staff: selectedDogsStaff };
   dogsPreviousActorPositions = new Map();
+  dogsActorFacings = new Map();
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
@@ -3838,6 +3865,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     }
   }
   const nextActorPositions = new Map<string, { x: number; y: number }>();
+  const nextActorFacings = new Map<string, DogsActorFacing>();
   for (const actor of frame.characters) {
     if (!actor.alive) continue;
     const spriteW = Math.max(8, Math.ceil(32 * scale));
@@ -3849,10 +3877,15 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const actorKey = `${actor.faction}:${actor.id}`;
     const previous = dogsPreviousActorPositions.get(actorKey);
     const moving = Boolean(previous && (previous.x !== actor.x || previous.y !== actor.y));
+    const fallbackFacing = dogsActorFacings.get(actorKey) ?? dogsActorDirectionFacing(actor);
+    const facing = previous
+      ? dogsFacingFromMovement(actor.x - previous.x, actor.y - previous.y, fallbackFacing)
+      : fallbackFacing;
     nextActorPositions.set(actorKey, { x: actor.x, y: actor.y });
+    nextActorFacings.set(actorKey, facing);
     if (actor.faction === "player") {
       const frameColumn = moving ? Math.floor(frame.frame / 8) % 3 : 1;
-      const frameRow = dogsActorDirectionRow(actor);
+      const frameRow = dogsActorFacingRow(facing);
       drawDogsImageFrame(
         dogsActorSheetAsset(actor),
         frameColumn * 32,
@@ -3870,6 +3903,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     }
   }
   dogsPreviousActorPositions = nextActorPositions;
+  dogsActorFacings = nextActorFacings;
   for (const bullet of frame.bullets) {
     const projectileSize = Math.max(4, Math.ceil(16 * scale));
     drawDogsImage(
