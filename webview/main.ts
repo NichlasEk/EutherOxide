@@ -282,6 +282,12 @@ type DogsStoreItem = {
   label: string;
   price: number;
   detail: string;
+  weapon?: string | null;
+  ammo: number;
+  armor: number;
+  owned: boolean;
+  currentAmmo?: number | null;
+  active: boolean;
   affordable: boolean;
 };
 
@@ -3281,6 +3287,31 @@ function dogsCurrentCash(): number {
   return dogsFrame?.summary.cash ?? 0;
 }
 
+function dogsCurrentHero(): DogsCoreActor | null {
+  return dogsFrame?.characters.find((actor) => actor.faction === "player") ?? null;
+}
+
+function dogsAmmoLabel(ammo: number | null | undefined): string {
+  if (ammo == null) return "Not stocked";
+  return ammo < 0 ? "INF" : String(ammo);
+}
+
+function dogsStoreItemMeta(item: DogsStoreItem): string {
+  if (item.armor > 0) {
+    return `Coat +${item.armor}`;
+  }
+  if (item.owned) {
+    return `${item.active ? "Active" : "Owned"} | Ammo ${dogsAmmoLabel(item.currentAmmo)}`;
+  }
+  return `New | Ammo +${dogsAmmoLabel(item.ammo)}`;
+}
+
+function dogsStoreActionLabel(item: DogsStoreItem): string {
+  if (item.armor > 0) return `Boost $${item.price}`;
+  if (item.owned) return `Refill $${item.price}`;
+  return `Buy $${item.price}`;
+}
+
 function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
   dogsMenuMode = mode;
   ui.playing = false;
@@ -3300,6 +3331,7 @@ function hideDogsMenu(): void {
 function renderDogsMenu(): void {
   const cash = dogsCurrentCash();
   const storeItems = dogsFrame?.store ?? [];
+  const hero = dogsCurrentHero();
   eutherDogsMenuCash.textContent = `$${cash}`;
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
@@ -3318,16 +3350,17 @@ function renderDogsMenu(): void {
     return;
   }
   eutherDogsMenuKicker.textContent = "RX Store";
-  eutherDogsMenuTitle.textContent = "Counter Before Chaos";
+  eutherDogsMenuTitle.textContent = `Counter | Coat ${hero?.armor ?? 0} | ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}`;
   eutherDogsMenuBody.innerHTML = storeItems
     .map((item) => {
       return `
-        <button class="eutherdogs-store-item" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
+        <button class="eutherdogs-store-item ${item.active ? "is-equipped" : ""}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
           <span>
             <strong>${item.label}</strong>
             <small>${item.detail}</small>
+            <small>${dogsStoreItemMeta(item)}</small>
           </span>
-          <em>$${item.price}</em>
+          <em>${dogsStoreActionLabel(item)}</em>
         </button>
       `;
     })

@@ -370,6 +370,17 @@ button:disabled {
   font-size: 0.78rem;
   font-style: normal;
   font-weight: 950;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.eutherdogs-store-item.is-equipped {
+  border-color: rgba(255, 239, 110, 0.5);
+  background: rgba(45, 39, 7, 0.72);
+}
+
+.eutherdogs-store-item:disabled em {
+  color: #8da09d;
 }
 
 .eutherdogs-briefing-grid {

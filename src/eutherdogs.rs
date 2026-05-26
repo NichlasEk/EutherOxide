@@ -60,6 +60,12 @@ pub struct EutherDogsStoreItem {
     pub label: String,
     pub price: i32,
     pub detail: String,
+    pub weapon: Option<String>,
+    pub ammo: i32,
+    pub armor: i32,
+    pub owned: bool,
+    pub current_ammo: Option<i32>,
+    pub active: bool,
     pub affordable: bool,
 }
 
@@ -280,15 +286,38 @@ pub fn eutherdogs_frame(
 
 fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsStoreItem> {
     let cash = game.summary().progress.cash;
+    let player = game
+        .characters()
+        .iter()
+        .find(|character| character.faction == eutherdogs_core::entity::Faction::Player);
     config
         .store
         .iter()
-        .map(|item| EutherDogsStoreItem {
-            id: item.id.clone(),
-            label: item.label.clone(),
-            price: item.price,
-            detail: item.detail.clone(),
-            affordable: cash >= item.price.max(0),
+        .map(|item| {
+            let weapon = item
+                .weapon
+                .as_deref()
+                .and_then(eutherdogs_core::WeaponId::from_key);
+            let slot = weapon.and_then(|weapon| {
+                player.and_then(|player| player.weapons.iter().find(|slot| slot.weapon == weapon))
+            });
+            let active = weapon
+                .zip(player)
+                .is_some_and(|(weapon, player)| player.active_weapon_id() == weapon);
+            let owned = item.armor > 0 || slot.is_some();
+            EutherDogsStoreItem {
+                id: item.id.clone(),
+                label: item.label.clone(),
+                price: item.price,
+                detail: item.detail.clone(),
+                weapon: item.weapon.clone(),
+                ammo: item.ammo,
+                armor: item.armor,
+                owned,
+                current_ammo: slot.map(|slot| slot.ammo),
+                active,
+                affordable: cash >= item.price.max(0),
+            }
         })
         .collect()
 }
