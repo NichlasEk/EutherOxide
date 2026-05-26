@@ -3291,6 +3291,28 @@ function dogsExitReady(frame: DogsCoreFrame): boolean {
   );
 }
 
+function dogsHeroOnExit(frame: DogsCoreFrame): boolean {
+  const hero = frame.characters.find((actor) => actor.faction === "player" && actor.alive);
+  if (!hero) return false;
+  const left = hero.x;
+  const right = hero.x + frame.characterWidth - 1;
+  const top = hero.y;
+  const bottom = hero.y + frame.characterHeight - 1;
+  const centerX = hero.x + frame.characterWidth / 2;
+  const centerY = hero.y + frame.characterHeight / 2;
+  return [
+    [centerX, centerY],
+    [left, top],
+    [right, top],
+    [left, bottom],
+    [right, bottom],
+  ].some(([x, y]) => {
+    const tileX = Math.floor(x / frame.tileWidth);
+    const tileY = Math.floor(y / frame.tileHeight);
+    return dogsTileAt(frame, tileX, tileY) === "service_elevator";
+  });
+}
+
 function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
   const staffId = dogsFrame?.characters.filter((entry) => entry.faction === "player").length === 1
     ? selectedDogsStaff
@@ -3544,6 +3566,15 @@ function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame 
   } else if (frame.summary.hits > previous.summary.hits || frame.summary.damageTaken > previous.summary.damageTaken) {
     void playDogsSfx("impact_heavy", 0.9);
   }
+}
+
+function resolveDogsLocalExit(frame: DogsCoreFrame): boolean {
+  if (frame.summary.status !== "running" || !dogsExitReady(frame) || !dogsHeroOnExit(frame)) {
+    return false;
+  }
+  frame.summary.status = "won";
+  void playDogsSfx("portal_enter");
+  return true;
 }
 
 function dogsGameplaySfxGain(sound: string): number {
@@ -3956,6 +3987,7 @@ async function runDogsFrame(): Promise<void> {
   const started = performance.now();
   dogsFrame = await runDogsCoreFrame();
   processDogsAudio(dogsFrame);
+  resolveDogsLocalExit(dogsFrame);
   drawDogsFrame(dogsFrame);
   const done = performance.now();
   ui.frame = dogsFrame.frame;

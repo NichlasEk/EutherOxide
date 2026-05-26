@@ -676,12 +676,25 @@ impl Game {
         self.characters
             .iter()
             .filter(|character| character.faction == Faction::Player && character.alive)
-            .any(|character| {
-                self.world.tile_at_pixel(
-                    character.x + crate::world::CHARACTER_WIDTH / 2,
-                    character.y + crate::world::CHARACTER_HEIGHT / 2,
-                ) == Some(Tile::ServiceElevator)
-            })
+            .any(|character| self.character_overlaps_exit(character))
+    }
+
+    fn character_overlaps_exit(&self, character: &Character) -> bool {
+        let left = character.x;
+        let right = character.x + crate::world::CHARACTER_WIDTH - 1;
+        let top = character.y;
+        let bottom = character.y + crate::world::CHARACTER_HEIGHT - 1;
+        let center_x = character.x + crate::world::CHARACTER_WIDTH / 2;
+        let center_y = character.y + crate::world::CHARACTER_HEIGHT / 2;
+        [
+            (center_x, center_y),
+            (left, top),
+            (right, top),
+            (left, bottom),
+            (right, bottom),
+        ]
+        .into_iter()
+        .any(|(x, y)| self.world.tile_at_pixel(x, y) == Some(Tile::ServiceElevator))
     }
 
     fn hostile_queue_left(&self) -> i32 {
