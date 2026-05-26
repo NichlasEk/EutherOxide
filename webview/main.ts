@@ -244,7 +244,7 @@ type DogsCoreActor = {
   x: number;
   y: number;
   direction: string;
-  sprite: string;
+  sprite?: string;
   armor: number;
   lives: number;
   alive: boolean;
@@ -3239,16 +3239,21 @@ function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
   return animated ? "night_shift_tech_walk" : "night_shift_tech";
 }
 
+function dogsEnemyKey(actor: DogsCoreActor): string {
+  const enemies = ["angry_customer", "claim_denier", "inventory_drone", "recall_enforcer", "black_market_courier", "district_manager"];
+  return actor.sprite && dogsAsset("sprites.enemies", actor.sprite) ? actor.sprite : enemies[actor.id % enemies.length];
+}
+
 function dogsActorAsset(actor: DogsCoreActor): string | null {
   if (actor.faction === "player") {
     return dogsAsset("sprites.heroes", dogsHeroKey(actor, false));
   }
-  return dogsAsset("sprites.enemies", actor.sprite);
+  return dogsAsset("sprites.enemies", dogsEnemyKey(actor));
 }
 
 function dogsActorSheetAsset(actor: DogsCoreActor): string | null {
   if (actor.faction !== "player") {
-    return dogsAsset("sprites.enemies", `${actor.sprite}_walk`);
+    return dogsAsset("sprites.enemies", `${dogsEnemyKey(actor)}_walk`);
   }
   return dogsAsset("sprites.heroes", dogsHeroKey(actor, true));
 }
@@ -3376,10 +3381,10 @@ function drawDogsImageFrame(
   width: number,
   height: number,
   fallbackColor: string,
-): void {
+): boolean {
   if (!url) {
     drawDogsImage(null, x, y, width, height, fallbackColor);
-    return;
+    return false;
   }
   let image = dogsImageCache.get(url);
   if (!image) {
@@ -3392,9 +3397,11 @@ function drawDogsImageFrame(
   }
   if (image.complete && image.naturalWidth > 0) {
     dogsContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
+    return true;
   } else {
     dogsContext.fillStyle = fallbackColor;
     dogsContext.fillRect(x, y, width, height);
+    return false;
   }
 }
 
@@ -3889,7 +3896,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     if (sheetAsset) {
       const frameColumn = moving ? Math.floor(frame.frame / 8) % 3 : 1;
       const frameRow = dogsActorFacingRow(facing);
-      drawDogsImageFrame(
+      const drewFrame = drawDogsImageFrame(
         sheetAsset,
         frameColumn * 32,
         frameRow * 32,
@@ -3901,6 +3908,9 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
         spriteH,
         actor.faction === "player" ? "#27f2ff" : "#f04444",
       );
+      if (!drewFrame) {
+        drawDogsImage(dogsActorAsset(actor), x, y, spriteW, spriteH, actor.faction === "player" ? "#27f2ff" : "#f04444");
+      }
     } else {
       drawDogsImage(dogsActorAsset(actor), x, y, spriteW, spriteH, "#f04444");
     }
