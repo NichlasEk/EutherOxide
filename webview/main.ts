@@ -3247,7 +3247,9 @@ function dogsActorAsset(actor: DogsCoreActor): string | null {
 }
 
 function dogsActorSheetAsset(actor: DogsCoreActor): string | null {
-  if (actor.faction !== "player") return null;
+  if (actor.faction !== "player") {
+    return dogsAsset("sprites.enemies", `${actor.sprite}_walk`);
+  }
   return dogsAsset("sprites.heroes", dogsHeroKey(actor, true));
 }
 
@@ -3883,11 +3885,12 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       : fallbackFacing;
     nextActorPositions.set(actorKey, { x: actor.x, y: actor.y });
     nextActorFacings.set(actorKey, facing);
-    if (actor.faction === "player") {
+    const sheetAsset = dogsActorSheetAsset(actor);
+    if (sheetAsset) {
       const frameColumn = moving ? Math.floor(frame.frame / 8) % 3 : 1;
       const frameRow = dogsActorFacingRow(facing);
       drawDogsImageFrame(
-        dogsActorSheetAsset(actor),
+        sheetAsset,
         frameColumn * 32,
         frameRow * 32,
         32,
@@ -3896,7 +3899,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
         y,
         spriteW,
         spriteH,
-        "#27f2ff",
+        actor.faction === "player" ? "#27f2ff" : "#f04444",
       );
     } else {
       drawDogsImage(dogsActorAsset(actor), x, y, spriteW, spriteH, "#f04444");

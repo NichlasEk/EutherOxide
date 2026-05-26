@@ -16,11 +16,17 @@ compliance_runner = "sprites/heroes/compliance_runner.png"
 
 [sprites.enemies]
 angry_customer = "sprites/enemies/angry_customer.png"
+angry_customer_walk = "sprites/enemies/angry_customer_walk.png"
 claim_denier = "sprites/enemies/claim_denier.png"
+claim_denier_walk = "sprites/enemies/claim_denier_walk.png"
 inventory_drone = "sprites/enemies/inventory_drone.png"
+inventory_drone_walk = "sprites/enemies/inventory_drone_walk.png"
 recall_enforcer = "sprites/enemies/recall_enforcer.png"
+recall_enforcer_walk = "sprites/enemies/recall_enforcer_walk.png"
 black_market_courier = "sprites/enemies/black_market_courier.png"
+black_market_courier_walk = "sprites/enemies/black_market_courier_walk.png"
 district_manager = "sprites/enemies/district_manager.png"
+district_manager_walk = "sprites/enemies/district_manager_walk.png"
 
 [sprites.weapons]
 rx_cannon = "sprites/weapons/rx_cannon.png"
