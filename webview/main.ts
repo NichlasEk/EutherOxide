@@ -527,6 +527,7 @@ let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
 let dogsActorFacings = new Map<string, DogsActorFacing>();
 let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
+let dogsPreviousAudioFrame: DogsCoreFrame | null = null;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -3269,13 +3270,21 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
   return dogsAsset("tiles.walls", prefix);
 }
 
-function dogsExitReady(summary: DogsCoreSummary): boolean {
+function dogsQueueLeft(frame: DogsCoreFrame | null | undefined): number {
+  if (!frame) return 0;
+  const hostileCount = frame.characters.filter((actor) => actor.faction === "hostile_customer" && actor.alive).length;
+  return hostileCount > 0 || frame.characters.some((actor) => actor.faction === "hostile_customer")
+    ? hostileCount
+    : frame.summary.targetsLeft;
+}
+
+function dogsExitReady(frame: DogsCoreFrame): boolean {
   return (
-    summary.status === "won" ||
-    (summary.status === "running" &&
-      summary.targetsLeft <= 0 &&
-      summary.objectsLeft <= 0 &&
-      summary.kills >= summary.minimumKills)
+    frame.summary.status === "won" ||
+    (frame.summary.status === "running" &&
+      dogsQueueLeft(frame) <= 0 &&
+      frame.summary.objectsLeft <= 0 &&
+      frame.summary.kills >= frame.summary.minimumKills)
   );
 }
 
@@ -3497,10 +3506,14 @@ function drawDogsExitPortal(x: number, y: number, width: number, height: number,
 }
 
 function processDogsAudio(frame: DogsCoreFrame): void {
-  for (const event of frame.audioEvents ?? []) {
+  const events = frame.audioEvents ?? [];
+  for (const event of events) {
     void playDogsSfx(event, dogsGameplaySfxGain(event));
   }
-  const exitReady = dogsExitReady(frame.summary);
+  if (events.length === 0) {
+    processDogsAudioFallback(frame, dogsPreviousAudioFrame);
+  }
+  const exitReady = dogsExitReady(frame);
   if (exitReady && !dogsLastExitReady) {
     void playDogsSfx("portal_ready");
   }
@@ -3511,6 +3524,23 @@ function processDogsAudio(frame: DogsCoreFrame): void {
     void playDogsSfx("portal_idle", exitReady ? 0.14 : 0.045);
   }
   dogsLastExitReady = exitReady;
+  dogsPreviousAudioFrame = frame;
+}
+
+function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame | null): void {
+  if (!previous) return;
+  if (frame.bullets.length > previous.bullets.length) {
+    const hero = frame.characters.find((actor) => actor.faction === "player");
+    void playDogsSfx(hero?.activeWeapon ?? "scanner_blaster", 0.9);
+  }
+  if (frame.summary.objectsCollected > previous.summary.objectsCollected || frame.summary.cash > previous.summary.cash) {
+    void playDogsSfx("pickup_rx", 0.82);
+  }
+  if (frame.summary.kills > previous.summary.kills || dogsQueueLeft(frame) < dogsQueueLeft(previous)) {
+    void playDogsSfx("customer_defeated", 0.95);
+  } else if (frame.summary.hits > previous.summary.hits || frame.summary.damageTaken > previous.summary.damageTaken) {
+    void playDogsSfx("impact_heavy", 0.9);
+  }
 }
 
 function dogsGameplaySfxGain(sound: string): number {
@@ -3591,8 +3621,9 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   const healthPercent = Math.min(100, Math.max(8, armor));
   const clock = dogsClockSource(frame.summary);
   const weaponIcon = dogsWeaponAsset(hero?.activeWeapon);
+  const queueLeft = dogsQueueLeft(frame);
   eutherDogsRxLeft.textContent = String(frame.summary.objectsLeft);
-  eutherDogsTargetsLeft.textContent = String(frame.summary.targetsLeft);
+  eutherDogsTargetsLeft.textContent = String(queueLeft);
   eutherDogsCash.textContent = `$${frame.summary.cash}`;
   eutherDogsClockLabel.textContent = clock.label;
   eutherDogsClock.textContent = formatDogsClock(clock.ticks);
@@ -3600,8 +3631,8 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   eutherDogsWeapon.style.setProperty("--dogs-active-weapon", weaponIcon ? `url("${weaponIcon}")` : "none");
   eutherDogsAlert.textContent = status === "RUNNING" ? "Open" : status;
   eutherDogsHealthFill.style.width = `${healthPercent}%`;
-  eutherDogsLamp.classList.toggle("is-hot", frame.summary.targetsLeft > 0 && frame.summary.status === "running");
-  eutherDogsConsole.classList.toggle("is-alert", frame.summary.targetsLeft > 0);
+  eutherDogsLamp.classList.toggle("is-hot", queueLeft > 0 && frame.summary.status === "running");
+  eutherDogsConsole.classList.toggle("is-alert", queueLeft > 0);
   eutherDogsConsole.classList.toggle("is-closed", frame.summary.status !== "running");
   if (dogsMenuMode) {
     renderDogsMenu();
@@ -3695,12 +3726,13 @@ function renderDogsMenu(): void {
   }
   if (dogsMenuMode === "briefing") {
     const summary = dogsFrame?.summary;
+    const queueLeft = dogsQueueLeft(dogsFrame);
     eutherDogsMenuKicker.textContent = "Briefing";
     eutherDogsMenuTitle.textContent = "Night Shift Protocol";
     eutherDogsMenuBody.innerHTML = `
       <div class="eutherdogs-briefing-grid">
         <div><span>Retrieve</span><strong>${summary?.objectsLeft ?? 0} RX objects</strong></div>
-        <div><span>Defuse</span><strong>${summary?.targetsLeft ?? 0} angry customers</strong></div>
+        <div><span>Defuse</span><strong>${queueLeft} angry customers</strong></div>
         <div><span>Policy</span><strong>No refunds after laser contact</strong></div>
         <div><span>Uniform</span><strong>White coat, zero patience</strong></div>
       </div>
@@ -3778,8 +3810,9 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
   selectedDogsStaff = staff;
   try {
     dogsFrame = await startDogsCore();
-    dogsLastExitReady = dogsExitReady(dogsFrame.summary);
+    dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
+    dogsPreviousAudioFrame = dogsFrame;
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace(`EutherDogs staff selected ${dogsStaffOptions.find((option) => option.id === staff)?.name ?? staff}`);
@@ -3792,8 +3825,9 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
 async function retryDogsShift(): Promise<void> {
   try {
     dogsFrame = await startDogsCore();
-    dogsLastExitReady = dogsExitReady(dogsFrame.summary);
+    dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
+    dogsPreviousAudioFrame = dogsFrame;
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace("EutherDogs shift retried");
@@ -3869,8 +3903,9 @@ async function enterDogsMode(): Promise<void> {
   document.body.classList.add("eutherdogs-mode");
   eutherDogsConsole.setAttribute("aria-hidden", "false");
   eutherDogsToggle.classList.add("is-active");
-  dogsLastExitReady = dogsExitReady(dogsFrame.summary);
+  dogsLastExitReady = dogsExitReady(dogsFrame);
   dogsLastPortalHumFrame = -9999;
+  dogsPreviousAudioFrame = dogsFrame;
   drawDogsFrame(dogsFrame);
   showDogsMenu("staff");
   renderUi();
@@ -3881,6 +3916,7 @@ function leaveDogsMode(): void {
   dogsMode = false;
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
+  dogsPreviousAudioFrame = null;
   ui.playing = false;
   ui.loaded = false;
   ui.title = "No ROM";
@@ -3939,6 +3975,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
+  dogsPreviousAudioFrame = null;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
@@ -4027,7 +4064,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const firstTileY = Math.max(0, Math.floor(cameraY / frame.tileHeight));
   const lastTileX = Math.min(frame.width - 1, Math.ceil((cameraX + viewW) / frame.tileWidth));
   const lastTileY = Math.min(frame.height - 1, Math.ceil((cameraY + viewH) / frame.tileHeight));
-  const exitReady = dogsExitReady(frame.summary);
+  const exitReady = dogsExitReady(frame);
   for (let y = firstTileY; y <= lastTileY; y += 1) {
     for (let x = firstTileX; x <= lastTileX; x += 1) {
       const tile = frame.tiles[y * frame.width + x] ?? "floor";
@@ -4113,7 +4150,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   if (hud) {
     const hero = frame.characters.find((actor) => actor.faction === "player");
     const ammo = hero?.ammo ?? -1;
-    hud.textContent = `COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE ${frame.summary.targetsLeft} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
+    hud.textContent = `COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE ${dogsQueueLeft(frame)} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
   }
   updateDogsConsole(frame);
 }
