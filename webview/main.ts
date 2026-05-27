@@ -375,7 +375,11 @@ type DogsCoreFrame = {
   store: DogsStoreItem[];
   audioEvents?: string[];
   highscoreCount: number;
+  ackedInputSeq?: number;
 };
+
+type DogsStreamFrame = Partial<DogsCoreFrame> &
+  Pick<DogsCoreFrame, "frame" | "characters" | "bullets" | "summary">;
 
 type DogsHighScoreEntry = {
   id: string;
@@ -629,6 +633,7 @@ let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
+let dogsRenderActorPositions = new Map<string, { x: number; y: number }>();
 let dogsActorFacings = new Map<string, DogsActorFacing>();
 let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
@@ -640,6 +645,8 @@ let lastDogsSnapshotAt = 0;
 let dogsSnapshotMisses = 0;
 let dogsStream: EventSource | null = null;
 let lastDogsProcessedFrame = -1;
+let dogsInputSeq = 0;
+let dogsLastAckedInputSeq = 0;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -4736,6 +4743,46 @@ function dogsLocalPlayer(frame: DogsCoreFrame): DogsCoreActor | undefined {
   );
 }
 
+function predictedDogsActor(actor: DogsCoreActor | undefined): DogsCoreActor | undefined {
+  if (!actor || actor.faction !== "player" || dogsInputSeq <= dogsLastAckedInputSeq) {
+    return actor;
+  }
+  const dx = Number(inputState.right) - Number(inputState.left);
+  const dy = Number(inputState.down) - Number(inputState.up);
+  if (dx === 0 && dy === 0) {
+    return actor;
+  }
+  const unacked = Math.min(3, Math.max(1, dogsInputSeq - dogsLastAckedInputSeq));
+  const distance = 3 * unacked;
+  const diagonal = dx !== 0 && dy !== 0 ? Math.SQRT1_2 : 1;
+  return {
+    ...actor,
+    x: actor.x + Math.round(dx * distance * diagonal),
+    y: actor.y + Math.round(dy * distance * diagonal),
+  };
+}
+
+function smoothDogsActor(actor: DogsCoreActor, isLocalPlayer: boolean): DogsCoreActor {
+  const key = `${actor.faction}:${actor.id}`;
+  const previous = dogsRenderActorPositions.get(key);
+  if (!previous) {
+    dogsRenderActorPositions.set(key, { x: actor.x, y: actor.y });
+    return actor;
+  }
+  const dx = actor.x - previous.x;
+  const dy = actor.y - previous.y;
+  if (Math.hypot(dx, dy) > 80) {
+    dogsRenderActorPositions.set(key, { x: actor.x, y: actor.y });
+    return actor;
+  }
+  const factor = isLocalPlayer ? 0.72 : 0.42;
+  const x = previous.x + dx * factor;
+  const y = previous.y + dy * factor;
+  const smoothed = { x, y };
+  dogsRenderActorPositions.set(key, smoothed);
+  return { ...actor, x: Math.round(x), y: Math.round(y) };
+}
+
 function dogsCurrentCash(): number {
   return dogsFrame?.summary.cash ?? 0;
 }
@@ -5606,7 +5653,8 @@ function startDogsSnapshotStream(): void {
   });
   dogsStream.onmessage = (event) => {
     try {
-      dogsFrame = JSON.parse(event.data) as DogsCoreFrame;
+      dogsFrame = mergeDogsStreamFrame(dogsFrame, JSON.parse(event.data) as DogsStreamFrame);
+      dogsLastAckedInputSeq = dogsFrame.ackedInputSeq ?? dogsLastAckedInputSeq;
       lastDogsSnapshotAt = performance.now();
       dogsSnapshotMisses = 0;
       ui.transportMode = "DOGS SSE";
@@ -5620,6 +5668,31 @@ function startDogsSnapshotStream(): void {
   };
 }
 
+function mergeDogsStreamFrame(previous: DogsCoreFrame | null, patch: DogsStreamFrame): DogsCoreFrame {
+  if (!previous && (!patch.tiles || !patch.visibility || !patch.store)) {
+    throw new Error("EutherDogs stream missing initial static state");
+  }
+  const base = previous as DogsCoreFrame;
+  return {
+    frame: patch.frame,
+    width: patch.width ?? base.width,
+    height: patch.height ?? base.height,
+    tileWidth: patch.tileWidth ?? base.tileWidth,
+    tileHeight: patch.tileHeight ?? base.tileHeight,
+    characterWidth: patch.characterWidth ?? base.characterWidth,
+    characterHeight: patch.characterHeight ?? base.characterHeight,
+    tiles: patch.tiles ?? base.tiles,
+    visibility: patch.visibility ?? base.visibility,
+    characters: patch.characters,
+    bullets: patch.bullets,
+    summary: patch.summary,
+    store: patch.store ?? base.store,
+    audioEvents: patch.audioEvents ?? [],
+    highscoreCount: patch.highscoreCount ?? base.highscoreCount,
+    ackedInputSeq: patch.ackedInputSeq ?? base.ackedInputSeq,
+  };
+}
+
 function stopDogsSnapshotStream(): void {
   dogsStream?.close();
   dogsStream = null;
@@ -5628,6 +5701,7 @@ function stopDogsSnapshotStream(): void {
 async function startDogsCore(): Promise<DogsCoreFrame> {
   const start = { staff: selectedDogsStaff, mission: selectedDogsMission, players: 2 };
   dogsPreviousActorPositions = new Map();
+  dogsRenderActorPositions = new Map();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
@@ -5641,6 +5715,8 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   lastDogsSnapshotAt = 0;
   dogsSnapshotMisses = 0;
   lastDogsProcessedFrame = -1;
+  dogsInputSeq = 0;
+  dogsLastAckedInputSeq = 0;
   stopDogsSnapshotStream();
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
@@ -5659,6 +5735,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
 
 async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
   dogsPreviousActorPositions = new Map();
+  dogsRenderActorPositions = new Map();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
@@ -5687,7 +5764,7 @@ async function resetDogsCore(): Promise<DogsCoreFrame> {
 }
 
 async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
-  const input = { ...inputState, player: playerPort };
+  const input = { ...inputState, player: playerPort, seq: dogsInputSeq };
   if (isTauri) {
     return await invoke<DogsCoreFrame>("run_eutherdogs_frame", { input });
   }
@@ -5708,13 +5785,19 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
 }
 
-async function syncDogsBridgeInput(input: InputState & { player: PlayerPort }): Promise<void> {
+async function syncDogsBridgeInput(input: InputState & { player: PlayerPort; seq?: number }): Promise<void> {
   const now = performance.now();
-  const next = JSON.stringify(input);
-  if (next === lastDogsInputJson && now - lastDogsInputSentAt < 120) {
+  const changedInput = { ...input, seq: undefined };
+  const nextState = JSON.stringify(changedInput);
+  if (nextState === lastDogsInputJson && now - lastDogsInputSentAt < 120) {
     return;
   }
-  lastDogsInputJson = next;
+  if (nextState !== lastDogsInputJson) {
+    dogsInputSeq += 1;
+  }
+  const payload = { ...input, seq: dogsInputSeq };
+  const next = JSON.stringify(payload);
+  lastDogsInputJson = nextState;
   lastDogsInputSentAt = now;
   await bridgeRequest("/eutherdogs/input", {
     method: "POST",
@@ -5740,7 +5823,13 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
 
   const worldW = frame.width * frame.tileWidth;
   const worldH = frame.height * frame.tileHeight;
-  const player = dogsLocalPlayer(frame) ?? frame.characters[0];
+  const serverPlayer = dogsLocalPlayer(frame);
+  const localPlayerTarget = predictedDogsActor(serverPlayer);
+  const localPlayer =
+    localPlayerTarget && serverPlayer
+      ? smoothDogsActor(localPlayerTarget, true)
+      : undefined;
+  const player = localPlayer ?? frame.characters[0];
   const scale = Math.max(
     0.18,
     Math.min(dogsCanvas.width / eutherDogsCameraWorldWidth, dogsCanvas.height / eutherDogsCameraWorldHeight),
@@ -5821,7 +5910,14 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const nextActorPositions = new Map<string, { x: number; y: number }>();
   const nextActorFacings = new Map<string, DogsActorFacing>();
   const localPlayerId = player?.faction === "player" ? player.id : null;
-  for (const actor of frame.characters) {
+  for (const serverActor of frame.characters) {
+    const isLocalPlayer = serverActor.id === localPlayerId && serverActor.faction === "player";
+    const targetActor = isLocalPlayer
+      ? localPlayerTarget ?? serverActor
+      : serverActor;
+    const actor = isLocalPlayer && localPlayer
+      ? localPlayer
+      : smoothDogsActor(targetActor, false);
     if (!actor.alive) continue;
     if (actor.faction === "player" && actor.id !== localPlayerId && dogsPixelVisibility(frame, actor.x, actor.y) < 255) {
       continue;
@@ -5834,13 +5930,13 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const x = Math.floor((actor.x - cameraX) * scale - (spriteW - bodyW) / 2);
     const y = Math.floor((actor.y - cameraY) * scale - Math.max(0, spriteH - bodyH));
     const actorKey = `${actor.faction}:${actor.id}`;
-    const previous = dogsPreviousActorPositions.get(actorKey);
-    const moving = Boolean(previous && (previous.x !== actor.x || previous.y !== actor.y));
+    const serverPrevious = dogsPreviousActorPositions.get(actorKey);
+    const moving = Boolean(serverPrevious && (serverPrevious.x !== targetActor.x || serverPrevious.y !== targetActor.y));
     const fallbackFacing = dogsActorFacings.get(actorKey) ?? dogsActorDirectionFacing(actor);
-    const facing = previous
-      ? dogsFacingFromMovement(actor.x - previous.x, actor.y - previous.y, fallbackFacing)
+    const facing = serverPrevious
+      ? dogsFacingFromMovement(targetActor.x - serverPrevious.x, targetActor.y - serverPrevious.y, fallbackFacing)
       : fallbackFacing;
-    nextActorPositions.set(actorKey, { x: actor.x, y: actor.y });
+    nextActorPositions.set(actorKey, { x: targetActor.x, y: targetActor.y });
     nextActorFacings.set(actorKey, facing);
     const sheetAsset = dogsActorSheetAsset(actor);
     if (sheetAsset) {
@@ -5867,6 +5963,11 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   }
   dogsPreviousActorPositions = nextActorPositions;
   dogsActorFacings = nextActorFacings;
+  for (const actorKey of Array.from(dogsRenderActorPositions.keys())) {
+    if (!nextActorPositions.has(actorKey)) {
+      dogsRenderActorPositions.delete(actorKey);
+    }
+  }
   for (const bullet of frame.bullets) {
     if (bullet.ownerFaction !== "player" && dogsPixelVisibility(frame, bullet.x, bullet.y) < 255) continue;
     const projectileSize = Math.max(4, Math.ceil(16 * scale));
@@ -5903,6 +6004,15 @@ function setPlayerPort(port: PlayerPort): void {
   playerPort = port;
   localStorage.setItem(playerPortStorageKey, String(port));
   lastInputJson = "";
+  lastDogsInputJson = "";
+  dogsInputSeq = 0;
+  dogsLastAckedInputSeq = 0;
+  if (dogsMode && ui.runtime === "bridge") {
+    stopDogsSnapshotStream();
+    if (ui.playing) {
+      startDogsSnapshotStream();
+    }
+  }
   resetScheduledAudio();
   if (ui.runtime === "bridge" && ui.playing) {
     stopBridgeStream();

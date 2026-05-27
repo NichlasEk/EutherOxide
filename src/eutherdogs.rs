@@ -24,6 +24,7 @@ pub struct EutherDogsRuntime {
 #[serde(rename_all = "camelCase")]
 pub struct EutherDogsInput {
     pub player: Option<u8>,
+    pub seq: Option<u64>,
     pub up: bool,
     pub down: bool,
     pub left: bool,

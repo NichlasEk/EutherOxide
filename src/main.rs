@@ -637,6 +637,7 @@ struct BridgeState {
     gamepads: Arc<Mutex<GamepadReader>>,
     eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
     eutherdogs_latest: Arc<Mutex<[Option<euther_oxide::eutherdogs::EutherDogsFrame>; 2]>>,
+    eutherdogs_input_seq: Arc<Mutex<[u64; 2]>>,
     eutherdogs_runner_active: Arc<Mutex<bool>>,
     eutherdogs_last_poll: Arc<Mutex<Instant>>,
 }
@@ -743,6 +744,7 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
             euther_oxide::eutherdogs::EutherDogsRuntime::demo(),
         )),
         eutherdogs_latest: Arc::new(Mutex::new([None, None])),
+        eutherdogs_input_seq: Arc::new(Mutex::new([0, 0])),
         eutherdogs_runner_active: Arc::new(Mutex::new(false)),
         eutherdogs_last_poll: Arc::new(Mutex::new(Instant::now())),
     }
@@ -1831,7 +1833,14 @@ fn handle_bridge_route_with_user(
                 .eutherdogs
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            dogs.set_input(input);
+            let player_index = dogs.set_input(input);
+            if let Some(seq) = input.seq {
+                let mut seqs = state
+                    .eutherdogs_input_seq
+                    .lock()
+                    .map_err(|err| io::Error::other(err.to_string()))?;
+                seqs[player_index] = seq;
+            }
             send_empty(stream, 204)
         }
         ("GET", "/eutherdogs/snapshot") => {
@@ -2571,6 +2580,7 @@ fn bridge_eutherdogs_stream(
     touch_eutherdogs_poll(state)?;
     ensure_eutherdogs_runner(state)?;
     let mut last_frame = None;
+    let mut full_refresh_countdown = 0u8;
     loop {
         if state.shutdown.load(Ordering::SeqCst) {
             break Ok(());
@@ -2578,8 +2588,8 @@ fn bridge_eutherdogs_stream(
         touch_eutherdogs_poll(state)?;
         let frame = latest_eutherdogs_frame(state, player_index)?;
         if Some(frame.frame) != last_frame {
-            let payload =
-                serde_json::to_string(&frame).map_err(|err| io::Error::other(err.to_string()))?;
+            let include_static = last_frame.is_none() || full_refresh_countdown == 0;
+            let payload = eutherdogs_stream_payload(state, &frame, player_index, include_static)?;
             if write!(stream, "data: {payload}\n\n").is_err() {
                 break Ok(());
             }
@@ -2587,9 +2597,47 @@ fn bridge_eutherdogs_stream(
                 break Ok(());
             }
             last_frame = Some(frame.frame);
+            full_refresh_countdown = if include_static {
+                30
+            } else {
+                full_refresh_countdown.saturating_sub(1)
+            };
         }
         thread::sleep(Duration::from_millis(8));
     }
+}
+
+fn eutherdogs_stream_payload(
+    state: &BridgeState,
+    frame: &euther_oxide::eutherdogs::EutherDogsFrame,
+    player_index: usize,
+    include_static: bool,
+) -> io::Result<String> {
+    let acked_input_seq = state
+        .eutherdogs_input_seq
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?[player_index];
+    let mut value = serde_json::json!({
+        "frame": frame.frame,
+        "characters": frame.characters,
+        "bullets": frame.bullets,
+        "summary": frame.summary,
+        "audioEvents": frame.audio_events,
+        "highscoreCount": frame.highscore_count,
+        "ackedInputSeq": acked_input_seq,
+    });
+    if include_static {
+        value["width"] = serde_json::json!(frame.width);
+        value["height"] = serde_json::json!(frame.height);
+        value["tileWidth"] = serde_json::json!(frame.tile_width);
+        value["tileHeight"] = serde_json::json!(frame.tile_height);
+        value["characterWidth"] = serde_json::json!(frame.character_width);
+        value["characterHeight"] = serde_json::json!(frame.character_height);
+        value["tiles"] = serde_json::json!(frame.tiles);
+        value["visibility"] = serde_json::json!(frame.visibility);
+        value["store"] = serde_json::json!(frame.store);
+    }
+    serde_json::to_string(&value).map_err(|err| io::Error::other(err.to_string()))
 }
 
 fn bridge_stream_frame_audio(
