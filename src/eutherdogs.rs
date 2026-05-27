@@ -12,6 +12,7 @@ pub struct EutherDogsRuntime {
     config: EutherDogsConfig,
     game: Game,
     frame: u64,
+    explored_tiles: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -52,6 +53,7 @@ pub struct EutherDogsFrame {
     pub character_width: i32,
     pub character_height: i32,
     pub tiles: Vec<&'static str>,
+    pub visibility: Vec<u8>,
     pub characters: Vec<EutherDogsActor>,
     pub bullets: Vec<EutherDogsBullet>,
     pub summary: EutherDogsSummary,
@@ -130,6 +132,7 @@ impl EutherDogsRuntime {
             config,
             game,
             frame: 0,
+            explored_tiles: Vec::new(),
         })
     }
 
@@ -145,6 +148,7 @@ impl EutherDogsRuntime {
     pub fn reset(&mut self) -> Result<(), ConfigError> {
         self.game = Game::new_mission_from_config(&self.config)?;
         self.frame = 0;
+        self.explored_tiles.clear();
         Ok(())
     }
 
@@ -194,21 +198,40 @@ impl EutherDogsRuntime {
         Ok(self.snapshot_with_audio_events(&audio_events))
     }
 
-    pub fn snapshot(&self) -> EutherDogsFrame {
+    pub fn snapshot(&mut self) -> EutherDogsFrame {
         self.snapshot_with_audio_events(&[])
     }
 
     fn snapshot_with_audio_events(
-        &self,
+        &mut self,
         audio_events: &[eutherdogs_core::AudioEvent],
     ) -> EutherDogsFrame {
+        let visibility = self.update_visibility();
         eutherdogs_frame(
             &self.game,
             &self.config,
             self.frame,
             audio_events,
             self.config.high_score_table().entries().len(),
+            visibility,
         )
+    }
+
+    fn update_visibility(&mut self) -> Vec<u8> {
+        let current = compute_visibility(&self.game);
+        if self.explored_tiles.len() != current.len() {
+            self.explored_tiles = vec![false; current.len()];
+        }
+        let mut visibility = vec![0; current.len()];
+        for (index, visible) in current.into_iter().enumerate() {
+            if visible {
+                self.explored_tiles[index] = true;
+                visibility[index] = 255;
+            } else if self.explored_tiles[index] {
+                visibility[index] = 96;
+            }
+        }
+        visibility
     }
 }
 
@@ -237,6 +260,7 @@ pub fn eutherdogs_frame(
     frame: u64,
     audio_events: &[eutherdogs_core::AudioEvent],
     highscore_count: usize,
+    visibility: Vec<u8>,
 ) -> EutherDogsFrame {
     let summary = game.summary();
     EutherDogsFrame {
@@ -253,6 +277,7 @@ pub fn eutherdogs_frame(
             .iter()
             .map(|tile| tile_key(*tile))
             .collect(),
+        visibility,
         characters: game
             .characters()
             .iter()
@@ -363,6 +388,72 @@ fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsSto
             }
         })
         .collect()
+}
+
+fn compute_visibility(game: &Game) -> Vec<bool> {
+    let world = game.world();
+    let mut visible = vec![false; world.width() * world.height()];
+    let radius = 11;
+    for character in game.characters().iter().filter(|character| {
+        character.alive && character.faction == eutherdogs_core::entity::Faction::Player
+    }) {
+        let origin_x = (character.x / TILE_WIDTH).clamp(0, world.width().saturating_sub(1) as i32);
+        let origin_y =
+            (character.y / TILE_HEIGHT).clamp(0, world.height().saturating_sub(1) as i32);
+        for y in origin_y - radius..=origin_y + radius {
+            for x in origin_x - radius..=origin_x + radius {
+                if x < 0 || y < 0 || x >= world.width() as i32 || y >= world.height() as i32 {
+                    continue;
+                }
+                let dx = x - origin_x;
+                let dy = y - origin_y;
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                if has_line_of_sight(game, origin_x, origin_y, x, y) {
+                    visible[y as usize * world.width() + x as usize] = true;
+                }
+            }
+        }
+    }
+    visible
+}
+
+fn has_line_of_sight(game: &Game, from_x: i32, from_y: i32, to_x: i32, to_y: i32) -> bool {
+    let mut x = from_x;
+    let mut y = from_y;
+    let dx = (to_x - from_x).abs();
+    let dy = -(to_y - from_y).abs();
+    let step_x = if from_x < to_x { 1 } else { -1 };
+    let step_y = if from_y < to_y { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    loop {
+        if x == to_x && y == to_y {
+            return true;
+        }
+        if (x != from_x || y != from_y) && blocks_sight(game, x, y) {
+            return false;
+        }
+        let e2 = err * 2;
+        if e2 >= dy {
+            err += dy;
+            x += step_x;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += step_y;
+        }
+    }
+}
+
+fn blocks_sight(game: &Game, x: i32, y: i32) -> bool {
+    if x < 0 || y < 0 {
+        return true;
+    }
+    game.world()
+        .tile(x as usize, y as usize)
+        .map_or(true, Tile::blocks_walk)
 }
 
 fn complete_store_items(store: &[ConfigStoreItem]) -> Vec<ConfigStoreItem> {
@@ -490,7 +581,10 @@ mod tests {
     #[test]
     fn runtime_backfills_missing_store_items_for_purchase() {
         let mut runtime = EutherDogsRuntime::demo();
-        runtime.config.store.retain(|item| item.id != "autoinjector");
+        runtime
+            .config
+            .store
+            .retain(|item| item.id != "autoinjector");
 
         let frame = runtime
             .purchase(EutherDogsPurchase {
@@ -505,7 +599,29 @@ mod tests {
             .find(|character| character.faction == "player")
             .unwrap();
         assert_eq!(hero.active_weapon, "autoinjector");
-        assert!(frame.store.iter().any(|item| item.id == "autoinjector" && item.active));
+        assert!(
+            frame
+                .store
+                .iter()
+                .any(|item| item.id == "autoinjector" && item.active)
+        );
+    }
+
+    #[test]
+    fn snapshot_includes_player_visibility_mask() {
+        let mut runtime = EutherDogsRuntime::demo();
+        let frame = runtime.snapshot();
+        let hero = frame
+            .characters
+            .iter()
+            .find(|character| character.faction == "player")
+            .unwrap();
+        let tile_x = (hero.x / frame.tile_width) as usize;
+        let tile_y = (hero.y / frame.tile_height) as usize;
+
+        assert_eq!(frame.visibility.len(), frame.width * frame.height);
+        assert_eq!(frame.visibility[tile_y * frame.width + tile_x], 255);
+        assert!(frame.visibility.iter().any(|visibility| *visibility == 0));
     }
 }
 

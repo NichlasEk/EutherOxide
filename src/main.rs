@@ -1207,8 +1207,9 @@ fn handle_bridge_route(
             ensure_bridge_control_dir()?;
             fs::write(shader_config_path(), &request.body)?;
             send_empty(stream, 204)
-        },
-        ("GET", "/eutherdogs-highscores") => match fs::read_to_string(eutherdogs_highscores_path()) {
+        }
+        ("GET", "/eutherdogs-highscores") => match fs::read_to_string(eutherdogs_highscores_path())
+        {
             Ok(contents) => send_response(
                 stream,
                 200,
@@ -1224,7 +1225,7 @@ fn handle_bridge_route(
             ensure_bridge_control_dir()?;
             fs::write(eutherdogs_highscores_path(), &request.body)?;
             send_empty(stream, 204)
-        },
+        }
         ("GET", "/rom-dir") => send_json(
             stream,
             &RomDirSetting {

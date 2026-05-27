@@ -302,6 +302,7 @@ type DogsCoreFrame = {
   characterWidth: number;
   characterHeight: number;
   tiles: string[];
+  visibility: number[];
   characters: DogsCoreActor[];
   bullets: DogsCoreBullet[];
   summary: DogsCoreSummary;
@@ -3304,6 +3305,15 @@ function dogsTileAt(frame: DogsCoreFrame, x: number, y: number): string {
   return frame.tiles[y * frame.width + x] ?? "floor";
 }
 
+function dogsVisibilityAt(frame: DogsCoreFrame, x: number, y: number): number {
+  if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return 0;
+  return frame.visibility?.[y * frame.width + x] ?? 255;
+}
+
+function dogsPixelVisibility(frame: DogsCoreFrame, x: number, y: number): number {
+  return dogsVisibilityAt(frame, Math.floor(x / frame.tileWidth), Math.floor(y / frame.tileHeight));
+}
+
 function dogsWallTile(tile: string): boolean {
   return tile === "wall" || tile === "door";
 }
@@ -3599,6 +3609,52 @@ function drawDogsExitPortal(x: number, y: number, width: number, height: number,
       const py = cy + Math.sin(angle) * radius * 0.45;
       dogsContext.fillStyle = i % 2 === 0 ? "rgba(194, 255, 45, 0.85)" : "rgba(57, 247, 200, 0.75)";
       dogsContext.fillRect(px - width * 0.025, py - height * 0.025, width * 0.05, height * 0.05);
+    }
+  }
+  dogsContext.restore();
+}
+
+function drawDogsVisibilityFog(
+  frame: DogsCoreFrame,
+  cameraX: number,
+  cameraY: number,
+  scale: number,
+  firstTileX: number,
+  firstTileY: number,
+  lastTileX: number,
+  lastTileY: number,
+): void {
+  dogsContext.save();
+  const time = frame.frame / 38;
+  for (let y = firstTileY; y <= lastTileY; y += 1) {
+    for (let x = firstTileX; x <= lastTileX; x += 1) {
+      const visibility = dogsVisibilityAt(frame, x, y);
+      if (visibility >= 255) continue;
+      const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
+      const tileY = Math.floor((y * frame.tileHeight - cameraY) * scale);
+      const tileW = Math.ceil(frame.tileWidth * scale);
+      const tileH = Math.ceil(frame.tileHeight * scale);
+      const ripple = (Math.sin(x * 0.73 + y * 1.17 + time) + 1) * 0.5;
+      const alpha = visibility > 0 ? 0.42 + ripple * 0.1 : 0.82 + ripple * 0.08;
+      dogsContext.fillStyle = visibility > 0
+        ? `rgba(2, 13, 35, ${alpha})`
+        : `rgba(0, 0, 8, ${alpha})`;
+      dogsContext.fillRect(tileX, tileY, tileW, tileH);
+      if (visibility > 0) {
+        const smoke = dogsContext.createRadialGradient(
+          tileX + tileW * (0.35 + ripple * 0.3),
+          tileY + tileH * 0.45,
+          0,
+          tileX + tileW * 0.5,
+          tileY + tileH * 0.5,
+          Math.max(tileW, tileH),
+        );
+        smoke.addColorStop(0, `rgba(72, 255, 225, ${0.05 + ripple * 0.025})`);
+        smoke.addColorStop(0.55, `rgba(255, 42, 205, ${0.025 + ripple * 0.018})`);
+        smoke.addColorStop(1, "rgba(0, 0, 0, 0)");
+        dogsContext.fillStyle = smoke;
+        dogsContext.fillRect(tileX, tileY, tileW, tileH);
+      }
     }
   }
   dogsContext.restore();
@@ -4651,6 +4707,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const nextActorFacings = new Map<string, DogsActorFacing>();
   for (const actor of frame.characters) {
     if (!actor.alive) continue;
+    if (actor.faction !== "player" && dogsPixelVisibility(frame, actor.x, actor.y) < 255) continue;
     const spriteW = Math.max(8, Math.ceil(32 * scale));
     const spriteH = Math.max(8, Math.ceil(32 * scale));
     const bodyW = frame.characterWidth * scale;
@@ -4692,6 +4749,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   dogsPreviousActorPositions = nextActorPositions;
   dogsActorFacings = nextActorFacings;
   for (const bullet of frame.bullets) {
+    if (bullet.ownerFaction !== "player" && dogsPixelVisibility(frame, bullet.x, bullet.y) < 255) continue;
     const projectileSize = Math.max(4, Math.ceil(16 * scale));
     drawDogsImage(
       dogsProjectileAsset(bullet),
@@ -4702,6 +4760,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       bullet.ownerFaction === "player" ? "#39f7c8" : "#ff3030",
     );
   }
+  drawDogsVisibilityFog(frame, cameraX, cameraY, scale, firstTileX, firstTileY, lastTileX, lastTileY);
   const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
   if (hud) {
     const hero = frame.characters.find((actor) => actor.faction === "player");
