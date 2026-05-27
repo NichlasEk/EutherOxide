@@ -545,6 +545,7 @@ let dogsHighScoresTomlLoadAttempted = false;
 let dogsPendingHighscoreFrame: DogsCoreFrame | null = null;
 let dogsHighscoreInitials = ["A", "A", "A"];
 let dogsHighscoreInitialIndex = 0;
+let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
@@ -1301,6 +1302,12 @@ window.addEventListener("keydown", (event) => {
     renderBindings();
     return;
   }
+  if (event.key === "Shift" && dogsMode && dogsFrame) {
+    dogsMapOpen = true;
+    drawDogsFrame(dogsFrame);
+    event.preventDefault();
+    return;
+  }
   const key = keyForEvent(event.key);
   if (!key || keyboardState[key]) {
     return;
@@ -1311,6 +1318,12 @@ window.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("keyup", (event) => {
+  if (event.key === "Shift" && dogsMapOpen) {
+    dogsMapOpen = false;
+    if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
+    event.preventDefault();
+    return;
+  }
   const key = keyForEvent(event.key);
   if (!key) {
     return;
@@ -3676,6 +3689,85 @@ function drawDogsVisibilityFog(
   dogsContext.restore();
 }
 
+function dogsMapTileColor(tile: string, visibility: number): string {
+  if (visibility <= 0) return "#02050a";
+  if (dogsWallTile(tile)) return visibility >= 255 ? "#a6aeb2" : "#535a67";
+  switch (tile) {
+    case "service_elevator":
+      return "#c6ff35";
+    case "prescription":
+    case "folder":
+    case "data_wafer":
+    case "circuit_board":
+    case "pill_sample":
+      return "#ff5de1";
+    case "lab_coat_armor":
+    case "hazard_sleeves":
+    case "pill_splitter":
+      return "#ffe96d";
+    case "scorch_mark":
+    case "spilled_syrup":
+      return "#24f3df";
+    default:
+      return visibility >= 255 ? "#27313c" : "#171b2c";
+  }
+}
+
+function drawDogsMapOverlay(frame: DogsCoreFrame, cameraX: number, cameraY: number, viewW: number, viewH: number): void {
+  const margin = 34;
+  const mapW = Math.min(dogsCanvas.width - margin * 2, frame.width * 7);
+  const mapH = Math.min(dogsCanvas.height - margin * 2, frame.height * 7);
+  const tileW = mapW / frame.width;
+  const tileH = mapH / frame.height;
+  const mapX = Math.floor((dogsCanvas.width - mapW) / 2);
+  const mapY = Math.floor((dogsCanvas.height - mapH) / 2);
+
+  dogsContext.save();
+  dogsContext.fillStyle = "rgba(0, 0, 0, 0.86)";
+  dogsContext.fillRect(0, 0, dogsCanvas.width, dogsCanvas.height);
+  dogsContext.fillStyle = "rgba(44, 0, 58, 0.72)";
+  dogsContext.fillRect(mapX - 12, mapY - 12, mapW + 24, mapH + 24);
+  dogsContext.fillStyle = "#03070c";
+  dogsContext.fillRect(mapX, mapY, mapW, mapH);
+
+  for (let y = 0; y < frame.height; y += 1) {
+    for (let x = 0; x < frame.width; x += 1) {
+      const visibility = dogsVisibilityAt(frame, x, y);
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      dogsContext.fillStyle = dogsMapTileColor(tile, visibility);
+      dogsContext.fillRect(
+        Math.floor(mapX + x * tileW),
+        Math.floor(mapY + y * tileH),
+        Math.max(1, Math.ceil(tileW)),
+        Math.max(1, Math.ceil(tileH)),
+      );
+    }
+  }
+
+  for (const actor of frame.characters) {
+    if (!actor.alive || dogsPixelVisibility(frame, actor.x, actor.y) <= 0) continue;
+    dogsContext.fillStyle = actor.faction === "player" ? "#39ffe6" : "#ff3b62";
+    dogsContext.fillRect(
+      Math.floor(mapX + (actor.x / frame.tileWidth) * tileW) - 2,
+      Math.floor(mapY + (actor.y / frame.tileHeight) * tileH) - 2,
+      4,
+      4,
+    );
+  }
+
+  const viewX = mapX + (cameraX / frame.tileWidth) * tileW;
+  const viewY = mapY + (cameraY / frame.tileHeight) * tileH;
+  const rectW = (viewW / frame.tileWidth) * tileW;
+  const rectH = (viewH / frame.tileHeight) * tileH;
+  dogsContext.strokeStyle = "#ffffff";
+  dogsContext.lineWidth = 2;
+  dogsContext.strokeRect(viewX, viewY, rectW, rectH);
+  dogsContext.strokeStyle = "rgba(39, 242, 255, 0.55)";
+  dogsContext.lineWidth = 1;
+  dogsContext.strokeRect(mapX - 1, mapY - 1, mapW + 2, mapH + 2);
+  dogsContext.restore();
+}
+
 function processDogsAudio(frame: DogsCoreFrame): void {
   const events = frame.audioEvents ?? [];
   for (const event of events) {
@@ -4777,6 +4869,9 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     );
   }
   drawDogsVisibilityFog(frame, cameraX, cameraY, scale, firstTileX, firstTileY, lastTileX, lastTileY);
+  if (dogsMapOpen) {
+    drawDogsMapOverlay(frame, cameraX, cameraY, viewW, viewH);
+  }
   const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
   if (hud) {
     const hero = frame.characters.find((actor) => actor.faction === "player");
