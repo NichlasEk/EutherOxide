@@ -3712,6 +3712,11 @@ function dogsMapTileColor(tile: string, visibility: number): string {
   if (visibility <= 0) return "#02050a";
   if (dogsWallTile(tile)) return visibility >= 255 ? "#a6aeb2" : "#535a67";
   switch (tile) {
+    case "corrupt_med_cabinet":
+    case "hacked_vending_unit":
+    case "recall_crate":
+    case "shipping_box":
+      return visibility >= 255 ? "#626b6a" : "#343a42";
     case "service_elevator":
       return "#c6ff35";
     case "prescription":
