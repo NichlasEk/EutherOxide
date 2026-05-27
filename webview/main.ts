@@ -548,6 +548,7 @@ let dogsHighScoresTomlLoadAttempted = false;
 let dogsPendingHighscoreFrame: DogsCoreFrame | null = null;
 let dogsHighscoreInitials = ["A", "A", "A"];
 let dogsHighscoreInitialIndex = 0;
+let dogsHighscoreSavedName: string | null = null;
 let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
@@ -3653,6 +3654,60 @@ function drawDogsExitPortal(x: number, y: number, width: number, height: number,
   dogsContext.restore();
 }
 
+function drawDogsVentFan(x: number, y: number, width: number, height: number, tick: number): void {
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  const radius = Math.min(width, height) * 0.36;
+  const bladeLength = radius * 0.95;
+  const bladeWidth = Math.max(2, Math.min(width, height) * 0.12);
+  const spin = tick / 7;
+  dogsContext.save();
+  dogsContext.fillStyle = "#aebcb7";
+  dogsContext.fillRect(x, y, width, height);
+  dogsContext.strokeStyle = "rgba(91, 110, 109, 0.7)";
+  dogsContext.lineWidth = Math.max(1, Math.ceil(width * 0.025));
+  for (let i = 1; i < 4; i += 1) {
+    const gx = Math.floor(x + (width * i) / 4) + 0.5;
+    dogsContext.beginPath();
+    dogsContext.moveTo(gx, y);
+    dogsContext.lineTo(gx, y + height);
+    dogsContext.stroke();
+  }
+  for (let i = 1; i < 3; i += 1) {
+    const gy = Math.floor(y + (height * i) / 3) + 0.5;
+    dogsContext.beginPath();
+    dogsContext.moveTo(x, gy);
+    dogsContext.lineTo(x + width, gy);
+    dogsContext.stroke();
+  }
+  dogsContext.fillStyle = "#718480";
+  dogsContext.strokeStyle = "#2f3d3d";
+  dogsContext.lineWidth = Math.max(1, Math.ceil(width * 0.04));
+  dogsContext.beginPath();
+  dogsContext.arc(cx, cy, radius * 1.08, 0, Math.PI * 2);
+  dogsContext.fill();
+  dogsContext.stroke();
+  dogsContext.fillStyle = "#1d2728";
+  dogsContext.beginPath();
+  dogsContext.arc(cx, cy, radius * 0.86, 0, Math.PI * 2);
+  dogsContext.fill();
+  dogsContext.fillStyle = "#96aaa5";
+  for (let i = 0; i < 4; i += 1) {
+    dogsContext.save();
+    dogsContext.translate(cx, cy);
+    dogsContext.rotate(spin + (Math.PI * i) / 2);
+    dogsContext.beginPath();
+    dogsContext.ellipse(bladeLength * 0.42, 0, bladeLength * 0.52, bladeWidth, 0.2, 0, Math.PI * 2);
+    dogsContext.fill();
+    dogsContext.restore();
+  }
+  dogsContext.fillStyle = "#c8d4cf";
+  dogsContext.beginPath();
+  dogsContext.arc(cx, cy, Math.max(2, radius * 0.18), 0, Math.PI * 2);
+  dogsContext.fill();
+  dogsContext.restore();
+}
+
 function drawDogsVisibilityFog(
   frame: DogsCoreFrame,
   cameraX: number,
@@ -4317,6 +4372,7 @@ function queueDogsHighScore(frame: DogsCoreFrame): void {
   dogsPendingHighscoreFrame = frame;
   dogsHighscoreInitials = ["A", "A", "A"];
   dogsHighscoreInitialIndex = 0;
+  dogsHighscoreSavedName = null;
 }
 
 function stepDogsHighscoreInitial(delta: number): void {
@@ -4327,9 +4383,11 @@ function stepDogsHighscoreInitial(delta: number): void {
 
 async function submitPendingDogsHighScore(): Promise<void> {
   if (!dogsPendingHighscoreFrame) return;
-  storeDogsHighScoreEntry(makeDogsHighScoreEntry(dogsPendingHighscoreFrame, dogsHighscoreInitials.join("")));
+  const name = dogsHighscoreInitials.join("");
+  storeDogsHighScoreEntry(makeDogsHighScoreEntry(dogsPendingHighscoreFrame, name));
   dogsPendingHighscoreFrame = null;
-  showDogsMenu("scores");
+  dogsHighscoreSavedName = name;
+  renderDogsMenu();
 }
 
 function dogsTimeLabel(ticks: number): string {
@@ -4383,6 +4441,18 @@ function dogsHighScoreEntryMarkup(frame: DogsCoreFrame | null): string {
         <button data-score-step="-1" type="button">Prev</button>
         <button data-score-step="1" type="button">Next</button>
         <button data-score-submit="true" type="button">Save</button>
+      </div>
+    </div>
+  `;
+}
+
+function dogsHighScoreSavedMarkup(): string {
+  if (!dogsHighscoreSavedName) return "";
+  return `
+    <div class="eutherdogs-score-entry">
+      <div class="eutherdogs-score-entry-summary">
+        <span>Highscore</span><strong>Saved</strong>
+        <span>Name</span><strong>${dogsHighscoreSavedName}</strong>
       </div>
     </div>
   `;
@@ -4505,7 +4575,7 @@ function renderDogsMenu(): void {
         <div><span>Damage taken</span><strong>${summary?.damageTaken ?? 0}</strong></div>
         <div><span>Board</span><strong>${readDogsHighScores()[0]?.score ?? 0}</strong></div>
       </div>
-      ${dogsPendingHighscoreFrame ? dogsHighScoreEntryMarkup(dogsPendingHighscoreFrame) : ""}
+      ${dogsPendingHighscoreFrame ? dogsHighScoreEntryMarkup(dogsPendingHighscoreFrame) : dogsHighScoreSavedMarkup()}
     `;
     return;
   }
@@ -4725,6 +4795,7 @@ function resetDogsMode(): void {
   ui.status = "DOGS RESET";
   dogsSubmittedHighscoreFrame = null;
   dogsPendingHighscoreFrame = null;
+  dogsHighscoreSavedName = null;
   playToggle.textContent = "Play";
   void resetDogsCore()
     .then((frame) => {
@@ -4772,6 +4843,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsSawHostileQueue = false;
   dogsSubmittedHighscoreFrame = null;
   dogsPendingHighscoreFrame = null;
+  dogsHighscoreSavedName = null;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
@@ -4796,6 +4868,7 @@ async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
   dogsSawHostileQueue = false;
   dogsSubmittedHighscoreFrame = null;
   dogsPendingHighscoreFrame = null;
+  dogsHighscoreSavedName = null;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("advance_eutherdogs_mission");
   }
@@ -4890,7 +4963,11 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       const tileW = Math.ceil(frame.tileWidth * scale);
       const tileH = Math.ceil(frame.tileHeight * scale);
       const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
-      drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
+      if (tile === "spilled_syrup") {
+        drawDogsVentFan(tileX, tileY, tileW, tileH, frame.frame);
+      } else {
+        drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
+      }
       if (tile === "service_elevator") {
         drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, frame.frame);
       }
