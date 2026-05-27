@@ -201,7 +201,10 @@ impl Game {
                 game.next_character_id = player as u32 + 1;
             }
         }
-        game.spawn_hostiles(mission.targets.max(mission.mission + 4).max(4) as usize);
+        game.spawn_hostiles(
+            mission.targets.max(mission.mission + 4).max(4) as usize,
+            mission.mission,
+        );
         game
     }
 
@@ -216,7 +219,7 @@ impl Game {
         Ok(game)
     }
 
-    pub fn spawn_hostiles(&mut self, count: usize) {
+    pub fn spawn_hostiles(&mut self, count: usize, mission: i32) {
         for _ in 0..count {
             if let Some((x, y)) = random_spawn_point(&self.world, &mut self.rng) {
                 let sprite = match self.rng.range(12) {
@@ -225,20 +228,27 @@ impl Game {
                     2 => AssetId::InventoryDrone,
                     3 => AssetId::BlackMarketCourier,
                     4 => AssetId::RecallEnforcer,
-                    5 if count > 10 => AssetId::DistrictManager,
                     _ => AssetId::AngryCustomer,
                 };
-                let mut hostile = Character::hostile_customer(
-                    self.next_character_id,
-                    x,
-                    y,
-                    sprite,
-                );
-                apply_hostile_profile(&mut hostile, hostile_profile(sprite));
-                self.characters.push(hostile);
-                self.next_character_id += 1;
+                self.spawn_hostile_at(x, y, sprite);
             }
         }
+        if mission > 0 && mission % 3 == 0 {
+            self.spawn_boss();
+        }
+    }
+
+    fn spawn_boss(&mut self) {
+        if let Some((x, y)) = random_spawn_point(&self.world, &mut self.rng) {
+            self.spawn_hostile_at(x, y, AssetId::DistrictManager);
+        }
+    }
+
+    fn spawn_hostile_at(&mut self, x: i32, y: i32, sprite: AssetId) {
+        let mut hostile = Character::hostile_customer(self.next_character_id, x, y, sprite);
+        apply_hostile_profile(&mut hostile, hostile_profile(sprite));
+        self.characters.push(hostile);
+        self.next_character_id += 1;
     }
 
     pub fn tick(&mut self, input: &[PlayerInput], dt: FixedStep) {
@@ -904,6 +914,42 @@ mod tests {
         let game = Game::new_mission(7, WorldParams::default(), MissionSpec::default());
         assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::Player));
         assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::HostileCustomer));
+    }
+
+    #[test]
+    fn every_third_mission_spawns_district_manager_boss() {
+        let game = Game::new_mission(
+            7,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 3,
+                targets: 0,
+                objects: 1,
+            },
+        );
+
+        assert!(game
+            .characters()
+            .iter()
+            .any(|character| character.sprite == crate::assets::AssetId::DistrictManager));
+    }
+
+    #[test]
+    fn early_missions_do_not_force_district_manager_boss() {
+        let game = Game::new_mission(
+            7,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 1,
+            },
+        );
+
+        assert!(!game
+            .characters()
+            .iter()
+            .any(|character| character.sprite == crate::assets::AssetId::DistrictManager));
     }
 
     #[test]
