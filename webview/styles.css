@@ -549,10 +549,17 @@ button:disabled {
 }
 
 .eutherdogs-briefing-grid,
-.eutherdogs-result-grid {
+.eutherdogs-result-grid,
+.eutherdogs-scoreboard {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
+}
+
+.eutherdogs-scoreboard {
+  grid-template-columns: 1fr;
+  align-content: start;
+  overflow: auto;
 }
 
 .eutherdogs-staff-grid {
@@ -641,6 +648,55 @@ button:disabled {
   padding: 8px;
   border: 1px solid rgba(39, 242, 255, 0.18);
   background: rgba(0, 5, 7, 0.74);
+}
+
+.eutherdogs-score-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(39, 242, 255, 0.18);
+  background: rgba(4, 12, 10, 0.78);
+}
+
+.eutherdogs-score-row.is-complete {
+  border-color: rgba(156, 255, 117, 0.28);
+}
+
+.eutherdogs-score-row.is-failed {
+  border-color: rgba(255, 80, 80, 0.2);
+}
+
+.eutherdogs-score-row span,
+.eutherdogs-score-row em {
+  color: #ffef6e;
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.eutherdogs-score-row strong,
+.eutherdogs-score-row small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherdogs-score-row strong {
+  color: #ffffff;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.eutherdogs-score-row small {
+  grid-column: 2 / 4;
+  color: #9ee9de;
+  font-size: 0.58rem;
+  font-weight: 850;
 }
 
 .eutherdogs-briefing-grid span,

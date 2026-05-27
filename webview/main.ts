@@ -310,7 +310,22 @@ type DogsCoreFrame = {
   highscoreCount: number;
 };
 
-type DogsMenuMode = "staff" | "store" | "briefing" | "result" | null;
+type DogsHighScoreEntry = {
+  id: string;
+  name: string;
+  score: number;
+  cash: number;
+  mission: number;
+  kills: number;
+  targetsDestroyed: number;
+  objectsCollected: number;
+  elapsedTicks: number;
+  completed: boolean;
+  staff: string;
+  createdAt: string;
+};
+
+type DogsMenuMode = "staff" | "store" | "briefing" | "scores" | "result" | null;
 type DogsActorFacing = "down" | "left" | "right" | "up";
 
 type DogsStaffOption = {
@@ -363,6 +378,8 @@ const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 const mobileModeStorageKey = "eutheroxide-mobile-mode";
 const bridgeClientStorageKey = "eutheroxide-bridge-client-id";
 const playerPortStorageKey = "eutheroxide-player-port";
+const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
+const dogsHighScoreLimit = 10;
 let audioVolume = readStoredVolume();
 const localAudioTargetLeadSeconds = 0.055;
 const localAudioMinimumLeadSeconds = 0.018;
@@ -522,6 +539,7 @@ let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
 let dogsStorePreviewItemId: string | null = null;
+let dogsSubmittedHighscoreFrame: number | null = null;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
@@ -712,6 +730,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <button id="eutherdogs-staff-open" type="button">Staff</button>
                 <button id="eutherdogs-store-open" type="button">RX Store</button>
                 <button id="eutherdogs-briefing-open" type="button">Briefing</button>
+                <button id="eutherdogs-scores-open" type="button">Scores</button>
                 <button id="eutherdogs-start-shift" class="primary-action" type="button">Start shift</button>
               </footer>
             </div>
@@ -871,6 +890,7 @@ const eutherDogsMenuBody = document.querySelector<HTMLDivElement>("#eutherdogs-m
 const eutherDogsStaffOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-staff-open")!;
 const eutherDogsStoreOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-store-open")!;
 const eutherDogsBriefingOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-briefing-open")!;
+const eutherDogsScoresOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-scores-open")!;
 const eutherDogsStartShift = document.querySelector<HTMLButtonElement>("#eutherdogs-start-shift")!;
 const mobileToggle = document.querySelector<HTMLButtonElement>("#mobile-toggle")!;
 const mobilePlay = document.querySelector<HTMLButtonElement>('[data-mobile-command="play"]')!;
@@ -1116,6 +1136,10 @@ eutherDogsStoreOpen.addEventListener("click", () => {
 
 eutherDogsBriefingOpen.addEventListener("click", () => {
   showDogsMenu("briefing");
+});
+
+eutherDogsScoresOpen.addEventListener("click", () => {
+  showDogsMenu("scores");
 });
 
 eutherDogsStartShift.addEventListener("click", () => {
@@ -3848,6 +3872,128 @@ function dogsStorePreviewMarkup(item: DogsStoreItem | null): string {
   `;
 }
 
+function dogsDefaultHighScores(): DogsHighScoreEntry[] {
+  return [
+    {
+      id: "seed-anon",
+      name: "ANON",
+      score: 1000,
+      cash: 100,
+      mission: 1,
+      kills: 10,
+      targetsDestroyed: 3,
+      objectsCollected: 5,
+      elapsedTicks: 3600,
+      completed: true,
+      staff: "Counter",
+      createdAt: "2026-05-27T00:00:00.000Z",
+    },
+  ];
+}
+
+function normalizeDogsHighScoreEntry(value: unknown): DogsHighScoreEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Partial<DogsHighScoreEntry>;
+  const score = Number(entry.score);
+  if (!Number.isFinite(score)) return null;
+  const name = String(entry.name ?? "ANON").trim().slice(0, 16) || "ANON";
+  return {
+    id: String(entry.id ?? `score-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`),
+    name,
+    score,
+    cash: Number(entry.cash) || 0,
+    mission: Number(entry.mission) || 1,
+    kills: Number(entry.kills) || 0,
+    targetsDestroyed: Number(entry.targetsDestroyed) || 0,
+    objectsCollected: Number(entry.objectsCollected) || 0,
+    elapsedTicks: Number(entry.elapsedTicks) || 0,
+    completed: Boolean(entry.completed),
+    staff: String(entry.staff ?? "Counter").slice(0, 24),
+    createdAt: String(entry.createdAt ?? new Date().toISOString()),
+  };
+}
+
+function compareDogsHighScores(a: DogsHighScoreEntry, b: DogsHighScoreEntry): number {
+  return (
+    Number(b.completed) - Number(a.completed) ||
+    b.score - a.score ||
+    b.mission - a.mission ||
+    b.kills - a.kills ||
+    b.targetsDestroyed - a.targetsDestroyed ||
+    b.objectsCollected - a.objectsCollected ||
+    a.elapsedTicks - b.elapsedTicks ||
+    a.name.localeCompare(b.name)
+  );
+}
+
+function readDogsHighScores(): DogsHighScoreEntry[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(dogsHighScoresStorageKey) ?? "[]");
+    const entries = Array.isArray(parsed)
+      ? parsed.map(normalizeDogsHighScoreEntry).filter((entry): entry is DogsHighScoreEntry => Boolean(entry))
+      : [];
+    return (entries.length ? entries : dogsDefaultHighScores()).sort(compareDogsHighScores).slice(0, dogsHighScoreLimit);
+  } catch {
+    return dogsDefaultHighScores();
+  }
+}
+
+function writeDogsHighScores(entries: DogsHighScoreEntry[]): void {
+  localStorage.setItem(
+    dogsHighScoresStorageKey,
+    JSON.stringify(entries.sort(compareDogsHighScores).slice(0, dogsHighScoreLimit)),
+  );
+}
+
+function submitDogsHighScore(frame: DogsCoreFrame): void {
+  if (frame.summary.status === "running" || dogsSubmittedHighscoreFrame === frame.frame) return;
+  dogsSubmittedHighscoreFrame = frame.frame;
+  const staff = dogsStaffOptions.find((option) => option.id === selectedDogsStaff);
+  const entry: DogsHighScoreEntry = {
+    id: `score-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    name: staff?.name ?? "Counter",
+    score: frame.summary.score,
+    cash: frame.summary.cash,
+    mission: 1,
+    kills: frame.summary.kills,
+    targetsDestroyed: frame.summary.targetsDestroyed,
+    objectsCollected: frame.summary.objectsCollected,
+    elapsedTicks: frame.summary.elapsedTicks,
+    completed: frame.summary.status === "won",
+    staff: staff?.role ?? "Counter",
+    createdAt: new Date().toISOString(),
+  };
+  const entries = [...readDogsHighScores(), entry].sort(compareDogsHighScores).slice(0, dogsHighScoreLimit);
+  writeDogsHighScores(entries);
+}
+
+function dogsTimeLabel(ticks: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ticks / 60));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function dogsHighScoreBoardMarkup(): string {
+  const entries = readDogsHighScores();
+  return `
+    <div class="eutherdogs-scoreboard">
+      ${entries
+        .map(
+          (entry, index) => `
+            <div class="eutherdogs-score-row ${entry.completed ? "is-complete" : "is-failed"}">
+              <span>${String(index + 1).padStart(2, "0")}</span>
+              <strong>${entry.name}</strong>
+              <em>${entry.score}</em>
+              <small>${entry.completed ? "Closed" : "Failed"} | K ${entry.kills} | RX ${entry.objectsCollected} | ${dogsTimeLabel(entry.elapsedTicks)}</small>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
   dogsMenuMode = mode;
   ui.playing = false;
@@ -3872,6 +4018,7 @@ function renderDogsMenu(): void {
   eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
+  eutherDogsScoresOpen.classList.toggle("is-active", dogsMenuMode === "scores");
   eutherDogsStartShift.textContent =
     dogsMenuMode === "result" && dogsFrame?.summary.status === "won"
       ? "Main menu"
@@ -3919,6 +4066,12 @@ function renderDogsMenu(): void {
     `;
     return;
   }
+  if (dogsMenuMode === "scores") {
+    eutherDogsMenuKicker.textContent = "High Score Board";
+    eutherDogsMenuTitle.textContent = "Best Counter Closures";
+    eutherDogsMenuBody.innerHTML = dogsHighScoreBoardMarkup();
+    return;
+  }
   if (dogsMenuMode === "result") {
     const summary = dogsFrame?.summary;
     const won = summary?.status === "won";
@@ -3934,6 +4087,7 @@ function renderDogsMenu(): void {
         <div><span>Targets</span><strong>${summary?.targetsDestroyed ?? 0}</strong></div>
         <div><span>Shots / hits</span><strong>${summary?.shotsFired ?? 0} / ${summary?.hits ?? 0}</strong></div>
         <div><span>Damage taken</span><strong>${summary?.damageTaken ?? 0}</strong></div>
+        <div><span>Board</span><strong>${readDogsHighScores()[0]?.score ?? 0}</strong></div>
       </div>
     `;
     return;
@@ -4124,6 +4278,7 @@ function resetDogsMode(): void {
   ui.playing = false;
   ui.frame = 0;
   ui.status = "DOGS RESET";
+  dogsSubmittedHighscoreFrame = null;
   playToggle.textContent = "Play";
   void resetDogsCore()
     .then((frame) => {
@@ -4154,6 +4309,7 @@ async function runDogsFrame(): Promise<void> {
   ui.audioLeadMs = 0;
   ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
   if (dogsFrame.summary.status !== "running") {
+    submitDogsHighScore(dogsFrame);
     ui.playing = false;
     playToggle.textContent = "Play";
     showDogsMenu("result");
@@ -4168,6 +4324,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
   dogsSawHostileQueue = false;
+  dogsSubmittedHighscoreFrame = null;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
