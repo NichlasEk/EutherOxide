@@ -79,6 +79,16 @@ pub struct ScoringRules {
     pub time_bonus_divisor: i32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostileProfile {
+    armor: i32,
+    speed: i32,
+    weapon: WeaponId,
+    preferred_range: i32,
+    contact_damage: i32,
+    will_retreat: bool,
+}
+
 impl Default for MissionRules {
     fn default() -> Self {
         Self {
@@ -209,18 +219,23 @@ impl Game {
     pub fn spawn_hostiles(&mut self, count: usize) {
         for _ in 0..count {
             if let Some((x, y)) = random_spawn_point(&self.world, &mut self.rng) {
-                let sprite = match self.rng.range(4) {
+                let sprite = match self.rng.range(12) {
                     0 => AssetId::AngryCustomer,
                     1 => AssetId::ClaimDenier,
                     2 => AssetId::InventoryDrone,
+                    3 => AssetId::BlackMarketCourier,
+                    4 => AssetId::RecallEnforcer,
+                    5 if count > 10 => AssetId::DistrictManager,
                     _ => AssetId::AngryCustomer,
                 };
-                self.characters.push(Character::hostile_customer(
+                let mut hostile = Character::hostile_customer(
                     self.next_character_id,
                     x,
                     y,
                     sprite,
-                ));
+                );
+                apply_hostile_profile(&mut hostile, hostile_profile(sprite));
+                self.characters.push(hostile);
                 self.next_character_id += 1;
             }
         }
@@ -487,16 +502,24 @@ impl Game {
             if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
                 && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
             {
-                self.hurt_player_index(player_index, 2 * dt.ticks as i32);
+                let profile = hostile_profile(self.characters[index].sprite);
+                self.hurt_player_index(player_index, profile.contact_damage * dt.ticks as i32);
                 continue;
             }
 
             let direction = direction_toward(x, y, player_x, player_y);
             self.characters[index].direction = direction;
-            if (x - player_x).abs().max((y - player_y).abs()) < 220
-                && self.has_line_of_sight(x, y, player_x, player_y)
-            {
-                self.fire_weapon(index);
+            let profile = hostile_profile(self.characters[index].sprite);
+            let distance = (x - player_x).abs().max((y - player_y).abs());
+            let has_line_of_sight = self.has_line_of_sight(x, y, player_x, player_y);
+            if has_line_of_sight && distance < profile.preferred_range {
+                if profile.will_retreat && distance < profile.preferred_range / 2 {
+                    let retreat = direction_toward(player_x, player_y, x, y);
+                    self.characters[index].direction = retreat;
+                    self.move_character(index, retreat, dt);
+                } else {
+                    self.fire_weapon(index);
+                }
             } else {
                 self.move_character(index, direction, dt);
             }
@@ -724,6 +747,81 @@ impl Game {
             .min_by_key(|(_, character)| (character.x - x).abs() + (character.y - y).abs())
             .map(|(index, character)| (index, character.x, character.y))
     }
+}
+
+fn hostile_profile(sprite: AssetId) -> HostileProfile {
+    match sprite {
+        // Bitter pensionar: slow, stubborn, surprisingly durable.
+        AssetId::ClaimDenier => HostileProfile {
+            armor: 70,
+            speed: 1,
+            weapon: WeaponId::CouponPistol,
+            preferred_range: 180,
+            contact_damage: 3,
+            will_retreat: false,
+        },
+        // Pundaren: fast, fragile, closes distance instead of thinking.
+        AssetId::BlackMarketCourier => HostileProfile {
+            armor: 24,
+            speed: 4,
+            weapon: WeaponId::ReceiptGun,
+            preferred_range: 90,
+            contact_damage: 4,
+            will_retreat: false,
+        },
+        // Snalkunden: backs away and fires paperwork from a distance.
+        AssetId::AngryCustomer => HostileProfile {
+            armor: 35,
+            speed: 2,
+            weapon: WeaponId::CouponPistol,
+            preferred_range: 190,
+            contact_damage: 2,
+            will_retreat: true,
+        },
+        AssetId::InventoryDrone => HostileProfile {
+            armor: 28,
+            speed: 3,
+            weapon: WeaponId::FormularyZapper,
+            preferred_range: 150,
+            contact_damage: 2,
+            will_retreat: true,
+        },
+        AssetId::RecallEnforcer => HostileProfile {
+            armor: 55,
+            speed: 2,
+            weapon: WeaponId::NeonPriorAuth,
+            preferred_range: 210,
+            contact_damage: 3,
+            will_retreat: false,
+        },
+        AssetId::DistrictManager => HostileProfile {
+            armor: 120,
+            speed: 1,
+            weapon: WeaponId::TurboPriorAuth,
+            preferred_range: 240,
+            contact_damage: 5,
+            will_retreat: false,
+        },
+        _ => HostileProfile {
+            armor: 35,
+            speed: 2,
+            weapon: WeaponId::CouponPistol,
+            preferred_range: 180,
+            contact_damage: 2,
+            will_retreat: false,
+        },
+    }
+}
+
+fn apply_hostile_profile(character: &mut Character, profile: HostileProfile) {
+    character.armor = profile.armor;
+    character.speed = profile.speed;
+    character.weapon = profile.weapon;
+    character.weapons = vec![crate::entity::WeaponSlot {
+        weapon: profile.weapon,
+        ammo: -1,
+    }];
+    character.active_weapon = 0;
 }
 
 fn bullet_hits_wall(world: &World, bullet: &Bullet) -> bool {
@@ -1005,6 +1103,45 @@ mod tests {
         ));
         game.tick(&[], FixedStep { ticks: 1 });
         assert!(game.progress().shots_fired > 0);
+    }
+
+    #[test]
+    fn hostile_profiles_have_distinct_loadouts() {
+        let pensioner = super::hostile_profile(crate::assets::AssetId::ClaimDenier);
+        let courier = super::hostile_profile(crate::assets::AssetId::BlackMarketCourier);
+        let cheap_customer = super::hostile_profile(crate::assets::AssetId::AngryCustomer);
+
+        assert!(pensioner.armor > cheap_customer.armor);
+        assert!(courier.speed > cheap_customer.speed);
+        assert_ne!(courier.weapon, pensioner.weapon);
+        assert!(cheap_customer.will_retreat);
+    }
+
+    #[test]
+    fn retreating_customer_backs_away_when_too_close() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH * 5 + 8,
+            TILE_HEIGHT * 5 + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        let mut hostile = crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH * 6 + 8,
+            TILE_HEIGHT * 5 + 2,
+            crate::assets::AssetId::AngryCustomer,
+        );
+        super::apply_hostile_profile(
+            &mut hostile,
+            super::hostile_profile(crate::assets::AssetId::AngryCustomer),
+        );
+        game.characters.push(hostile);
+        let before = game.characters()[1].x;
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert!(game.characters()[1].x > before);
     }
 
     #[test]
