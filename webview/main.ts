@@ -1671,6 +1671,9 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
+  if (isEditableEventTarget(event.target)) {
+    return;
+  }
   if (captureTarget && captureMode === "key") {
     event.preventDefault();
     controlBindings[captureTarget].key = event.key;
@@ -1696,6 +1699,9 @@ window.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("keyup", (event) => {
+  if (isEditableEventTarget(event.target)) {
+    return;
+  }
   if (event.key === "Shift" && dogsMapOpen) {
     dogsMapOpen = false;
     if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
@@ -1710,6 +1716,18 @@ window.addEventListener("keyup", (event) => {
   keyboardState[key] = false;
   recomputeInputState();
 });
+
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  );
+}
 
 function emptyInputState(): InputState {
   return {
