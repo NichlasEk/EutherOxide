@@ -699,6 +699,69 @@ button:disabled {
   font-weight: 850;
 }
 
+.eutherdogs-score-entry {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 239, 110, 0.28);
+  background: rgba(8, 9, 4, 0.76);
+}
+
+.eutherdogs-score-entry-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.eutherdogs-score-entry-summary span,
+.eutherdogs-score-entry-summary strong {
+  display: block;
+  text-align: center;
+}
+
+.eutherdogs-score-entry-summary span {
+  color: #92f4ee;
+  font-size: 0.52rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherdogs-score-entry-summary strong {
+  color: #ffffff;
+  font-size: 0.78rem;
+}
+
+.eutherdogs-initials,
+.eutherdogs-initial-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.eutherdogs-initials button {
+  width: 52px;
+  height: 58px;
+  border-color: rgba(39, 242, 255, 0.24);
+  color: #ffffff;
+  font-size: 1.4rem;
+}
+
+.eutherdogs-initials button.is-active {
+  border-color: rgba(255, 239, 110, 0.78);
+  color: #ffef6e;
+  box-shadow: 0 0 18px rgba(255, 239, 110, 0.18);
+}
+
+.eutherdogs-initial-actions button {
+  min-width: 72px;
+  min-height: 32px;
+  border-radius: 0;
+  font-size: 0.62rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
 .eutherdogs-briefing-grid span,
 .eutherdogs-briefing-grid strong,
 .eutherdogs-result-grid span,

@@ -540,6 +540,10 @@ let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
 let dogsStorePreviewItemId: string | null = null;
 let dogsSubmittedHighscoreFrame: number | null = null;
+let dogsHighScoresTomlLoadAttempted = false;
+let dogsPendingHighscoreFrame: DogsCoreFrame | null = null;
+let dogsHighscoreInitials = ["A", "A", "A"];
+let dogsHighscoreInitialIndex = 0;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
@@ -1155,6 +1159,23 @@ eutherDogsStartShift.addEventListener("click", () => {
 });
 
 eutherDogsMenuBody.addEventListener("click", (event) => {
+  const initialButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-initial]");
+  if (initialButton) {
+    dogsHighscoreInitialIndex = Number(initialButton.dataset.scoreInitial) || 0;
+    renderDogsMenu();
+    return;
+  }
+  const initialStep = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-step]");
+  if (initialStep) {
+    stepDogsHighscoreInitial(Number(initialStep.dataset.scoreStep) || 1);
+    renderDogsMenu();
+    return;
+  }
+  const scoreSubmit = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-submit]");
+  if (scoreSubmit) {
+    void submitPendingDogsHighScore();
+    return;
+  }
   const staffButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-staff-id]");
   if (staffButton) {
     const staff = staffButton.dataset.staffId === "2" ? 2 : 1;
@@ -3891,6 +3912,132 @@ function dogsDefaultHighScores(): DogsHighScoreEntry[] {
   ];
 }
 
+function parseDogsHighScoresToml(toml: string): DogsHighScoreEntry[] {
+  const entries: DogsHighScoreEntry[] = [];
+  let current: Record<string, string> | null = null;
+  const flush = () => {
+    if (!current) return;
+    const entry = normalizeDogsHighScoreEntry({
+      id: current.id,
+      name: current.name,
+      score: Number(current.score),
+      cash: Number(current.cash),
+      mission: Number(current.mission),
+      kills: Number(current.kills),
+      targetsDestroyed: Number(current.targets_destroyed),
+      objectsCollected: Number(current.objects_collected),
+      elapsedTicks: Number(current.elapsed_ticks),
+      completed: current.completed === "true",
+      staff: current.staff,
+      createdAt: current.created_at,
+    });
+    if (entry) entries.push(entry);
+  };
+  for (const rawLine of toml.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line === "[[highscores]]") {
+      flush();
+      current = {};
+      continue;
+    }
+    if (!current) continue;
+    const match = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.+)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    const value = rawValue.trim();
+    current[key] = value.startsWith('"') ? value.replace(/^"|"$/g, "").replace(/\\"/g, '"').replace(/\\\\/g, "\\") : value;
+  }
+  flush();
+  return entries.sort(compareDogsHighScores).slice(0, dogsHighScoreLimit);
+}
+
+function tomlString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function serializeDogsHighScoresToml(entries: DogsHighScoreEntry[]): string {
+  const lines = [
+    "# EutherDogs high scores",
+    "# Edit values freely if you want to mod or cheat the board.",
+    "",
+  ];
+  for (const entry of entries.sort(compareDogsHighScores).slice(0, dogsHighScoreLimit)) {
+    lines.push("[[highscores]]");
+    lines.push(`id = ${tomlString(entry.id)}`);
+    lines.push(`name = ${tomlString(entry.name)}`);
+    lines.push(`score = ${Math.trunc(entry.score)}`);
+    lines.push(`cash = ${Math.trunc(entry.cash)}`);
+    lines.push(`mission = ${Math.trunc(entry.mission)}`);
+    lines.push(`kills = ${Math.trunc(entry.kills)}`);
+    lines.push(`targets_destroyed = ${Math.trunc(entry.targetsDestroyed)}`);
+    lines.push(`objects_collected = ${Math.trunc(entry.objectsCollected)}`);
+    lines.push(`elapsed_ticks = ${Math.trunc(entry.elapsedTicks)}`);
+    lines.push(`completed = ${entry.completed ? "true" : "false"}`);
+    lines.push(`staff = ${tomlString(entry.staff)}`);
+    lines.push(`created_at = ${tomlString(entry.createdAt)}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+async function loadDogsHighScoresToml(): Promise<void> {
+  if (dogsHighScoresTomlLoadAttempted) return;
+  if (!isTauri && ui.runtime !== "bridge") return;
+  dogsHighScoresTomlLoadAttempted = true;
+  const toml = await readDogsHighScoresToml();
+  if (!toml) {
+    await saveDogsHighScoresToml(serializeDogsHighScoresToml(readDogsHighScores()));
+    return;
+  }
+  const entries = parseDogsHighScoresToml(toml);
+  if (entries.length > 0) {
+    window.localStorage.setItem(dogsHighScoresStorageKey, JSON.stringify(entries));
+  }
+}
+
+async function readDogsHighScoresToml(): Promise<string | null> {
+  if (isTauri) {
+    try {
+      return await invoke<string | null>("read_eutherdogs_highscores_toml");
+    } catch {
+      return null;
+    }
+  }
+  if (ui.runtime === "bridge") {
+    try {
+      const response = await bridgeRequest("/eutherdogs-highscores", {}, 300);
+      if (response.status === 204) return null;
+      return await response.text();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function saveDogsHighScoresToml(toml: string): Promise<void> {
+  if (isTauri) {
+    try {
+      await invoke("save_eutherdogs_highscores_toml", { toml });
+    } catch {
+      pushTrace("EutherDogs highscore TOML save missed");
+    }
+    return;
+  }
+  if (ui.runtime === "bridge") {
+    try {
+      await bridgeRequest("/eutherdogs-highscores", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: toml,
+      });
+    } catch {
+      pushTrace("EutherDogs highscore TOML save missed");
+    }
+  }
+}
+
 function normalizeDogsHighScoreEntry(value: unknown): DogsHighScoreEntry | null {
   if (!value || typeof value !== "object") return null;
   const entry = value as Partial<DogsHighScoreEntry>;
@@ -3945,13 +4092,11 @@ function writeDogsHighScores(entries: DogsHighScoreEntry[]): void {
   );
 }
 
-function submitDogsHighScore(frame: DogsCoreFrame): void {
-  if (frame.summary.status === "running" || dogsSubmittedHighscoreFrame === frame.frame) return;
-  dogsSubmittedHighscoreFrame = frame.frame;
+function makeDogsHighScoreEntry(frame: DogsCoreFrame, name: string): DogsHighScoreEntry {
   const staff = dogsStaffOptions.find((option) => option.id === selectedDogsStaff);
-  const entry: DogsHighScoreEntry = {
+  return {
     id: `score-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-    name: staff?.name ?? "Counter",
+    name: name.trim().slice(0, 3).toUpperCase() || "AAA",
     score: frame.summary.score,
     cash: frame.summary.cash,
     mission: 1,
@@ -3963,8 +4108,33 @@ function submitDogsHighScore(frame: DogsCoreFrame): void {
     staff: staff?.role ?? "Counter",
     createdAt: new Date().toISOString(),
   };
+}
+
+function storeDogsHighScoreEntry(entry: DogsHighScoreEntry): void {
   const entries = [...readDogsHighScores(), entry].sort(compareDogsHighScores).slice(0, dogsHighScoreLimit);
   writeDogsHighScores(entries);
+  void saveDogsHighScoresToml(serializeDogsHighScoresToml(entries));
+}
+
+function queueDogsHighScore(frame: DogsCoreFrame): void {
+  if (frame.summary.status === "running" || dogsSubmittedHighscoreFrame === frame.frame) return;
+  dogsSubmittedHighscoreFrame = frame.frame;
+  dogsPendingHighscoreFrame = frame;
+  dogsHighscoreInitials = ["A", "A", "A"];
+  dogsHighscoreInitialIndex = 0;
+}
+
+function stepDogsHighscoreInitial(delta: number): void {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const current = alphabet.indexOf(dogsHighscoreInitials[dogsHighscoreInitialIndex] ?? "A");
+  dogsHighscoreInitials[dogsHighscoreInitialIndex] = alphabet[(current + delta + alphabet.length) % alphabet.length];
+}
+
+async function submitPendingDogsHighScore(): Promise<void> {
+  if (!dogsPendingHighscoreFrame) return;
+  storeDogsHighScoreEntry(makeDogsHighScoreEntry(dogsPendingHighscoreFrame, dogsHighscoreInitials.join("")));
+  dogsPendingHighscoreFrame = null;
+  showDogsMenu("scores");
 }
 
 function dogsTimeLabel(ticks: number): string {
@@ -3990,6 +4160,35 @@ function dogsHighScoreBoardMarkup(): string {
           `,
         )
         .join("")}
+    </div>
+  `;
+}
+
+function dogsHighScoreEntryMarkup(frame: DogsCoreFrame | null): string {
+  if (!frame) return dogsHighScoreBoardMarkup();
+  return `
+    <div class="eutherdogs-score-entry">
+      <div class="eutherdogs-score-entry-summary">
+        <span>Score</span><strong>${frame.summary.score}</strong>
+        <span>Cash</span><strong>$${frame.summary.cash}</strong>
+        <span>Queue</span><strong>${frame.summary.kills}</strong>
+      </div>
+      <div class="eutherdogs-initials" aria-label="high score initials">
+        ${dogsHighscoreInitials
+          .map(
+            (letter, index) => `
+              <button class="${index === dogsHighscoreInitialIndex ? "is-active" : ""}" data-score-initial="${index}" type="button">
+                ${letter}
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="eutherdogs-initial-actions">
+        <button data-score-step="-1" type="button">Prev</button>
+        <button data-score-step="1" type="button">Next</button>
+        <button data-score-submit="true" type="button">Save</button>
+      </div>
     </div>
   `;
 }
@@ -4076,7 +4275,11 @@ function renderDogsMenu(): void {
     const summary = dogsFrame?.summary;
     const won = summary?.status === "won";
     eutherDogsMenuKicker.textContent = won ? "Shift Closed" : "Shift Failed";
-    eutherDogsMenuTitle.textContent = won ? "Receipts Balanced" : "Counter Incident Report";
+    eutherDogsMenuTitle.textContent = dogsPendingHighscoreFrame
+      ? "Enter Initials"
+      : won
+        ? "Receipts Balanced"
+        : "Counter Incident Report";
     eutherDogsMenuBody.innerHTML = `
       <div class="eutherdogs-result-grid">
         <div><span>Status</span><strong>${summary?.status.toUpperCase() ?? "UNKNOWN"}</strong></div>
@@ -4089,6 +4292,7 @@ function renderDogsMenu(): void {
         <div><span>Damage taken</span><strong>${summary?.damageTaken ?? 0}</strong></div>
         <div><span>Board</span><strong>${readDogsHighScores()[0]?.score ?? 0}</strong></div>
       </div>
+      ${dogsPendingHighscoreFrame ? dogsHighScoreEntryMarkup(dogsPendingHighscoreFrame) : ""}
     `;
     return;
   }
@@ -4219,6 +4423,7 @@ async function enterDogsMode(): Promise<void> {
   stopBridgeStream();
   try {
     dogsFrame = await startDogsCore();
+    await loadDogsHighScoresToml();
   } catch (err) {
     dogsMode = false;
     pushTrace(`EutherDogs core failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -4279,6 +4484,7 @@ function resetDogsMode(): void {
   ui.frame = 0;
   ui.status = "DOGS RESET";
   dogsSubmittedHighscoreFrame = null;
+  dogsPendingHighscoreFrame = null;
   playToggle.textContent = "Play";
   void resetDogsCore()
     .then((frame) => {
@@ -4309,7 +4515,7 @@ async function runDogsFrame(): Promise<void> {
   ui.audioLeadMs = 0;
   ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
   if (dogsFrame.summary.status !== "running") {
-    submitDogsHighScore(dogsFrame);
+    queueDogsHighScore(dogsFrame);
     ui.playing = false;
     playToggle.textContent = "Play";
     showDogsMenu("result");
@@ -4325,6 +4531,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsPreviousAudioFrame = null;
   dogsSawHostileQueue = false;
   dogsSubmittedHighscoreFrame = null;
+  dogsPendingHighscoreFrame = null;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }

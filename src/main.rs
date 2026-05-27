@@ -1207,7 +1207,24 @@ fn handle_bridge_route(
             ensure_bridge_control_dir()?;
             fs::write(shader_config_path(), &request.body)?;
             send_empty(stream, 204)
-        }
+        },
+        ("GET", "/eutherdogs-highscores") => match fs::read_to_string(eutherdogs_highscores_path()) {
+            Ok(contents) => send_response(
+                stream,
+                200,
+                "text/plain; charset=utf-8",
+                contents.as_bytes(),
+            ),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                send_response(stream, 204, "text/plain; charset=utf-8", &[])
+            }
+            Err(err) => Err(err),
+        },
+        ("POST", "/eutherdogs-highscores") => {
+            ensure_bridge_control_dir()?;
+            fs::write(eutherdogs_highscores_path(), &request.body)?;
+            send_empty(stream, 204)
+        },
         ("GET", "/rom-dir") => send_json(
             stream,
             &RomDirSetting {
@@ -2130,6 +2147,10 @@ fn build_status_path() -> PathBuf {
 
 fn shader_config_path() -> PathBuf {
     bridge_control_dir().join("shaders.toml")
+}
+
+fn eutherdogs_highscores_path() -> PathBuf {
+    bridge_control_dir().join("eutherdogs-highscores.toml")
 }
 
 fn settings_path() -> PathBuf {
