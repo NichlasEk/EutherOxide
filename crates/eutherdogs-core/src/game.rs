@@ -87,6 +87,7 @@ struct HostileProfile {
     preferred_range: i32,
     contact_damage: i32,
     will_retreat: bool,
+    straight_shooter: bool,
 }
 
 impl Default for MissionRules {
@@ -201,10 +202,11 @@ impl Game {
                 game.next_character_id = player as u32 + 1;
             }
         }
-        game.spawn_hostiles(
-            mission.targets.max(mission.mission + 4).max(4) as usize,
-            mission.mission,
-        );
+        let hostile_count = mission
+            .targets
+            .max(mission.mission + 4 + mission.mission / 2)
+            .max(4) as usize;
+        game.spawn_hostiles(hostile_count, mission.mission);
         game
     }
 
@@ -222,14 +224,7 @@ impl Game {
     pub fn spawn_hostiles(&mut self, count: usize, mission: i32) {
         for _ in 0..count {
             if let Some((x, y)) = random_spawn_point(&self.world, &mut self.rng) {
-                let sprite = match self.rng.range(12) {
-                    0 => AssetId::AngryCustomer,
-                    1 => AssetId::ClaimDenier,
-                    2 => AssetId::InventoryDrone,
-                    3 => AssetId::BlackMarketCourier,
-                    4 => AssetId::RecallEnforcer,
-                    _ => AssetId::AngryCustomer,
-                };
+                let sprite = hostile_spawn_sprite(self.rng.range(100), mission);
                 self.spawn_hostile_at(x, y, sprite);
             }
         }
@@ -457,7 +452,7 @@ impl Game {
                     .push(AudioEvent::Sfx(AssetId::ImpactLight));
             } else if let Some(hit_index) = bullet_hits_character(&self.characters, &bullet) {
                 let damage = weapon.power as i32;
-                self.damage_character(hit_index, damage);
+                self.damage_bullet_hit(hit_index, damage, bullet.owner_faction);
                 self.apply_area_damage(
                     bullet.x,
                     bullet.y,
@@ -517,22 +512,42 @@ impl Game {
                 continue;
             }
 
-            let direction = direction_toward(x, y, player_x, player_y);
-            self.characters[index].direction = direction;
             let profile = hostile_profile(self.characters[index].sprite);
+            let direction = direction_toward(x, y, player_x, player_y);
             let distance = (x - player_x).abs().max((y - player_y).abs());
-            let has_line_of_sight = self.has_line_of_sight(x, y, player_x, player_y);
-            if has_line_of_sight && distance < profile.preferred_range {
+            let straight_direction = if profile.straight_shooter {
+                straight_direction_to(x, y, player_x, player_y)
+            } else {
+                Some(direction)
+            };
+            let has_line_of_sight = straight_direction
+                .is_some_and(|_| self.has_line_of_sight(x, y, player_x, player_y));
+            if has_line_of_sight && distance < profile.preferred_range && straight_direction.is_some() {
                 if profile.will_retreat && distance < profile.preferred_range / 2 {
                     let retreat = direction_toward(player_x, player_y, x, y);
                     self.characters[index].direction = retreat;
                     self.move_character(index, retreat, dt);
                 } else {
+                    self.characters[index].direction = straight_direction.unwrap_or(direction);
                     self.fire_weapon(index);
                 }
             } else {
+                self.characters[index].direction = direction;
                 self.move_character(index, direction, dt);
             }
+        }
+    }
+
+    fn damage_bullet_hit(&mut self, character_index: usize, damage: i32, owner_faction: Faction) {
+        if owner_faction == Faction::HostileCustomer
+            && self
+                .characters
+                .get(character_index)
+                .is_some_and(|character| character.faction == Faction::Player)
+        {
+            self.hurt_player_index(character_index, damage);
+        } else {
+            self.damage_character(character_index, damage);
         }
     }
 
@@ -769,6 +784,7 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 180,
             contact_damage: 3,
             will_retreat: false,
+            straight_shooter: true,
         },
         // Pundaren: fast, fragile, closes distance instead of thinking.
         AssetId::BlackMarketCourier => HostileProfile {
@@ -778,6 +794,7 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 90,
             contact_damage: 4,
             will_retreat: false,
+            straight_shooter: false,
         },
         // Snalkunden: backs away and fires paperwork from a distance.
         AssetId::AngryCustomer => HostileProfile {
@@ -787,6 +804,7 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 190,
             contact_damage: 2,
             will_retreat: true,
+            straight_shooter: true,
         },
         AssetId::InventoryDrone => HostileProfile {
             armor: 28,
@@ -795,6 +813,7 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 150,
             contact_damage: 2,
             will_retreat: true,
+            straight_shooter: false,
         },
         AssetId::RecallEnforcer => HostileProfile {
             armor: 55,
@@ -803,6 +822,7 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 210,
             contact_damage: 3,
             will_retreat: false,
+            straight_shooter: true,
         },
         AssetId::DistrictManager => HostileProfile {
             armor: 120,
@@ -811,6 +831,7 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 240,
             contact_damage: 5,
             will_retreat: false,
+            straight_shooter: true,
         },
         _ => HostileProfile {
             armor: 35,
@@ -819,7 +840,45 @@ fn hostile_profile(sprite: AssetId) -> HostileProfile {
             preferred_range: 180,
             contact_damage: 2,
             will_retreat: false,
+            straight_shooter: true,
         },
+    }
+}
+
+fn hostile_spawn_sprite(roll: i32, mission: i32) -> AssetId {
+    if mission >= 8 {
+        match roll {
+            0..=17 => AssetId::AngryCustomer,
+            18..=32 => AssetId::ClaimDenier,
+            33..=49 => AssetId::InventoryDrone,
+            50..=66 => AssetId::BlackMarketCourier,
+            67..=91 => AssetId::RecallEnforcer,
+            _ => AssetId::DistrictManager,
+        }
+    } else if mission >= 5 {
+        match roll {
+            0..=25 => AssetId::AngryCustomer,
+            26..=43 => AssetId::ClaimDenier,
+            44..=62 => AssetId::InventoryDrone,
+            63..=80 => AssetId::BlackMarketCourier,
+            _ => AssetId::RecallEnforcer,
+        }
+    } else if mission >= 3 {
+        match roll {
+            0..=42 => AssetId::AngryCustomer,
+            43..=62 => AssetId::ClaimDenier,
+            63..=80 => AssetId::InventoryDrone,
+            81..=94 => AssetId::BlackMarketCourier,
+            _ => AssetId::RecallEnforcer,
+        }
+    } else {
+        match roll {
+            0..=54 => AssetId::AngryCustomer,
+            55..=72 => AssetId::ClaimDenier,
+            73..=86 => AssetId::InventoryDrone,
+            87..=96 => AssetId::BlackMarketCourier,
+            _ => AssetId::RecallEnforcer,
+        }
     }
 }
 
@@ -871,6 +930,28 @@ fn direction_toward(x: i32, y: i32, target_x: i32, target_y: i32) -> Direction {
         (-1, 0) => Direction::Left,
         (-1, -1) => Direction::UpLeft,
         _ => Direction::Down,
+    }
+}
+
+fn straight_direction_to(x: i32, y: i32, target_x: i32, target_y: i32) -> Option<Direction> {
+    let x = x + crate::world::CHARACTER_WIDTH / 2;
+    let y = y + crate::world::CHARACTER_HEIGHT / 2;
+    let target_x = target_x + crate::world::CHARACTER_WIDTH / 2;
+    let target_y = target_y + crate::world::CHARACTER_HEIGHT / 2;
+    if (target_y - y).abs() <= crate::world::CHARACTER_HEIGHT / 2 {
+        Some(if target_x >= x {
+            Direction::Right
+        } else {
+            Direction::Left
+        })
+    } else if (target_x - x).abs() <= crate::world::CHARACTER_WIDTH / 2 {
+        Some(if target_y >= y {
+            Direction::Down
+        } else {
+            Direction::Up
+        })
+    } else {
+        None
     }
 }
 
@@ -1149,6 +1230,76 @@ mod tests {
         ));
         game.tick(&[], FixedStep { ticks: 1 });
         assert!(game.progress().shots_fired > 0);
+    }
+
+    #[test]
+    fn hostile_straight_shooter_fires_cardinal_projectile() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.characters.push(crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH * 4 + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::ClaimDenier,
+        ));
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        let bullet = game.bullets().first().expect("hostile should fire");
+        assert!(bullet.dx < 0);
+        assert_eq!(bullet.dy, 0);
+    }
+
+    #[test]
+    fn hostile_straight_shooter_repositions_when_unaligned() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.characters.push(crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH * 4 + 8,
+            TILE_HEIGHT * 3 + 2,
+            crate::assets::AssetId::ClaimDenier,
+        ));
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert!(game.bullets().is_empty());
+        assert_eq!(game.progress().shots_fired, 0);
+    }
+
+    #[test]
+    fn hostile_projectile_damages_player_state() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.characters.push(crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH * 4 + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::AngryCustomer,
+        ));
+        let armor = game.characters()[0].armor;
+
+        for _ in 0..32 {
+            game.tick(&[], FixedStep { ticks: 1 });
+        }
+
+        assert!(game.characters()[0].armor < armor);
+        assert!(game.progress().damage_taken > 0);
     }
 
     #[test]

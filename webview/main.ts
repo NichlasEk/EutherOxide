@@ -3375,6 +3375,8 @@ function renderHostUsers(): void {
 }
 
 function renderChat(): void {
+  const shouldStickToBottom =
+    chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight < 24;
   chatList.innerHTML = chatMessages.length
     ? chatMessages
         .map(
@@ -3387,7 +3389,9 @@ function renderChat(): void {
         )
         .join("")
     : `<span>No messages</span>`;
-  chatList.scrollTop = chatList.scrollHeight;
+  if (shouldStickToBottom) {
+    chatList.scrollTop = chatList.scrollHeight;
+  }
 }
 
 async function bridgeFrame(timeoutMs = 0): Promise<FrameResult> {
@@ -4113,7 +4117,7 @@ function dogsExitReady(frame: DogsCoreFrame): boolean {
 }
 
 function dogsHeroOnExit(frame: DogsCoreFrame): boolean {
-  const hero = frame.characters.find((actor) => actor.faction === "player" && actor.alive);
+  const hero = dogsLocalPlayer(frame);
   if (!hero) return false;
   const left = hero.x;
   const right = hero.x + frame.characterWidth - 1;
@@ -4587,7 +4591,7 @@ function processDogsAudio(frame: DogsCoreFrame): void {
 function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame | null): void {
   if (!previous) return;
   if (frame.bullets.length > previous.bullets.length) {
-    const hero = frame.characters.find((actor) => actor.faction === "player");
+    const hero = dogsLocalPlayer(frame);
     void playDogsSfx(hero?.activeWeapon ?? "scanner_blaster", 0.9);
   }
   if (frame.summary.objectsCollected > previous.summary.objectsCollected || frame.summary.cash > previous.summary.cash) {
@@ -4707,9 +4711,11 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
 }
 
 function dogsLocalPlayer(frame: DogsCoreFrame): DogsCoreActor | undefined {
+  const players = frame.characters.filter((actor) => actor.faction === "player" && actor.alive);
   return (
-    frame.characters.find((actor) => actor.faction === "player" && actor.id === playerPort - 1 && actor.alive) ??
-    frame.characters.find((actor) => actor.faction === "player" && actor.alive)
+    players.find((actor) => actor.id === playerPort - 1) ??
+    players[playerPort - 1] ??
+    players[0]
   );
 }
 
@@ -4718,7 +4724,7 @@ function dogsCurrentCash(): number {
 }
 
 function dogsCurrentHero(): DogsCoreActor | null {
-  return dogsFrame?.characters.find((actor) => actor.faction === "player") ?? null;
+  return dogsFrame ? dogsLocalPlayer(dogsFrame) ?? null : null;
 }
 
 function dogsAmmoLabel(ammo: number | null | undefined): string {
@@ -4795,14 +4801,15 @@ const dogsStoreCatalog: Array<Pick<DogsStoreItem, "id" | "label" | "price" | "de
 function dogsVisibleStoreItems(frame: DogsCoreFrame | null, cash: number, hero: DogsCoreActor | null): DogsStoreItem[] {
   const byId = new Map((frame?.store ?? []).map((item) => [item.id, item]));
   for (const item of dogsStoreCatalog) {
-    if (byId.has(item.id)) continue;
+    const existing = byId.get(item.id);
     const active = Boolean(item.weapon && hero?.activeWeapon === item.weapon);
     byId.set(item.id, {
+      ...existing,
       ...item,
-      owned: active,
+      owned: item.armor > 0 ? Boolean(existing?.owned) : active || Boolean(existing?.owned && !item.weapon),
       currentAmmo: active ? hero?.ammo : null,
       active,
-      affordable: cash >= item.price,
+      affordable: cash >= (existing?.price ?? item.price),
     });
   }
   return dogsStoreCatalog.map((item) => byId.get(item.id)).filter((item): item is DogsStoreItem => Boolean(item));
@@ -5713,8 +5720,12 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   }
   const nextActorPositions = new Map<string, { x: number; y: number }>();
   const nextActorFacings = new Map<string, DogsActorFacing>();
+  const localPlayerId = player?.faction === "player" ? player.id : null;
   for (const actor of frame.characters) {
     if (!actor.alive) continue;
+    if (actor.faction === "player" && actor.id !== localPlayerId && dogsPixelVisibility(frame, actor.x, actor.y) < 255) {
+      continue;
+    }
     if (actor.faction !== "player" && dogsPixelVisibility(frame, actor.x, actor.y) < 255) continue;
     const spriteW = Math.max(8, Math.ceil(32 * scale));
     const spriteH = Math.max(8, Math.ceil(32 * scale));

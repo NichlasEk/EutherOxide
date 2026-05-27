@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -695,7 +695,7 @@ struct HostSession {
     updated_unix_ms: u64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HostChatMessage {
     id: u64,
@@ -749,6 +749,13 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         write_rom_dir_setting(&canonical)?;
     }
     let users = Arc::new(Mutex::new(load_host_users()?));
+    let chat_messages = load_host_chat_messages()?;
+    let next_chat_id = chat_messages
+        .iter()
+        .map(|message| message.id)
+        .max()
+        .unwrap_or(0)
+        + 1;
     let listener = TcpListener::bind(&config.bind)?;
     let bridge = new_bridge_state(emulator);
     let instances = Arc::new(Mutex::new(vec![HostInstance {
@@ -764,8 +771,8 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         config,
         users,
         sessions: Arc::new(Mutex::new(Vec::new())),
-        chat_messages: Arc::new(Mutex::new(Vec::new())),
-        next_chat_id: Arc::new(Mutex::new(1)),
+        chat_messages: Arc::new(Mutex::new(chat_messages)),
+        next_chat_id: Arc::new(Mutex::new(next_chat_id)),
     };
     println!(
         "EutherHost reaction chamber listening on http://{}",
@@ -1272,12 +1279,14 @@ fn post_host_chat_message(state: &HostState, user: &str, message: &str) -> io::R
         .chat_messages
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
-    messages.push(HostChatMessage {
+    let entry = HostChatMessage {
         id: *next_id,
         user: user.to_string(),
         message,
         created_unix_ms: unix_ms_now(),
-    });
+    };
+    append_host_chat_message(&entry)?;
+    messages.push(entry);
     *next_id += 1;
     if messages.len() > 80 {
         let excess = messages.len() - 80;
@@ -2957,6 +2966,35 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
     fs::write(host_users_path(), contents)
 }
 
+fn load_host_chat_messages() -> io::Result<Vec<HostChatMessage>> {
+    ensure_host_dir()?;
+    let path = host_chat_path();
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let mut messages = contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<HostChatMessage>(line).ok())
+        .collect::<Vec<_>>();
+    if messages.len() > 80 {
+        let keep_from = messages.len() - 80;
+        messages.drain(0..keep_from);
+    }
+    Ok(messages)
+}
+
+fn append_host_chat_message(message: &HostChatMessage) -> io::Result<()> {
+    ensure_host_dir()?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(host_chat_path())?;
+    serde_json::to_writer(&mut file, message).map_err(|err| io::Error::other(err.to_string()))?;
+    file.write_all(b"\n")
+}
+
 fn ensure_host_dir() -> io::Result<()> {
     fs::create_dir_all(host_dir())
 }
@@ -2971,6 +3009,10 @@ fn host_config_path() -> PathBuf {
 
 fn host_users_path() -> PathBuf {
     host_dir().join("users.toml")
+}
+
+fn host_chat_path() -> PathBuf {
+    host_dir().join("chat.log")
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
