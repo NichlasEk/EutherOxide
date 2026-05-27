@@ -636,6 +636,9 @@ struct BridgeState {
     shutdown: Arc<AtomicBool>,
     gamepads: Arc<Mutex<GamepadReader>>,
     eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
+    eutherdogs_latest: Arc<Mutex<[Option<euther_oxide::eutherdogs::EutherDogsFrame>; 2]>>,
+    eutherdogs_runner_active: Arc<Mutex<bool>>,
+    eutherdogs_last_poll: Arc<Mutex<Instant>>,
 }
 
 struct BridgePlayerLease {
@@ -739,6 +742,9 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         eutherdogs: Arc::new(Mutex::new(
             euther_oxide::eutherdogs::EutherDogsRuntime::demo(),
         )),
+        eutherdogs_latest: Arc::new(Mutex::new([None, None])),
+        eutherdogs_runner_active: Arc::new(Mutex::new(false)),
+        eutherdogs_last_poll: Arc::new(Mutex::new(Instant::now())),
     }
 }
 
@@ -1771,7 +1777,10 @@ fn handle_bridge_route_with_user(
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
             *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_start(start);
-            send_json(stream, &dogs.snapshot())
+            let frame = dogs.snapshot();
+            drop(dogs);
+            publish_eutherdogs_initial_frame(state, frame.clone())?;
+            send_json(stream, &frame)
         }
         ("POST", "/eutherdogs/next") => {
             let mut dogs = state
@@ -1781,6 +1790,8 @@ fn handle_bridge_route_with_user(
             let frame = dogs
                 .advance_mission()
                 .map_err(|err| invalid_request(err.to_string()))?;
+            drop(dogs);
+            publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
         }
         ("POST", "/eutherdogs/reset") => {
@@ -1790,7 +1801,10 @@ fn handle_bridge_route_with_user(
                 .map_err(|err| io::Error::other(err.to_string()))?;
             dogs.reset()
                 .map_err(|err| invalid_request(err.to_string()))?;
-            send_json(stream, &dogs.snapshot())
+            let frame = dogs.snapshot();
+            drop(dogs);
+            publish_eutherdogs_initial_frame(state, frame.clone())?;
+            send_json(stream, &frame)
         }
         ("POST", "/eutherdogs/frame") => {
             let input = if request.body.is_empty() {
@@ -1805,6 +1819,32 @@ fn handle_bridge_route_with_user(
                 .map_err(|err| io::Error::other(err.to_string()))?;
             send_json(stream, &dogs.tick(input))
         }
+        ("POST", "/eutherdogs/input") => {
+            let input = if request.body.is_empty() {
+                euther_oxide::eutherdogs::EutherDogsInput::default()
+            } else {
+                serde_json::from_slice(&request.body)
+                    .map_err(|err| invalid_request(err.to_string()))?
+            };
+            touch_eutherdogs_poll(state)?;
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            dogs.set_input(input);
+            send_empty(stream, 204)
+        }
+        ("GET", "/eutherdogs/snapshot") => {
+            let player_index = bridge_player_index(&request).unwrap_or(0).min(1);
+            touch_eutherdogs_poll(state)?;
+            ensure_eutherdogs_runner(state)?;
+            let frame = latest_eutherdogs_frame(state, player_index)?;
+            send_json(stream, &frame)
+        }
+        ("GET", "/eutherdogs/stream") => {
+            let player_index = bridge_player_index(&request).unwrap_or(0).min(1);
+            bridge_eutherdogs_stream(stream, state, player_index)
+        }
         ("POST", "/eutherdogs/purchase") => {
             let purchase: euther_oxide::eutherdogs::EutherDogsPurchase =
                 serde_json::from_slice(&request.body)
@@ -1816,6 +1856,8 @@ fn handle_bridge_route_with_user(
             let frame = dogs
                 .purchase(purchase)
                 .map_err(|err| invalid_request(format!("{err:?}")))?;
+            drop(dogs);
+            publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
         }
         ("GET", "/gamepads") => {
@@ -2238,6 +2280,109 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
     }
 }
 
+fn publish_eutherdogs_initial_frame(
+    state: &BridgeState,
+    frame: euther_oxide::eutherdogs::EutherDogsFrame,
+) -> io::Result<()> {
+    let mut latest = state
+        .eutherdogs_latest
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    latest[0] = Some(frame.clone());
+    latest[1] = Some(frame);
+    Ok(())
+}
+
+fn touch_eutherdogs_poll(state: &BridgeState) -> io::Result<()> {
+    let mut last_poll = state
+        .eutherdogs_last_poll
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *last_poll = Instant::now();
+    Ok(())
+}
+
+fn latest_eutherdogs_frame(
+    state: &BridgeState,
+    player_index: usize,
+) -> io::Result<euther_oxide::eutherdogs::EutherDogsFrame> {
+    if let Some(frame) = state
+        .eutherdogs_latest
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?[player_index]
+        .clone()
+    {
+        return Ok(frame);
+    }
+    let mut dogs = state
+        .eutherdogs
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(dogs.snapshot_for_player(player_index))
+}
+
+fn ensure_eutherdogs_runner(state: &BridgeState) -> io::Result<()> {
+    if state.shutdown.load(Ordering::SeqCst) {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "bridge instance closed",
+        ));
+    }
+    let mut active = state
+        .eutherdogs_runner_active
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if *active {
+        return Ok(());
+    }
+    *active = true;
+    let state = state.clone();
+    thread::spawn(move || {
+        if let Err(err) = eutherdogs_runner_loop(&state) {
+            eprintln!("eutherdogs runner error: {err}");
+        }
+        if let Ok(mut active) = state.eutherdogs_runner_active.lock() {
+            *active = false;
+        }
+    });
+    Ok(())
+}
+
+fn eutherdogs_runner_loop(state: &BridgeState) -> io::Result<()> {
+    let frame_time = Duration::from_secs_f64(1.0 / 60.0);
+    let mut next_frame_due = Instant::now();
+    loop {
+        if state.shutdown.load(Ordering::SeqCst) {
+            break Ok(());
+        }
+        let last_poll = *state
+            .eutherdogs_last_poll
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if Instant::now().duration_since(last_poll) > Duration::from_secs(2) {
+            break Ok(());
+        }
+        let now = Instant::now();
+        if next_frame_due > now {
+            thread::sleep(next_frame_due - now);
+        }
+        next_frame_due = Instant::now() + frame_time;
+        let frames = {
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            dogs.tick_held()
+        };
+        let mut latest = state
+            .eutherdogs_latest
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        latest[0] = Some(frames[0].clone());
+        latest[1] = Some(frames[1].clone());
+    }
+}
+
 fn pace_bridge_frame(state: &BridgeState) -> io::Result<()> {
     let frame_rate = {
         let emulator = lock_bridge_emulator(state)?;
@@ -2399,6 +2544,52 @@ fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<
          Content-Type: {content_type}\r\n\
          Connection: close\r\n\r\n",
     )
+}
+
+fn send_event_stream_header(stream: &mut TcpStream) -> io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\n\
+         Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Allow-Credentials: true\r\n\
+         Access-Control-Expose-Headers: Content-Type\r\n\
+         Cache-Control: no-store\r\n\
+         Content-Type: text/event-stream; charset=utf-8\r\n\
+         Connection: close\r\n\r\n",
+    )
+}
+
+fn bridge_eutherdogs_stream(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    player_index: usize,
+) -> io::Result<()> {
+    stream.set_nodelay(true)?;
+    send_event_stream_header(stream)?;
+    touch_eutherdogs_poll(state)?;
+    ensure_eutherdogs_runner(state)?;
+    let mut last_frame = None;
+    loop {
+        if state.shutdown.load(Ordering::SeqCst) {
+            break Ok(());
+        }
+        touch_eutherdogs_poll(state)?;
+        let frame = latest_eutherdogs_frame(state, player_index)?;
+        if Some(frame.frame) != last_frame {
+            let payload =
+                serde_json::to_string(&frame).map_err(|err| io::Error::other(err.to_string()))?;
+            if write!(stream, "data: {payload}\n\n").is_err() {
+                break Ok(());
+            }
+            if stream.flush().is_err() {
+                break Ok(());
+            }
+            last_frame = Some(frame.frame);
+        }
+        thread::sleep(Duration::from_millis(8));
+    }
 }
 
 fn bridge_stream_frame_audio(

@@ -634,6 +634,12 @@ let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
 let dogsPreviousAudioFrame: DogsCoreFrame | null = null;
 let dogsSawHostileQueue = false;
+let lastDogsInputJson = "";
+let lastDogsInputSentAt = 0;
+let lastDogsSnapshotAt = 0;
+let dogsSnapshotMisses = 0;
+let dogsStream: EventSource | null = null;
+let lastDogsProcessedFrame = -1;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -1393,6 +1399,17 @@ playToggle.addEventListener("click", async () => {
   playToggle.textContent = ui.playing ? "Pause" : "Play";
   ui.status = ui.playing ? "RUNNING" : "PAUSED";
   renderUi();
+  if (dogsMode) {
+    if (ui.playing) {
+      startDogsSnapshotStream();
+      nextFrameDue = performance.now();
+      void ensureAudio();
+      void animationLoop();
+    } else {
+      stopDogsSnapshotStream();
+    }
+    return;
+  }
   if (isTauri && ui.runtime === "tauri" && ui.loaded) {
     await invoke("set_native_running", { running: ui.playing });
     if (ui.playing) {
@@ -5185,6 +5202,7 @@ function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
   dogsMenuMode = mode;
   ui.playing = false;
   playToggle.textContent = "Play";
+  stopDogsSnapshotStream();
   stopBridgeStream();
   renderDogsMenu();
   eutherDogsMenu.setAttribute("aria-hidden", "false");
@@ -5202,6 +5220,7 @@ function startDogsShift(): void {
   ui.playing = true;
   ui.status = "DOGS RUNNING";
   playToggle.textContent = "Pause";
+  startDogsSnapshotStream();
   nextFrameDue = performance.now();
   renderUi();
   void ensureAudio();
@@ -5495,6 +5514,7 @@ async function enterDogsMode(): Promise<void> {
 
 function leaveDogsMode(): void {
   dogsMode = false;
+  stopDogsSnapshotStream();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
@@ -5535,9 +5555,29 @@ function resetDogsMode(): void {
 
 async function runDogsFrame(): Promise<void> {
   const started = performance.now();
-  dogsFrame = await runDogsCoreFrame();
-  processDogsAudio(dogsFrame);
-  resolveDogsLocalExit(dogsFrame);
+  try {
+    dogsFrame = await runDogsCoreFrame();
+    lastDogsSnapshotAt = performance.now();
+    dogsSnapshotMisses = 0;
+  } catch (err) {
+    dogsSnapshotMisses += 1;
+    if (!dogsFrame) {
+      throw err;
+    }
+    drawDogsFrame(dogsFrame);
+    const held = performance.now();
+    ui.frame = dogsFrame.frame;
+    ui.transportMs = held - started;
+    ui.drawMs = 0;
+    ui.transportMode = `DOGS HOLD ${dogsSnapshotMisses}`;
+    ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
+    return;
+  }
+  if (dogsFrame.frame !== lastDogsProcessedFrame) {
+    processDogsAudio(dogsFrame);
+    resolveDogsLocalExit(dogsFrame);
+    lastDogsProcessedFrame = dogsFrame.frame;
+  }
   drawDogsFrame(dogsFrame);
   const done = performance.now();
   ui.frame = dogsFrame.frame;
@@ -5552,8 +5592,37 @@ async function runDogsFrame(): Promise<void> {
     queueDogsHighScore(dogsFrame);
     ui.playing = false;
     playToggle.textContent = "Play";
+    stopDogsSnapshotStream();
     showDogsMenu("result");
   }
+}
+
+function startDogsSnapshotStream(): void {
+  if (isTauri || ui.runtime !== "bridge" || dogsStream) {
+    return;
+  }
+  dogsStream = new EventSource(bridgeUrl(`/eutherdogs/stream?player=${playerPort}`), {
+    withCredentials: true,
+  });
+  dogsStream.onmessage = (event) => {
+    try {
+      dogsFrame = JSON.parse(event.data) as DogsCoreFrame;
+      lastDogsSnapshotAt = performance.now();
+      dogsSnapshotMisses = 0;
+      ui.transportMode = "DOGS SSE";
+    } catch (err) {
+      ui.lastError = err instanceof Error ? err.message : String(err);
+    }
+  };
+  dogsStream.onerror = () => {
+    dogsSnapshotMisses += 1;
+    ui.transportMode = `DOGS SSE HOLD ${dogsSnapshotMisses}`;
+  };
+}
+
+function stopDogsSnapshotStream(): void {
+  dogsStream?.close();
+  dogsStream = null;
 }
 
 async function startDogsCore(): Promise<DogsCoreFrame> {
@@ -5567,6 +5636,12 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsSubmittedHighscoreFrame = null;
   dogsPendingHighscoreFrame = null;
   dogsHighscoreSavedName = null;
+  lastDogsInputJson = "";
+  lastDogsInputSentAt = 0;
+  lastDogsSnapshotAt = 0;
+  dogsSnapshotMisses = 0;
+  lastDogsProcessedFrame = -1;
+  stopDogsSnapshotStream();
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
@@ -5616,10 +5691,35 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   if (isTauri) {
     return await invoke<DogsCoreFrame>("run_eutherdogs_frame", { input });
   }
-  return await bridgeJson<DogsCoreFrame>("/eutherdogs/frame", {
+  await syncDogsBridgeInput(input);
+  if (dogsStream && dogsFrame) {
+    const age = performance.now() - lastDogsSnapshotAt;
+    if (age > 450) {
+      stopDogsSnapshotStream();
+      ui.transportMode = "DOGS SSE RESTART";
+      startDogsSnapshotStream();
+    }
+    return dogsFrame;
+  }
+  const now = performance.now();
+  if (dogsFrame && now - lastDogsSnapshotAt < 33) {
+    return dogsFrame;
+  }
+  return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
+}
+
+async function syncDogsBridgeInput(input: InputState & { player: PlayerPort }): Promise<void> {
+  const now = performance.now();
+  const next = JSON.stringify(input);
+  if (next === lastDogsInputJson && now - lastDogsInputSentAt < 120) {
+    return;
+  }
+  lastDogsInputJson = next;
+  lastDogsInputSentAt = now;
+  await bridgeRequest("/eutherdogs/input", {
     method: "POST",
-    body: JSON.stringify(input),
-  });
+    body: next,
+  }, 180);
 }
 
 async function purchaseDogsCoreItem(itemId: string): Promise<DogsCoreFrame> {
@@ -6233,6 +6333,11 @@ async function syncInput(): Promise<void> {
   }
   lastInputJson = next;
   if (dogsMode) {
+    void syncDogsBridgeInput({ ...inputState, player: playerPort }).catch((err) => {
+      dogsSnapshotMisses += 1;
+      ui.transportMode = "DOGS INPUT HOLD";
+      ui.lastError = err instanceof Error ? err.message : String(err);
+    });
     return;
   }
   if (isTauri && ui.runtime === "tauri" && ui.loaded) {

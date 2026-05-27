@@ -195,11 +195,33 @@ impl EutherDogsRuntime {
     }
 
     pub fn tick(&mut self, input: EutherDogsInput) -> EutherDogsFrame {
+        let player_index = self.set_input(input);
+        self.tick_held_for_player(player_index)
+    }
+
+    pub fn set_input(&mut self, input: EutherDogsInput) -> usize {
         let player_index = input.player.unwrap_or(1).clamp(1, 2).saturating_sub(1) as usize;
         self.held_inputs[player_index] = EutherDogsInput {
             player: Some((player_index + 1) as u8),
             ..input
         };
+        player_index
+    }
+
+    pub fn tick_held(&mut self) -> [EutherDogsFrame; 2] {
+        self.tick_held_with_audio()
+    }
+
+    pub fn snapshot_for_player(&mut self, player_index: usize) -> EutherDogsFrame {
+        self.snapshot_for_player_with_audio_events(player_index.min(1), &[])
+    }
+
+    fn tick_held_for_player(&mut self, player_index: usize) -> EutherDogsFrame {
+        let frames = self.tick_held_with_audio();
+        frames[player_index.min(1)].clone()
+    }
+
+    fn tick_held_with_audio(&mut self) -> [EutherDogsFrame; 2] {
         let player_inputs: Vec<PlayerInput> = self
             .held_inputs
             .iter()
@@ -212,7 +234,10 @@ impl EutherDogsRuntime {
         self.game.tick(&player_inputs, FixedStep { ticks: 1 });
         self.frame += 1;
         let audio_events = self.game.drain_audio_events();
-        self.snapshot_for_player_with_audio_events(player_index, &audio_events)
+        [
+            self.snapshot_for_player_with_audio_events(0, &audio_events),
+            self.snapshot_for_player_with_audio_events(1, &audio_events),
+        ]
     }
 
     pub fn purchase(
