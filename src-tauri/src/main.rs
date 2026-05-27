@@ -545,10 +545,21 @@ fn start_eutherdogs(
     start: Option<euther_oxide::eutherdogs::EutherDogsStart>,
 ) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
     let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
-    *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_staff(
-        start.and_then(|start| start.staff).unwrap_or(1),
-    );
+    *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_start(start.unwrap_or(
+        euther_oxide::eutherdogs::EutherDogsStart {
+            staff: None,
+            mission: None,
+        },
+    ));
     Ok(dogs.snapshot())
+}
+
+#[tauri::command]
+fn advance_eutherdogs_mission(
+    state: State<'_, AppState>,
+) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
+    let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
+    dogs.advance_mission().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -1655,6 +1666,7 @@ fn main() {
             reset_emulator,
             set_input,
             start_eutherdogs,
+            advance_eutherdogs_mission,
             reset_eutherdogs,
             run_eutherdogs_frame,
             purchase_eutherdogs_item,

@@ -263,6 +263,8 @@ type DogsCoreBullet = {
 };
 
 type DogsCoreSummary = {
+  mission: number;
+  maxMission: number;
   status: "running" | "won" | "lost" | string;
   elapsedTicks: number;
   score: number;
@@ -539,6 +541,7 @@ let dogsMode = false;
 let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
+let selectedDogsMission = 1;
 let dogsStorePreviewItemId: string | null = null;
 let dogsSubmittedHighscoreFrame: number | null = null;
 let dogsHighScoresTomlLoadAttempted = false;
@@ -1151,7 +1154,11 @@ eutherDogsScoresOpen.addEventListener("click", () => {
 eutherDogsStartShift.addEventListener("click", () => {
   if (dogsMenuMode === "result") {
     if (dogsFrame?.summary.status === "won") {
-      showDogsMenu("staff");
+      if ((dogsFrame.summary.mission ?? selectedDogsMission) >= (dogsFrame.summary.maxMission ?? 10)) {
+        showDogsMenu("staff");
+        return;
+      }
+      void startDogsNextMission();
       return;
     }
     void retryDogsShift();
@@ -3731,7 +3738,7 @@ function dogsMapTileColor(tile: string, visibility: number): string {
       return "#ffe96d";
     case "scorch_mark":
     case "spilled_syrup":
-      return "#24f3df";
+      return visibility >= 255 ? "#2d3d43" : "#1a2330";
     default:
       return visibility >= 255 ? "#27313c" : "#171b2c";
   }
@@ -4287,7 +4294,7 @@ function makeDogsHighScoreEntry(frame: DogsCoreFrame, name: string): DogsHighSco
     name: name.trim().slice(0, 3).toUpperCase() || "AAA",
     score: frame.summary.score,
     cash: frame.summary.cash,
-    mission: 1,
+    mission: frame.summary.mission || selectedDogsMission,
     kills: frame.summary.kills,
     targetsDestroyed: frame.summary.targetsDestroyed,
     objectsCollected: frame.summary.objectsCollected,
@@ -4412,6 +4419,8 @@ function renderDogsMenu(): void {
   const cash = dogsCurrentCash();
   const hero = dogsCurrentHero();
   const storeItems = dogsVisibleStoreItems(dogsFrame, cash, hero);
+  const mission = dogsFrame?.summary.mission ?? selectedDogsMission;
+  const maxMission = dogsFrame?.summary.maxMission ?? 10;
   eutherDogsMenuCash.textContent = `$${cash}`;
   eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
@@ -4419,7 +4428,9 @@ function renderDogsMenu(): void {
   eutherDogsScoresOpen.classList.toggle("is-active", dogsMenuMode === "scores");
   eutherDogsStartShift.textContent =
     dogsMenuMode === "result" && dogsFrame?.summary.status === "won"
-      ? "Main menu"
+      ? mission >= maxMission
+        ? "Main menu"
+        : "Next shift"
       : dogsMenuMode === "result"
         ? "Retry shift"
         : "Start shift";
@@ -4453,11 +4464,13 @@ function renderDogsMenu(): void {
     const summary = dogsFrame?.summary;
     const queueLeft = dogsQueueLeft(dogsFrame);
     eutherDogsMenuKicker.textContent = "Briefing";
-    eutherDogsMenuTitle.textContent = "Night Shift Protocol";
+    eutherDogsMenuTitle.textContent = `Mission ${mission}/${maxMission} Protocol`;
     eutherDogsMenuBody.innerHTML = `
       <div class="eutherdogs-briefing-grid">
+        <div><span>Mission</span><strong>${mission} / ${maxMission}</strong></div>
         <div><span>Retrieve</span><strong>${summary?.objectsLeft ?? 0} RX objects</strong></div>
         <div><span>Defuse</span><strong>${queueLeft} angry customers</strong></div>
+        <div><span>Minimum</span><strong>${summary?.minimumKills ?? 0} removals</strong></div>
         <div><span>Policy</span><strong>No refunds after laser contact</strong></div>
         <div><span>Uniform</span><strong>White coat, zero patience</strong></div>
       </div>
@@ -4481,6 +4494,7 @@ function renderDogsMenu(): void {
         : "Counter Incident Report";
     eutherDogsMenuBody.innerHTML = `
       <div class="eutherdogs-result-grid">
+        <div><span>Mission</span><strong>${summary?.mission ?? mission} / ${summary?.maxMission ?? maxMission}</strong></div>
         <div><span>Status</span><strong>${summary?.status.toUpperCase() ?? "UNKNOWN"}</strong></div>
         <div><span>Score</span><strong>${summary?.score ?? 0}</strong></div>
         <div><span>Cash</span><strong>$${summary?.cash ?? 0}</strong></div>
@@ -4558,8 +4572,10 @@ async function purchaseDogsStoreItem(itemId: string): Promise<void> {
 
 async function selectDogsStaff(staff: 1 | 2): Promise<void> {
   selectedDogsStaff = staff;
+  selectedDogsMission = 1;
   try {
     dogsFrame = await startDogsCore();
+    selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
     dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
     dogsPreviousAudioFrame = dogsFrame;
@@ -4575,6 +4591,7 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
 async function retryDogsShift(): Promise<void> {
   try {
     dogsFrame = await startDogsCore();
+    selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
     dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
     dogsPreviousAudioFrame = dogsFrame;
@@ -4583,6 +4600,25 @@ async function retryDogsShift(): Promise<void> {
     pushTrace("EutherDogs shift retried");
   } catch (err) {
     pushTrace(`EutherDogs retry failed: ${err instanceof Error ? err.message : String(err)}`);
+    renderDogsMenu();
+  }
+}
+
+async function startDogsNextMission(): Promise<void> {
+  try {
+    if (dogsPendingHighscoreFrame) {
+      await submitPendingDogsHighScore();
+    }
+    dogsFrame = await nextDogsCoreMission();
+    selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission + 1;
+    dogsLastExitReady = dogsExitReady(dogsFrame);
+    dogsLastPortalHumFrame = -9999;
+    dogsPreviousAudioFrame = dogsFrame;
+    drawDogsFrame(dogsFrame);
+    showDogsMenu("store");
+    pushTrace(`EutherDogs mission ${selectedDogsMission} ready`);
+  } catch (err) {
+    pushTrace(`EutherDogs next mission failed: ${err instanceof Error ? err.message : String(err)}`);
     renderDogsMenu();
   }
 }
@@ -4626,6 +4662,7 @@ async function enterDogsMode(): Promise<void> {
   stopBridgeStream();
   try {
     dogsFrame = await startDogsCore();
+    selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
     await loadDogsHighScoresToml();
   } catch (err) {
     dogsMode = false;
@@ -4726,7 +4763,7 @@ async function runDogsFrame(): Promise<void> {
 }
 
 async function startDogsCore(): Promise<DogsCoreFrame> {
-  const start = { staff: selectedDogsStaff };
+  const start = { staff: selectedDogsStaff, mission: selectedDogsMission };
   dogsPreviousActorPositions = new Map();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
@@ -4746,6 +4783,27 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
       method: "POST",
       body: JSON.stringify(start),
     });
+  }
+  throw new Error("starta web bridge eller Tauri for Rust-core demo");
+}
+
+async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
+  dogsPreviousActorPositions = new Map();
+  dogsActorFacings = new Map();
+  dogsLastExitReady = false;
+  dogsLastPortalHumFrame = -9999;
+  dogsPreviousAudioFrame = null;
+  dogsSawHostileQueue = false;
+  dogsSubmittedHighscoreFrame = null;
+  dogsPendingHighscoreFrame = null;
+  if (isTauri) {
+    return await invoke<DogsCoreFrame>("advance_eutherdogs_mission");
+  }
+  if (ui.runtime !== "bridge") {
+    await connectBridge(false);
+  }
+  if (ui.runtime === "bridge") {
+    return await bridgeJson<DogsCoreFrame>("/eutherdogs/next", { method: "POST" });
   }
   throw new Error("starta web bridge eller Tauri for Rust-core demo");
 }

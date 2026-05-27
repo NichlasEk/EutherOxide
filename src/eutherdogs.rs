@@ -7,12 +7,16 @@ pub use eutherdogs_core::{
 };
 use serde::{Deserialize, Serialize};
 
+const CAMPAIGN_MISSIONS: i32 = 10;
+
 #[derive(Clone, Debug)]
 pub struct EutherDogsRuntime {
     config: EutherDogsConfig,
     game: Game,
     frame: u64,
     explored_tiles: Vec<bool>,
+    mission: i32,
+    staff: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -40,6 +44,7 @@ pub struct EutherDogsPurchase {
 #[serde(rename_all = "camelCase")]
 pub struct EutherDogsStart {
     pub staff: Option<u8>,
+    pub mission: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -109,6 +114,8 @@ pub struct EutherDogsBullet {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EutherDogsSummary {
+    pub mission: i32,
+    pub max_mission: i32,
     pub status: &'static str,
     pub elapsed_ticks: u32,
     pub score: i32,
@@ -127,12 +134,15 @@ pub struct EutherDogsSummary {
 
 impl EutherDogsRuntime {
     pub fn from_config(config: EutherDogsConfig) -> Result<Self, ConfigError> {
-        let game = Game::new_mission_from_config(&config)?;
+        let mission = config.settings.starting_mission.max(1);
+        let game = Game::new_mission_from_config(&campaign_config(&config, mission))?;
         Ok(Self {
             config,
             game,
             frame: 0,
             explored_tiles: Vec::new(),
+            mission,
+            staff: 1,
         })
     }
 
@@ -141,15 +151,41 @@ impl EutherDogsRuntime {
     }
 
     pub fn demo_with_staff(staff: u8) -> Self {
-        Self::from_config(staff_demo_config(staff))
-            .expect("bundled EutherDogs staff config is valid")
+        Self::demo_with_start(EutherDogsStart {
+            staff: Some(staff),
+            mission: None,
+        })
+    }
+
+    pub fn demo_with_start(start: EutherDogsStart) -> Self {
+        let staff = start.staff.unwrap_or(1).clamp(1, 2);
+        let mut config = staff_demo_config(staff);
+        config.settings.starting_mission = start
+            .mission
+            .unwrap_or(config.settings.starting_mission)
+            .max(1);
+        let mut runtime =
+            Self::from_config(config).expect("bundled EutherDogs staff config is valid");
+        runtime.staff = staff;
+        runtime
     }
 
     pub fn reset(&mut self) -> Result<(), ConfigError> {
-        self.game = Game::new_mission_from_config(&self.config)?;
+        self.game = Game::new_mission_from_config(&campaign_config(&self.config, self.mission))?;
         self.frame = 0;
         self.explored_tiles.clear();
         Ok(())
+    }
+
+    pub fn advance_mission(&mut self) -> Result<EutherDogsFrame, ConfigError> {
+        self.persist_player_state();
+        if self.mission < CAMPAIGN_MISSIONS {
+            self.mission += 1;
+        }
+        self.game = Game::new_mission_from_config(&campaign_config(&self.config, self.mission))?;
+        self.frame = 0;
+        self.explored_tiles.clear();
+        Ok(self.snapshot())
     }
 
     pub fn tick(&mut self, input: EutherDogsInput) -> EutherDogsFrame {
@@ -210,6 +246,7 @@ impl EutherDogsRuntime {
         eutherdogs_frame(
             &self.game,
             &self.config,
+            self.mission,
             self.frame,
             audio_events,
             self.config.high_score_table().entries().len(),
@@ -233,6 +270,37 @@ impl EutherDogsRuntime {
         }
         visibility
     }
+
+    fn persist_player_state(&mut self) {
+        let summary = self.game.summary();
+        for (player_index, character) in self
+            .game
+            .characters()
+            .iter()
+            .filter(|character| {
+                character.faction == eutherdogs_core::entity::Faction::Player && character.alive
+            })
+            .enumerate()
+        {
+            let player_key = (player_index + 1).to_string();
+            let Some(player) = self.config.player.get_mut(&player_key) else {
+                continue;
+            };
+            player.cash = summary.progress.cash;
+            player.score = summary.progress.score;
+            player.armor = character.armor.max(1);
+            player.lives = character.lives.max(1);
+            player.active_weapon = character.active_weapon_id().key().to_string();
+            player.weapons = character
+                .weapons
+                .iter()
+                .map(|slot| eutherdogs_core::ConfigWeaponSlot {
+                    id: slot.weapon.key().to_string(),
+                    ammo: slot.ammo,
+                })
+                .collect();
+        }
+    }
 }
 
 pub fn demo_game() -> Game {
@@ -254,9 +322,30 @@ pub fn staff_demo_config(staff: u8) -> EutherDogsConfig {
     config
 }
 
+fn campaign_config(config: &EutherDogsConfig, mission: i32) -> EutherDogsConfig {
+    let mut config = config.clone();
+    let mission = mission.clamp(1, CAMPAIGN_MISSIONS);
+    let step = mission - 1;
+    config.settings.starting_mission = mission;
+    config.settings.object_count = (config.settings.object_count + step * 2).clamp(1, 40);
+    config.settings.target_count = (config.settings.target_count + step).clamp(0, 40);
+    config.settings.minimum_kills = if mission >= 4 && mission % 3 == 0 {
+        (config.settings.minimum_kills + mission * 2).max(6)
+    } else {
+        config.settings.minimum_kills.max(0)
+    };
+    config.world.seed = config.world.seed.wrapping_add((step as u64) * 10);
+    config.world.wall_count = (config.world.wall_count + step * 2).clamp(8, 56);
+    config.world.wall_length = (config.world.wall_length + step / 2).clamp(4, 22);
+    config.world.room_count = (config.world.room_count + step).clamp(4, 34);
+    config.world.detail_density = (config.world.detail_density + step * 3).clamp(8, 64);
+    config
+}
+
 pub fn eutherdogs_frame(
     game: &Game,
     config: &EutherDogsConfig,
+    mission: i32,
     frame: u64,
     audio_events: &[eutherdogs_core::AudioEvent],
     highscore_count: usize,
@@ -323,6 +412,8 @@ pub fn eutherdogs_frame(
             })
             .collect(),
         summary: EutherDogsSummary {
+            mission,
+            max_mission: CAMPAIGN_MISSIONS,
             status: match summary.status {
                 eutherdogs_core::MissionStatus::Running => "running",
                 eutherdogs_core::MissionStatus::Won => "won",
@@ -622,6 +713,19 @@ mod tests {
         assert_eq!(frame.visibility.len(), frame.width * frame.height);
         assert_eq!(frame.visibility[tile_y * frame.width + tile_x], 255);
         assert!(frame.visibility.iter().any(|visibility| *visibility == 0));
+    }
+
+    #[test]
+    fn runtime_advances_campaign_mission_and_carries_state() {
+        let mut runtime = EutherDogsRuntime::demo();
+        let starting_cash = runtime.snapshot().summary.cash;
+
+        let frame = runtime.advance_mission().unwrap();
+
+        assert_eq!(frame.summary.mission, 2);
+        assert_eq!(frame.summary.max_mission, 10);
+        assert!(frame.summary.cash >= starting_cash);
+        assert!(frame.summary.objects_left >= 10);
     }
 }
 

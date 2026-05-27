@@ -1135,7 +1135,10 @@ fn handle_bridge_route(
         }
         ("POST", "/eutherdogs/start") => {
             let start = if request.body.is_empty() {
-                euther_oxide::eutherdogs::EutherDogsStart { staff: None }
+                euther_oxide::eutherdogs::EutherDogsStart {
+                    staff: None,
+                    mission: None,
+                }
             } else {
                 serde_json::from_slice(&request.body)
                     .map_err(|err| invalid_request(err.to_string()))?
@@ -1144,10 +1147,18 @@ fn handle_bridge_route(
                 .eutherdogs
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_staff(
-                start.staff.unwrap_or(1),
-            );
+            *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_start(start);
             send_json(stream, &dogs.snapshot())
+        }
+        ("POST", "/eutherdogs/next") => {
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            let frame = dogs
+                .advance_mission()
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &frame)
         }
         ("POST", "/eutherdogs/reset") => {
             let mut dogs = state
