@@ -1157,7 +1157,7 @@ eutherDogsStartShift.addEventListener("click", () => {
     void retryDogsShift();
     return;
   }
-  hideDogsMenu();
+  startDogsShift();
 });
 
 eutherDogsMenuBody.addEventListener("click", (event) => {
@@ -1184,13 +1184,20 @@ eutherDogsMenuBody.addEventListener("click", (event) => {
     void selectDogsStaff(staff);
     return;
   }
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
-  if (!button || button.disabled) return;
-  void purchaseDogsStoreItem(button.dataset.storeItem ?? "");
+  const buyButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-buy]");
+  if (buyButton) {
+    if (!buyButton.disabled) void purchaseDogsStoreItem(buyButton.dataset.storeBuy ?? "");
+    return;
+  }
+  const itemButton = (event.target as HTMLElement).closest<HTMLElement>("[data-store-item]");
+  if (!itemButton) return;
+  dogsStorePreviewItemId = itemButton.dataset.storeItem ?? dogsStorePreviewItemId;
+  renderDogsMenu();
 });
 
 eutherDogsMenuBody.addEventListener("mouseover", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
+  if ((event.target as HTMLElement).closest("[data-store-buy]")) return;
+  const button = (event.target as HTMLElement).closest<HTMLElement>("[data-store-item]");
   if (!button || dogsMenuMode !== "store") return;
   const itemId = button.dataset.storeItem ?? null;
   if (itemId && dogsStorePreviewItemId !== itemId) {
@@ -1200,10 +1207,22 @@ eutherDogsMenuBody.addEventListener("mouseover", (event) => {
 });
 
 eutherDogsMenuBody.addEventListener("focusin", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
+  if ((event.target as HTMLElement).closest("[data-store-buy]")) return;
+  const button = (event.target as HTMLElement).closest<HTMLElement>("[data-store-item]");
   if (!button || dogsMenuMode !== "store") return;
   dogsStorePreviewItemId = button.dataset.storeItem ?? dogsStorePreviewItemId;
   renderDogsMenu();
+});
+
+eutherDogsMenuBody.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const buyButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-buy]");
+  if (buyButton) return;
+  const item = (event.target as HTMLElement).closest<HTMLElement>("[data-store-item]");
+  if (!item || dogsMenuMode !== "store") return;
+  dogsStorePreviewItemId = item.dataset.storeItem ?? dogsStorePreviewItemId;
+  renderDogsMenu();
+  event.preventDefault();
 });
 
 releaseBuild.addEventListener("click", async () => {
@@ -4373,6 +4392,17 @@ function hideDogsMenu(): void {
   eutherDogsMenu.classList.remove("is-open");
 }
 
+function startDogsShift(): void {
+  hideDogsMenu();
+  ui.playing = true;
+  ui.status = "DOGS RUNNING";
+  playToggle.textContent = "Pause";
+  nextFrameDue = performance.now();
+  renderUi();
+  void ensureAudio();
+  void animationLoop();
+}
+
 function renderDogsMenu(): void {
   const cash = dogsCurrentCash();
   const hero = dogsCurrentHero();
@@ -4485,7 +4515,7 @@ function renderDogsMenu(): void {
           ${storeItems
             .map((item) => {
               return `
-                <button class="eutherdogs-store-item ${dogsStoreItemClass(item)}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
+                <div class="eutherdogs-store-item ${dogsStoreItemClass(item)}" data-store-item="${item.id}" role="button" tabindex="0">
                   ${dogsStoreItemIconMarkup(item)}
                   <span>
                     <b>${dogsStoreItemStatus(item)}</b>
@@ -4493,8 +4523,10 @@ function renderDogsMenu(): void {
                     <small>${item.detail}</small>
                     <small>${dogsStoreItemMeta(item)}</small>
                   </span>
-                  <em>${dogsStoreActionLabel(item)}</em>
-                </button>
+                  <button class="eutherdogs-store-buy" data-store-buy="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
+                    ${dogsStoreActionLabel(item)}
+                  </button>
+                </div>
               `;
             })
             .join("")}
@@ -4507,6 +4539,8 @@ function renderDogsMenu(): void {
 async function purchaseDogsStoreItem(itemId: string): Promise<void> {
   if (!itemId) return;
   try {
+    void playDogsSfx("impact_heavy", 0.9);
+    void playDogsSfx("pickup_rx", 0.5);
     dogsFrame = await purchaseDogsCoreItem(itemId);
     processDogsAudio(dogsFrame);
     drawDogsFrame(dogsFrame);

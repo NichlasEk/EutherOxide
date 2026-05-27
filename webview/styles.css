@@ -374,6 +374,7 @@ button:disabled {
   padding: 5px 7px;
   border-radius: 0;
   text-align: left;
+  cursor: pointer;
 }
 
 .eutherdogs-armory-layout {
@@ -515,10 +516,13 @@ button:disabled {
   font-weight: 800;
 }
 
-.eutherdogs-store-item em {
+.eutherdogs-store-buy {
+  min-width: 72px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 0;
   color: #ffef6e;
   font-size: 0.68rem;
-  font-style: normal;
   font-weight: 950;
   text-align: right;
   white-space: nowrap;
@@ -544,8 +548,9 @@ button:disabled {
   border-color: rgba(255, 255, 255, 0.22);
 }
 
-.eutherdogs-store-item:disabled em {
+.eutherdogs-store-buy:disabled {
   color: #8da09d;
+  cursor: not-allowed;
 }
 
 .eutherdogs-briefing-grid,
