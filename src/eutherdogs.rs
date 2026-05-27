@@ -15,6 +15,7 @@ pub struct EutherDogsRuntime {
     game: Game,
     frame: u64,
     explored_tiles: Vec<bool>,
+    held_inputs: [EutherDogsInput; 2],
     mission: i32,
     staff: u8,
 }
@@ -45,6 +46,7 @@ pub struct EutherDogsPurchase {
 pub struct EutherDogsStart {
     pub staff: Option<u8>,
     pub mission: Option<i32>,
+    pub players: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -141,6 +143,7 @@ impl EutherDogsRuntime {
             game,
             frame: 0,
             explored_tiles: Vec::new(),
+            held_inputs: [EutherDogsInput::default(), EutherDogsInput::default()],
             mission,
             staff: 1,
         })
@@ -154,12 +157,13 @@ impl EutherDogsRuntime {
         Self::demo_with_start(EutherDogsStart {
             staff: Some(staff),
             mission: None,
+            players: Some(1),
         })
     }
 
     pub fn demo_with_start(start: EutherDogsStart) -> Self {
         let staff = start.staff.unwrap_or(1).clamp(1, 2);
-        let mut config = staff_demo_config(staff);
+        let mut config = start_demo_config(staff, start.players.unwrap_or(1));
         config.settings.starting_mission = start
             .mission
             .unwrap_or(config.settings.starting_mission)
@@ -174,6 +178,7 @@ impl EutherDogsRuntime {
         self.game = Game::new_mission_from_config(&campaign_config(&self.config, self.mission))?;
         self.frame = 0;
         self.explored_tiles.clear();
+        self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
         Ok(())
     }
 
@@ -185,36 +190,26 @@ impl EutherDogsRuntime {
         self.game = Game::new_mission_from_config(&campaign_config(&self.config, self.mission))?;
         self.frame = 0;
         self.explored_tiles.clear();
+        self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
         Ok(self.snapshot())
     }
 
     pub fn tick(&mut self, input: EutherDogsInput) -> EutherDogsFrame {
-        let mut command = 0;
-        if input.up {
-            command |= PlayerCommand::UP;
-        }
-        if input.down {
-            command |= PlayerCommand::DOWN;
-        }
-        if input.left {
-            command |= PlayerCommand::LEFT;
-        }
-        if input.right {
-            command |= PlayerCommand::RIGHT;
-        }
-        if input.a || input.b {
-            command |= PlayerCommand::SHOOT;
-        }
-        if input.c {
-            command |= PlayerCommand::SWITCH;
-        }
-        self.game.tick(
-            &[PlayerInput {
-                player_index: input.player.unwrap_or(1).saturating_sub(1) as usize,
-                command: PlayerCommand::from_bits(command),
-            }],
-            FixedStep { ticks: 1 },
-        );
+        let player_index = input.player.unwrap_or(1).clamp(1, 2).saturating_sub(1) as usize;
+        self.held_inputs[player_index] = EutherDogsInput {
+            player: Some((player_index + 1) as u8),
+            ..input
+        };
+        let player_inputs: Vec<PlayerInput> = self
+            .held_inputs
+            .iter()
+            .enumerate()
+            .map(|(player_index, input)| PlayerInput {
+                player_index,
+                command: input_command(*input),
+            })
+            .collect();
+        self.game.tick(&player_inputs, FixedStep { ticks: 1 });
         self.frame += 1;
         let audio_events = self.game.drain_audio_events();
         self.snapshot_with_audio_events(&audio_events)
@@ -303,6 +298,29 @@ impl EutherDogsRuntime {
     }
 }
 
+fn input_command(input: EutherDogsInput) -> PlayerCommand {
+    let mut command = 0;
+    if input.up {
+        command |= PlayerCommand::UP;
+    }
+    if input.down {
+        command |= PlayerCommand::DOWN;
+    }
+    if input.left {
+        command |= PlayerCommand::LEFT;
+    }
+    if input.right {
+        command |= PlayerCommand::RIGHT;
+    }
+    if input.a || input.b {
+        command |= PlayerCommand::SHOOT;
+    }
+    if input.c {
+        command |= PlayerCommand::SWITCH;
+    }
+    PlayerCommand::from_bits(command)
+}
+
 pub fn demo_game() -> Game {
     Game::new_mission_from_config(&demo_config()).expect("bundled EutherDogs demo config is valid")
 }
@@ -313,12 +331,19 @@ pub fn demo_config() -> EutherDogsConfig {
 }
 
 pub fn staff_demo_config(staff: u8) -> EutherDogsConfig {
+    start_demo_config(staff, 1)
+}
+
+pub fn start_demo_config(staff: u8, players: usize) -> EutherDogsConfig {
     let mut config = demo_config();
-    let staff_key = staff.clamp(1, 2).to_string();
-    if let Some(player) = config.player.get(&staff_key).cloned() {
-        config.player.insert("1".to_string(), player);
+    let players = players.clamp(1, 2);
+    if players == 1 {
+        let staff_key = staff.clamp(1, 2).to_string();
+        if let Some(player) = config.player.get(&staff_key).cloned() {
+            config.player.insert("1".to_string(), player);
+        }
     }
-    config.settings.player_count = 1;
+    config.settings.player_count = players;
     config
 }
 
@@ -726,6 +751,59 @@ mod tests {
         assert_eq!(frame.summary.max_mission, 10);
         assert!(frame.summary.cash >= starting_cash);
         assert!(frame.summary.objects_left >= 10);
+    }
+
+    #[test]
+    fn runtime_start_can_spawn_two_players() {
+        let mut runtime = EutherDogsRuntime::demo_with_start(EutherDogsStart {
+            staff: Some(1),
+            mission: None,
+            players: Some(2),
+        });
+
+        let frame = runtime.snapshot();
+
+        assert_eq!(
+            frame
+                .characters
+                .iter()
+                .filter(|character| character.faction == "player")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn runtime_keeps_separate_input_state_for_two_players() {
+        let mut runtime = EutherDogsRuntime::demo_with_start(EutherDogsStart {
+            staff: Some(1),
+            mission: None,
+            players: Some(2),
+        });
+
+        runtime.tick(EutherDogsInput {
+            player: Some(1),
+            right: true,
+            ..EutherDogsInput::default()
+        });
+        let frame = runtime.tick(EutherDogsInput {
+            player: Some(2),
+            left: true,
+            ..EutherDogsInput::default()
+        });
+
+        let player_one = frame
+            .characters
+            .iter()
+            .find(|character| character.faction == "player" && character.id == 0)
+            .unwrap();
+        let player_two = frame
+            .characters
+            .iter()
+            .find(|character| character.faction == "player" && character.id == 1)
+            .unwrap();
+        assert_eq!(player_one.direction, "right");
+        assert_eq!(player_two.direction, "left");
     }
 }
 

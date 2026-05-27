@@ -106,15 +106,21 @@ button:disabled {
 
 .eutherdogs-console {
   position: absolute;
-  inset: 9px 9px auto 9px;
+  inset: 0 0 auto 0;
   z-index: 5;
   display: none;
-  grid-template-columns: minmax(158px, 0.9fr) minmax(260px, 1.45fr) minmax(142px, 0.8fr);
+  grid-template-columns: minmax(168px, 0.9fr) minmax(170px, 0.75fr) minmax(210px, 1.1fr);
   align-items: center;
-  gap: 8px;
+  gap: 0;
   pointer-events: none;
   color: #f3ffff;
   text-shadow: 0 1px 0 #000;
+  border: 2px solid rgba(5, 12, 12, 0.96);
+  border-bottom-color: rgba(39, 242, 255, 0.38);
+  background: rgba(3, 8, 10, 0.98);
+  box-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.55),
+    0 10px 28px rgba(0, 0, 0, 0.32);
 }
 
 .eutherdogs-mode .eutherdogs-console {
@@ -124,10 +130,11 @@ button:disabled {
 .eutherdogs-console-top,
 .eutherdogs-dispensary,
 .eutherdogs-vitals {
-  min-height: 39px;
+  min-height: 45px;
   border: 1px solid rgba(39, 242, 255, 0.24);
+  border-left: 0;
   background:
-    linear-gradient(180deg, rgba(3, 10, 13, 0.78), rgba(4, 9, 10, 0.52)),
+    linear-gradient(180deg, rgba(3, 10, 13, 0.94), rgba(4, 9, 10, 0.86)),
     var(--dogs-dispensary, none);
   background-size: cover;
   box-shadow: inset 0 0 24px rgba(255, 48, 208, 0.08);
@@ -137,6 +144,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 84px minmax(0, 1fr);
   align-items: center;
+  border-left: 0;
 }
 
 .eutherdogs-logo {
@@ -189,9 +197,9 @@ button:disabled {
 
 .eutherdogs-dispensary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  padding: 5px 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  padding: 5px 8px;
 }
 
 .eutherdogs-dispensary div {
@@ -267,7 +275,7 @@ button:disabled {
 }
 
 .eutherdogs-console.is-alert .eutherdogs-shift strong {
-  color: #ff5050;
+  color: #ffef6e;
 }
 
 .eutherdogs-console.is-closed .eutherdogs-shift strong {
@@ -942,6 +950,7 @@ button:disabled {
   color: #9fbe91;
   font-size: 0.72rem;
   font-weight: 700;
+  line-height: 1.2;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1134,7 +1143,7 @@ h2 {
 }
 
 .rom-browser-section {
-  min-height: 0;
+  min-height: auto;
 }
 
 .rom-dir-path,
@@ -1235,8 +1244,7 @@ h2 {
   font-size: 0.84rem;
 }
 
-.lobby-card span,
-.admin-users span {
+.lobby-card span {
   color: #aac99c;
   font-size: 0.76rem;
   font-weight: 800;
@@ -1249,6 +1257,46 @@ h2 {
   gap: 7px;
 }
 
+.lobby-instances {
+  display: grid;
+  gap: 7px;
+}
+
+.lobby-instances button {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  min-height: 40px;
+  justify-items: start;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.lobby-instances button.is-selected {
+  border-color: rgba(214, 233, 95, 0.5);
+  background: rgba(41, 71, 34, 0.74);
+}
+
+.lobby-instances strong,
+.lobby-instances span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lobby-instances strong {
+  color: #eef8dd;
+  font-size: 0.74rem;
+}
+
+.lobby-instances span {
+  color: #aac99c;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
 .lobby-actions button,
 .admin-form button {
   min-height: 34px;
@@ -1256,50 +1304,9 @@ h2 {
   font-weight: 900;
 }
 
-.admin-form {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 76px;
-}
-
-.admin-form:has(#invite-email) {
-  grid-template-columns: minmax(0, 1fr) 76px;
-}
-
-.admin-form input {
-  min-width: 0;
-  min-height: 34px;
-  border: 1px solid rgba(207, 240, 178, 0.16);
-  border-radius: 8px;
-  background: rgba(5, 11, 8, 0.78);
-  color: #edf6dd;
-  padding: 0 9px;
-  font-size: 0.76rem;
-}
-
-.admin-user {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px 56px;
-  align-items: center;
-  gap: 6px;
-}
-
-.admin-user strong {
-  min-width: 0;
-  color: #eef8dd;
-  font-size: 0.78rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.admin-user button {
-  min-height: 28px;
-  padding: 0 7px;
-  font-size: 0.7rem;
-  font-weight: 900;
-}
-
 .rail-section {
   display: grid;
+  flex: 0 0 auto;
   gap: 10px;
 }
 
@@ -1308,6 +1315,12 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .section-head .section-label {
@@ -1687,7 +1700,54 @@ h2 {
   font-weight: 800;
 }
 
+.perf-drawer,
+.chat-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.perf-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-color: rgba(165, 222, 114, 0.22);
+  background:
+    linear-gradient(90deg, rgba(165, 222, 114, 0.11), rgba(245, 215, 125, 0.08)),
+    rgba(7, 14, 8, 0.82);
+}
+
+.perf-toggle span,
+.perf-toggle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.perf-toggle span {
+  color: #9fbe91;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.perf-toggle strong {
+  justify-self: end;
+  color: #eef8dd;
+  font-size: 0.78rem;
+}
+
 .metric-grid {
+  display: none;
+  max-height: 430px;
+  overflow: auto;
+}
+
+.perf-drawer.is-open .metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
@@ -1834,6 +1894,77 @@ h2 {
   overflow: hidden;
 }
 
+.chat-panel {
+  min-height: 240px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 10px;
+  border: 1px solid rgba(98, 218, 168, 0.14);
+  border-radius: 8px;
+  background: rgba(5, 13, 10, 0.54);
+}
+
+.chat-list {
+  display: grid;
+  align-content: end;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.chat-list > span {
+  color: #aac99c;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.chat-message {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(98, 218, 168, 0.45);
+  background: rgba(98, 218, 168, 0.06);
+}
+
+.chat-message strong {
+  min-width: 0;
+  color: #e8ffd2;
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message p {
+  margin: 0;
+  color: #dcebc9;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px;
+  gap: 7px;
+}
+
+.chat-form input {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 9px;
+  font-size: 0.78rem;
+}
+
+.chat-form button {
+  min-height: 34px;
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
 .reaction-log ol {
   display: grid;
   gap: 8px;
@@ -1904,6 +2035,142 @@ h2 {
   grid-template-columns: minmax(250px, 0.85fr) minmax(420px, 1.7fr) minmax(240px, 0.75fr);
   gap: 14px;
   min-height: 0;
+}
+
+.admin-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 22;
+  display: none;
+  place-items: center;
+  padding: 22px;
+  background: rgba(0, 0, 0, 0.68);
+  backdrop-filter: blur(12px);
+}
+
+.admin-modal.is-open {
+  display: grid;
+}
+
+.admin-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  width: min(980px, 94vw);
+  max-height: min(720px, 92vh);
+  padding: 18px;
+  border: 1px solid rgba(165, 222, 114, 0.32);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(7, 18, 10, 0.97), rgba(21, 16, 8, 0.95)),
+    repeating-linear-gradient(90deg, rgba(165, 222, 114, 0.035) 0 1px, transparent 1px 24px);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.58),
+    inset 0 0 80px rgba(165, 222, 114, 0.08);
+}
+
+.admin-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.admin-dialog-head h2 {
+  max-width: none;
+}
+
+.admin-dialog-body {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(280px, 0.72fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.admin-list-panel,
+.admin-edit-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid rgba(165, 222, 114, 0.18);
+  border-radius: 8px;
+  background: rgba(4, 12, 7, 0.76);
+}
+
+.admin-edit-panel {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.admin-users {
+  overflow: auto;
+}
+
+.admin-user {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 70px;
+  align-items: stretch;
+  gap: 7px;
+}
+
+.admin-user > button {
+  min-height: 38px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.admin-user > button:first-child {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  text-align: left;
+}
+
+.admin-user.is-selected > button:first-child {
+  border-color: rgba(214, 233, 95, 0.5);
+  background: rgba(95, 97, 12, 0.48);
+}
+
+.admin-user strong,
+.admin-user span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user strong {
+  color: #eef8dd;
+  font-size: 0.8rem;
+}
+
+.admin-user span {
+  color: #aac99c;
+  font-size: 0.68rem;
+}
+
+.admin-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 86px;
+  gap: 8px;
+}
+
+.admin-form:has(#invite-email) {
+  grid-template-columns: minmax(0, 1fr) 86px;
+}
+
+.admin-form input {
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 10px;
+  font-size: 0.78rem;
 }
 
 .binding-list,
@@ -2231,6 +2498,10 @@ h2 {
   .controls-dialog {
     max-height: none;
   }
+
+  .admin-dialog-body {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2243,6 +2514,29 @@ h2 {
   .reactor-stage,
   .telemetry-panel {
     padding: 12px;
+  }
+
+  .admin-modal {
+    align-items: stretch;
+    padding: 10px;
+  }
+
+  .admin-dialog {
+    width: 100%;
+    max-height: calc(100dvh - 20px);
+  }
+
+  .admin-dialog-head {
+    display: grid;
+  }
+
+  .admin-user {
+    grid-template-columns: minmax(0, 1fr) 62px 62px;
+  }
+
+  .admin-form,
+  .admin-form:has(#invite-email) {
+    grid-template-columns: 1fr;
   }
 
   .stage-header,

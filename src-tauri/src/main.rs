@@ -549,6 +549,7 @@ fn start_eutherdogs(
         euther_oxide::eutherdogs::EutherDogsStart {
             staff: None,
             mission: None,
+            players: Some(2),
         },
     ));
     Ok(dogs.snapshot())

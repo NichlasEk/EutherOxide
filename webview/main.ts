@@ -127,6 +127,7 @@ type LobbyInstance = {
   subscribers: number;
   spectators: number;
   host?: string | null;
+  createdUnixMs?: number;
 };
 
 type LobbyStatus = {
@@ -141,9 +142,15 @@ type LobbyJoinResult = {
   };
 };
 
+type LobbyStartResult = {
+  instance: LobbyStatus;
+  id: string;
+};
+
 type HostUserSummary = {
   name: string;
   banned: boolean;
+  admin: boolean;
 };
 
 type HostUserList = {
@@ -153,6 +160,18 @@ type HostUserList = {
 type AuthStatus = {
   authenticated: boolean;
   user?: string;
+  isAdmin?: boolean;
+};
+
+type ChatMessage = {
+  id: number;
+  user: string;
+  message: string;
+  createdUnixMs: number;
+};
+
+type ChatResult = {
+  messages: ChatMessage[];
 };
 
 type PadBinding = {
@@ -440,6 +459,8 @@ const mobileBridgeAudioMinimumLeadSeconds = 0.16;
 const mobileBridgeAudioMaximumLeadSeconds = 1.0;
 const eutherDogsCameraWorldWidth = 430;
 const eutherDogsCameraWorldHeight = 300;
+const eutherDogsTopHudSafePx = 50;
+const eutherDogsBottomHudSafePx = 30;
 const inputState: InputState = {
   up: false,
   down: false,
@@ -569,9 +590,15 @@ let nativeBridgeBase: string | null = null;
 const bridgeClientId = readBridgeClientId();
 let playerPort: PlayerPort = readStoredPlayerPort();
 let lobbyRole: LobbyRole = "player";
+let activeLobbyInstanceId = "main";
+let claimedLobbyPlayer: PlayerPort | null = null;
 let hostUsername: string | null = null;
+let hostIsAdmin = false;
 let lobbyStatus: LobbyStatus | null = null;
 let hostUsers: HostUserSummary[] = [];
+let selectedAdminUser: string | null = null;
+let chatMessages: ChatMessage[] = [];
+let chatPollTimer: number | null = null;
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
 let audioGain: GainNode | null = null;
@@ -637,13 +664,17 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="rail-section lobby-section">
         <div class="section-head">
           <p class="section-label">Lobby</p>
-          <button id="lobby-refresh" class="mini-action" type="button">Scan</button>
+          <div class="section-actions">
+            <button id="admin-open" class="mini-action" type="button" hidden>Admin</button>
+            <button id="lobby-refresh" class="mini-action" type="button">Scan</button>
+          </div>
         </div>
         <div class="lobby-card" id="lobby-card">
-          <strong>Main Reaction Vessel</strong>
+          <strong id="lobby-title">Main Reaction Vessel</strong>
           <span id="lobby-meta">No instance scan</span>
           <span id="lobby-host">Host: open</span>
         </div>
+        <div class="lobby-instances" id="lobby-instances"></div>
         <div class="lobby-actions">
           <button id="instance-start" type="button">Start New</button>
           <button id="instance-join" type="button">Join</button>
@@ -653,25 +684,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button id="spectate-instance" type="button">Spectate</button>
           <button id="kick-p1" type="button">Kick P1</button>
           <button id="kick-p2" type="button">Kick P2</button>
-        </div>
-      </div>
-
-      <div class="rail-section admin-section">
-        <div class="section-head">
-          <p class="section-label">Users</p>
-          <button id="admin-refresh" class="mini-action" type="button">Sync</button>
-        </div>
-        <div class="admin-users" id="admin-users">
-          <span>Host admin offline</span>
-        </div>
-        <div class="admin-form">
-          <input id="admin-username" type="text" placeholder="user" aria-label="new user" />
-          <input id="admin-password" type="password" placeholder="password" aria-label="new password" />
-          <button id="admin-user-add" type="button">Add/Reset</button>
-        </div>
-        <div class="admin-form">
-          <input id="invite-email" type="email" placeholder="invite email placeholder" aria-label="invite email" />
-          <button id="invite-send" type="button">Invite</button>
+          <button id="close-instance" type="button">Close</button>
         </div>
       </div>
 
@@ -787,27 +800,21 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <div class="eutherdogs-logo"></div>
               <div class="eutherdogs-shift">
                 <span>Night shift</span>
-                <strong id="eutherdogs-alert">Open</strong>
+                <strong id="eutherdogs-alert">Mission 1/10</strong>
               </div>
             </div>
             <div class="eutherdogs-dispensary">
               <div>
-                <span>RX left</span>
+                <span>Mission</span>
                 <strong id="eutherdogs-rx-left">0</strong>
-              </div>
-              <div>
-                <span>Queue</span>
-                <strong id="eutherdogs-targets-left">0</strong>
-              </div>
-              <div>
-                <span>Copay</span>
-                <strong id="eutherdogs-cash">$0</strong>
               </div>
               <div>
                 <span id="eutherdogs-clock-label">Elapsed</span>
                 <strong id="eutherdogs-clock">--</strong>
               </div>
             </div>
+            <span id="eutherdogs-targets-left" hidden>0</span>
+            <span id="eutherdogs-cash" hidden>$0</span>
             <div class="eutherdogs-vitals">
               <span id="eutherdogs-lamp" class="eutherdogs-lamp"></span>
               <div class="eutherdogs-health">
@@ -864,20 +871,39 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div id="shader-controls" class="shader-controls"></div>
         </div>
       </div>
-      <div class="metric-grid">
-        <div class="metric"><span>Frame</span><strong id="frame-count">0</strong></div>
-        <div class="metric"><span>Timing</span><strong id="timing-mode">NTSC</strong></div>
-        <div class="metric"><span>Region</span><strong id="region-mode">AUTO</strong></div>
-        <div class="metric"><span>Reset PC</span><strong id="reset-pc">$000000</strong></div>
-        <div class="metric"><span>Cycles</span><strong id="cycle-count">0</strong></div>
-        <div class="metric"><span>Steps</span><strong id="step-count">0</strong></div>
-        <div class="metric"><span>Frame ms</span><strong id="frame-ms">0.00</strong></div>
-        <div class="metric"><span>Bridge</span><strong id="bridge-mode">WEB</strong></div>
-        <div class="metric"><span>Fetch ms</span><strong id="fetch-ms">0.00</strong></div>
-        <div class="metric"><span>Draw ms</span><strong id="draw-ms">0.00</strong></div>
-        <div class="metric"><span>Audio lead</span><strong id="audio-lead-ms">0</strong></div>
-        <div class="metric"><span>Transport</span><strong id="transport-mode">INIT</strong></div>
-        <div class="metric"><span>Build</span><strong id="build-id">dev</strong></div>
+      <div class="perf-drawer" id="perf-drawer">
+        <button id="perf-toggle" class="perf-toggle" type="button">
+          <span>Perf</span>
+          <strong id="perf-summary">0.00 ms | 0 lead</strong>
+        </button>
+        <div class="metric-grid">
+          <div class="metric"><span>Frame</span><strong id="frame-count">0</strong></div>
+          <div class="metric"><span>Timing</span><strong id="timing-mode">NTSC</strong></div>
+          <div class="metric"><span>Region</span><strong id="region-mode">AUTO</strong></div>
+          <div class="metric"><span>Reset PC</span><strong id="reset-pc">$000000</strong></div>
+          <div class="metric"><span>Cycles</span><strong id="cycle-count">0</strong></div>
+          <div class="metric"><span>Steps</span><strong id="step-count">0</strong></div>
+          <div class="metric"><span>Frame ms</span><strong id="frame-ms">0.00</strong></div>
+          <div class="metric"><span>Bridge</span><strong id="bridge-mode">WEB</strong></div>
+          <div class="metric"><span>Fetch ms</span><strong id="fetch-ms">0.00</strong></div>
+          <div class="metric"><span>Draw ms</span><strong id="draw-ms">0.00</strong></div>
+          <div class="metric"><span>Audio lead</span><strong id="audio-lead-ms">0</strong></div>
+          <div class="metric"><span>Transport</span><strong id="transport-mode">INIT</strong></div>
+          <div class="metric"><span>Build</span><strong id="build-id">dev</strong></div>
+        </div>
+      </div>
+      <div class="chat-panel">
+        <div class="section-head">
+          <p class="section-label">Reaction Chat</p>
+          <button id="chat-refresh" class="mini-action" type="button">Sync</button>
+        </div>
+        <div id="chat-list" class="chat-list">
+          <span>Chat offline</span>
+        </div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" type="text" maxlength="320" placeholder="message" aria-label="chat message" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
       </div>
       <div class="reaction-log">
         <p class="section-label">Oxidative Trace</p>
@@ -942,6 +968,40 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </div>
   </div>
+  <div id="admin-modal" class="admin-modal" aria-hidden="true">
+    <div class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-title">
+      <header class="admin-dialog-head">
+        <div>
+          <p class="eyebrow">Host Control</p>
+          <h2 id="admin-title">Users</h2>
+        </div>
+        <div class="controls-actions">
+          <button id="admin-refresh" class="mini-action" type="button">Sync</button>
+          <button id="admin-close" class="mini-action" type="button">Close</button>
+        </div>
+      </header>
+      <div class="admin-dialog-body">
+        <section class="admin-list-panel">
+          <p class="section-label">User List</p>
+          <div class="admin-users" id="admin-users">
+            <span>Host admin offline</span>
+          </div>
+        </section>
+        <section class="admin-edit-panel">
+          <p class="section-label">Edit User</p>
+          <div class="admin-form">
+            <input id="admin-username" type="text" placeholder="user" aria-label="user" />
+            <input id="admin-password" type="password" placeholder="new password" aria-label="new password" />
+            <button id="admin-user-add" type="button">Add/Reset</button>
+          </div>
+          <div class="admin-form">
+            <input id="invite-email" type="email" placeholder="invite email placeholder" aria-label="invite email" />
+            <button id="invite-send" type="button">Invite</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
 `;
 
 videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
@@ -964,11 +1024,21 @@ const shaderToggle = document.querySelector<HTMLButtonElement>("#shader-toggle")
 const shaderSelect = document.querySelector<HTMLSelectElement>("#shader-select")!;
 const shaderMode = document.querySelector<HTMLElement>("#shader-mode")!;
 const shaderControls = document.querySelector<HTMLDivElement>("#shader-controls")!;
+const perfDrawer = document.querySelector<HTMLDivElement>("#perf-drawer")!;
+const perfToggle = document.querySelector<HTMLButtonElement>("#perf-toggle")!;
+const perfSummary = document.querySelector<HTMLElement>("#perf-summary")!;
+const chatRefresh = document.querySelector<HTMLButtonElement>("#chat-refresh")!;
+const chatList = document.querySelector<HTMLDivElement>("#chat-list")!;
+const chatForm = document.querySelector<HTMLFormElement>("#chat-form")!;
+const chatInput = document.querySelector<HTMLInputElement>("#chat-input")!;
 const romInput = document.querySelector<HTMLInputElement>("#rom-input")!;
 const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
 const lobbyRefresh = document.querySelector<HTMLButtonElement>("#lobby-refresh")!;
+const lobbyTitle = document.querySelector<HTMLElement>("#lobby-title")!;
 const lobbyMeta = document.querySelector<HTMLElement>("#lobby-meta")!;
 const lobbyHost = document.querySelector<HTMLElement>("#lobby-host")!;
+const lobbyInstances = document.querySelector<HTMLDivElement>("#lobby-instances")!;
+const adminOpen = document.querySelector<HTMLButtonElement>("#admin-open")!;
 const instanceStart = document.querySelector<HTMLButtonElement>("#instance-start")!;
 const instanceJoin = document.querySelector<HTMLButtonElement>("#instance-join")!;
 const claimP1 = document.querySelector<HTMLButtonElement>("#claim-p1")!;
@@ -977,6 +1047,9 @@ const releaseSlot = document.querySelector<HTMLButtonElement>("#release-slot")!;
 const spectateInstance = document.querySelector<HTMLButtonElement>("#spectate-instance")!;
 const kickP1 = document.querySelector<HTMLButtonElement>("#kick-p1")!;
 const kickP2 = document.querySelector<HTMLButtonElement>("#kick-p2")!;
+const closeInstance = document.querySelector<HTMLButtonElement>("#close-instance")!;
+const adminModal = document.querySelector<HTMLDivElement>("#admin-modal")!;
+const adminClose = document.querySelector<HTMLButtonElement>("#admin-close")!;
 const adminRefresh = document.querySelector<HTMLButtonElement>("#admin-refresh")!;
 const adminUsers = document.querySelector<HTMLDivElement>("#admin-users")!;
 const adminUsername = document.querySelector<HTMLInputElement>("#admin-username")!;
@@ -1049,12 +1122,32 @@ mobileToggle.addEventListener("click", () => {
 
 playerPortButtons.forEach((button) => {
   button.addEventListener("click", () => {
+    if (claimedLobbyPlayer !== null) {
+      setPlayerPort(claimedLobbyPlayer);
+      pushTrace(`Player locked to claimed P${claimedLobbyPlayer}`);
+      return;
+    }
     setPlayerPort(button.dataset.playerPort === "2" ? 2 : 1);
   });
 });
 
 lobbyRefresh.addEventListener("click", () => {
   void refreshLobby();
+});
+
+lobbyInstances.addEventListener("click", async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-instance-id]");
+  if (!button) {
+    return;
+  }
+  const previousInstanceId = activeLobbyInstanceId;
+  activeLobbyInstanceId = button.dataset.instanceId ?? "main";
+  lobbyRole = "spectator";
+  claimedLobbyPlayer = null;
+  stopBridgeStream();
+  await releaseLobbySlot(false, previousInstanceId);
+  renderLobby();
+  await connectBridge(false);
 });
 
 instanceStart.addEventListener("click", async () => {
@@ -1079,6 +1172,7 @@ releaseSlot.addEventListener("click", async () => {
 
 spectateInstance.addEventListener("click", async () => {
   lobbyRole = "spectator";
+  claimedLobbyPlayer = null;
   stopBridgeStream();
   await releaseLobbySlot(false);
   renderLobby();
@@ -1092,6 +1186,24 @@ kickP2.addEventListener("click", async () => {
   await kickLobbyPlayer(2);
 });
 
+closeInstance.addEventListener("click", async () => {
+  await closeLobbyInstance();
+});
+
+adminOpen.addEventListener("click", async () => {
+  if (!hostIsAdmin) {
+    return;
+  }
+  adminModal.classList.add("is-open");
+  adminModal.setAttribute("aria-hidden", "false");
+  await refreshHostUsers();
+});
+
+adminClose.addEventListener("click", () => {
+  adminModal.classList.remove("is-open");
+  adminModal.setAttribute("aria-hidden", "true");
+});
+
 adminRefresh.addEventListener("click", () => {
   void refreshHostUsers();
 });
@@ -1101,7 +1213,34 @@ adminUserAdd.addEventListener("click", async () => {
 });
 
 adminUsers.addEventListener("click", async (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-admin-ban]");
+  const target = event.target as HTMLElement;
+  const select = target.closest<HTMLButtonElement>("[data-admin-select]");
+  if (select) {
+    selectedAdminUser = select.dataset.adminSelect ?? null;
+    adminUsername.value = selectedAdminUser ?? "";
+    adminPassword.value = "";
+    renderHostUsers();
+    return;
+  }
+  const adminButton = target.closest<HTMLButtonElement>("[data-admin-admin]");
+  if (adminButton) {
+    const username = adminButton.dataset.adminAdmin ?? "";
+    const admin = adminButton.dataset.admin === "1";
+    const result = await bridgeJson<HostUserList>(
+      "/api/admin/users/admin",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username, admin: String(admin) }),
+      },
+      1200,
+    );
+    hostUsers = result.users;
+    selectedAdminUser = username;
+    renderHostUsers();
+    return;
+  }
+  const button = target.closest<HTMLButtonElement>("[data-admin-ban]");
   if (!button) {
     return;
   }
@@ -1122,6 +1261,19 @@ adminUsers.addEventListener("click", async (event) => {
 
 inviteSend.addEventListener("click", async () => {
   await sendInvitePlaceholder();
+});
+
+perfToggle.addEventListener("click", () => {
+  perfDrawer.classList.toggle("is-open");
+});
+
+chatRefresh.addEventListener("click", () => {
+  void refreshChat();
+});
+
+chatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await sendChatMessage();
 });
 
 shaderSelect.addEventListener("change", () => {
@@ -2898,6 +3050,12 @@ async function refreshLobby(): Promise<void> {
   }
   try {
     lobbyStatus = await bridgeJson<LobbyStatus>("/api/lobby", {}, 900);
+    if (
+      lobbyStatus.instances.length > 0 &&
+      !lobbyStatus.instances.some((instance) => instance.id === activeLobbyInstanceId)
+    ) {
+      activeLobbyInstanceId = lobbyStatus.instances[0].id;
+    }
     renderLobby();
   } catch {
     lobbyMeta.textContent = "Host lobby unavailable";
@@ -2911,46 +3069,58 @@ async function refreshAuthStatus(): Promise<void> {
   try {
     const status = await bridgeJson<AuthStatus>("/api/auth/status", {}, 700);
     hostUsername = status.authenticated ? status.user ?? null : null;
+    hostIsAdmin = Boolean(status.authenticated && status.isAdmin);
+    updateChatPolling(status.authenticated);
   } catch {
     hostUsername = null;
+    hostIsAdmin = false;
+    updateChatPolling(false);
   }
+  renderAdminAccess();
 }
 
 async function startLobbyInstance(): Promise<void> {
-  lobbyStatus = await bridgeJson<LobbyStatus>("/api/lobby/start", { method: "POST" }, 1200);
+  const result = await bridgeJson<LobbyStartResult>("/api/lobby/start", { method: "POST" }, 1200);
+  lobbyStatus = result.instance;
+  activeLobbyInstanceId = result.id;
   lobbyRole = "player";
+  claimedLobbyPlayer = 1;
   setPlayerPort(1);
   pushTrace("New host instance primed");
   renderLobby();
+  await connectBridge(false);
 }
 
 async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<void> {
   const result = await bridgeJson<LobbyJoinResult>(
-    `/api/lobby/join?player=${port}`,
+    `/api/lobby/join?instance=${encodeURIComponent(activeLobbyInstanceId)}&player=${port}`,
     { method: "POST" },
     1200,
   );
   lobbyStatus = result.instance;
   if (result.role.kind === "player" && (result.role.player === 1 || result.role.player === 2)) {
     lobbyRole = "player";
-    setPlayerPort(result.role.player);
+    claimedLobbyPlayer = result.role.player;
+    setPlayerPort(claimedLobbyPlayer);
     pushTrace(`Joined as P${result.role.player}`);
   } else {
     lobbyRole = "spectator";
+    claimedLobbyPlayer = null;
     stopBridgeStream();
     pushTrace("Joined as spectator");
   }
   renderLobby();
 }
 
-async function releaseLobbySlot(announce = true): Promise<void> {
+async function releaseLobbySlot(announce = true, instanceId = activeLobbyInstanceId): Promise<void> {
   lobbyStatus = await bridgeJson<LobbyStatus>(
-    "/api/lobby/release",
+    `/api/lobby/release?instance=${encodeURIComponent(instanceId)}`,
     { method: "POST" },
     1200,
   );
   if (announce) {
     lobbyRole = "spectator";
+    claimedLobbyPlayer = null;
     stopBridgeStream();
     pushTrace("Released player slot");
   }
@@ -2959,12 +3129,29 @@ async function releaseLobbySlot(announce = true): Promise<void> {
 
 async function kickLobbyPlayer(player: PlayerPort): Promise<void> {
   lobbyStatus = await bridgeJson<LobbyStatus>(
-    `/api/lobby/kick?player=${player}`,
+    `/api/lobby/kick?instance=${encodeURIComponent(activeLobbyInstanceId)}&player=${player}`,
     { method: "POST" },
     1200,
   );
   pushTrace(`Kicked P${player}`);
   renderLobby();
+}
+
+async function closeLobbyInstance(): Promise<void> {
+  const closingId = activeLobbyInstanceId;
+  lobbyStatus = await bridgeJson<LobbyStatus>(
+    `/api/lobby/close?instance=${encodeURIComponent(closingId)}`,
+    { method: "POST" },
+    1200,
+  );
+  const fallback = lobbyStatus.instances.find((instance) => instance.id !== closingId);
+  activeLobbyInstanceId = fallback?.id ?? "main";
+  lobbyRole = "spectator";
+  claimedLobbyPlayer = null;
+  stopBridgeStream();
+  pushTrace(`Closed ${closingId}`);
+  renderLobby();
+  await connectBridge(false);
 }
 
 async function refreshHostUsers(): Promise<void> {
@@ -2998,6 +3185,7 @@ async function addOrResetHostUser(): Promise<void> {
     1600,
   );
   hostUsers = result.users;
+  selectedAdminUser = username;
   adminPassword.value = "";
   renderHostUsers();
 }
@@ -3019,25 +3207,105 @@ async function sendInvitePlaceholder(): Promise<void> {
   pushTrace("Invite placeholder logged");
 }
 
-function renderLobby(): void {
-  const instance = lobbyStatus?.instances[0];
-  if (!instance) {
-    lobbyMeta.textContent = "No instance scan";
-    lobbyHost.textContent = "Host: open";
+function updateChatPolling(enabled: boolean): void {
+  if (isTauri || !enabled) {
+    if (chatPollTimer !== null) {
+      window.clearInterval(chatPollTimer);
+      chatPollTimer = null;
+    }
     return;
   }
+  if (chatPollTimer === null) {
+    void refreshChat();
+    chatPollTimer = window.setInterval(() => void refreshChat(), 2200);
+  }
+}
+
+async function refreshChat(): Promise<void> {
+  if (isTauri) {
+    return;
+  }
+  try {
+    const result = await bridgeJson<ChatResult>("/api/chat", {}, 900);
+    chatMessages = result.messages;
+    renderChat();
+  } catch {
+    chatList.innerHTML = `<span>Chat offline</span>`;
+  }
+}
+
+async function sendChatMessage(): Promise<void> {
+  const message = chatInput.value.trim();
+  if (!message) {
+    return;
+  }
+  const result = await bridgeJson<ChatResult>(
+    "/api/chat",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message }),
+    },
+    1200,
+  );
+  chatMessages = result.messages;
+  chatInput.value = "";
+  renderChat();
+}
+
+function renderLobby(): void {
+  const instance = activeLobbyInstance();
+  if (!instance) {
+    lobbyTitle.textContent = "No Reaction Vessel";
+    lobbyMeta.textContent = "No instance scan";
+    lobbyHost.textContent = "Host: open";
+    lobbyInstances.innerHTML = "";
+    return;
+  }
+  renderLobbyInstances();
   const occupied = instance.players
     .map((player) => `P${player.player}:${player.occupied ? player.user ?? "busy" : "open"}`)
     .join(" ");
+  lobbyTitle.textContent = instance.name;
   lobbyMeta.textContent =
     `${instance.loaded ? instance.title : "No ROM"} | ${occupied} | ${instance.spectators} spec`;
   lobbyHost.textContent = `Host: ${instance.host ?? "open"}`;
-  instanceJoin.textContent = lobbyRole === "spectator" ? "Join Auto" : `Joined P${playerPort}`;
-  instanceStart.disabled = !canHostMutate();
-  releaseSlot.disabled = !ownsCurrentSlot();
-  kickP1.disabled = !canHostMutate() || !Boolean(instance.players.find((player) => player.player === 1)?.occupied);
-  kickP2.disabled = !canHostMutate() || !Boolean(instance.players.find((player) => player.player === 2)?.occupied);
+  instanceJoin.textContent =
+    lobbyRole === "spectator" || claimedLobbyPlayer === null ? "Join Auto" : `Joined P${claimedLobbyPlayer}`;
+  instanceStart.disabled = false;
+  releaseSlot.disabled = claimedLobbyPlayer === null && !ownsCurrentSlot();
+  claimP1.disabled = claimedLobbyPlayer !== null || Boolean(instance.players.find((player) => player.player === 1)?.occupied);
+  claimP2.disabled = claimedLobbyPlayer !== null || Boolean(instance.players.find((player) => player.player === 2)?.occupied);
+  claimP1.classList.toggle("is-selected", claimedLobbyPlayer === 1);
+  claimP2.classList.toggle("is-selected", claimedLobbyPlayer === 2);
+  kickP1.disabled =
+    !canHostMutate() || !Boolean(instance.players.find((player) => player.player === 1)?.occupied);
+  kickP2.disabled =
+    !canHostMutate() || !Boolean(instance.players.find((player) => player.player === 2)?.occupied);
+  closeInstance.disabled = instance.id === "main" || !canHostMutate();
   spectateInstance.classList.toggle("is-selected", lobbyRole === "spectator");
+  renderPlayerPort();
+}
+
+function activeLobbyInstance(): LobbyInstance | undefined {
+  return (
+    lobbyStatus?.instances.find((instance) => instance.id === activeLobbyInstanceId) ??
+    lobbyStatus?.instances[0]
+  );
+}
+
+function renderLobbyInstances(): void {
+  const instances = lobbyStatus?.instances ?? [];
+  lobbyInstances.innerHTML = instances
+    .map(
+      (instance) => `
+        <button class="${instance.id === activeLobbyInstanceId ? "is-selected" : ""}" data-instance-id="${escapeHtml(instance.id)}" type="button">
+          <strong>${escapeHtml(instance.name)}</strong>
+          <span>${escapeHtml(instance.loaded ? instance.title : "No ROM")} | ${instance.players.filter((player) => player.occupied).length}P ${instance.spectators}S</span>
+        </button>
+      `,
+    )
+    .join("");
 }
 
 function ownsCurrentSlot(): boolean {
@@ -3047,14 +3315,22 @@ function ownsCurrentSlot(): boolean {
   if (!hostUsername) {
     return false;
   }
-  const instance = lobbyStatus?.instances[0];
+  const instance = activeLobbyInstance();
   const slot = instance?.players.find((player) => player.player === playerPort);
   return Boolean(slot?.occupied && hostUsername && slot.user === hostUsername);
 }
 
 function canHostMutate(): boolean {
-  const host = lobbyStatus?.instances[0]?.host;
+  const host = activeLobbyInstance()?.host;
   return !host || host === hostUsername;
+}
+
+function renderAdminAccess(): void {
+  adminOpen.hidden = !hostIsAdmin;
+  if (!hostIsAdmin) {
+    adminModal.classList.remove("is-open");
+    adminModal.setAttribute("aria-hidden", "true");
+  }
 }
 
 function renderHostUsers(): void {
@@ -3062,9 +3338,14 @@ function renderHostUsers(): void {
     ? hostUsers
         .map(
           (user) => `
-            <div class="admin-user">
-              <strong>${escapeHtml(user.name)}</strong>
-              <span>${user.banned ? "Banned" : "Active"}</span>
+            <div class="admin-user ${user.name === selectedAdminUser ? "is-selected" : ""}">
+              <button data-admin-select="${escapeHtml(user.name)}" type="button">
+                <strong>${escapeHtml(user.name)}</strong>
+                <span>${user.admin ? "Admin" : "User"} | ${user.banned ? "Banned" : "Active"}</span>
+              </button>
+              <button data-admin-admin="${escapeHtml(user.name)}" data-admin="${user.admin ? "0" : "1"}" type="button">
+                ${user.admin ? "User" : "Admin"}
+              </button>
               <button data-admin-ban="${escapeHtml(user.name)}" data-banned="${user.banned ? "0" : "1"}" type="button">
                 ${user.banned ? "Unban" : "Ban"}
               </button>
@@ -3073,6 +3354,22 @@ function renderHostUsers(): void {
         )
         .join("")
     : `<span>No users loaded</span>`;
+}
+
+function renderChat(): void {
+  chatList.innerHTML = chatMessages.length
+    ? chatMessages
+        .map(
+          (entry) => `
+            <div class="chat-message">
+              <strong>${escapeHtml(entry.user)}</strong>
+              <p>${escapeHtml(entry.message)}</p>
+            </div>
+          `,
+        )
+        .join("")
+    : `<span>No messages</span>`;
+  chatList.scrollTop = chatList.scrollHeight;
 }
 
 async function bridgeFrame(timeoutMs = 0): Promise<FrameResult> {
@@ -3107,6 +3404,9 @@ function readBridgeClientId(): string {
 
 function bridgeUrl(path: string): string {
   const url = new URL(path, bridgeBase);
+  if (!url.searchParams.has("instance")) {
+    url.searchParams.set("instance", activeLobbyInstanceId);
+  }
   url.searchParams.set("client", bridgeClientId);
   if (!url.searchParams.has("player")) {
     url.searchParams.set("player", String(playerPort));
@@ -4362,7 +4662,7 @@ function dogsClockSource(summary: DogsCoreSummary): { label: string; ticks: numb
 }
 
 function updateDogsConsole(frame: DogsCoreFrame): void {
-  const hero = frame.characters.find((actor) => actor.faction === "player");
+  const hero = dogsLocalPlayer(frame);
   const status = frame.summary.status.toUpperCase();
   const weapon = hero?.activeWeapon.replaceAll("_", " ") ?? "scanner";
   const armor = Math.max(0, hero?.armor ?? 0);
@@ -4370,14 +4670,15 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   const clock = dogsClockSource(frame.summary);
   const weaponIcon = dogsWeaponAsset(hero?.activeWeapon);
   const queueLeft = dogsQueueLeft(frame);
-  eutherDogsRxLeft.textContent = String(frame.summary.objectsLeft);
+  eutherDogsRxLeft.textContent = `${frame.summary.mission}/${frame.summary.maxMission}`;
   eutherDogsTargetsLeft.textContent = String(queueLeft);
   eutherDogsCash.textContent = `$${frame.summary.cash}`;
   eutherDogsClockLabel.textContent = clock.label;
   eutherDogsClock.textContent = formatDogsClock(clock.ticks);
   eutherDogsWeapon.textContent = weapon;
   eutherDogsWeapon.style.setProperty("--dogs-active-weapon", weaponIcon ? `url("${weaponIcon}")` : "none");
-  eutherDogsAlert.textContent = status === "RUNNING" ? "Open" : status;
+  eutherDogsAlert.textContent =
+    status === "RUNNING" ? `Mission ${frame.summary.mission}/${frame.summary.maxMission}` : `Mission ${status}`;
   eutherDogsHealthFill.style.width = `${healthPercent}%`;
   eutherDogsLamp.classList.toggle("is-hot", queueLeft > 0 && frame.summary.status === "running");
   eutherDogsConsole.classList.toggle("is-alert", queueLeft > 0);
@@ -4385,6 +4686,13 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   if (dogsMenuMode) {
     renderDogsMenu();
   }
+}
+
+function dogsLocalPlayer(frame: DogsCoreFrame): DogsCoreActor | undefined {
+  return (
+    frame.characters.find((actor) => actor.faction === "player" && actor.id === playerPort - 1 && actor.alive) ??
+    frame.characters.find((actor) => actor.faction === "player" && actor.alive)
+  );
 }
 
 function dogsCurrentCash(): number {
@@ -5224,7 +5532,7 @@ async function runDogsFrame(): Promise<void> {
 }
 
 async function startDogsCore(): Promise<DogsCoreFrame> {
-  const start = { staff: selectedDogsStaff, mission: selectedDogsMission };
+  const start = { staff: selectedDogsStaff, mission: selectedDogsMission, players: 2 };
   dogsPreviousActorPositions = new Map();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
@@ -5307,7 +5615,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
 
   const worldW = frame.width * frame.tileWidth;
   const worldH = frame.height * frame.tileHeight;
-  const player = frame.characters.find((actor) => actor.faction === "player" && actor.alive) ?? frame.characters[0];
+  const player = dogsLocalPlayer(frame) ?? frame.characters[0];
   const scale = Math.max(
     0.18,
     Math.min(dogsCanvas.width / eutherDogsCameraWorldWidth, dogsCanvas.height / eutherDogsCameraWorldHeight),
@@ -5315,7 +5623,17 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const viewW = dogsCanvas.width / scale;
   const viewH = dogsCanvas.height / scale;
   const cameraX = Math.max(0, Math.min(worldW - viewW, (player?.x ?? 0) - viewW / 2));
-  const cameraY = Math.max(0, Math.min(worldH - viewH, (player?.y ?? 0) - viewH / 2));
+  const rawCameraY = Math.max(0, Math.min(worldH - viewH, (player?.y ?? 0) - viewH / 2));
+  const playerY = player?.y ?? 0;
+  const playerScreenY = (playerY - rawCameraY) * scale;
+  const safeTop = eutherDogsTopHudSafePx + frame.characterHeight * scale * 0.25;
+  const safeBottom = dogsCanvas.height - eutherDogsBottomHudSafePx - frame.characterHeight * scale;
+  const cameraY =
+    playerScreenY < safeTop
+      ? Math.max(0, Math.min(worldH - viewH, playerY - safeTop / scale))
+      : playerScreenY > safeBottom
+        ? Math.max(0, Math.min(worldH - viewH, playerY - safeBottom / scale))
+        : rawCameraY;
   const colors: Record<string, string> = {
     floor: "#dfe8dc",
     sterile_floor: "#dfe8dc",
@@ -5438,7 +5756,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   }
   const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
   if (hud) {
-    const hero = frame.characters.find((actor) => actor.faction === "player");
+    const hero = dogsLocalPlayer(frame);
     const ammo = hero?.ammo ?? -1;
     hud.textContent = `COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE ${dogsQueueLeft(frame)} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
   }
@@ -5469,6 +5787,9 @@ function renderPlayerPort(): void {
     const selected = Number(button.dataset.playerPort ?? 1) === playerPort;
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.disabled = claimedLobbyPlayer !== null && !selected;
+    button.title =
+      claimedLobbyPlayer === null ? "" : `Locked to claimed P${claimedLobbyPlayer}`;
   });
 }
 
@@ -6120,6 +6441,7 @@ function renderUi(): void {
   document.querySelector("#audio-lead-ms")!.textContent = ui.audioLeadMs.toFixed(0);
   document.querySelector("#transport-mode")!.textContent = ui.transportMode;
   document.querySelector("#build-id")!.textContent = WEB_BUILD_ID;
+  perfSummary.textContent = `${ui.frameMs.toFixed(2)} ms | ${ui.audioLeadMs.toFixed(0)} lead`;
   document.querySelector("#runtime-chip")!.textContent =
     ui.runtime === "tauri"
       ? "TAURI 2 CORE"
