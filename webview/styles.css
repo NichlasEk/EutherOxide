@@ -378,7 +378,7 @@ button:disabled {
 
 .eutherdogs-armory-layout {
   display: grid;
-  grid-template-columns: 136px minmax(0, 1fr);
+  grid-template-columns: 168px minmax(0, 1fr);
   gap: 7px;
   height: 100%;
   min-height: 0;
@@ -387,21 +387,41 @@ button:disabled {
 
 .eutherdogs-inventory-panel {
   display: grid;
-  align-content: start;
-  gap: 5px;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  gap: 8px;
   min-width: 0;
   padding: 8px;
   border: 1px solid rgba(39, 242, 255, 0.18);
   background: rgba(0, 5, 7, 0.74);
 }
 
-.eutherdogs-inventory-panel .eutherdogs-weapon-icon {
+.eutherdogs-player-loadout,
+.eutherdogs-store-preview {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.eutherdogs-player-loadout .eutherdogs-weapon-icon {
   width: 56px;
   height: 56px;
 }
 
+.eutherdogs-store-preview {
+  padding-top: 8px;
+  border-top: 1px solid rgba(39, 242, 255, 0.16);
+}
+
+.eutherdogs-store-preview .eutherdogs-weapon-icon {
+  width: 72px;
+  height: 72px;
+}
+
 .eutherdogs-inventory-panel strong,
 .eutherdogs-inventory-panel span,
+.eutherdogs-inventory-panel small,
 .eutherdogs-inventory-panel em {
   display: block;
   min-width: 0;
@@ -420,6 +440,12 @@ button:disabled {
   color: #9ee9de;
   font-size: 0.62rem;
   font-weight: 850;
+}
+
+.eutherdogs-inventory-panel small {
+  color: #9ee9de;
+  font-size: 0.54rem;
+  font-weight: 800;
 }
 
 .eutherdogs-inventory-panel em {
@@ -458,6 +484,17 @@ button:disabled {
   min-width: 0;
 }
 
+.eutherdogs-store-item b {
+  display: inline-block;
+  margin-bottom: 2px;
+  padding: 1px 4px;
+  border: 1px solid rgba(39, 242, 255, 0.18);
+  color: #ffef6e;
+  font-size: 0.48rem;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .eutherdogs-store-item strong,
 .eutherdogs-store-item small {
   display: block;
@@ -490,6 +527,21 @@ button:disabled {
 .eutherdogs-store-item.is-equipped {
   border-color: rgba(255, 239, 110, 0.5);
   background: rgba(45, 39, 7, 0.72);
+}
+
+.eutherdogs-store-item.is-previewed {
+  box-shadow:
+    inset 0 0 0 1px rgba(39, 242, 255, 0.55),
+    0 0 18px rgba(39, 242, 255, 0.16);
+}
+
+.eutherdogs-store-item.is-owned:not(.is-equipped) {
+  border-color: rgba(39, 242, 255, 0.32);
+}
+
+.eutherdogs-store-item.is-armor b {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.22);
 }
 
 .eutherdogs-store-item:disabled em {

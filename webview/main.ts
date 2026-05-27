@@ -521,6 +521,7 @@ let dogsMode = false;
 let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
 let selectedDogsStaff: 1 | 2 = 1;
+let dogsStorePreviewItemId: string | null = null;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
@@ -1139,6 +1140,23 @@ eutherDogsMenuBody.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
   if (!button || button.disabled) return;
   void purchaseDogsStoreItem(button.dataset.storeItem ?? "");
+});
+
+eutherDogsMenuBody.addEventListener("mouseover", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
+  if (!button || dogsMenuMode !== "store") return;
+  const itemId = button.dataset.storeItem ?? null;
+  if (itemId && dogsStorePreviewItemId !== itemId) {
+    dogsStorePreviewItemId = itemId;
+    renderDogsMenu();
+  }
+});
+
+eutherDogsMenuBody.addEventListener("focusin", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-item]");
+  if (!button || dogsMenuMode !== "store") return;
+  dogsStorePreviewItemId = button.dataset.storeItem ?? dogsStorePreviewItemId;
+  renderDogsMenu();
 });
 
 releaseBuild.addEventListener("click", async () => {
@@ -3795,6 +3813,41 @@ function dogsStoreActionLabel(item: DogsStoreItem): string {
   return `Buy $${item.price}`;
 }
 
+function dogsStoreItemStatus(item: DogsStoreItem): string {
+  if (item.active) return "Active";
+  if (item.owned) return "Owned";
+  if (item.armor > 0) return "Coat";
+  return "New";
+}
+
+function dogsStoreItemClass(item: DogsStoreItem): string {
+  return [
+    item.active ? "is-equipped" : "",
+    item.owned ? "is-owned" : "",
+    item.armor > 0 ? "is-armor" : "is-weapon",
+    dogsStorePreviewItemId === item.id ? "is-previewed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function dogsStorePreviewMarkup(item: DogsStoreItem | null): string {
+  if (!item) {
+    return "";
+  }
+  const icon = dogsStoreItemIconMarkup(item);
+  return `
+    <section class="eutherdogs-store-preview" aria-label="RX store preview">
+      ${icon}
+      <span>${dogsStoreItemStatus(item)}</span>
+      <strong>${item.label}</strong>
+      <small>${item.detail}</small>
+      <small>${dogsStoreItemMeta(item)}</small>
+      <em>${dogsStoreActionLabel(item)}</em>
+    </section>
+  `;
+}
+
 function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
   dogsMenuMode = mode;
   ui.playing = false;
@@ -3887,24 +3940,33 @@ function renderDogsMenu(): void {
   }
   eutherDogsMenuKicker.textContent = "RX Store";
   eutherDogsMenuTitle.textContent = `Counter | Coat ${hero?.armor ?? 0} | ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}`;
+  const previewItem =
+    storeItems.find((item) => item.id === dogsStorePreviewItemId) ??
+    storeItems.find((item) => item.active) ??
+    storeItems[0] ??
+    null;
   eutherDogsMenuBody.innerHTML = storeItems
     ? `
       <div class="eutherdogs-armory-layout">
         <aside class="eutherdogs-inventory-panel">
-          ${hero ? dogsWeaponIconMarkup(hero.activeWeapon, hero.activeWeapon) : ""}
-          <strong>${dogsStaffOptions.find((staff) => staff.id === selectedDogsStaff)?.name ?? "Staff"}</strong>
-          <span>Coat ${hero?.armor ?? 0}</span>
-          <span>Active ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}</span>
-          <span>Ammo ${dogsAmmoLabel(hero?.ammo)}</span>
-          <em>Cash $${cash}</em>
+          <section class="eutherdogs-player-loadout">
+            ${hero ? dogsWeaponIconMarkup(hero.activeWeapon, hero.activeWeapon) : ""}
+            <strong>${dogsStaffOptions.find((staff) => staff.id === selectedDogsStaff)?.name ?? "Staff"}</strong>
+            <span>Coat ${hero?.armor ?? 0}</span>
+            <span>Active ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}</span>
+            <span>Ammo ${dogsAmmoLabel(hero?.ammo)}</span>
+            <em>Cash $${cash}</em>
+          </section>
+          ${dogsStorePreviewMarkup(previewItem)}
         </aside>
         <div class="eutherdogs-store-grid">
           ${storeItems
             .map((item) => {
               return `
-                <button class="eutherdogs-store-item ${item.active ? "is-equipped" : ""}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
+                <button class="eutherdogs-store-item ${dogsStoreItemClass(item)}" data-store-item="${item.id}" type="button" ${item.affordable ? "" : "disabled"}>
                   ${dogsStoreItemIconMarkup(item)}
                   <span>
+                    <b>${dogsStoreItemStatus(item)}</b>
                     <strong>${item.label}</strong>
                     <small>${item.detail}</small>
                     <small>${dogsStoreItemMeta(item)}</small>
