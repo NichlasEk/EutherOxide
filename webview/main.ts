@@ -3635,26 +3635,42 @@ function drawDogsVisibilityFog(
       const tileW = Math.ceil(frame.tileWidth * scale);
       const tileH = Math.ceil(frame.tileHeight * scale);
       const ripple = (Math.sin(x * 0.73 + y * 1.17 + time) + 1) * 0.5;
-      const alpha = visibility > 0 ? 0.42 + ripple * 0.1 : 0.82 + ripple * 0.08;
-      dogsContext.fillStyle = visibility > 0
-        ? `rgba(2, 13, 35, ${alpha})`
-        : `rgba(0, 0, 8, ${alpha})`;
-      dogsContext.fillRect(tileX, tileY, tileW, tileH);
-      if (visibility > 0) {
+      if (visibility <= 0) {
+        dogsContext.fillStyle = "#00040a";
+        dogsContext.fillRect(tileX, tileY, tileW, tileH);
         const smoke = dogsContext.createRadialGradient(
-          tileX + tileW * (0.35 + ripple * 0.3),
-          tileY + tileH * 0.45,
+          tileX + tileW * (0.25 + ripple * 0.48),
+          tileY + tileH * (0.3 + (1 - ripple) * 0.34),
           0,
           tileX + tileW * 0.5,
           tileY + tileH * 0.5,
-          Math.max(tileW, tileH),
+          Math.max(tileW, tileH) * 1.15,
         );
-        smoke.addColorStop(0, `rgba(72, 255, 225, ${0.05 + ripple * 0.025})`);
-        smoke.addColorStop(0.55, `rgba(255, 42, 205, ${0.025 + ripple * 0.018})`);
-        smoke.addColorStop(1, "rgba(0, 0, 0, 0)");
+        smoke.addColorStop(0, `rgba(12, 32, 58, ${0.9 - ripple * 0.12})`);
+        smoke.addColorStop(0.45, `rgba(4, 12, 28, ${0.94})`);
+        smoke.addColorStop(1, "rgba(0, 4, 10, 1)");
         dogsContext.fillStyle = smoke;
         dogsContext.fillRect(tileX, tileY, tileW, tileH);
+        dogsContext.strokeStyle = `rgba(39, 242, 255, ${0.035 + ripple * 0.018})`;
+        dogsContext.strokeRect(tileX + 0.5, tileY + 0.5, Math.max(0, tileW - 1), Math.max(0, tileH - 1));
+        continue;
       }
+      const alpha = 0.48 + ripple * 0.12;
+      dogsContext.fillStyle = `rgba(2, 13, 35, ${alpha})`;
+      dogsContext.fillRect(tileX, tileY, tileW, tileH);
+      const smoke = dogsContext.createRadialGradient(
+        tileX + tileW * (0.35 + ripple * 0.3),
+        tileY + tileH * 0.45,
+        0,
+        tileX + tileW * 0.5,
+        tileY + tileH * 0.5,
+        Math.max(tileW, tileH),
+      );
+      smoke.addColorStop(0, `rgba(72, 255, 225, ${0.05 + ripple * 0.025})`);
+      smoke.addColorStop(0.55, `rgba(255, 42, 205, ${0.025 + ripple * 0.018})`);
+      smoke.addColorStop(1, "rgba(0, 0, 0, 0)");
+      dogsContext.fillStyle = smoke;
+      dogsContext.fillRect(tileX, tileY, tileW, tileH);
     }
   }
   dogsContext.restore();
