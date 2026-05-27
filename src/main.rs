@@ -636,6 +636,7 @@ struct BridgeState {
 
 struct BridgePlayerLease {
     client_id: String,
+    user: String,
     updated: Instant,
 }
 
@@ -654,8 +655,9 @@ struct GamepadReader {
 struct HostState {
     bridge: BridgeState,
     config: HostConfig,
-    users: Arc<Vec<HostUser>>,
+    users: Arc<Mutex<Vec<HostUser>>>,
     sessions: Arc<Mutex<Vec<HostSession>>>,
+    host_owner: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -668,6 +670,7 @@ struct HostConfig {
 struct HostUser {
     name: String,
     password_hash: String,
+    banned: bool,
 }
 
 struct HostSession {
@@ -719,13 +722,14 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         let canonical = validate_rom_root(rom_dir)?;
         write_rom_dir_setting(&canonical)?;
     }
-    let users = Arc::new(load_host_users()?);
+    let users = Arc::new(Mutex::new(load_host_users()?));
     let listener = TcpListener::bind(&config.bind)?;
     let state = HostState {
         bridge: new_bridge_state(emulator),
         config,
         users,
         sessions: Arc::new(Mutex::new(Vec::new())),
+        host_owner: Arc::new(Mutex::new(None)),
     };
     println!(
         "EutherHost reaction chamber listening on http://{}",
@@ -768,18 +772,129 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 send_json(stream, &serde_json::json!({ "authenticated": false }))
             }
         }
+        ("GET", "/api/lobby") => {
+            require_host_user(state, &request)?;
+            send_json(stream, &host_lobby_status(state)?)
+        }
+        ("POST", "/api/lobby/start") => {
+            let user = require_host_user(state, &request)?;
+            set_host_owner(state, &user)?;
+            clear_bridge_player(&state.bridge)?;
+            reset_bridge_pacer(&state.bridge)?;
+            send_json(stream, &host_lobby_status(state)?)
+        }
+        ("POST", "/api/lobby/join") => {
+            let client_id = query_string_value(&request.path, "client")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_request("missing client id"))?;
+            let requested =
+                query_string_value(&request.path, "player")?.unwrap_or_else(|| "auto".to_string());
+            let user = require_host_user(state, &request)?;
+            let role = join_lobby_instance(&state.bridge, &client_id, &user, &requested)?;
+            send_json(
+                stream,
+                &serde_json::json!({
+                    "instance": host_lobby_status(state)?,
+                    "role": role,
+                }),
+            )
+        }
+        ("POST", "/api/lobby/release") => {
+            require_host_user(state, &request)?;
+            let client_id = query_string_value(&request.path, "client")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_request("missing client id"))?;
+            release_lobby_client(&state.bridge, &client_id)?;
+            send_json(stream, &host_lobby_status(state)?)
+        }
+        ("POST", "/api/lobby/kick") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_owner(state, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let player = query_string_value(&request.path, "player")?
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|player| *player == 1 || *player == 2)
+                .ok_or_else(|| invalid_request("player must be 1 or 2"))?;
+            release_lobby_player(&state.bridge, player - 1)?;
+            clear_bridge_input(&state.bridge, player - 1)?;
+            send_json(stream, &host_lobby_status(state)?)
+        }
+        ("GET", "/api/admin/users") => {
+            require_host_user(state, &request)?;
+            send_json(stream, &host_user_list(state)?)
+        }
+        ("POST", "/api/admin/users/create") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_owner(state, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let form =
+                parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+            let username = form_value(&form, "username").unwrap_or_default();
+            let password = form_value(&form, "password").unwrap_or_default();
+            create_host_user(state, &username, &password)?;
+            send_json(stream, &host_user_list(state)?)
+        }
+        ("POST", "/api/admin/users/password") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_owner(state, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let form =
+                parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+            let username = form_value(&form, "username").unwrap_or_default();
+            let password = form_value(&form, "password").unwrap_or_default();
+            set_host_user_password(state, &username, &password)?;
+            send_json(stream, &host_user_list(state)?)
+        }
+        ("POST", "/api/admin/users/ban") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_owner(state, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let form =
+                parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+            let username = form_value(&form, "username").unwrap_or_default();
+            let banned =
+                form_value(&form, "banned").is_some_and(|value| value == "true" || value == "1");
+            set_host_user_banned(state, &username, banned)?;
+            send_json(stream, &host_user_list(state)?)
+        }
+        ("POST", "/api/admin/invites/placeholder") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_owner(state, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let form =
+                parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+            let email = form_value(&form, "email").unwrap_or_default();
+            send_json(
+                stream,
+                &serde_json::json!({
+                    "queued": false,
+                    "email": email,
+                    "message": "email invites are a placeholder"
+                }),
+            )
+        }
         _ => {
-            if authenticated_user(state, &request)?.is_none() {
+            let Some(user) = authenticated_user(state, &request)? else {
                 return if path.starts_with("/api/") {
                     send_error(stream, 401, "login required")
                 } else {
                     send_login_page(stream, None)
                 };
-            }
+            };
             if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
                 return send_host_static(stream, path);
             }
-            handle_bridge_route(stream, &state.bridge, request)
+            if host_route_requires_owner(path, &request.method) {
+                if let Err(err) = require_host_owner(state, &user) {
+                    return send_error(stream, 403, &err.to_string());
+                }
+            }
+            handle_bridge_route_with_user(stream, &state.bridge, request, Some(&user))
         }
     }
 }
@@ -794,9 +909,16 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
         .iter()
         .find_map(|(name, value)| (name == "password").then_some(value.as_str()))
         .unwrap_or_default();
-    let Some(user) = state.users.iter().find(|user| user.name == username) else {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(user) = users.iter().find(|user| user.name == username) else {
         return send_login_page(stream, Some("Unknown reagent"));
     };
+    if user.banned {
+        return send_login_page(stream, Some("User reagent quarantined"));
+    }
     if !verify_password(password, &user.password_hash) {
         return send_login_page(stream, Some("Reaction key rejected"));
     }
@@ -859,10 +981,258 @@ fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Op
     let now = unix_ms_now();
     sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < 24 * 60 * 60 * 1000);
     if let Some(session) = sessions.iter_mut().find(|session| session.token == token) {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if users
+            .iter()
+            .any(|user| user.name == session.user && user.banned)
+        {
+            return Ok(None);
+        }
         session.updated_unix_ms = now;
         return Ok(Some(session.user.clone()));
     }
     Ok(None)
+}
+
+fn require_host_user(state: &HostState, request: &HttpRequest) -> io::Result<String> {
+    authenticated_user(state, request)?.ok_or_else(|| invalid_request("login required"))
+}
+
+fn set_host_owner(state: &HostState, user: &str) -> io::Result<()> {
+    let mut owner = state
+        .host_owner
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *owner = Some(user.to_string());
+    Ok(())
+}
+
+fn require_host_owner(state: &HostState, user: &str) -> io::Result<()> {
+    let mut owner = state
+        .host_owner
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if owner.is_none() {
+        *owner = Some(user.to_string());
+    }
+    if owner.as_deref() == Some(user) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "host owner required",
+        ))
+    }
+}
+
+fn host_route_requires_owner(path: &str, method: &str) -> bool {
+    matches!(
+        (method, path),
+        ("POST", "/load")
+            | ("POST", "/reset")
+            | ("POST", "/rom-dir/load")
+            | ("POST", "/state/save")
+            | ("POST", "/state/load")
+    )
+}
+
+fn host_lobby_status(state: &HostState) -> io::Result<serde_json::Value> {
+    let emulator = lock_bridge_emulator(&state.bridge)?;
+    let status = bridge_status(&emulator);
+    let slots = bridge_player_slots_json(&state.bridge)?;
+    let subscribers = bridge_subscriber_count(&state.bridge)?;
+    let host = state
+        .host_owner
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .clone();
+    Ok(serde_json::json!({
+        "instances": [
+            {
+                "id": "main",
+                "name": "Main Reaction Vessel",
+                "loaded": status.loaded,
+                "title": status.title,
+                "frame": status.frame,
+                "players": slots,
+                "subscribers": subscribers,
+                "spectators": subscribers.saturating_sub(2),
+                "host": host,
+            }
+        ]
+    }))
+}
+
+fn bridge_player_slots_json(state: &BridgeState) -> io::Result<Vec<serde_json::Value>> {
+    let slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let now = Instant::now();
+    Ok(slots
+        .iter()
+        .enumerate()
+        .map(|(index, slot)| {
+            let active = slot
+                .as_ref()
+                .is_some_and(|lease| now.duration_since(lease.updated) <= Duration::from_secs(8));
+            serde_json::json!({
+                "player": index + 1,
+                "occupied": active,
+                "user": slot.as_ref().filter(|_| active).map(|lease| lease.user.clone()),
+            })
+        })
+        .collect())
+}
+
+fn join_lobby_instance(
+    state: &BridgeState,
+    client_id: &str,
+    user: &str,
+    requested: &str,
+) -> io::Result<serde_json::Value> {
+    let choices: &[usize] = match requested {
+        "1" | "p1" | "P1" => &[0],
+        "2" | "p2" | "P2" => &[1],
+        _ => &[0, 1],
+    };
+    for &player_index in choices {
+        if claim_bridge_player(state, client_id, user, player_index).is_ok() {
+            return Ok(serde_json::json!({
+                "kind": "player",
+                "player": player_index + 1,
+                "user": user,
+            }));
+        }
+    }
+    Ok(serde_json::json!({
+        "kind": "spectator",
+        "player": null,
+    }))
+}
+
+fn release_lobby_client(state: &BridgeState, client_id: &str) -> io::Result<()> {
+    let mut slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for slot in slots.iter_mut() {
+        if slot
+            .as_ref()
+            .is_some_and(|lease| lease.client_id == client_id)
+        {
+            *slot = None;
+        }
+    }
+    Ok(())
+}
+
+fn release_lobby_player(state: &BridgeState, player_index: usize) -> io::Result<()> {
+    let mut slots = state
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if player_index < slots.len() {
+        slots[player_index] = None;
+    }
+    Ok(())
+}
+
+fn clear_bridge_input(state: &BridgeState, player_index: usize) -> io::Result<()> {
+    let mut emulator = lock_bridge_emulator(state)?;
+    let input = BridgeInput {
+        player: Some((player_index + 1) as u8),
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        a: false,
+        b: false,
+        c: false,
+        start: false,
+    };
+    apply_bridge_input(&mut emulator, input);
+    Ok(())
+}
+
+fn host_user_list(state: &HostState) -> io::Result<serde_json::Value> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(serde_json::json!({
+        "users": users
+            .iter()
+            .map(|user| serde_json::json!({
+                "name": user.name,
+                "banned": user.banned,
+            }))
+            .collect::<Vec<_>>()
+    }))
+}
+
+fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Result<()> {
+    validate_host_username(username)?;
+    if password.len() < 6 {
+        return Err(invalid_request("password must be at least 6 characters"));
+    }
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if users.iter().any(|user| user.name == username) {
+        return Err(invalid_request("user already exists"));
+    }
+    users.push(HostUser {
+        name: username.to_string(),
+        password_hash: hash_host_password(password)?,
+        banned: false,
+    });
+    save_host_users(&users)
+}
+
+fn set_host_user_password(state: &HostState, username: &str, password: &str) -> io::Result<()> {
+    if password.len() < 6 {
+        return Err(invalid_request("password must be at least 6 characters"));
+    }
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(user) = users.iter_mut().find(|user| user.name == username) else {
+        return Err(invalid_request("user not found"));
+    };
+    user.password_hash = hash_host_password(password)?;
+    save_host_users(&users)
+}
+
+fn set_host_user_banned(state: &HostState, username: &str, banned: bool) -> io::Result<()> {
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(user) = users.iter_mut().find(|user| user.name == username) else {
+        return Err(invalid_request("user not found"));
+    };
+    user.banned = banned;
+    save_host_users(&users)
+}
+
+fn validate_host_username(username: &str) -> io::Result<()> {
+    if username.is_empty()
+        || username.len() > 32
+        || !username
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(invalid_request(
+            "username must be 1-32 ascii letters, numbers, - or _",
+        ));
+    }
+    Ok(())
 }
 
 fn session_token(request: &HttpRequest) -> Option<String> {
@@ -953,10 +1323,20 @@ fn handle_bridge_route(
     state: &BridgeState,
     request: HttpRequest,
 ) -> io::Result<()> {
+    handle_bridge_route_with_user(stream, state, request, None)
+}
+
+fn handle_bridge_route_with_user(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    request: HttpRequest,
+    user: Option<&str>,
+) -> io::Result<()> {
     if request.method == "OPTIONS" {
         return send_empty(stream, 204);
     }
 
+    let route_user = user.unwrap_or("dev");
     let path = request.path.split('?').next().unwrap_or(&request.path);
     match (request.method.as_str(), path) {
         ("GET", "/status") => {
@@ -991,7 +1371,7 @@ fn handle_bridge_route(
             }
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             clear_bridge_player(state)?;
@@ -1003,7 +1383,7 @@ fn handle_bridge_route(
         ("GET", "/frame") | ("POST", "/frame") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             match claim_bridge_driver(state, &client_id) {
@@ -1025,7 +1405,7 @@ fn handle_bridge_route(
         ("GET", "/frame.bin") | ("POST", "/frame.bin") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             match claim_bridge_driver(state, &client_id) {
@@ -1052,7 +1432,7 @@ fn handle_bridge_route(
         ("GET", "/frame-audio.bin") | ("POST", "/frame-audio.bin") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             match claim_bridge_driver(state, &client_id) {
@@ -1078,16 +1458,23 @@ fn handle_bridge_route(
         }
         ("GET", "/stream-frame-audio.bin") => {
             let client_id = bridge_client_id(&request)?;
-            let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
-                return send_error(stream, 409, &err.to_string());
-            }
+            let spectator =
+                query_string_value(&request.path, "role")?.as_deref() == Some("spectator");
+            let player_index = if spectator {
+                None
+            } else {
+                let player_index = bridge_player_index(&request)?;
+                if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
+                    return send_error(stream, 409, &err.to_string());
+                }
+                Some(player_index)
+            };
             bridge_stream_frame_audio(stream, state, client_id, player_index)
         }
         ("GET", "/audio.bin") | ("POST", "/audio.bin") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             match claim_bridge_driver(state, &client_id) {
@@ -1112,7 +1499,7 @@ fn handle_bridge_route(
         ("POST", "/reset") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             clear_bridge_player(state)?;
@@ -1264,7 +1651,7 @@ fn handle_bridge_route(
                 .ok_or_else(|| invalid_request("missing path query"))?;
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             let rom_path = resolve_rom_file_path(&relative)?;
@@ -1285,7 +1672,7 @@ fn handle_bridge_route(
         ("POST", "/state/save") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             let emulator = lock_bridge_emulator(state)?;
@@ -1299,7 +1686,7 @@ fn handle_bridge_route(
         ("POST", "/state/load") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
-            if let Err(err) = claim_bridge_player(state, &client_id, player_index) {
+            if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
             let mut emulator = lock_bridge_emulator(state)?;
@@ -1356,6 +1743,7 @@ fn bridge_player_index(request: &HttpRequest) -> io::Result<usize> {
 fn claim_bridge_player(
     state: &BridgeState,
     client_id: &str,
+    user: &str,
     player_index: usize,
 ) -> io::Result<()> {
     let mut slots = state
@@ -1383,6 +1771,7 @@ fn claim_bridge_player(
     match slots[player_index].as_mut() {
         Some(lease) if lease.client_id == client_id => {
             lease.updated = now;
+            lease.user = user.to_string();
             Ok(())
         }
         Some(_) => Err(io::Error::new(
@@ -1392,6 +1781,7 @@ fn claim_bridge_player(
         None => {
             slots[player_index] = Some(BridgePlayerLease {
                 client_id: client_id.to_string(),
+                user: user.to_string(),
                 updated: now,
             });
             Ok(())
@@ -1481,6 +1871,7 @@ fn claim_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<bool>
         None => {
             *driver = Some(BridgePlayerLease {
                 client_id: client_id.to_string(),
+                user: "driver".to_string(),
                 updated: now,
             });
             Ok(true)
@@ -1713,15 +2104,17 @@ fn send_response_with_headers(
         303 => "See Other",
         204 => "No Content",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         _ => "Error",
     };
     write!(
         stream,
         "HTTP/1.1 {status} {reason}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
@@ -1740,9 +2133,10 @@ fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<
     write!(
         stream,
         "HTTP/1.1 200 OK\r\n\
-         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
@@ -1754,12 +2148,14 @@ fn bridge_stream_frame_audio(
     stream: &mut TcpStream,
     state: &BridgeState,
     client_id: String,
-    player_index: usize,
+    player_index: Option<usize>,
 ) -> io::Result<()> {
     {
         let emulator = lock_bridge_emulator(state)?;
         if emulator.bus.rom.is_empty() {
-            release_bridge_player(state, &client_id, player_index)?;
+            if let Some(player_index) = player_index {
+                release_bridge_player(state, &client_id, player_index)?;
+            }
             return send_error(stream, 409, "no ROM loaded");
         }
     }
@@ -1770,7 +2166,9 @@ fn bridge_stream_frame_audio(
     ensure_bridge_runner(state)?;
     let result = bridge_stream_subscriber(stream, state, &client_id, player_index);
     remove_bridge_subscriber(state)?;
-    release_bridge_player(state, &client_id, player_index)?;
+    if let Some(player_index) = player_index {
+        release_bridge_player(state, &client_id, player_index)?;
+    }
     result
 }
 
@@ -1778,12 +2176,14 @@ fn bridge_stream_subscriber(
     stream: &mut TcpStream,
     state: &BridgeState,
     client_id: &str,
-    player_index: usize,
+    player_index: Option<usize>,
 ) -> io::Result<()> {
     let (packet_lock, condvar) = &*state.latest_packet;
     let mut last_frame = 0u32;
     loop {
-        touch_bridge_player(state, client_id, player_index)?;
+        if let Some(player_index) = player_index {
+            touch_bridge_player(state, client_id, player_index)?;
+        }
         let mut packet = packet_lock
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
@@ -1796,7 +2196,9 @@ fn bridge_stream_subscriber(
                 .map_err(|err| io::Error::other(err.to_string()))?;
             packet = wait.0;
             if wait.1.timed_out() {
-                touch_bridge_player(state, client_id, player_index)?;
+                if let Some(player_index) = player_index {
+                    touch_bridge_player(state, client_id, player_index)?;
+                }
             }
         }
         let Some(snapshot) = packet.as_ref() else {
@@ -2226,14 +2628,17 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut users = Vec::new();
     let mut name = None;
     let mut password_hash = None;
+    let mut banned = false;
     for line in contents.lines().map(str::trim) {
         if line.starts_with("[[user]]") {
             if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
                 users.push(HostUser {
                     name,
                     password_hash,
+                    banned,
                 });
             }
+            banned = false;
             continue;
         }
         if line.starts_with('#') || line.is_empty() {
@@ -2243,12 +2648,15 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             name = Some(value);
         } else if let Some(value) = parse_toml_assignment(line, "password_hash") {
             password_hash = Some(value);
+        } else if let Some(value) = parse_toml_bool_assignment(line, "banned") {
+            banned = value;
         }
     }
     if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
         users.push(HostUser {
             name,
             password_hash,
+            banned,
         });
     }
     if users.is_empty() {
@@ -2258,6 +2666,21 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
         ));
     }
     Ok(users)
+}
+
+fn save_host_users(users: &[HostUser]) -> io::Result<()> {
+    ensure_host_dir()?;
+    let mut contents = String::from("# Managed by EutherHost admin UI.\n");
+    for user in users {
+        contents.push_str("\n[[user]]\n");
+        contents.push_str(&format!("name = \"{}\"\n", toml_escape(&user.name)));
+        contents.push_str(&format!(
+            "password_hash = \"{}\"\n",
+            toml_escape(&user.password_hash)
+        ));
+        contents.push_str(&format!("banned = {}\n", user.banned));
+    }
+    fs::write(host_users_path(), contents)
 }
 
 fn ensure_host_dir() -> io::Result<()> {
@@ -2313,6 +2736,11 @@ fn parse_urlencoded_form(value: &str) -> io::Result<Vec<(String, String)>> {
         .collect()
 }
 
+fn form_value<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    form.iter()
+        .find_map(|(key, value)| (key == name).then_some(value.as_str()))
+}
+
 fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -2328,6 +2756,15 @@ fn parse_toml_assignment(line: &str, key: &str) -> Option<String> {
     }
     let value = value.trim().trim_matches('"');
     Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
+}
+
+fn parse_toml_bool_assignment(line: &str, key: &str) -> Option<bool> {
+    let (name, value) = line.split_once('=')?;
+    (name.trim() == key).then(|| matches!(value.trim(), "true" | "1"))
+}
+
+fn toml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn read_rom_dir_setting() -> io::Result<Option<String>> {

@@ -109,6 +109,51 @@ type InputState = {
 
 type InputName = keyof InputState;
 type PlayerPort = 1 | 2;
+type LobbyRole = "player" | "spectator";
+
+type LobbyPlayer = {
+  player: number;
+  occupied: boolean;
+  user?: string | null;
+};
+
+type LobbyInstance = {
+  id: string;
+  name: string;
+  loaded: boolean;
+  title: string;
+  frame: number;
+  players: LobbyPlayer[];
+  subscribers: number;
+  spectators: number;
+  host?: string | null;
+};
+
+type LobbyStatus = {
+  instances: LobbyInstance[];
+};
+
+type LobbyJoinResult = {
+  instance: LobbyStatus;
+  role: {
+    kind: LobbyRole;
+    player?: number | null;
+  };
+};
+
+type HostUserSummary = {
+  name: string;
+  banned: boolean;
+};
+
+type HostUserList = {
+  users: HostUserSummary[];
+};
+
+type AuthStatus = {
+  authenticated: boolean;
+  user?: string;
+};
 
 type PadBinding = {
   kind: "button" | "axis";
@@ -523,6 +568,10 @@ let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
 const bridgeClientId = readBridgeClientId();
 let playerPort: PlayerPort = readStoredPlayerPort();
+let lobbyRole: LobbyRole = "player";
+let hostUsername: string | null = null;
+let lobbyStatus: LobbyStatus | null = null;
+let hostUsers: HostUserSummary[] = [];
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
 let audioGain: GainNode | null = null;
@@ -584,6 +633,47 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <span>ROM Reagent</span>
         <strong id="rom-name">Load Mega Drive</strong>
       </label>
+
+      <div class="rail-section lobby-section">
+        <div class="section-head">
+          <p class="section-label">Lobby</p>
+          <button id="lobby-refresh" class="mini-action" type="button">Scan</button>
+        </div>
+        <div class="lobby-card" id="lobby-card">
+          <strong>Main Reaction Vessel</strong>
+          <span id="lobby-meta">No instance scan</span>
+          <span id="lobby-host">Host: open</span>
+        </div>
+        <div class="lobby-actions">
+          <button id="instance-start" type="button">Start New</button>
+          <button id="instance-join" type="button">Join</button>
+          <button id="claim-p1" type="button">Claim P1</button>
+          <button id="claim-p2" type="button">Claim P2</button>
+          <button id="release-slot" type="button">Release</button>
+          <button id="spectate-instance" type="button">Spectate</button>
+          <button id="kick-p1" type="button">Kick P1</button>
+          <button id="kick-p2" type="button">Kick P2</button>
+        </div>
+      </div>
+
+      <div class="rail-section admin-section">
+        <div class="section-head">
+          <p class="section-label">Users</p>
+          <button id="admin-refresh" class="mini-action" type="button">Sync</button>
+        </div>
+        <div class="admin-users" id="admin-users">
+          <span>Host admin offline</span>
+        </div>
+        <div class="admin-form">
+          <input id="admin-username" type="text" placeholder="user" aria-label="new user" />
+          <input id="admin-password" type="password" placeholder="password" aria-label="new password" />
+          <button id="admin-user-add" type="button">Add/Reset</button>
+        </div>
+        <div class="admin-form">
+          <input id="invite-email" type="email" placeholder="invite email placeholder" aria-label="invite email" />
+          <button id="invite-send" type="button">Invite</button>
+        </div>
+      </div>
 
       <div class="rail-section rom-browser-section">
         <div class="section-head">
@@ -876,6 +966,24 @@ const shaderMode = document.querySelector<HTMLElement>("#shader-mode")!;
 const shaderControls = document.querySelector<HTMLDivElement>("#shader-controls")!;
 const romInput = document.querySelector<HTMLInputElement>("#rom-input")!;
 const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
+const lobbyRefresh = document.querySelector<HTMLButtonElement>("#lobby-refresh")!;
+const lobbyMeta = document.querySelector<HTMLElement>("#lobby-meta")!;
+const lobbyHost = document.querySelector<HTMLElement>("#lobby-host")!;
+const instanceStart = document.querySelector<HTMLButtonElement>("#instance-start")!;
+const instanceJoin = document.querySelector<HTMLButtonElement>("#instance-join")!;
+const claimP1 = document.querySelector<HTMLButtonElement>("#claim-p1")!;
+const claimP2 = document.querySelector<HTMLButtonElement>("#claim-p2")!;
+const releaseSlot = document.querySelector<HTMLButtonElement>("#release-slot")!;
+const spectateInstance = document.querySelector<HTMLButtonElement>("#spectate-instance")!;
+const kickP1 = document.querySelector<HTMLButtonElement>("#kick-p1")!;
+const kickP2 = document.querySelector<HTMLButtonElement>("#kick-p2")!;
+const adminRefresh = document.querySelector<HTMLButtonElement>("#admin-refresh")!;
+const adminUsers = document.querySelector<HTMLDivElement>("#admin-users")!;
+const adminUsername = document.querySelector<HTMLInputElement>("#admin-username")!;
+const adminPassword = document.querySelector<HTMLInputElement>("#admin-password")!;
+const adminUserAdd = document.querySelector<HTMLButtonElement>("#admin-user-add")!;
+const inviteEmail = document.querySelector<HTMLInputElement>("#invite-email")!;
+const inviteSend = document.querySelector<HTMLButtonElement>("#invite-send")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
@@ -925,6 +1033,8 @@ applyEutherDogsCssAssets();
 initializeShaderControls();
 void loadShaderConfigFile();
 void loadRomDirSetting();
+void refreshLobby();
+void refreshHostUsers();
 updateVolumeUi();
 applyAudioVolume();
 applyMobileMode();
@@ -941,6 +1051,77 @@ playerPortButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setPlayerPort(button.dataset.playerPort === "2" ? 2 : 1);
   });
+});
+
+lobbyRefresh.addEventListener("click", () => {
+  void refreshLobby();
+});
+
+instanceStart.addEventListener("click", async () => {
+  await startLobbyInstance();
+});
+
+instanceJoin.addEventListener("click", async () => {
+  await joinLobbyInstance();
+});
+
+claimP1.addEventListener("click", async () => {
+  await joinLobbyInstance(1);
+});
+
+claimP2.addEventListener("click", async () => {
+  await joinLobbyInstance(2);
+});
+
+releaseSlot.addEventListener("click", async () => {
+  await releaseLobbySlot();
+});
+
+spectateInstance.addEventListener("click", async () => {
+  lobbyRole = "spectator";
+  stopBridgeStream();
+  await releaseLobbySlot(false);
+  renderLobby();
+});
+
+kickP1.addEventListener("click", async () => {
+  await kickLobbyPlayer(1);
+});
+
+kickP2.addEventListener("click", async () => {
+  await kickLobbyPlayer(2);
+});
+
+adminRefresh.addEventListener("click", () => {
+  void refreshHostUsers();
+});
+
+adminUserAdd.addEventListener("click", async () => {
+  await addOrResetHostUser();
+});
+
+adminUsers.addEventListener("click", async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-admin-ban]");
+  if (!button) {
+    return;
+  }
+  const username = button.dataset.adminBan ?? "";
+  const banned = button.dataset.banned === "1";
+  const result = await bridgeJson<HostUserList>(
+    "/api/admin/users/ban",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username, banned: String(banned) }),
+    },
+    1200,
+  );
+  hostUsers = result.users;
+  renderHostUsers();
+});
+
+inviteSend.addEventListener("click", async () => {
+  await sendInvitePlaceholder();
 });
 
 shaderSelect.addEventListener("change", () => {
@@ -978,6 +1159,10 @@ romDrop.addEventListener("click", async (event) => {
 romInput.addEventListener("change", async () => {
   const file = romInput.files?.[0];
   if (file) {
+    if (!canHostMutate()) {
+      pushTrace("Host owner required");
+      return;
+    }
     await loadFile(file);
   }
 });
@@ -1016,6 +1201,10 @@ romList.addEventListener("click", async (event) => {
   if (button.dataset.romKind === "dir") {
     await refreshRomDir(path);
   } else {
+    if (!canHostMutate()) {
+      pushTrace("Host owner required");
+      return;
+    }
     await loadRomDirEntry(path, button.dataset.romName ?? basename(path));
   }
 });
@@ -1034,6 +1223,10 @@ romDrop.addEventListener("drop", async (event) => {
   romDrop.classList.remove("is-dragging");
   const file = event.dataTransfer?.files?.[0];
   if (file) {
+    if (!canHostMutate()) {
+      pushTrace("Host owner required");
+      return;
+    }
     const filePath = tauriFilePath(file);
     if (isTauri && filePath) {
       await loadRomPath(filePath);
@@ -1253,8 +1446,14 @@ stateGrid.addEventListener("click", async (event) => {
   }
   const slot = Number(button.dataset.slot ?? 0);
   if (button.dataset.stateAction === "save") {
+    if (!canHostMutate()) {
+      return;
+    }
     await saveStateSlot(slot);
   } else {
+    if (!canHostMutate()) {
+      return;
+    }
     await loadStateSlot(slot);
   }
 });
@@ -2433,6 +2632,7 @@ async function connectBridge(announce = true): Promise<boolean> {
     ui.frame = result.frame;
     ui.status = ui.loaded ? "BRIDGE READY" : "BRIDGE IDLE";
     ui.lastError = "";
+    await refreshAuthStatus();
     await refreshBuildStatus(false);
     await loadShaderConfigFile();
     await loadRomDirSetting();
@@ -2692,6 +2892,189 @@ async function bridgeJson<T>(
   return (await response.json()) as T;
 }
 
+async function refreshLobby(): Promise<void> {
+  if (isTauri) {
+    return;
+  }
+  try {
+    lobbyStatus = await bridgeJson<LobbyStatus>("/api/lobby", {}, 900);
+    renderLobby();
+  } catch {
+    lobbyMeta.textContent = "Host lobby unavailable";
+  }
+}
+
+async function refreshAuthStatus(): Promise<void> {
+  if (isTauri) {
+    return;
+  }
+  try {
+    const status = await bridgeJson<AuthStatus>("/api/auth/status", {}, 700);
+    hostUsername = status.authenticated ? status.user ?? null : null;
+  } catch {
+    hostUsername = null;
+  }
+}
+
+async function startLobbyInstance(): Promise<void> {
+  lobbyStatus = await bridgeJson<LobbyStatus>("/api/lobby/start", { method: "POST" }, 1200);
+  lobbyRole = "player";
+  setPlayerPort(1);
+  pushTrace("New host instance primed");
+  renderLobby();
+}
+
+async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<void> {
+  const result = await bridgeJson<LobbyJoinResult>(
+    `/api/lobby/join?player=${port}`,
+    { method: "POST" },
+    1200,
+  );
+  lobbyStatus = result.instance;
+  if (result.role.kind === "player" && (result.role.player === 1 || result.role.player === 2)) {
+    lobbyRole = "player";
+    setPlayerPort(result.role.player);
+    pushTrace(`Joined as P${result.role.player}`);
+  } else {
+    lobbyRole = "spectator";
+    stopBridgeStream();
+    pushTrace("Joined as spectator");
+  }
+  renderLobby();
+}
+
+async function releaseLobbySlot(announce = true): Promise<void> {
+  lobbyStatus = await bridgeJson<LobbyStatus>(
+    "/api/lobby/release",
+    { method: "POST" },
+    1200,
+  );
+  if (announce) {
+    lobbyRole = "spectator";
+    stopBridgeStream();
+    pushTrace("Released player slot");
+  }
+  renderLobby();
+}
+
+async function kickLobbyPlayer(player: PlayerPort): Promise<void> {
+  lobbyStatus = await bridgeJson<LobbyStatus>(
+    `/api/lobby/kick?player=${player}`,
+    { method: "POST" },
+    1200,
+  );
+  pushTrace(`Kicked P${player}`);
+  renderLobby();
+}
+
+async function refreshHostUsers(): Promise<void> {
+  if (isTauri) {
+    return;
+  }
+  try {
+    const result = await bridgeJson<HostUserList>("/api/admin/users", {}, 900);
+    hostUsers = result.users;
+    renderHostUsers();
+  } catch {
+    adminUsers.innerHTML = `<span>Host admin unavailable</span>`;
+  }
+}
+
+async function addOrResetHostUser(): Promise<void> {
+  const username = adminUsername.value.trim();
+  const password = adminPassword.value;
+  if (!username || !password) {
+    return;
+  }
+  const existing = hostUsers.some((user) => user.name === username);
+  const body = new URLSearchParams({ username, password });
+  const result = await bridgeJson<HostUserList>(
+    existing ? "/api/admin/users/password" : "/api/admin/users/create",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    },
+    1600,
+  );
+  hostUsers = result.users;
+  adminPassword.value = "";
+  renderHostUsers();
+}
+
+async function sendInvitePlaceholder(): Promise<void> {
+  const email = inviteEmail.value.trim();
+  if (!email) {
+    return;
+  }
+  await bridgeJson(
+    "/api/admin/invites/placeholder",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ email }),
+    },
+    900,
+  );
+  pushTrace("Invite placeholder logged");
+}
+
+function renderLobby(): void {
+  const instance = lobbyStatus?.instances[0];
+  if (!instance) {
+    lobbyMeta.textContent = "No instance scan";
+    lobbyHost.textContent = "Host: open";
+    return;
+  }
+  const occupied = instance.players
+    .map((player) => `P${player.player}:${player.occupied ? player.user ?? "busy" : "open"}`)
+    .join(" ");
+  lobbyMeta.textContent =
+    `${instance.loaded ? instance.title : "No ROM"} | ${occupied} | ${instance.spectators} spec`;
+  lobbyHost.textContent = `Host: ${instance.host ?? "open"}`;
+  instanceJoin.textContent = lobbyRole === "spectator" ? "Join Auto" : `Joined P${playerPort}`;
+  instanceStart.disabled = !canHostMutate();
+  releaseSlot.disabled = !ownsCurrentSlot();
+  kickP1.disabled = !canHostMutate() || !Boolean(instance.players.find((player) => player.player === 1)?.occupied);
+  kickP2.disabled = !canHostMutate() || !Boolean(instance.players.find((player) => player.player === 2)?.occupied);
+  spectateInstance.classList.toggle("is-selected", lobbyRole === "spectator");
+}
+
+function ownsCurrentSlot(): boolean {
+  if (!lobbyStatus) {
+    return true;
+  }
+  if (!hostUsername) {
+    return false;
+  }
+  const instance = lobbyStatus?.instances[0];
+  const slot = instance?.players.find((player) => player.player === playerPort);
+  return Boolean(slot?.occupied && hostUsername && slot.user === hostUsername);
+}
+
+function canHostMutate(): boolean {
+  const host = lobbyStatus?.instances[0]?.host;
+  return !host || host === hostUsername;
+}
+
+function renderHostUsers(): void {
+  adminUsers.innerHTML = hostUsers.length
+    ? hostUsers
+        .map(
+          (user) => `
+            <div class="admin-user">
+              <strong>${escapeHtml(user.name)}</strong>
+              <span>${user.banned ? "Banned" : "Active"}</span>
+              <button data-admin-ban="${escapeHtml(user.name)}" data-banned="${user.banned ? "0" : "1"}" type="button">
+                ${user.banned ? "Unban" : "Ban"}
+              </button>
+            </div>
+          `,
+        )
+        .join("")
+    : `<span>No users loaded</span>`;
+}
+
 async function bridgeFrame(timeoutMs = 0): Promise<FrameResult> {
   const response = await bridgeRequest("/frame.bin", { method: "POST" }, timeoutMs);
   const buffer = await response.arrayBuffer();
@@ -2725,13 +3108,19 @@ function readBridgeClientId(): string {
 function bridgeUrl(path: string): string {
   const url = new URL(path, bridgeBase);
   url.searchParams.set("client", bridgeClientId);
-  url.searchParams.set("player", String(playerPort));
+  if (!url.searchParams.has("player")) {
+    url.searchParams.set("player", String(playerPort));
+  }
+  if (lobbyRole === "spectator" && path.includes("stream-frame-audio")) {
+    url.searchParams.set("role", "spectator");
+  }
   return url.toString();
 }
 
 async function bridgeStreamRequest(signal: AbortSignal): Promise<Response> {
   const response = await fetch(bridgeUrl("/stream-frame-audio.bin"), {
     method: "GET",
+    credentials: "include",
     signal,
   });
   if (!response.ok) {
@@ -2995,6 +3384,7 @@ async function bridgeRequest(
     const response = await fetch(bridgeUrl(path), {
       ...init,
       headers,
+      credentials: "include",
       signal: controller?.signal,
     });
     if (!response.ok) {
@@ -5503,6 +5893,9 @@ async function syncInput(): Promise<void> {
       pushTrace("Input bridge fallback");
     }
   } else if (ui.runtime === "bridge" && ui.loaded) {
+    if (lobbyRole === "spectator" || !ownsCurrentSlot()) {
+      return;
+    }
     try {
       await bridgeRequest("/input", {
         method: "POST",
@@ -5706,8 +6099,8 @@ function renderStateSlots(): void {
     const save = row.querySelector<HTMLButtonElement>('[data-state-action="save"]')!;
     const load = row.querySelector<HTMLButtonElement>('[data-state-action="load"]')!;
     label.textContent = slot?.occupied ? slot.label ?? `Frame ${slot.frameCount ?? "?"}` : "Empty";
-    save.disabled = !ui.loaded;
-    load.disabled = !ui.loaded || !Boolean(slot?.occupied);
+    save.disabled = !ui.loaded || !canHostMutate();
+    load.disabled = !ui.loaded || !Boolean(slot?.occupied) || !canHostMutate();
   });
 }
 
@@ -5735,11 +6128,12 @@ function renderUi(): void {
         : "WEB VIEW";
   playToggle.disabled = !ui.loaded;
   stepFrame.disabled = !ui.loaded;
-  resetCore.disabled = !ui.loaded;
+  resetCore.disabled = !ui.loaded || !canHostMutate();
   mobilePlay.disabled = !ui.loaded;
   mobilePlay.textContent = ui.playing ? "Pause" : "Play";
   screenGlass.classList.toggle("is-native-frame", ui.loaded && ui.runtime !== "web");
   renderPlayerPort();
+  renderLobby();
   renderBuildControls();
   renderStateSlots();
   scheduleNativeSurfaceRectSync();

@@ -17,6 +17,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  height: 100vh;
   overflow: hidden;
   overflow-anchor: none;
   background:
@@ -837,7 +838,9 @@ button:disabled {
   grid-template-columns: 260px minmax(420px, 1fr) 300px;
   gap: 18px;
   min-height: 100vh;
+  height: 100vh;
   padding: 18px;
+  overflow: hidden;
 }
 
 .control-rail,
@@ -856,8 +859,29 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-height: 0;
   padding: 18px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(165, 222, 114, 0.58) rgba(5, 12, 8, 0.58);
+}
+
+.control-rail::-webkit-scrollbar,
+.telemetry-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.control-rail::-webkit-scrollbar-track,
+.telemetry-panel::-webkit-scrollbar-track {
+  background: rgba(5, 12, 8, 0.58);
+}
+
+.control-rail::-webkit-scrollbar-thumb,
+.telemetry-panel::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(165, 222, 114, 0.58);
 }
 
 .control-rail {
@@ -1186,6 +1210,92 @@ h2 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.lobby-card,
+.admin-users {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(98, 218, 168, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 13, 10, 0.72);
+}
+
+.lobby-card strong,
+.lobby-card span,
+.admin-users span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lobby-card strong {
+  color: #e8ffd2;
+  font-size: 0.84rem;
+}
+
+.lobby-card span,
+.admin-users span {
+  color: #aac99c;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.lobby-actions,
+.admin-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.lobby-actions button,
+.admin-form button {
+  min-height: 34px;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.admin-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 76px;
+}
+
+.admin-form:has(#invite-email) {
+  grid-template-columns: minmax(0, 1fr) 76px;
+}
+
+.admin-form input {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 9px;
+  font-size: 0.76rem;
+}
+
+.admin-user {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px 56px;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-user strong {
+  min-width: 0;
+  color: #eef8dd;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user button {
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 0.7rem;
+  font-weight: 900;
 }
 
 .rail-section {
@@ -2076,12 +2186,20 @@ h2 {
 
 @media (max-width: 1100px) {
   body {
+    height: auto;
     overflow: auto;
   }
 
   .oxide-shell {
     grid-template-columns: 1fr;
     min-height: auto;
+    height: auto;
+    overflow: visible;
+  }
+
+  .control-rail,
+  .telemetry-panel {
+    overflow: visible;
   }
 
   h2 {
