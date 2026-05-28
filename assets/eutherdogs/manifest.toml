@@ -156,6 +156,55 @@ black_market_courier_walk = "highres/2x/sprites/enemies/black_market_courier_wal
 district_manager = "highres/2x/sprites/enemies/district_manager.png"
 district_manager_walk = "highres/2x/sprites/enemies/district_manager_walk.png"
 
+[highres.sprites.weapons]
+rx_cannon = "highres/2x/sprites/weapons/rx_cannon.png"
+scanner_blaster = "highres/2x/sprites/weapons/scanner_blaster.png"
+label_printer = "highres/2x/sprites/weapons/label_printer.png"
+sterilizer_spray = "highres/2x/sprites/weapons/sterilizer_spray.png"
+capsule_launcher = "highres/2x/sprites/weapons/capsule_launcher.png"
+coupon_pistol = "highres/2x/sprites/weapons/coupon_pistol.png"
+receipt_gun = "highres/2x/sprites/weapons/receipt_gun.png"
+neon_prior_auth = "highres/2x/sprites/weapons/neon_prior_auth.png"
+turbo_prior_auth = "highres/2x/sprites/weapons/turbo_prior_auth.png"
+formulary_zapper = "highres/2x/sprites/weapons/formulary_zapper.png"
+autoinjector = "highres/2x/sprites/weapons/autoinjector.png"
+needlegun = "highres/2x/sprites/weapons/needlegun.png"
+handsanitizer_flamethrower = "highres/2x/sprites/weapons/handsanitizer_flamethrower.png"
+
+[highres.sprites.projectiles]
+cyan_rx_bolt = "highres/2x/sprites/projectiles/cyan_rx_bolt.png"
+red_denial_bolt = "highres/2x/sprites/projectiles/red_denial_bolt.png"
+label_shred = "highres/2x/sprites/projectiles/label_shred.png"
+sterilizer_cloud = "highres/2x/sprites/projectiles/sterilizer_cloud.png"
+capsule_grenade = "highres/2x/sprites/projectiles/capsule_grenade.png"
+green_auth_laser = "highres/2x/sprites/projectiles/green_auth_laser.png"
+yellow_warning_laser = "highres/2x/sprites/projectiles/yellow_warning_laser.png"
+power_pill = "highres/2x/sprites/projectiles/power_pill.png"
+zapper_arc = "highres/2x/sprites/projectiles/zapper_arc.png"
+injector_dart = "highres/2x/sprites/projectiles/injector_dart.png"
+needle_stream = "highres/2x/sprites/projectiles/needle_stream.png"
+sanitizer_flame = "highres/2x/sprites/projectiles/sanitizer_flame.png"
+
+[highres.sprites.effects]
+explosion_01 = "highres/2x/sprites/effects/explosion_01.png"
+explosion_02 = "highres/2x/sprites/effects/explosion_02.png"
+explosion_03 = "highres/2x/sprites/effects/explosion_03.png"
+explosion_04 = "highres/2x/sprites/effects/explosion_04.png"
+explosion_05 = "highres/2x/sprites/effects/explosion_05.png"
+death_stamp = "highres/2x/sprites/effects/death_stamp.png"
+scorch_mark = "highres/2x/sprites/effects/scorch_mark.png"
+spilled_syrup = "highres/2x/sprites/effects/spilled_syrup.png"
+
+[highres.items]
+prescription = "highres/2x/sprites/items/prescription.png"
+folder = "highres/2x/sprites/items/folder.png"
+data_wafer = "highres/2x/sprites/items/data_wafer.png"
+circuit_board = "highres/2x/sprites/items/circuit_board.png"
+pill_sample = "highres/2x/sprites/items/pill_sample.png"
+lab_coat_armor = "highres/2x/sprites/items/lab_coat_armor.png"
+hazard_sleeves = "highres/2x/sprites/items/hazard_sleeves.png"
+pill_splitter = "highres/2x/sprites/items/pill_splitter.png"
+
 [items]
 prescription = "sprites/items/prescription.png"
 folder = "sprites/items/folder.png"
