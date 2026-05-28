@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/write-build-info.mjs && vite",
     "dev:bridge": "bash scripts/dev-bridge.sh",
     "dev:bridge:release": "EUTHER_BRIDGE_RELEASE=1 bash scripts/dev-bridge.sh",
     "build:release": "bash scripts/build-release.sh",
