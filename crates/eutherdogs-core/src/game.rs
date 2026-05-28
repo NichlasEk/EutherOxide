@@ -557,6 +557,15 @@ impl Game {
     }
 
     fn damage_character(&mut self, character_index: usize, damage: i32) {
+        if self
+            .characters
+            .get(character_index)
+            .is_some_and(|character| character.faction == Faction::Player)
+        {
+            self.hurt_player_index(character_index, damage);
+            return;
+        }
+
         let hit = &mut self.characters[character_index];
         hit.armor -= damage;
         self.progress.hits += 1;
@@ -614,13 +623,35 @@ impl Game {
         character.armor -= damage;
         self.progress.damage_taken += damage;
         if character.armor <= 0 {
-            character.lives -= 1;
-            if character.lives <= 0 {
-                character.alive = false;
-            } else {
-                character.armor = 100;
-            }
+            self.respawn_player_at_start(character_index);
         }
+    }
+
+    fn respawn_player_at_start(&mut self, character_index: usize) {
+        let player_offset = self
+            .characters
+            .iter()
+            .take(character_index + 1)
+            .filter(|character| character.faction == Faction::Player)
+            .count()
+            .saturating_sub(1);
+        let spawn = spawn_point_at(&self.world, player_offset);
+        let Some(character) = self.characters.get_mut(character_index) else {
+            return;
+        };
+        if let Some((x, y)) = spawn {
+            character.x = x;
+            character.y = y;
+        }
+        character.direction = Direction::Down;
+        character.armor = 100;
+        character.lives = character.lives.max(1);
+        character.weapon_cooldown = 0;
+        character.alive = true;
+        self.progress.score = 0;
+        self.progress.cash = self.progress.cash.saturating_mul(70) / 100;
+        self.audio_events
+            .push(AudioEvent::Sfx(AssetId::CustomerDefeated));
     }
 
     fn collect_pickups(&mut self) {
@@ -1335,6 +1366,31 @@ mod tests {
 
         assert!(game.characters()[0].armor < armor);
         assert!(game.progress().damage_taken > 0);
+    }
+
+    #[test]
+    fn player_death_respawns_and_keeps_mission_progress() {
+        let mut game = Game::new_mission(7, WorldParams::default(), MissionSpec::default());
+        let spawn = super::spawn_point_at(&game.world, 0).expect("mission has a player spawn");
+        game.characters[0].x = TILE_WIDTH * 5 + 8;
+        game.characters[0].y = TILE_HEIGHT * 5 + 2;
+        game.characters[0].armor = 5;
+        game.characters[0].lives = 1;
+        game.progress.score = 500;
+        game.progress.cash = 100;
+        game.progress.kills = 3;
+        game.progress.objects_collected = 2;
+
+        game.hurt_player_index(0, 10);
+
+        assert_eq!((game.characters[0].x, game.characters[0].y), spawn);
+        assert!(game.characters[0].alive);
+        assert_eq!(game.characters[0].armor, 100);
+        assert_eq!(game.status(), super::MissionStatus::Running);
+        assert_eq!(game.progress().score, 0);
+        assert_eq!(game.progress().cash, 70);
+        assert_eq!(game.progress().kills, 3);
+        assert_eq!(game.progress().objects_collected, 2);
     }
 
     #[test]
