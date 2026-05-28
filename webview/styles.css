@@ -1349,6 +1349,35 @@ h2 {
   font-size: 0.9rem;
 }
 
+.dogs-asset-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(98, 218, 168, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 14, 11, 0.68);
+}
+
+.dogs-asset-switch button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9fbe91;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.dogs-asset-switch button:hover,
+.dogs-asset-switch button.is-selected {
+  transform: none;
+  background: linear-gradient(135deg, rgba(98, 218, 168, 0.26), rgba(245, 215, 125, 0.18));
+  color: #f4ffde;
+  box-shadow: none;
+}
+
 .volume-section {
   gap: 8px;
 }

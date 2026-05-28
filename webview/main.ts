@@ -110,6 +110,7 @@ type InputState = {
 type InputName = keyof InputState;
 type PlayerPort = 1 | 2;
 type LobbyRole = "player" | "spectator";
+type DogsAssetMode = "classic" | "2x";
 type DogsBridgeInput = InputState & {
   player: PlayerPort;
   seq?: number;
@@ -452,6 +453,7 @@ const bindingsStorageKey = "eutheroxide-input-bindings";
 const shaderStorageKey = "eutheroxide-video-shader";
 const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 const mobileModeStorageKey = "eutheroxide-mobile-mode";
+const dogsAssetModeStorageKey = "eutheroxide-eutherdogs-asset-mode";
 const bridgeClientStorageKey = "eutheroxide-bridge-client-id";
 const playerPortStorageKey = "eutheroxide-player-port";
 const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
@@ -625,6 +627,7 @@ let mobileMode = readStoredMobileMode();
 let dogsMode = false;
 let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
+let dogsAssetMode: DogsAssetMode = readStoredDogsAssetMode();
 let selectedDogsStaff: 1 | 2 = 1;
 let selectedDogsMission = 1;
 let dogsStorePreviewItemId: string | null = null;
@@ -729,6 +732,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button id="step-frame" type="button">Step</button>
           <button id="reset-core" type="button">Reset</button>
           <button id="eutherdogs-toggle" type="button">EutherDogs</button>
+        </div>
+        <div class="dogs-asset-switch" aria-label="EutherDogs asset resolution">
+          <button data-dogs-asset-mode="classic" type="button">Low</button>
+          <button data-dogs-asset-mode="2x" type="button">2x</button>
         </div>
       </div>
 
@@ -1079,6 +1086,7 @@ const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const eutherDogsToggle = document.querySelector<HTMLButtonElement>("#eutherdogs-toggle")!;
+const dogsAssetModeButtons = document.querySelectorAll<HTMLButtonElement>("[data-dogs-asset-mode]");
 const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
 const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
 const eutherDogsConsole = document.querySelector<HTMLDivElement>("#eutherdogs-console")!;
@@ -1129,6 +1137,7 @@ void refreshHostUsers();
 updateVolumeUi();
 applyAudioVolume();
 applyMobileMode();
+renderDogsAssetMode();
 renderPlayerPort();
 volumeSlider.addEventListener("input", () => {
   setAudioVolume(Number(volumeSlider.value) / 100);
@@ -1136,6 +1145,12 @@ volumeSlider.addEventListener("input", () => {
 
 mobileToggle.addEventListener("click", () => {
   setMobileMode(!mobileMode);
+});
+
+dogsAssetModeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setDogsAssetMode(button.dataset.dogsAssetMode === "2x" ? "2x" : "classic");
+  });
 });
 
 playerPortButtons.forEach((button) => {
@@ -4073,7 +4088,17 @@ function parseEutherDogsManifest(toml: string, modules: Record<string, string>):
 }
 
 function dogsAsset(section: string, key: string): string | null {
+  if (dogsAssetMode === "2x") {
+    const highres = dogsHighresAsset(section, key);
+    if (highres) {
+      return highres;
+    }
+  }
   return eutherDogsAssets.get(`${section}.${key}`) ?? null;
+}
+
+function dogsHighresAsset(section: string, key: string): string | null {
+  return eutherDogsAssets.get(`highres.${section}.${key}`) ?? null;
 }
 
 function dogsTileAsset(tile: string): string | null {
@@ -4220,9 +4245,17 @@ function dogsActorAsset(actor: DogsCoreActor): string | null {
 
 function dogsActorSheetAsset(actor: DogsCoreActor): string | null {
   if (actor.faction !== "player") {
-    return dogsAsset("sprites.enemies", `${dogsEnemyKey(actor)}_walk`);
+    const key = `${dogsEnemyKey(actor)}_walk`;
+    if (dogsAssetMode === "2x" && !dogsHighresAsset("sprites.enemies", key)) {
+      return null;
+    }
+    return dogsAsset("sprites.enemies", key);
   }
-  return dogsAsset("sprites.heroes", dogsHeroKey(actor, true));
+  const key = dogsHeroKey(actor, true);
+  if (dogsAssetMode === "2x" && !dogsHighresAsset("sprites.heroes", key)) {
+    return null;
+  }
+  return dogsAsset("sprites.heroes", key);
 }
 
 function dogsActorDirectionFacing(actor: DogsCoreActor): DogsActorFacing {
@@ -5529,6 +5562,10 @@ function readStoredMobileMode(): boolean {
   return window.matchMedia("(max-width: 760px)").matches;
 }
 
+function readStoredDogsAssetMode(): DogsAssetMode {
+  return localStorage.getItem(dogsAssetModeStorageKey) === "2x" ? "2x" : "classic";
+}
+
 function setMobileMode(enabled: boolean): void {
   mobileMode = enabled;
   localStorage.setItem(mobileModeStorageKey, enabled ? "1" : "0");
@@ -5542,6 +5579,30 @@ function applyMobileMode(): void {
   mobileToggle.setAttribute("aria-pressed", mobileMode ? "true" : "false");
   mobileToggle.textContent = mobileMode ? "Desk" : "Mobile";
   ui.audioLeadMs = 0;
+}
+
+function setDogsAssetMode(mode: DogsAssetMode): void {
+  if (dogsAssetMode === mode) {
+    return;
+  }
+  dogsAssetMode = mode;
+  localStorage.setItem(dogsAssetModeStorageKey, mode);
+  dogsImageCache.clear();
+  dogsSfxCache.clear();
+  applyEutherDogsCssAssets();
+  renderDogsAssetMode();
+  if (dogsMode && dogsFrame) {
+    drawDogsFrame(dogsFrame);
+    renderDogsMenu();
+  }
+}
+
+function renderDogsAssetMode(): void {
+  dogsAssetModeButtons.forEach((button) => {
+    const selected = button.dataset.dogsAssetMode === dogsAssetMode;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  });
 }
 
 async function enterDogsMode(): Promise<void> {
@@ -5982,12 +6043,13 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     if (sheetAsset) {
       const frameColumn = moving ? Math.floor(frame.frame / 8) % 3 : 1;
       const frameRow = dogsActorFacingRow(facing);
+      const sheetFrameSize = dogsAssetMode === "2x" ? 64 : 32;
       const drewFrame = drawDogsImageFrame(
         sheetAsset,
-        frameColumn * 32,
-        frameRow * 32,
-        32,
-        32,
+        frameColumn * sheetFrameSize,
+        frameRow * sheetFrameSize,
+        sheetFrameSize,
+        sheetFrameSize,
         x,
         y,
         spriteW,

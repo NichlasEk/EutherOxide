@@ -94,6 +94,68 @@ recall_crate = "tiles/props/recall_crate.png"
 shipping_box = "tiles/props/shipping_box.png"
 service_elevator = "tiles/props/service_elevator.png"
 
+# Optional 2x asset sections work for every EutherDogs asset group.
+# Use the same section/key prefixed with highres.
+# Example:
+# [highres.tiles.floor]
+# sterile_tile = "highres/2x/tiles/floor/sterile_tile.png"
+# [highres.sprites.heroes]
+# night_shift_tech = "highres/2x/sprites/heroes/night_shift_tech.png"
+# [highres.audio.sfx]
+# scanner_blaster = "highres/2x/audio/sfx/scanner_blaster.wav"
+# Missing highres entries fall back to the classic asset above.
+
+[highres.tiles.floor]
+sterile_tile = "highres/2x/tiles/floor/sterile_tile.png"
+neon_floor = "highres/2x/tiles/floor/neon_floor.png"
+warning_floor = "highres/2x/tiles/floor/warning_floor.png"
+fan_floor = "highres/2x/tiles/floor/fan_floor.png"
+
+[highres.tiles.walls]
+pharmacy_wall = "highres/2x/tiles/walls/pharmacy_wall.png"
+pharmacy_wall_cap = "highres/2x/tiles/walls/pharmacy_wall_cap.png"
+pharmacy_wall_face = "highres/2x/tiles/walls/pharmacy_wall_face.png"
+pharmacy_wall_column = "highres/2x/tiles/walls/pharmacy_wall_column.png"
+pharmacy_wall_junction = "highres/2x/tiles/walls/pharmacy_wall_junction.png"
+neon_shelf_wall = "highres/2x/tiles/walls/neon_shelf_wall.png"
+consultation_wall = "highres/2x/tiles/walls/consultation_wall.png"
+security_glass_wall = "highres/2x/tiles/walls/security_glass_wall.png"
+security_glass_wall_cap = "highres/2x/tiles/walls/security_glass_wall_cap.png"
+security_glass_wall_face = "highres/2x/tiles/walls/security_glass_wall_face.png"
+security_glass_wall_column = "highres/2x/tiles/walls/security_glass_wall_column.png"
+security_glass_wall_junction = "highres/2x/tiles/walls/security_glass_wall_junction.png"
+
+[highres.tiles.props]
+corrupt_med_cabinet = "highres/2x/tiles/props/corrupt_med_cabinet.png"
+hacked_vending_unit = "highres/2x/tiles/props/hacked_vending_unit.png"
+recall_crate = "highres/2x/tiles/props/recall_crate.png"
+shipping_box = "highres/2x/tiles/props/shipping_box.png"
+service_elevator = "highres/2x/tiles/props/service_elevator.png"
+
+[highres.sprites.heroes]
+night_shift_tech = "highres/2x/sprites/heroes/night_shift_tech.png"
+night_shift_tech_walk = "highres/2x/sprites/heroes/night_shift_tech_walk.png"
+neon_pharmacist = "highres/2x/sprites/heroes/neon_pharmacist.png"
+neon_pharmacist_walk = "highres/2x/sprites/heroes/neon_pharmacist_walk.png"
+steelcoat_pharmacist = "highres/2x/sprites/heroes/steelcoat_pharmacist.png"
+steelcoat_pharmacist_walk = "highres/2x/sprites/heroes/steelcoat_pharmacist_walk.png"
+compliance_runner = "highres/2x/sprites/heroes/compliance_runner.png"
+compliance_runner_walk = "highres/2x/sprites/heroes/compliance_runner_walk.png"
+
+[highres.sprites.enemies]
+angry_customer = "highres/2x/sprites/enemies/angry_customer.png"
+angry_customer_walk = "highres/2x/sprites/enemies/angry_customer_walk.png"
+claim_denier = "highres/2x/sprites/enemies/claim_denier.png"
+claim_denier_walk = "highres/2x/sprites/enemies/claim_denier_walk.png"
+inventory_drone = "highres/2x/sprites/enemies/inventory_drone.png"
+inventory_drone_walk = "highres/2x/sprites/enemies/inventory_drone_walk.png"
+recall_enforcer = "highres/2x/sprites/enemies/recall_enforcer.png"
+recall_enforcer_walk = "highres/2x/sprites/enemies/recall_enforcer_walk.png"
+black_market_courier = "highres/2x/sprites/enemies/black_market_courier.png"
+black_market_courier_walk = "highres/2x/sprites/enemies/black_market_courier_walk.png"
+district_manager = "highres/2x/sprites/enemies/district_manager.png"
+district_manager_walk = "highres/2x/sprites/enemies/district_manager_walk.png"
+
 [items]
 prescription = "sprites/items/prescription.png"
 folder = "sprites/items/folder.png"
