@@ -4745,6 +4745,7 @@ function applyEutherDogsCssAssets(): void {
     "--dogs-lamp-off": "selector_lamp_off",
     "--dogs-lamp-on": "selector_lamp_on",
     "--dogs-hud-bar": "hud_health_bar",
+    "--dogs-menu-panel": "menu_panel",
     "--dogs-map-overlay": "security_map_overlay",
   };
   for (const [property, key] of Object.entries(plannedAssets)) {
@@ -5357,6 +5358,9 @@ function renderDogsMenu(): void {
         : "Start shift";
   eutherDogsMenu.classList.toggle("is-staff", dogsMenuMode === "staff");
   eutherDogsMenu.classList.toggle("is-store", dogsMenuMode === "store");
+  eutherDogsMenu.classList.toggle("is-briefing", dogsMenuMode === "briefing");
+  eutherDogsMenu.classList.toggle("is-scores", dogsMenuMode === "scores");
+  eutherDogsMenu.classList.toggle("is-result", dogsMenuMode === "result");
   if (dogsMenuMode === "staff") {
     eutherDogsMenuKicker.textContent = "Staff Select";
     eutherDogsMenuTitle.textContent = "Choose Counter Liability";
