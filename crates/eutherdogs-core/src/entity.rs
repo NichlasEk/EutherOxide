@@ -118,6 +118,21 @@ impl Character {
         }
     }
 
+    pub fn select_weapon_slot(&mut self, slot: usize) -> bool {
+        let Some(weapon_slot) = self.weapons.get(slot) else {
+            return false;
+        };
+        if weapon_slot.ammo == 0 {
+            return false;
+        }
+        if self.active_weapon == slot {
+            return false;
+        }
+        self.active_weapon = slot;
+        self.weapon = weapon_slot.weapon;
+        true
+    }
+
     pub fn consume_active_ammo(&mut self) -> bool {
         let Some(slot) = self.weapons.get_mut(self.active_weapon) else {
             return true;

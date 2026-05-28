@@ -110,6 +110,11 @@ type InputState = {
 type InputName = keyof InputState;
 type PlayerPort = 1 | 2;
 type LobbyRole = "player" | "spectator";
+type DogsBridgeInput = InputState & {
+  player: PlayerPort;
+  seq?: number;
+  weaponSlot?: number;
+};
 
 type LobbyPlayer = {
   player: number;
@@ -1713,6 +1718,14 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
+  const dogsWeaponSlot = dogsWeaponSlotForKey(event);
+  if (dogsWeaponSlot !== null) {
+    event.preventDefault();
+    if (!event.repeat) {
+      void syncDogsWeaponSlot(dogsWeaponSlot);
+    }
+    return;
+  }
   const key = keyForEvent(event.key);
   if (!key || keyboardState[key]) {
     return;
@@ -1751,6 +1764,22 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
     target instanceof HTMLSelectElement ||
     target.isContentEditable
   );
+}
+
+function dogsWeaponSlotForKey(event: KeyboardEvent): number | null {
+  if (!dogsMode || !dogsFrame || event.ctrlKey || event.altKey || event.metaKey) {
+    return null;
+  }
+  if (/^Digit[1-9]$/.test(event.code)) {
+    return Number(event.code.slice(5)) - 1;
+  }
+  if (/^Numpad[1-9]$/.test(event.code)) {
+    return Number(event.code.slice(6)) - 1;
+  }
+  if (event.code === "Digit0" || event.code === "Numpad0") {
+    return 9;
+  }
+  return null;
 }
 
 function emptyInputState(): InputState {
@@ -5785,7 +5814,18 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
 }
 
-async function syncDogsBridgeInput(input: InputState & { player: PlayerPort; seq?: number }): Promise<void> {
+async function syncDogsWeaponSlot(slot: number): Promise<void> {
+  try {
+    await syncDogsBridgeInput({ ...inputState, player: playerPort, weaponSlot: slot });
+    pushTrace(`EutherDogs weapon slot ${slot + 1}`);
+  } catch (err) {
+    dogsSnapshotMisses += 1;
+    ui.transportMode = "DOGS INPUT HOLD";
+    ui.lastError = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function syncDogsBridgeInput(input: DogsBridgeInput): Promise<void> {
   const now = performance.now();
   const changedInput = { ...input, seq: undefined };
   const nextState = JSON.stringify(changedInput);

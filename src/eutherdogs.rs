@@ -8,6 +8,7 @@ pub use eutherdogs_core::{
 use serde::{Deserialize, Serialize};
 
 const CAMPAIGN_MISSIONS: i32 = 10;
+const WEAPON_SWITCH_COOLDOWN_TICKS: u8 = 18;
 
 #[derive(Clone, Debug)]
 pub struct EutherDogsRuntime {
@@ -16,6 +17,7 @@ pub struct EutherDogsRuntime {
     frame: u64,
     explored_tiles: [Vec<bool>; 2],
     held_inputs: [EutherDogsInput; 2],
+    weapon_switch_cooldowns: [u8; 2],
     mission: i32,
     staff: u8,
 }
@@ -33,6 +35,7 @@ pub struct EutherDogsInput {
     pub b: bool,
     pub c: bool,
     pub start: bool,
+    pub weapon_slot: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -145,6 +148,7 @@ impl EutherDogsRuntime {
             frame: 0,
             explored_tiles: [Vec::new(), Vec::new()],
             held_inputs: [EutherDogsInput::default(), EutherDogsInput::default()],
+            weapon_switch_cooldowns: [0, 0],
             mission,
             staff: 1,
         })
@@ -180,6 +184,7 @@ impl EutherDogsRuntime {
         self.frame = 0;
         self.clear_visibility_history();
         self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
+        self.weapon_switch_cooldowns = [0, 0];
         Ok(())
     }
 
@@ -192,6 +197,7 @@ impl EutherDogsRuntime {
         self.frame = 0;
         self.clear_visibility_history();
         self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
+        self.weapon_switch_cooldowns = [0, 0];
         Ok(self.snapshot())
     }
 
@@ -223,22 +229,47 @@ impl EutherDogsRuntime {
     }
 
     fn tick_held_with_audio(&mut self) -> [EutherDogsFrame; 2] {
-        let player_inputs: Vec<PlayerInput> = self
-            .held_inputs
-            .iter()
+        let held_inputs = self.held_inputs;
+        let player_inputs: Vec<PlayerInput> = held_inputs
+            .into_iter()
             .enumerate()
             .map(|(player_index, input)| PlayerInput {
                 player_index,
-                command: input_command(*input),
+                command: self.input_command_for_player(player_index, input),
+                weapon_slot: input.weapon_slot,
             })
             .collect();
         self.game.tick(&player_inputs, FixedStep { ticks: 1 });
         self.frame += 1;
+        for (input, cooldown) in self
+            .held_inputs
+            .iter_mut()
+            .zip(self.weapon_switch_cooldowns.iter_mut())
+        {
+            input.weapon_slot = None;
+            *cooldown = cooldown.saturating_sub(1);
+        }
         let audio_events = self.game.drain_audio_events();
         [
             self.snapshot_for_player_with_audio_events(0, &audio_events),
             self.snapshot_for_player_with_audio_events(1, &audio_events),
         ]
+    }
+
+    fn input_command_for_player(
+        &mut self,
+        player_index: usize,
+        input: EutherDogsInput,
+    ) -> PlayerCommand {
+        let mut command = input_command(input);
+        if input.c {
+            if self.weapon_switch_cooldowns[player_index] == 0 {
+                self.weapon_switch_cooldowns[player_index] = WEAPON_SWITCH_COOLDOWN_TICKS;
+            } else {
+                command = PlayerCommand::from_bits(command.bits() & !PlayerCommand::SWITCH);
+            }
+        }
+        command
     }
 
     pub fn purchase(

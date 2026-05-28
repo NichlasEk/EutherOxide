@@ -320,6 +320,7 @@ fn run_eutherdogs_demo(config_path: Option<&std::path::Path>) -> io::Result<()> 
                     euther_oxide::eutherdogs::PlayerCommand::RIGHT
                         | euther_oxide::eutherdogs::PlayerCommand::SHOOT,
                 ),
+                weapon_slot: None,
             }],
             euther_oxide::eutherdogs::FixedStep { ticks: 1 },
         );

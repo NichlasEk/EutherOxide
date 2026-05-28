@@ -19,6 +19,7 @@ pub struct FixedStep {
 pub struct PlayerInput {
     pub player_index: usize,
     pub command: PlayerCommand,
+    pub weapon_slot: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -376,7 +377,11 @@ impl Game {
             self.move_character(character_index, direction, dt);
         }
 
-        if input.command.has(PlayerCommand::SWITCH) {
+        if let Some(slot) = input.weapon_slot {
+            if self.characters[character_index].select_weapon_slot(slot) {
+                self.audio_events.push(AudioEvent::Sfx(AssetId::WeaponSwitch));
+            }
+        } else if input.command.has(PlayerCommand::SWITCH) {
             self.characters[character_index].switch_weapon();
             self.audio_events.push(AudioEvent::Sfx(AssetId::WeaponSwitch));
         }
@@ -1047,6 +1052,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1068,6 +1074,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 10 },
         );
@@ -1087,6 +1094,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1108,6 +1116,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1136,6 +1145,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1195,6 +1205,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::SWITCH),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1207,10 +1218,34 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
         assert_eq!(game.characters()[0].weapons[1].ammo, ammo - 1);
+    }
+
+    #[test]
+    fn direct_weapon_slot_selects_owned_weapon() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.tick(
+            &[PlayerInput {
+                player_index: 0,
+                command: PlayerCommand::empty(),
+                weapon_slot: Some(1),
+            }],
+            FixedStep { ticks: 1 },
+        );
+        assert_eq!(
+            game.characters()[0].active_weapon_id(),
+            crate::weapon::WeaponId::RxCannon
+        );
     }
 
     #[test]
@@ -1477,6 +1512,7 @@ mod tests {
             &[PlayerInput {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
+                weapon_slot: None,
             }],
             FixedStep { ticks: 1 },
         );
