@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, error::Error, fmt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    assets::AssetId,
     entity::WeaponSlot,
     game::{MissionRules, ScoringRules},
     highscore::{HighScoreEntry, HighScoreTable, DEFAULT_HIGH_SCORE_LIMIT},
@@ -43,6 +44,7 @@ pub struct PlayerConfig {
     pub score: i32,
     pub armor: i32,
     pub lives: i32,
+    pub character: String,
     pub active_weapon: String,
     pub weapons: Vec<ConfigWeaponSlot>,
 }
@@ -104,6 +106,7 @@ pub struct ConfigHighScoreEntry {
 pub enum ConfigError {
     Toml(toml::de::Error),
     TomlSerialize(toml::ser::Error),
+    UnknownCharacter { player: usize, character: String },
     UnknownWeapon { player: usize, weapon: String },
     UnknownStoreWeapon { item: String, weapon: String },
 }
@@ -163,6 +166,12 @@ impl EutherDogsConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         for (key, player) in &self.player {
             let player_number = key.parse::<usize>().unwrap_or_default();
+            if AssetId::player_from_key(&player.character).is_none() {
+                return Err(ConfigError::UnknownCharacter {
+                    player: player_number,
+                    character: player.character.clone(),
+                });
+            }
             player.weapon_slots(player_number)?;
             player.active_weapon_index(player_number)?;
         }
@@ -256,6 +265,7 @@ impl Default for PlayerConfig {
             score: 0,
             armor: 100,
             lives: 3,
+            character: AssetId::NightShiftTech.manifest_key().to_string(),
             active_weapon: WeaponId::ScannerBlaster.key().to_string(),
             weapons: vec![
                 ConfigWeaponSlot {
@@ -421,6 +431,9 @@ impl fmt::Display for ConfigError {
         match self {
             Self::Toml(err) => write!(f, "{err}"),
             Self::TomlSerialize(err) => write!(f, "{err}"),
+            Self::UnknownCharacter { player, character } => {
+                write!(f, "unknown character `{character}` in player {player} config")
+            }
             Self::UnknownWeapon { player, weapon } => {
                 write!(f, "unknown weapon `{weapon}` in player {player} config")
             }

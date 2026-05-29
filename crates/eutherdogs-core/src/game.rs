@@ -741,6 +741,9 @@ impl Game {
             };
             character.armor = player.armor.max(1);
             character.lives = player.lives.max(1);
+            if let Some(sprite) = crate::assets::AssetId::player_from_key(&player.character) {
+                character.sprite = sprite;
+            }
             character.weapons = player.weapon_slots(player_index + 1)?;
             character.active_weapon = player.active_weapon_index(player_index + 1)?;
             character.weapon = character
@@ -992,6 +995,20 @@ fn straight_direction_to(x: i32, y: i32, target_x: i32, target_y: i32) -> Option
 }
 
 fn spawn_point_at(world: &World, offset: usize) -> Option<(i32, i32)> {
+    let spawn_tile = match offset {
+        0 => Some(Tile::PlayerSpawn1),
+        1 => Some(Tile::PlayerSpawn2),
+        _ => None,
+    };
+    if let Some(spawn_tile) = spawn_tile {
+        for y in 1..world.height() - 1 {
+            for x in 1..world.width() - 1 {
+                if world.tile(x, y) == Some(spawn_tile) {
+                    return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
+                }
+            }
+        }
+    }
     let mut found = 0;
     for y in 1..world.height() - 1 {
         for x in 1..world.width() - 1 {
@@ -1010,7 +1027,12 @@ fn random_spawn_point(world: &World, rng: &mut Lcg) -> Option<(i32, i32)> {
     for _ in 0..200 {
         let x = rng.range(world.width() as i32) as usize;
         let y = rng.range(world.height() as i32) as usize;
-        if x > 1 && y > 1 && x < world.width() - 1 && y < world.height() - 1 && !world.blocks_walk(x, y)
+        if x > 1
+            && y > 1
+            && x < world.width() - 1
+            && y < world.height() - 1
+            && !matches!(world.tile(x, y), Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2))
+            && !world.blocks_walk(x, y)
         {
             return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
         }

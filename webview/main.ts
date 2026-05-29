@@ -111,6 +111,7 @@ type InputName = keyof InputState;
 type PlayerPort = 1 | 2;
 type LobbyRole = "player" | "spectator";
 type DogsAssetMode = "classic" | "2x";
+type DogsCharacterKey = "night_shift_tech" | "neon_pharmacist";
 type DogsBridgeInput = InputState & {
   player: PlayerPort;
   seq?: number;
@@ -426,6 +427,7 @@ type DogsActorFacing = "down" | "left" | "right" | "up";
 
 type DogsStaffOption = {
   id: 1 | 2;
+  character: DogsCharacterKey;
   name: string;
   role: string;
   armor: number;
@@ -448,6 +450,7 @@ const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherD
 const dogsStaffOptions: DogsStaffOption[] = [
   {
     id: 1,
+    character: "night_shift_tech",
     name: "Night Tech",
     role: "Closing shift technician",
     armor: 100,
@@ -457,6 +460,7 @@ const dogsStaffOptions: DogsStaffOption[] = [
   },
   {
     id: 2,
+    character: "neon_pharmacist",
     name: "Neon Pharmacist",
     role: "Counter lead",
     armor: 100,
@@ -473,6 +477,7 @@ const shaderStorageKey = "eutheroxide-video-shader";
 const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 const mobileModeStorageKey = "eutheroxide-mobile-mode";
 const dogsAssetModeStorageKey = "eutheroxide-eutherdogs-asset-mode";
+const dogsCharactersStorageKey = "eutheroxide-eutherdogs-characters";
 const bridgeClientStorageKey = "eutheroxide-bridge-client-id";
 const playerPortStorageKey = "eutheroxide-player-port";
 const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
@@ -649,6 +654,7 @@ let dogsFrame: DogsCoreFrame | null = null;
 let dogsMenuMode: DogsMenuMode = null;
 let dogsAssetMode: DogsAssetMode = readStoredDogsAssetMode();
 let selectedDogsStaff: 1 | 2 = 1;
+let selectedDogsCharacters: Record<PlayerPort, DogsCharacterKey> = readStoredDogsCharacters();
 let selectedDogsMission = 1;
 let dogsStorePreviewItemId: string | null = null;
 let dogsSubmittedHighscoreFrame: number | null = null;
@@ -3394,6 +3400,9 @@ function renderLobby(): void {
   closeInstance.disabled = instance.id === "main" || !canHostMutate();
   spectateInstance.classList.toggle("is-selected", lobbyRole === "spectator");
   renderPlayerPort();
+  if (dogsMenuMode === "staff") {
+    renderDogsMenu();
+  }
 }
 
 function activeLobbyInstance(): LobbyInstance | undefined {
@@ -4131,6 +4140,8 @@ function dogsTileAsset(tile: string): string | null {
     neon_floor: ["tiles.floor", "neon_floor"],
     warning_floor: ["tiles.floor", "warning_floor"],
     fan_floor: ["tiles.floor", "fan_floor"],
+    player_spawn_1: ["tiles.floor", "player_spawn_1"],
+    player_spawn_2: ["tiles.floor", "player_spawn_2"],
     wall: ["tiles.walls", "pharmacy_wall"],
     door: ["tiles.walls", "security_glass_wall"],
     corrupt_med_cabinet: ["tiles.props", "corrupt_med_cabinet"],
@@ -4215,7 +4226,15 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
 }
 
 function dogsTileImageFit(tile: string): "contain" | "cover" {
-  if (tile === "floor" || tile === "sterile_floor" || tile === "neon_floor" || tile === "warning_floor" || tile === "fan_floor") {
+  if (
+    tile === "floor"
+    || tile === "sterile_floor"
+    || tile === "neon_floor"
+    || tile === "warning_floor"
+    || tile === "fan_floor"
+    || tile === "player_spawn_1"
+    || tile === "player_spawn_2"
+  ) {
     return "cover";
   }
   return "contain";
@@ -4264,18 +4283,12 @@ function dogsHeroOnExit(frame: DogsCoreFrame): boolean {
 }
 
 function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
-  const staffId = dogsFrame?.characters.filter((entry) => entry.faction === "player").length === 1
-    ? selectedDogsStaff
-    : actor.id === 0
-      ? 1
-      : 2;
-  if (staffId === 2 && actor.armor > 100) {
-    return animated ? "steelcoat_pharmacist_walk" : "steelcoat_pharmacist";
-  }
-  if (staffId === 2) {
-    return animated ? "neon_pharmacist_walk" : "neon_pharmacist";
-  }
-  return animated ? "night_shift_tech_walk" : "night_shift_tech";
+  const key = actor.sprite && dogsAsset("sprites.heroes", actor.sprite)
+    ? actor.sprite
+    : actor.id === 1
+      ? "neon_pharmacist"
+      : "night_shift_tech";
+  return animated ? `${key}_walk` : key;
 }
 
 function dogsEnemyKey(actor: DogsCoreActor): string {
@@ -4401,7 +4414,7 @@ function dogsStoreItemIconMarkup(item: DogsStoreItem): string {
 }
 
 function dogsStaffAsset(staff: DogsStaffOption): string | null {
-  return dogsAsset("sprites.heroes", staff.id === 1 ? "night_shift_tech" : "neon_pharmacist");
+  return dogsAsset("sprites.heroes", staff.character);
 }
 
 function dogsStaffSpriteMarkup(staff: DogsStaffOption): string {
@@ -4409,6 +4422,10 @@ function dogsStaffSpriteMarkup(staff: DogsStaffOption): string {
   return url
     ? `<img class="eutherdogs-staff-sprite" src="${url}" alt="${staff.name}" />`
     : `<span class="eutherdogs-staff-sprite is-empty" aria-hidden="true"></span>`;
+}
+
+function dogsCharacterName(character: DogsCharacterKey): string {
+  return dogsStaffOptions.find((staff) => staff.character === character)?.name ?? "Night Tech";
 }
 
 function drawDogsImage(
@@ -4778,6 +4795,10 @@ function dogsMapTileColor(tile: string, visibility: number): string {
       return visibility >= 255 ? "#626b6a" : "#343a42";
     case "service_elevator":
       return "#c6ff35";
+    case "player_spawn_1":
+      return "#39f7c8";
+    case "player_spawn_2":
+      return "#ff5de1";
     case "prescription":
     case "folder":
     case "data_wafer":
@@ -5562,13 +5583,17 @@ function renderDogsMenu(): void {
   eutherDogsMenu.classList.toggle("is-result", dogsMenuMode === "result");
   if (dogsMenuMode === "staff") {
     eutherDogsMenuKicker.textContent = "Staff Select";
-    eutherDogsMenuTitle.textContent = "Choose Counter Liability";
+    eutherDogsMenuTitle.textContent = `Choose P${playerPort} Counter Liability`;
     eutherDogsMenuBody.innerHTML = `
+      <div class="eutherdogs-briefing-grid">
+        <div><span>P1</span><strong>${dogsCharacterName(selectedDogsCharacters[1])}</strong></div>
+        <div><span>P2</span><strong>${dogsCharacterName(selectedDogsCharacters[2])}</strong></div>
+      </div>
       <div class="eutherdogs-staff-grid">
         ${dogsStaffOptions
           .map(
             (staff) => `
-              <button class="eutherdogs-staff-card ${selectedDogsStaff === staff.id ? "is-selected" : ""}" data-staff-id="${staff.id}" type="button">
+              <button class="eutherdogs-staff-card ${selectedDogsCharacters[playerPort] === staff.character ? "is-selected" : ""}" data-staff-id="${staff.id}" type="button">
                 <span class="eutherdogs-selector-lamp"></span>
                 ${dogsStaffSpriteMarkup(staff)}
                 <span>${staff.role}</span>
@@ -5646,7 +5671,7 @@ function renderDogsMenu(): void {
         <aside class="eutherdogs-inventory-panel">
           <section class="eutherdogs-player-loadout">
             ${hero ? dogsWeaponIconMarkup(hero.activeWeapon, hero.activeWeapon) : ""}
-            <strong>${dogsStaffOptions.find((staff) => staff.id === selectedDogsStaff)?.name ?? "Staff"}</strong>
+            <strong>${dogsCharacterName(selectedDogsCharacters[playerPort])}</strong>
             <span>Coat ${hero?.armor ?? 0}</span>
             <span>Active ${hero?.activeWeapon.replaceAll("_", " ") ?? "scanner"}</span>
             <span>Ammo ${dogsAmmoLabel(hero?.ammo)}</span>
@@ -5696,6 +5721,8 @@ async function purchaseDogsStoreItem(itemId: string): Promise<void> {
 
 async function selectDogsStaff(staff: 1 | 2): Promise<void> {
   selectedDogsStaff = staff;
+  selectedDogsCharacters[playerPort] = dogsStaffOptions.find((option) => option.id === staff)?.character ?? "night_shift_tech";
+  writeStoredDogsCharacters();
   selectedDogsMission = 1;
   try {
     dogsFrame = await startDogsCore();
@@ -5705,7 +5732,7 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
     dogsPreviousAudioFrame = dogsFrame;
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
-    pushTrace(`EutherDogs staff selected ${dogsStaffOptions.find((option) => option.id === staff)?.name ?? staff}`);
+    pushTrace(`EutherDogs P${playerPort} selected ${dogsCharacterName(selectedDogsCharacters[playerPort])}`);
   } catch (err) {
     pushTrace(`EutherDogs staff select failed: ${err instanceof Error ? err.message : String(err)}`);
     renderDogsMenu();
@@ -5994,7 +6021,12 @@ function stopDogsSnapshotStream(): void {
 }
 
 async function startDogsCore(): Promise<DogsCoreFrame> {
-  const start = { staff: selectedDogsStaff, mission: selectedDogsMission, players: 2 };
+  const start = {
+    staff: selectedDogsStaff,
+    mission: selectedDogsMission,
+    players: 2,
+    characters: [selectedDogsCharacters[1], selectedDogsCharacters[2]],
+  };
   dogsPreviousActorPositions = new Map();
   dogsRenderActorPositions = new Map();
   dogsActorFacings = new Map();
@@ -6173,6 +6205,8 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     neon_floor: "#2ff7dc",
     warning_floor: "#f7d852",
     fan_floor: "#9fb2aa",
+    player_spawn_1: "#39f7c8",
+    player_spawn_2: "#ff5de1",
     wall: "#263630",
     door: "#374a42",
     corrupt_med_cabinet: "#ff37c8",
@@ -6311,6 +6345,22 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
 
 function readStoredPlayerPort(): PlayerPort {
   return localStorage.getItem(playerPortStorageKey) === "2" ? 2 : 1;
+}
+
+function readStoredDogsCharacters(): Record<PlayerPort, DogsCharacterKey> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(dogsCharactersStorageKey) ?? "{}") as Partial<Record<PlayerPort, string>>;
+    return {
+      1: parsed[1] === "neon_pharmacist" ? "neon_pharmacist" : "night_shift_tech",
+      2: parsed[2] === "night_shift_tech" ? "night_shift_tech" : "neon_pharmacist",
+    };
+  } catch {
+    return { 1: "night_shift_tech", 2: "neon_pharmacist" };
+  }
+}
+
+function writeStoredDogsCharacters(): void {
+  localStorage.setItem(dogsCharactersStorageKey, JSON.stringify(selectedDogsCharacters));
 }
 
 function setPlayerPort(port: PlayerPort): void {

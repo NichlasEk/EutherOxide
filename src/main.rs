@@ -1770,6 +1770,7 @@ fn handle_bridge_route_with_user(
                     staff: None,
                     mission: None,
                     players: Some(2),
+                    characters: None,
                 }
             } else {
                 serde_json::from_slice(&request.body)

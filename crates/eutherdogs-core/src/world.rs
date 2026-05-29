@@ -34,6 +34,8 @@ pub enum Tile {
     PillSplitter,
     ScorchMark,
     SpilledSyrup,
+    PlayerSpawn1,
+    PlayerSpawn2,
 }
 
 impl Tile {
@@ -151,6 +153,7 @@ impl World {
         world.add_targets(&mut rng, mission.targets);
         world.add_details(&mut rng, params.detail_density.max(9));
         world.add_objects(&mut rng, mission.mission, mission.objects);
+        world.add_player_spawns();
         world
     }
 
@@ -468,6 +471,30 @@ impl World {
         self.add_one_object(rng, Tile::PillSplitter, Structure::default());
     }
 
+    fn add_player_spawns(&mut self) {
+        let mut placed = 0;
+        for y in 1..self.height - 1 {
+            for x in 1..self.width - 1 {
+                if !matches!(
+                    self.tile(x, y),
+                    Some(Tile::Floor | Tile::SterileFloor | Tile::NeonFloor | Tile::WarningFloor | Tile::FanFloor)
+                ) {
+                    continue;
+                }
+                let spawn = if placed == 0 {
+                    Tile::PlayerSpawn1
+                } else {
+                    Tile::PlayerSpawn2
+                };
+                self.set_tile(x, y, spawn);
+                placed += 1;
+                if placed >= 2 {
+                    return;
+                }
+            }
+        }
+    }
+
     fn add_one_object(&mut self, rng: &mut Lcg, tile: Tile, structure: Structure) -> bool {
         for _ in 0..100 {
             let x = rng.range(self.width as i32) as usize;
@@ -562,6 +589,8 @@ mod tests {
         assert!(tiles.contains(&Tile::ServiceElevator));
         assert!(world.stats().targets_left > 0);
         assert!(world.stats().objects_to_collect > 0);
+        assert!(tiles.contains(&Tile::PlayerSpawn1));
+        assert!(tiles.contains(&Tile::PlayerSpawn2));
         assert!(tiles.iter().any(|tile| tile.blocks_walk()));
         assert!(tiles.iter().any(|tile| tile.is_pickup()));
     }

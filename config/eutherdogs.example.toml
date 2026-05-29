@@ -15,6 +15,7 @@ cash = 500
 score = 0
 armor = 100
 lives = 3
+character = "night_shift_tech"
 active_weapon = "scanner_blaster"
 
 [[player.1.weapons]]
@@ -31,6 +32,7 @@ cash = 500
 score = 0
 armor = 100
 lives = 3
+character = "neon_pharmacist"
 active_weapon = "scanner_blaster"
 
 [[player.2.weapons]]

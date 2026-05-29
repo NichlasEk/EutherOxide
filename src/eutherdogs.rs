@@ -45,12 +45,13 @@ pub struct EutherDogsPurchase {
     pub player: Option<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EutherDogsStart {
     pub staff: Option<u8>,
     pub mission: Option<i32>,
     pub players: Option<usize>,
+    pub characters: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -163,12 +164,15 @@ impl EutherDogsRuntime {
             staff: Some(staff),
             mission: None,
             players: Some(1),
+            characters: None,
         })
     }
 
     pub fn demo_with_start(start: EutherDogsStart) -> Self {
         let staff = start.staff.unwrap_or(1).clamp(1, 2);
-        let mut config = start_demo_config(staff, start.players.unwrap_or(1));
+        let players = start.players.unwrap_or(1);
+        let mut config = start_demo_config(staff, players);
+        apply_start_characters(&mut config, staff, players, start.characters.as_deref());
         config.settings.starting_mission = start
             .mission
             .unwrap_or(config.settings.starting_mission)
@@ -352,6 +356,11 @@ impl EutherDogsRuntime {
             player.score = summary.progress.score;
             player.armor = character.armor.max(1);
             player.lives = character.lives.max(1);
+            player.character = character
+                .sprite
+                .with_player_armor(false)
+                .manifest_key()
+                .to_string();
             player.active_weapon = character.active_weapon_id().key().to_string();
             player.weapons = character
                 .weapons
@@ -412,6 +421,58 @@ pub fn start_demo_config(staff: u8, players: usize) -> EutherDogsConfig {
     }
     config.settings.player_count = players;
     config
+}
+
+fn apply_start_characters(
+    config: &mut EutherDogsConfig,
+    staff: u8,
+    players: usize,
+    characters: Option<&[String]>,
+) {
+    let players = players.clamp(1, 2);
+    let fallback = if staff.clamp(1, 2) == 2 {
+        "neon_pharmacist"
+    } else {
+        "night_shift_tech"
+    };
+    let mut seen_night = 0;
+    let mut seen_neon = 0;
+    for player in 1..=players {
+        let requested = characters
+            .and_then(|entries| entries.get(player - 1))
+            .map(String::as_str)
+            .unwrap_or_else(|| {
+                config
+                    .player_config(player)
+                    .map(|entry| entry.character.as_str())
+                    .unwrap_or(fallback)
+            });
+        let base = if requested.starts_with("neon_pharmacist") {
+            "neon_pharmacist"
+        } else {
+            "night_shift_tech"
+        };
+        let character = if base == "neon_pharmacist" {
+            let key = if seen_neon == 0 {
+                "neon_pharmacist"
+            } else {
+                "neon_pharmacist_alt"
+            };
+            seen_neon += 1;
+            key
+        } else {
+            let key = if seen_night == 0 {
+                "night_shift_tech"
+            } else {
+                "night_shift_tech_alt"
+            };
+            seen_night += 1;
+            key
+        };
+        if let Some(entry) = config.player.get_mut(&player.to_string()) {
+            entry.character = character.to_string();
+        }
+    }
 }
 
 fn campaign_config(config: &EutherDogsConfig, mission: i32) -> EutherDogsConfig {
@@ -478,7 +539,7 @@ pub fn eutherdogs_frame(
                     x: character.x,
                     y: character.y,
                     direction: direction_key(character.direction),
-                    sprite: character.sprite.manifest_key(),
+                    sprite: display_player_sprite(character),
                     armor: character.armor,
                     lives: character.lives,
                     alive: character.alive,
@@ -735,6 +796,16 @@ fn store_weapon_item(
     }
 }
 
+fn display_player_sprite(character: &eutherdogs_core::entity::Character) -> &'static str {
+    if character.faction != eutherdogs_core::entity::Faction::Player {
+        return character.sprite.manifest_key();
+    }
+    character
+        .sprite
+        .with_player_armor(character.armor > 100)
+        .manifest_key()
+}
+
 fn tile_key(tile: Tile) -> &'static str {
     match tile {
         Tile::Floor => "floor",
@@ -759,6 +830,8 @@ fn tile_key(tile: Tile) -> &'static str {
         Tile::PillSplitter => "pill_splitter",
         Tile::ScorchMark => "scorch_mark",
         Tile::SpilledSyrup => "spilled_syrup",
+        Tile::PlayerSpawn1 => "player_spawn_1",
+        Tile::PlayerSpawn2 => "player_spawn_2",
     }
 }
 
@@ -831,6 +904,7 @@ mod tests {
             staff: Some(1),
             mission: None,
             players: Some(2),
+            characters: None,
         });
 
         let frame = runtime.snapshot();
@@ -846,11 +920,35 @@ mod tests {
     }
 
     #[test]
+    fn runtime_allows_ports_to_choose_same_character_with_variant() {
+        let mut runtime = EutherDogsRuntime::demo_with_start(EutherDogsStart {
+            staff: Some(1),
+            mission: None,
+            players: Some(2),
+            characters: Some(vec![
+                "neon_pharmacist".to_string(),
+                "neon_pharmacist".to_string(),
+            ]),
+        });
+
+        let frame = runtime.snapshot();
+        let players = frame
+            .characters
+            .iter()
+            .filter(|character| character.faction == "player")
+            .collect::<Vec<_>>();
+
+        assert_eq!(players[0].sprite, "neon_pharmacist");
+        assert_eq!(players[1].sprite, "neon_pharmacist_alt");
+    }
+
+    #[test]
     fn runtime_tracks_explored_visibility_per_player() {
         let mut runtime = EutherDogsRuntime::demo_with_start(EutherDogsStart {
             staff: Some(1),
             mission: None,
             players: Some(2),
+            characters: None,
         });
 
         let player_one_frame = runtime.tick(EutherDogsInput {
@@ -878,6 +976,7 @@ mod tests {
             staff: Some(1),
             mission: None,
             players: Some(2),
+            characters: None,
         });
 
         runtime.tick(EutherDogsInput {
