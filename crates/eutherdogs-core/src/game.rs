@@ -124,6 +124,15 @@ const INSPECTOR_RESPAWN_TICKS: u32 = 90;
 const INSPECTOR_QUESTION_RANGE: i32 = TILE_WIDTH * 2;
 const INSPECTOR_QUESTION_COOLDOWN_TICKS: u32 = 120;
 const INSPECTION_COMPLETE_LINE: &str = "Inspection complete. Your survival has been provisionally accepted.";
+const MPA_MISSION: i32 = 10;
+const MPA_ALERT_TICKS: u32 = 20 * 60;
+const MPA_AGENT_COUNT: usize = 50;
+const MPA_AGENT_INSPECT_TICKS: u32 = 180;
+const MPA_CHIEF_QUESTION_RANGE: i32 = TILE_WIDTH * 3;
+const MPA_CHIEF_QUESTION_COOLDOWN_TICKS: u32 = 90;
+const MPA_PROTOCOL_QUESTIONS: i32 = 3;
+const MPA_COMPLETE_LINE: &str =
+    "MPA protocol accepted. Elevator clearance has been provisionally tolerated.";
 const INSPECTION_QUESTIONS: [&str; 50] = [
     "Is your GDPR Officer compliant with rule 407?",
     "Have you verified that the verification process has itself been verified?",
@@ -176,6 +185,20 @@ const INSPECTION_QUESTIONS: [&str; 50] = [
     "Is the local interpretation of the central interpretation locally interpretable?",
     "Can you please remain still while I complete this minor procedural life-drain?",
 ];
+const MPA_QUESTIONS: [&str; 12] = [
+    "Have all Rx artifacts been visually reconciled with their invisible audit twins?",
+    "Is your Medical Products Agency contact person aware that awareness has occurred?",
+    "Can you prove the paper trail has not become self-guiding?",
+    "Have all product deviations been folded along the approved moral axis?",
+    "Is this medicine shelf prepared for angelic document sampling?",
+    "Can you identify which queue ticket gave informed consent?",
+    "Have controlled substances been controlled for excessive substance?",
+    "Is your inspection protocol present, legible, and spiritually laminated?",
+    "Can you explain why these records appear to contain operational reality?",
+    "Has the emergency checklist been inspected for checklist-shaped behavior?",
+    "Are the white coats in this facility authorized to reflect this much light?",
+    "Can you remain available until the audit becomes satisfied with itself?",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InspectorState {
@@ -186,6 +209,13 @@ struct InspectorState {
     question_index: usize,
     question_cooldown: u32,
     active_question: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MpaAgentState {
+    character_id: u32,
+    target_tile: Option<(usize, usize)>,
+    inspect_ticks: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,6 +306,16 @@ pub struct Game {
     senior_lma_boss_ids: Vec<u32>,
     senior_lma_max_armor: i32,
     senior_lma_defeated: bool,
+    inspection_protocols: [i32; 2],
+    mpa_triggered: bool,
+    mpa_complete: bool,
+    mpa_agents: Vec<MpaAgentState>,
+    mpa_chief_id: Option<u32>,
+    mpa_chief_player_index: usize,
+    mpa_chief_answers: i32,
+    mpa_chief_question_index: usize,
+    mpa_chief_question_cooldown: u32,
+    mpa_chief_active_question: Option<&'static str>,
 }
 
 impl Default for Game {
@@ -306,6 +346,16 @@ impl Default for Game {
             senior_lma_boss_ids: Vec::new(),
             senior_lma_max_armor: 0,
             senior_lma_defeated: false,
+            inspection_protocols: [0, 0],
+            mpa_triggered: false,
+            mpa_complete: false,
+            mpa_agents: Vec::new(),
+            mpa_chief_id: None,
+            mpa_chief_player_index: 0,
+            mpa_chief_answers: 0,
+            mpa_chief_question_index: 0,
+            mpa_chief_question_cooldown: 0,
+            mpa_chief_active_question: None,
         }
     }
 }
@@ -344,6 +394,16 @@ impl Game {
             senior_lma_boss_ids: Vec::new(),
             senior_lma_max_armor: 0,
             senior_lma_defeated: false,
+            inspection_protocols: [0, 0],
+            mpa_triggered: false,
+            mpa_complete: false,
+            mpa_agents: Vec::new(),
+            mpa_chief_id: None,
+            mpa_chief_player_index: 0,
+            mpa_chief_answers: 0,
+            mpa_chief_question_index: 0,
+            mpa_chief_question_cooldown: 0,
+            mpa_chief_active_question: None,
         };
         game.mission_goal_count =
             game.world.stats().targets_left + game.world.stats().objects_to_collect;
@@ -411,6 +471,7 @@ impl Game {
         let previous_elapsed_ticks = self.progress.elapsed_ticks;
         self.progress.elapsed_ticks = self.progress.elapsed_ticks.saturating_add(dt.ticks);
         self.update_inspection_alert(previous_elapsed_ticks);
+        self.update_mpa_inspection(previous_elapsed_ticks);
         for character in &mut self.characters {
             character.weapon_cooldown = character.weapon_cooldown.saturating_sub(dt.ticks as u8);
         }
@@ -422,11 +483,14 @@ impl Game {
         }
         self.move_hostiles(dt);
         self.move_inspectors(dt);
+        self.move_mpa_agents(dt);
+        self.move_mpa_chief(dt);
         self.move_bullets(dt);
         self.collect_pickups();
         self.remove_dead_characters();
         self.update_inspector_state(dt);
         self.update_inspector_dialogues(dt);
+        self.update_mpa_dialogue(dt);
         self.update_senior_lma_state(dt);
         self.update_boss_state();
         self.update_status();
@@ -456,7 +520,8 @@ impl Game {
     }
 
     pub fn inspection_dialogues(&self) -> Vec<InspectionDialogue> {
-        self.inspectors
+        let mut dialogues = self
+            .inspectors
             .iter()
             .filter_map(|inspector| {
                 let inspector_id = inspector.character_id?;
@@ -471,7 +536,24 @@ impl Game {
                         complete: question == INSPECTION_COMPLETE_LINE,
                     })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if let (Some(chief_id), Some(question)) =
+            (self.mpa_chief_id, self.mpa_chief_active_question)
+        {
+            if self
+                .characters
+                .iter()
+                .any(|character| character.id == chief_id && character.alive)
+            {
+                dialogues.push(InspectionDialogue {
+                    player_index: self.mpa_chief_player_index,
+                    inspector_id: chief_id,
+                    question,
+                    complete: question == MPA_COMPLETE_LINE,
+                });
+            }
+        }
+        dialogues
     }
 
     pub fn inspection_answer_count(&self, player_index: usize) -> i32 {
@@ -890,6 +972,78 @@ impl Game {
             self.characters[index].direction = direction;
             self.move_character(index, direction, dt);
         }
+    }
+
+    fn move_mpa_agents(&mut self, dt: FixedStep) {
+        for agent_index in 0..self.mpa_agents.len() {
+            let character_id = self.mpa_agents[agent_index].character_id;
+            let Some(character_index) = self.character_index(character_id) else {
+                continue;
+            };
+            if !self.characters[character_index].alive {
+                continue;
+            }
+            if self.mpa_agents[agent_index].inspect_ticks > 0 {
+                self.mpa_agents[agent_index].inspect_ticks = self.mpa_agents[agent_index]
+                    .inspect_ticks
+                    .saturating_sub(dt.ticks);
+                continue;
+            }
+            let target_tile = if let Some(target_tile) = self.mpa_agents[agent_index].target_tile {
+                target_tile
+            } else {
+                let Some(target_tile) = self.mpa_agent_target_tile() else {
+                    continue;
+                };
+                self.mpa_agents[agent_index].target_tile = Some(target_tile);
+                target_tile
+            };
+            let target_x = target_tile.0 as i32 * TILE_WIDTH + 8;
+            let target_y = target_tile.1 as i32 * TILE_HEIGHT + 2;
+            let x = self.characters[character_index].x;
+            let y = self.characters[character_index].y;
+            if (x - target_x).abs() <= crate::world::CHARACTER_WIDTH
+                && (y - target_y).abs() <= crate::world::CHARACTER_HEIGHT
+            {
+                self.mpa_agents[agent_index].target_tile = None;
+                self.mpa_agents[agent_index].inspect_ticks = MPA_AGENT_INSPECT_TICKS;
+                continue;
+            }
+            let direction = direction_toward(x, y, target_x, target_y);
+            self.characters[character_index].direction = direction;
+            self.move_character(character_index, direction, dt);
+        }
+    }
+
+    fn move_mpa_chief(&mut self, dt: FixedStep) {
+        let Some(chief_id) = self.mpa_chief_id else {
+            return;
+        };
+        let Some(chief_index) = self.character_index(chief_id) else {
+            self.mpa_chief_id = None;
+            self.mpa_chief_active_question = None;
+            return;
+        };
+        if !self.characters[chief_index].alive {
+            self.mpa_chief_id = None;
+            self.mpa_chief_active_question = None;
+            return;
+        }
+        let Some((_, player_x, player_y)) =
+            self.living_player_by_offset(self.mpa_chief_player_index)
+        else {
+            return;
+        };
+        let (x, y) = (self.characters[chief_index].x, self.characters[chief_index].y);
+        if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
+            && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
+        {
+            self.characters[chief_index].direction = direction_toward(x, y, player_x, player_y);
+            return;
+        }
+        let direction = direction_toward(x, y, player_x, player_y);
+        self.characters[chief_index].direction = direction;
+        self.move_character(chief_index, direction, dt);
     }
 
     fn move_boss(&mut self, index: usize, dt: FixedStep) {
@@ -1324,6 +1478,58 @@ impl Game {
         self.audio_events.push(AudioEvent::InspectionAlarm);
     }
 
+    fn update_mpa_inspection(&mut self, previous_elapsed_ticks: u32) {
+        if self.mpa_complete || self.mission != MPA_MISSION {
+            return;
+        }
+        if !self.mpa_triggered
+            && previous_elapsed_ticks < MPA_ALERT_TICKS
+            && self.progress.elapsed_ticks >= MPA_ALERT_TICKS
+        {
+            self.spawn_mpa_inspection();
+        }
+        if self.mpa_triggered && self.mpa_chief_id.is_none() {
+            self.spawn_mpa_chief();
+        }
+    }
+
+    fn spawn_mpa_inspection(&mut self) {
+        self.mpa_triggered = true;
+        self.mpa_agents.clear();
+        for _ in 0..MPA_AGENT_COUNT {
+            if let Some((x, y)) = random_spawn_point(&self.world, &mut self.rng) {
+                let id = self.next_character_id;
+                self.next_character_id += 1;
+                let mut agent = Character::inspector(id, x, y, AssetId::MpaAgent);
+                agent.speed = 1;
+                agent.armor = 45;
+                self.characters.push(agent);
+                self.mpa_agents.push(MpaAgentState {
+                    character_id: id,
+                    target_tile: None,
+                    inspect_ticks: self.rng.range(MPA_AGENT_INSPECT_TICKS as i32) as u32,
+                });
+            }
+        }
+        self.spawn_mpa_chief();
+        self.audio_events.push(AudioEvent::InspectionAlarm);
+    }
+
+    fn spawn_mpa_chief(&mut self) {
+        let Some((x, y)) = self.inspector_spawn_point(self.mpa_chief_player_index) else {
+            return;
+        };
+        let id = self.next_character_id;
+        self.next_character_id += 1;
+        let mut chief = Character::inspector(id, x, y, AssetId::MpaChief);
+        chief.speed = 2;
+        chief.armor = 180;
+        self.characters.push(chief);
+        self.mpa_chief_id = Some(id);
+        self.mpa_chief_question_cooldown = 20;
+        self.mpa_chief_active_question = None;
+    }
+
     fn spawn_inspectors(&mut self) {
         self.inspectors.clear();
         let player_count = self
@@ -1468,7 +1674,54 @@ impl Game {
         }
     }
 
+    fn update_mpa_dialogue(&mut self, dt: FixedStep) {
+        if self.mpa_complete {
+            self.mpa_chief_active_question = Some(MPA_COMPLETE_LINE);
+            return;
+        }
+        let Some(chief_id) = self.mpa_chief_id else {
+            return;
+        };
+        let Some(chief) = self
+            .characters
+            .iter()
+            .find(|character| character.id == chief_id && character.alive)
+        else {
+            return;
+        };
+        if self.mpa_chief_active_question.is_some() {
+            return;
+        }
+        self.mpa_chief_question_cooldown = self.mpa_chief_question_cooldown.saturating_sub(dt.ticks);
+        if self.mpa_chief_question_cooldown > 0 {
+            return;
+        }
+        let Some((_, player_x, player_y)) = self.living_player_by_offset(self.mpa_chief_player_index) else {
+            return;
+        };
+        let distance = (chief.x - player_x).abs().max((chief.y - player_y).abs());
+        if distance > MPA_CHIEF_QUESTION_RANGE {
+            return;
+        }
+        let question_index = self.mpa_chief_question_index % MPA_QUESTIONS.len();
+        self.mpa_chief_active_question = Some(MPA_QUESTIONS[question_index]);
+        self.mpa_chief_question_index = question_index + 1;
+    }
+
     fn answer_inspection_question(&mut self, player_index: usize, _answer: InspectionAnswer) {
+        if self.mpa_chief_player_index == player_index
+            && self.mpa_chief_active_question.is_some()
+            && self.mpa_chief_active_question != Some(MPA_COMPLETE_LINE)
+        {
+            self.mpa_chief_active_question = None;
+            self.mpa_chief_question_cooldown = MPA_CHIEF_QUESTION_COOLDOWN_TICKS;
+            self.mpa_chief_answers += 1;
+            if self.mpa_protocol_available() && self.mpa_chief_answers >= MPA_PROTOCOL_QUESTIONS {
+                self.mpa_complete = true;
+                self.mpa_chief_active_question = Some(MPA_COMPLETE_LINE);
+            }
+            return;
+        }
         if let Some(inspector) = self.inspectors.iter_mut().find(|inspector| {
             inspector.player_index == player_index
                 && inspector.active_question.is_some()
@@ -1594,17 +1847,24 @@ impl Game {
             .all(|character| !character.alive)
         {
             self.status = MissionStatus::Lost;
-        } else if self.mission_goal_count > 0
-            && self.hostile_queue_left() == 0
-            && self.world.stats().objects_to_collect == 0
-            && self.progress.kills >= self.rules.minimum_kills
-            && self.players_on_exit()
-        {
+        } else if self.mission_goals_satisfied() && self.players_on_exit() {
             let time_bonus = self.summary().time_remaining_ticks.unwrap_or(0) as i32;
             let divisor = self.rules.scoring.time_bonus_divisor.max(1);
             self.progress.score += time_bonus / divisor;
             self.status = MissionStatus::Won;
         }
+    }
+
+    fn mission_goals_satisfied(&self) -> bool {
+        self.mission_goal_count > 0
+            && self.hostile_queue_left() == 0
+            && self.special_mission_gate_satisfied()
+            && self.world.stats().objects_to_collect == 0
+            && self.progress.kills >= self.rules.minimum_kills
+    }
+
+    fn special_mission_gate_satisfied(&self) -> bool {
+        self.mission != MPA_MISSION || self.mpa_complete
     }
 
     fn apply_player_config(&mut self, config: &crate::config::EutherDogsConfig) -> Result<(), crate::config::ConfigError> {
@@ -1617,6 +1877,9 @@ impl Game {
             let Some(player) = config.player_config(player_index + 1) else {
                 continue;
             };
+            if let Some(protocol) = self.inspection_protocols.get_mut(player_index) {
+                *protocol = player.inspection_protocol;
+            }
             character.armor = player.armor.max(1);
             character.lives = player.lives.max(1);
             if let Some(sprite) = crate::assets::AssetId::player_from_key(&player.character) {
@@ -1677,6 +1940,9 @@ impl Game {
             && (!self.senior_lma_boss_ids.is_empty()
                 || (self.routine_total > 0 && self.progress.routines_read >= self.routine_total))
         {
+            return 1;
+        }
+        if self.mission == MPA_MISSION && !self.mpa_complete {
             return 1;
         }
         0
@@ -1775,6 +2041,37 @@ impl Game {
             .iter()
             .find(|inspector| inspector.character_id == Some(character_id))
             .map(|inspector| inspector.player_index)
+    }
+
+    fn character_index(&self, character_id: u32) -> Option<usize> {
+        self.characters
+            .iter()
+            .position(|character| character.id == character_id)
+    }
+
+    fn mpa_protocol_available(&self) -> bool {
+        self.inspection_protocols.iter().any(|protocol| *protocol > 0)
+    }
+
+    fn mpa_agent_target_tile(&mut self) -> Option<(usize, usize)> {
+        for _ in 0..160 {
+            let x = self.rng.range(self.world.width() as i32) as usize;
+            let y = self.rng.range(self.world.height() as i32) as usize;
+            let Some(tile) = self.world.tile(x, y) else {
+                continue;
+            };
+            if tile.is_pickup() || tile.is_target() {
+                return Some((x, y));
+            }
+        }
+        for _ in 0..120 {
+            let x = self.rng.range(self.world.width() as i32) as usize;
+            let y = self.rng.range(self.world.height() as i32) as usize;
+            if !self.world.blocks_walk(x, y) {
+                return Some((x, y));
+            }
+        }
+        None
     }
 }
 
@@ -2355,6 +2652,156 @@ mod tests {
         let boss = game.summary().boss.expect("Senior LMA has a boss bar");
         assert_eq!(boss.name, super::SENIOR_LMA_NAME);
         assert_eq!(boss.armor, super::SENIOR_LMA_ARMOR_PER_BODY);
+    }
+
+    #[test]
+    fn mission_two_exit_opens_after_senior_lma_defeat_without_protocol() {
+        let mut game = Game::new_mission(
+            31,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 0,
+            },
+        );
+        game.characters
+            .retain(|character| character.faction == Faction::Player);
+        game.mission_goal_count = 1;
+        game.world.set_tile(1, 1, Tile::ServiceElevator);
+
+        game.progress.elapsed_ticks = 899;
+        game.tick(&[], FixedStep { ticks: 1 });
+        game.progress.routines_read = game.routine_total;
+        game.tick(
+            &[],
+            FixedStep {
+                ticks: super::SENIOR_LMA_MUTATION_DELAY_TICKS,
+            },
+        );
+        assert_eq!(game.status(), super::MissionStatus::Running);
+
+        let boss_index = game
+            .characters()
+            .iter()
+            .position(|character| character.sprite == AssetId::SeniorLma)
+            .expect("Senior LMA mutates from inspector");
+        game.damage_character(boss_index, super::SENIOR_LMA_ARMOR_PER_BODY);
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = TILE_WIDTH + 8;
+            player.y = TILE_HEIGHT + 2;
+        }
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert_eq!(game.inspection_answer_count(0), 0);
+        assert_eq!(game.hostile_queue_left(), 0);
+        assert!(game.mission_goals_satisfied());
+        assert_eq!(game.status(), super::MissionStatus::Won);
+    }
+
+    #[test]
+    fn level_ten_mpa_protocol_clears_after_three_questions() {
+        let mut game = Game::new_mission(
+            41,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 10,
+                targets: 0,
+                objects: 0,
+            },
+        );
+        game.characters
+            .retain(|character| character.faction == Faction::Player);
+        game.mission_goal_count = 1;
+        game.inspection_protocols[0] = 1;
+        game.world.set_tile(1, 1, Tile::ServiceElevator);
+
+        game.progress.elapsed_ticks = super::MPA_ALERT_TICKS - 1;
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.mpa_agents.len(), super::MPA_AGENT_COUNT);
+        assert!(game.mpa_chief_id.is_some());
+        assert_eq!(game.hostile_queue_left(), 1);
+        assert!(!game.mission_goals_satisfied());
+
+        let chief_id = game.mpa_chief_id.expect("MPA chief exists");
+        let (player_x, player_y) = game
+            .characters()
+            .iter()
+            .find(|character| character.faction == Faction::Player)
+            .map(|character| (character.x, character.y))
+            .expect("player exists");
+        let chief_index = game.character_index(chief_id).expect("chief index");
+        game.characters[chief_index].x = player_x;
+        game.characters[chief_index].y = player_y;
+
+        for _ in 0..super::MPA_PROTOCOL_QUESTIONS {
+            game.mpa_chief_question_cooldown = 0;
+            game.tick(&[], FixedStep { ticks: 1 });
+            assert!(
+                game.inspection_dialogues()
+                    .iter()
+                    .any(|dialogue| dialogue.inspector_id == chief_id && !dialogue.complete)
+            );
+            game.answer_inspection_question(0, super::InspectionAnswer::Yes);
+        }
+
+        assert!(game.mpa_complete);
+        assert_eq!(game.hostile_queue_left(), 0);
+        assert!(game.mission_goals_satisfied());
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = TILE_WIDTH + 8;
+            player.y = TILE_HEIGHT + 2;
+        }
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Won);
+    }
+
+    #[test]
+    fn level_ten_mpa_without_protocol_keeps_questioning() {
+        let mut game = Game::new_mission(
+            43,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 10,
+                targets: 0,
+                objects: 0,
+            },
+        );
+        game.characters
+            .retain(|character| character.faction == Faction::Player);
+        game.mission_goal_count = 1;
+
+        game.progress.elapsed_ticks = super::MPA_ALERT_TICKS - 1;
+        game.tick(&[], FixedStep { ticks: 1 });
+        let chief_id = game.mpa_chief_id.expect("MPA chief exists");
+        let (player_x, player_y) = game
+            .characters()
+            .iter()
+            .find(|character| character.faction == Faction::Player)
+            .map(|character| (character.x, character.y))
+            .expect("player exists");
+        let chief_index = game.character_index(chief_id).expect("chief index");
+        game.characters[chief_index].x = player_x;
+        game.characters[chief_index].y = player_y;
+
+        for _ in 0..(super::MPA_PROTOCOL_QUESTIONS + 2) {
+            game.mpa_chief_question_cooldown = 0;
+            game.tick(&[], FixedStep { ticks: 1 });
+            game.answer_inspection_question(0, super::InspectionAnswer::Other);
+        }
+
+        assert!(!game.mpa_complete);
+        assert_eq!(game.mpa_chief_answers, super::MPA_PROTOCOL_QUESTIONS + 2);
+        assert_eq!(game.hostile_queue_left(), 1);
+        assert!(!game.mission_goals_satisfied());
     }
 
     #[test]

@@ -680,6 +680,7 @@ let dogsPendingHighscoreFrame: DogsCoreFrame | null = null;
 let dogsHighscoreInitials = ["A", "A", "A"];
 let dogsHighscoreInitialIndex = 0;
 let dogsHighscoreSavedName: string | null = null;
+let dogsSelectedHighScoreIndex = 0;
 let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
@@ -1593,10 +1594,15 @@ eutherDogsBriefingOpen.addEventListener("click", () => {
 });
 
 eutherDogsScoresOpen.addEventListener("click", () => {
+  dogsSelectedHighScoreIndex = 0;
   showDogsMenu("scores");
 });
 
 eutherDogsStartShift.addEventListener("click", () => {
+  if (dogsMenuMode === "scores" && dogsFrame?.summary.status && dogsFrame.summary.status !== "running") {
+    showDogsMenu("result");
+    return;
+  }
   if (dogsMenuMode === "result") {
     if (dogsFrame?.summary.status === "won") {
       if ((dogsFrame.summary.mission ?? selectedDogsMission) >= (dogsFrame.summary.maxMission ?? 10)) {
@@ -1628,6 +1634,12 @@ eutherDogsMenuBody.addEventListener("click", (event) => {
   const scoreSubmit = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-submit]");
   if (scoreSubmit) {
     void submitPendingDogsHighScore();
+    return;
+  }
+  const scoreRow = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-row]");
+  if (scoreRow) {
+    dogsSelectedHighScoreIndex = Number(scoreRow.dataset.scoreRow) || 0;
+    renderDogsMenu();
     return;
   }
   const staffButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-staff-id]");
@@ -4364,6 +4376,8 @@ function dogsEnemyKey(actor: DogsCoreActor): string {
     "inspector_cyan",
     "inspector_magenta",
     "senior_lma",
+    "mpa_agent",
+    "mpa_chief",
   ];
   return actor.sprite && dogsAsset("sprites.enemies", actor.sprite) ? actor.sprite : enemies[actor.id % enemies.length];
 }
@@ -5717,17 +5731,38 @@ function dogsTimeLabel(ticks: number): string {
 
 function dogsHighScoreBoardMarkup(): string {
   const entries = readDogsHighScores();
+  dogsSelectedHighScoreIndex = Math.max(0, Math.min(dogsSelectedHighScoreIndex, entries.length - 1));
+  const selected = entries[dogsSelectedHighScoreIndex] ?? null;
+  if (!entries.length) {
+    return `
+      <div class="eutherdogs-scoreboard">
+        <div class="eutherdogs-score-empty">No closures logged</div>
+      </div>
+    `;
+  }
   return `
     <div class="eutherdogs-scoreboard">
+      ${
+        selected
+          ? `
+            <div class="eutherdogs-score-detail">
+              <span>${String(dogsSelectedHighScoreIndex + 1).padStart(2, "0")}</span>
+              <strong>${escapeHtml(selected.name)}</strong>
+              <em>${selected.score}</em>
+              <small>${selected.completed ? "Closed" : "Failed"} | K ${selected.kills} | RX ${selected.objectsCollected} | ${dogsTimeLabel(selected.elapsedTicks)}</small>
+            </div>
+          `
+          : ""
+      }
       ${entries
         .map(
           (entry, index) => `
-            <div class="eutherdogs-score-row ${entry.completed ? "is-complete" : "is-failed"}">
+            <button class="eutherdogs-score-row ${index === dogsSelectedHighScoreIndex ? "is-selected" : ""} ${entry.completed ? "is-complete" : "is-failed"}" data-score-row="${index}" type="button">
               <span>${String(index + 1).padStart(2, "0")}</span>
-              <strong>${entry.name}</strong>
+              <strong>${escapeHtml(entry.name)}</strong>
               <em>${entry.score}</em>
               <small>${entry.completed ? "Closed" : "Failed"} | K ${entry.kills} | RX ${entry.objectsCollected} | ${dogsTimeLabel(entry.elapsedTicks)}</small>
-            </div>
+            </button>
           `,
         )
         .join("")}
@@ -5817,7 +5852,9 @@ function renderDogsMenu(): void {
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
   eutherDogsScoresOpen.classList.toggle("is-active", dogsMenuMode === "scores");
   eutherDogsStartShift.textContent =
-    dogsMenuMode === "result" && dogsFrame?.summary.status === "won"
+    dogsMenuMode === "scores" && dogsFrame?.summary.status && dogsFrame.summary.status !== "running"
+      ? "Back"
+      : dogsMenuMode === "result" && dogsFrame?.summary.status === "won"
       ? mission >= maxMission
         ? "Main menu"
         : "Next shift"
@@ -6570,7 +6607,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     }
     if (actor.faction !== "player" && dogsPixelVisibility(frame, actor.x, actor.y) < 255) continue;
     const enemyKey = actor.faction !== "player" ? dogsEnemyKey(actor) : "";
-    const spriteUnit = enemyKey === "senior_lma" ? 56 : enemyKey === "district_manager" ? 44 : 32;
+    const spriteUnit = enemyKey === "senior_lma" ? 56 : enemyKey === "mpa_chief" ? 46 : enemyKey === "district_manager" ? 44 : 32;
     const spriteW = Math.max(8, Math.ceil(spriteUnit * scale));
     const spriteH = Math.max(8, Math.ceil(spriteUnit * scale));
     const bodyW = frame.characterWidth * scale;

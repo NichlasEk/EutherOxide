@@ -44,6 +44,8 @@ inspector_cyan_walk = "sprites/enemies/inspector_cyan_walk.png"
 inspector_magenta = "sprites/enemies/inspector_magenta.png"
 inspector_magenta_walk = "sprites/enemies/inspector_magenta_walk.png"
 senior_lma = "sprites/enemies/senior_lma.png"
+mpa_agent = "sprites/enemies/mpa_agent.png"
+mpa_chief = "sprites/enemies/mpa_chief.png"
 
 [sprites.weapons]
 rx_cannon = "sprites/weapons/rx_cannon.png"
@@ -202,6 +204,8 @@ inspector_cyan_walk = "highres/2x/sprites/enemies/inspector_cyan_walk.png"
 inspector_magenta = "highres/2x/sprites/enemies/inspector_magenta.png"
 inspector_magenta_walk = "highres/2x/sprites/enemies/inspector_magenta_walk.png"
 senior_lma = "highres/2x/sprites/enemies/senior_lma.png"
+mpa_agent = "highres/2x/sprites/enemies/mpa_agent.png"
+mpa_chief = "highres/2x/sprites/enemies/mpa_chief.png"
 
 [highres.sprites.weapons]
 rx_cannon = "highres/2x/sprites/weapons/rx_cannon.png"
