@@ -4157,6 +4157,23 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
   const prefix = tile === "door" ? "security_glass_wall" : "pharmacy_wall";
   const horizontalRun = left || right;
   const verticalRun = up || down;
+  const cornerAsset = (suffix: string): string | null => (
+    dogsAsset("tiles.walls", `${prefix}_corner_${suffix}`)
+      ?? dogsAsset("tiles.walls", `${prefix}_junction`)
+      ?? dogsAsset("tiles.walls", prefix)
+  );
+  if (up && right && !down && !left) {
+    return cornerAsset("up_right");
+  }
+  if (up && left && !down && !right) {
+    return cornerAsset("up_left");
+  }
+  if (down && right && !up && !left) {
+    return cornerAsset("down_right");
+  }
+  if (down && left && !up && !right) {
+    return cornerAsset("down_left");
+  }
   if (horizontalRun && verticalRun) {
     return dogsAsset("tiles.walls", `${prefix}_junction`) ?? dogsAsset("tiles.walls", prefix);
   }
