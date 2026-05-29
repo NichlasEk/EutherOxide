@@ -1470,6 +1470,43 @@ mod tests {
     }
 
     #[test]
+    fn scanner_blaster_does_not_splash_nearby_enemy() {
+        let mut game = Game::default();
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 8,
+            TILE_HEIGHT + 2,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+        game.characters.push(crate::entity::Character::hostile_customer(
+            1,
+            TILE_WIDTH * 3,
+            TILE_HEIGHT,
+            crate::assets::AssetId::AngryCustomer,
+        ));
+        game.characters.push(crate::entity::Character::hostile_customer(
+            2,
+            TILE_WIDTH * 3 + 16,
+            TILE_HEIGHT,
+            crate::assets::AssetId::ClaimDenier,
+        ));
+        let nearby_armor = game.characters()[2].armor;
+        game.bullets.push(crate::entity::Bullet {
+            id: 1,
+            x: game.characters()[1].x + crate::world::CHARACTER_WIDTH / 2,
+            y: game.characters()[1].y + crate::world::CHARACTER_HEIGHT / 2,
+            dx: 0,
+            dy: 0,
+            range: 10,
+            owner: 0,
+            owner_faction: crate::entity::Faction::Player,
+            weapon: crate::weapon::WeaponId::ScannerBlaster,
+        });
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.characters()[2].armor, nearby_armor);
+    }
+
+    #[test]
     fn mission_win_requires_exit_after_goals() {
         let mut game = Game::default();
         game.mission_goal_count = 1;

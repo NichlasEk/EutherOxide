@@ -332,6 +332,25 @@ type DogsCoreBullet = {
   weapon: string;
 };
 
+type DogsProjectileStyle = {
+  asset: string;
+  color: string;
+  size: number;
+  trail: number;
+  glow: number;
+  impact: number;
+  spins?: boolean;
+};
+
+type DogsImpactEffect = {
+  id: string;
+  x: number;
+  y: number;
+  weapon: string;
+  ownerFaction: string;
+  startFrame: number;
+};
+
 type DogsCoreSummary = {
   mission: number;
   maxMission: number;
@@ -648,6 +667,9 @@ let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
 let dogsPreviousAudioFrame: DogsCoreFrame | null = null;
 let dogsSawHostileQueue = false;
+let dogsTrackedBullets = new Map<number, DogsCoreBullet>();
+let dogsImpactEffects: DogsImpactEffect[] = [];
+let dogsLastImpactFrameProcessed = -1;
 let lastDogsInputJson = "";
 let lastDogsInputSentAt = 0;
 let lastDogsSnapshotAt = 0;
@@ -4324,23 +4346,32 @@ function dogsActorFacingRow(facing: DogsActorFacing): number {
   }
 }
 
+const dogsProjectileStyles: Record<string, DogsProjectileStyle> = {
+  scanner_blaster: { asset: "cyan_rx_bolt", color: "#39f7c8", size: 13, trail: 14, glow: 12, impact: 18 },
+  coupon_pistol: { asset: "red_denial_bolt", color: "#ff4b4b", size: 10, trail: 7, glow: 5, impact: 10 },
+  receipt_gun: { asset: "red_denial_bolt", color: "#ffb35c", size: 9, trail: 18, glow: 7, impact: 9 },
+  rx_cannon: { asset: "power_pill", color: "#fff04a", size: 22, trail: 28, glow: 28, impact: 42, spins: true },
+  label_printer: { asset: "label_shred", color: "#f2f7ff", size: 11, trail: 20, glow: 5, impact: 8, spins: true },
+  sterilizer_spray: { asset: "sterilizer_cloud", color: "#7dfff1", size: 26, trail: 8, glow: 18, impact: 36 },
+  capsule_launcher: { asset: "capsule_grenade", color: "#ffde5a", size: 18, trail: 20, glow: 20, impact: 48, spins: true },
+  neon_prior_auth: { asset: "green_auth_laser", color: "#42ff74", size: 12, trail: 34, glow: 16, impact: 14 },
+  turbo_prior_auth: { asset: "yellow_warning_laser", color: "#ffee63", size: 10, trail: 42, glow: 18, impact: 16 },
+  formulary_zapper: { asset: "zapper_arc", color: "#ad7cff", size: 20, trail: 18, glow: 26, impact: 38 },
+  autoinjector: { asset: "injector_dart", color: "#ff79c8", size: 13, trail: 13, glow: 8, impact: 16 },
+  needlegun: { asset: "needle_stream", color: "#d5f7ff", size: 8, trail: 32, glow: 5, impact: 8 },
+  handsanitizer_flamethrower: { asset: "sanitizer_flame", color: "#ff7a24", size: 30, trail: 9, glow: 28, impact: 44 },
+};
+
+function dogsProjectileStyle(weapon: string): DogsProjectileStyle {
+  return dogsProjectileStyles[weapon] ?? dogsProjectileStyles.scanner_blaster;
+}
+
 function dogsProjectileAsset(bullet: DogsCoreBullet): string | null {
-  const projectileMap: Record<string, string> = {
-    scanner_blaster: "cyan_rx_bolt",
-    coupon_pistol: "red_denial_bolt",
-    receipt_gun: "red_denial_bolt",
-    rx_cannon: "power_pill",
-    label_printer: "label_shred",
-    sterilizer_spray: "sterilizer_cloud",
-    capsule_launcher: "capsule_grenade",
-    neon_prior_auth: "green_auth_laser",
-    turbo_prior_auth: "yellow_warning_laser",
-    formulary_zapper: "zapper_arc",
-    autoinjector: "injector_dart",
-    needlegun: "needle_stream",
-    handsanitizer_flamethrower: "sanitizer_flame",
-  };
-  return dogsAsset("sprites.projectiles", projectileMap[bullet.weapon] ?? "cyan_rx_bolt");
+  return dogsAsset("sprites.projectiles", dogsProjectileStyle(bullet.weapon).asset);
+}
+
+function dogsEffectAsset(frameIndex: number): string | null {
+  return dogsAsset("sprites.effects", `explosion_0${Math.min(5, Math.max(1, frameIndex))}`);
 }
 
 function dogsWeaponAsset(weapon: string | null | undefined): string | null {
@@ -4457,6 +4488,133 @@ function drawDogsImageFrame(
     dogsContext.fillStyle = fallbackColor;
     dogsContext.fillRect(x, y, width, height);
     return false;
+  }
+}
+
+function preloadDogsImage(url: string | null): void {
+  if (!url || dogsImageCache.has(url)) return;
+  const image = new Image();
+  image.src = url;
+  dogsImageCache.set(url, image);
+}
+
+function preloadDogsCombatAssets(): void {
+  for (const style of Object.values(dogsProjectileStyles)) {
+    preloadDogsImage(dogsAsset("sprites.projectiles", style.asset));
+  }
+  for (let index = 1; index <= 5; index += 1) {
+    preloadDogsImage(dogsEffectAsset(index));
+  }
+}
+
+function drawDogsProjectile(
+  bullet: DogsCoreBullet,
+  cameraX: number,
+  cameraY: number,
+  scale: number,
+  yScale: number,
+  frameTick: number,
+): void {
+  const style = dogsProjectileStyle(bullet.weapon);
+  const cx = (bullet.x - cameraX) * scale;
+  const cy = (bullet.y - cameraY) * yScale * scale;
+  const size = Math.max(4, Math.ceil(style.size * scale));
+  const velocity = Math.hypot(bullet.dx, bullet.dy) || 1;
+  const ux = bullet.dx / velocity;
+  const uy = bullet.dy / velocity;
+  const trailLength = style.trail * scale;
+
+  dogsContext.save();
+  dogsContext.globalCompositeOperation = "lighter";
+  dogsContext.strokeStyle = style.color;
+  dogsContext.lineWidth = Math.max(1, Math.ceil(size * 0.22));
+  dogsContext.globalAlpha = bullet.ownerFaction === "player" ? 0.7 : 0.52;
+  dogsContext.beginPath();
+  dogsContext.moveTo(cx - ux * trailLength, cy - uy * trailLength * yScale);
+  dogsContext.lineTo(cx, cy);
+  dogsContext.stroke();
+  if (style.glow > 0) {
+    const glow = dogsContext.createRadialGradient(cx, cy, 0, cx, cy, style.glow * scale);
+    glow.addColorStop(0, style.color);
+    glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+    dogsContext.globalAlpha = bullet.ownerFaction === "player" ? 0.36 : 0.24;
+    dogsContext.fillStyle = glow;
+    dogsContext.fillRect(cx - style.glow * scale, cy - style.glow * scale, style.glow * 2 * scale, style.glow * 2 * scale);
+  }
+  dogsContext.restore();
+
+  const url = dogsProjectileAsset(bullet);
+  const image = url ? dogsImageCache.get(url) : null;
+  if (url && image?.complete && image.naturalWidth > 0 && style.spins) {
+    dogsContext.save();
+    dogsContext.translate(cx, cy);
+    dogsContext.rotate((frameTick * 0.22 + bullet.id) % (Math.PI * 2));
+    dogsContext.drawImage(image, -size / 2, -size / 2, size, size);
+    dogsContext.restore();
+  } else {
+    drawDogsImage(
+      url,
+      Math.floor(cx - size / 2),
+      Math.floor(cy - size / 2),
+      size,
+      size,
+      bullet.ownerFaction === "player" ? style.color : "#ff3030",
+    );
+  }
+}
+
+function updateDogsImpactEffects(frame: DogsCoreFrame): void {
+  if (dogsLastImpactFrameProcessed === frame.frame) return;
+  const current = new Map<number, DogsCoreBullet>();
+  for (const bullet of frame.bullets) {
+    current.set(bullet.id, bullet);
+  }
+  for (const [id, previous] of dogsTrackedBullets) {
+    if (!current.has(id)) {
+      dogsImpactEffects.push({
+        id: `${frame.frame}:${id}`,
+        x: previous.x,
+        y: previous.y,
+        weapon: previous.weapon,
+        ownerFaction: previous.ownerFaction,
+        startFrame: frame.frame,
+      });
+    }
+  }
+  dogsTrackedBullets = current;
+  dogsImpactEffects = dogsImpactEffects.filter((effect) => frame.frame - effect.startFrame < 18);
+  dogsLastImpactFrameProcessed = frame.frame;
+}
+
+function drawDogsImpactEffects(frame: DogsCoreFrame, cameraX: number, cameraY: number, scale: number, yScale: number): void {
+  for (const effect of dogsImpactEffects) {
+    const age = frame.frame - effect.startFrame;
+    if (age < 0 || age >= 18) continue;
+    if (effect.ownerFaction !== "player" && dogsPixelVisibility(frame, effect.x, effect.y) < 255) continue;
+    const style = dogsProjectileStyle(effect.weapon);
+    const cx = (effect.x - cameraX) * scale;
+    const cy = (effect.y - cameraY) * yScale * scale;
+    const pulse = Math.sin((age / 18) * Math.PI);
+    const size = Math.max(8, Math.ceil((style.impact + pulse * style.impact * 0.45) * scale));
+    const frameIndex = Math.min(5, Math.floor((age / 18) * 5) + 1);
+    dogsContext.save();
+    dogsContext.globalCompositeOperation = "lighter";
+    const glow = dogsContext.createRadialGradient(cx, cy, 0, cx, cy, size * 0.62);
+    glow.addColorStop(0, style.color);
+    glow.addColorStop(0.35, `${style.color}88`);
+    glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+    dogsContext.globalAlpha = 0.42 * (1 - age / 20);
+    dogsContext.fillStyle = glow;
+    dogsContext.fillRect(cx - size, cy - size, size * 2, size * 2);
+    dogsContext.restore();
+    drawDogsImage(
+      dogsEffectAsset(frameIndex),
+      Math.floor(cx - size / 2),
+      Math.floor(cy - size / 2),
+      size,
+      size,
+      style.color,
+    );
   }
 }
 
@@ -5635,6 +5793,7 @@ function setDogsAssetMode(mode: DogsAssetMode): void {
   dogsImageCache.clear();
   dogsSfxCache.clear();
   applyEutherDogsCssAssets();
+  preloadDogsCombatAssets();
   renderDogsAssetMode();
   if (dogsMode && dogsFrame) {
     drawDogsFrame(dogsFrame);
@@ -5654,6 +5813,7 @@ async function enterDogsMode(): Promise<void> {
   dogsMode = true;
   resetScheduledAudio();
   stopBridgeStream();
+  preloadDogsCombatAssets();
   try {
     dogsFrame = await startDogsCore();
     selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
@@ -5842,6 +6002,9 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
   dogsSawHostileQueue = false;
+  dogsTrackedBullets = new Map();
+  dogsImpactEffects = [];
+  dogsLastImpactFrameProcessed = -1;
   dogsSubmittedHighscoreFrame = null;
   dogsPendingHighscoreFrame = null;
   dogsHighscoreSavedName = null;
@@ -5876,6 +6039,9 @@ async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
   dogsSawHostileQueue = false;
+  dogsTrackedBullets = new Map();
+  dogsImpactEffects = [];
+  dogsLastImpactFrameProcessed = -1;
   dogsSubmittedHighscoreFrame = null;
   dogsPendingHighscoreFrame = null;
   dogsHighscoreSavedName = null;
@@ -5892,6 +6058,9 @@ async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
 }
 
 async function resetDogsCore(): Promise<DogsCoreFrame> {
+  dogsTrackedBullets = new Map();
+  dogsImpactEffects = [];
+  dogsLastImpactFrameProcessed = -1;
   if (isTauri) {
     return await invoke<DogsCoreFrame>("reset_eutherdogs");
   }
@@ -6121,17 +6290,11 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       dogsRenderActorPositions.delete(actorKey);
     }
   }
+  updateDogsImpactEffects(frame);
+  drawDogsImpactEffects(frame, cameraX, cameraY, scale, yScale);
   for (const bullet of frame.bullets) {
     if (bullet.ownerFaction !== "player" && dogsPixelVisibility(frame, bullet.x, bullet.y) < 255) continue;
-    const projectileSize = Math.max(4, Math.ceil(16 * scale));
-    drawDogsImage(
-      dogsProjectileAsset(bullet),
-      Math.floor((bullet.x - cameraX) * scale - projectileSize / 2),
-      Math.floor((bullet.y - cameraY) * yScale * scale - projectileSize / 2),
-      projectileSize,
-      projectileSize,
-      bullet.ownerFaction === "player" ? "#39f7c8" : "#ff3030",
-    );
+    drawDogsProjectile(bullet, cameraX, cameraY, scale, yScale, frame.frame);
   }
   drawDogsVisibilityFog(frame, cameraX, cameraY, scale, yScale, firstTileX, firstTileY, lastTileX, lastTileY);
   if (dogsMapOpen) {
