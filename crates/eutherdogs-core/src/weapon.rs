@@ -22,6 +22,7 @@ pub enum WeaponId {
     Autoinjector,
     Needlegun,
     HandSanitizerFlamethrower,
+    ComplianceLaser,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,7 +39,7 @@ pub struct Weapon {
     pub sound: AssetId,
 }
 
-pub const WEAPONS: [Weapon; 13] = [
+pub const WEAPONS: [Weapon; 14] = [
     Weapon::new(
         WeaponId::RxCannon,
         "Rx Cannon",
@@ -195,6 +196,18 @@ pub const WEAPONS: [Weapon; 13] = [
         AnimationMode::Random,
         AssetId::SterilizerSpray,
     ),
+    Weapon::new(
+        WeaponId::ComplianceLaser,
+        "Compliance Laser",
+        138,
+        22,
+        14,
+        9,
+        0,
+        12,
+        AnimationMode::Sequence,
+        AssetId::NeonLaser,
+    ),
 ];
 
 impl Weapon {
@@ -241,6 +254,7 @@ impl WeaponId {
             Self::Autoinjector => "autoinjector",
             Self::Needlegun => "needlegun",
             Self::HandSanitizerFlamethrower => "handsanitizer_flamethrower",
+            Self::ComplianceLaser => "compliance_laser",
         }
     }
 
@@ -259,6 +273,7 @@ impl WeaponId {
             "autoinjector" => Some(Self::Autoinjector),
             "needlegun" => Some(Self::Needlegun),
             "handsanitizer_flamethrower" => Some(Self::HandSanitizerFlamethrower),
+            "compliance_laser" => Some(Self::ComplianceLaser),
             _ => None,
         }
     }
@@ -278,6 +293,7 @@ impl WeaponId {
             Self::Autoinjector => 10,
             Self::Needlegun => 11,
             Self::HandSanitizerFlamethrower => 12,
+            Self::ComplianceLaser => 13,
         }
     }
 

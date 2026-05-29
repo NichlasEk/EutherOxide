@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 const CAMPAIGN_MISSIONS: i32 = 10;
 const WEAPON_SWITCH_COOLDOWN_TICKS: u8 = 18;
+const INSPECTION_PROTOCOL_THRESHOLD: i32 = 10;
 
 #[derive(Clone, Debug)]
 pub struct EutherDogsRuntime {
@@ -162,6 +163,8 @@ pub struct EutherDogsSummary {
     pub boss_max_armor: Option<i32>,
     pub routine_read: i32,
     pub routine_total: i32,
+    pub inspection_answers: i32,
+    pub inspection_protocol: i32,
 }
 
 impl EutherDogsRuntime {
@@ -270,6 +273,7 @@ impl EutherDogsRuntime {
             })
             .collect();
         self.game.tick(&player_inputs, FixedStep { ticks: 1 });
+        self.update_inspection_protocol_state();
         self.frame += 1;
         for (input, cooldown) in self
             .held_inputs
@@ -332,6 +336,7 @@ impl EutherDogsRuntime {
             &self.game,
             &self.config,
             self.mission,
+            player_index,
             self.frame,
             audio_events,
             self.config.high_score_table().entries().len(),
@@ -389,6 +394,8 @@ impl EutherDogsRuntime {
                 .manifest_key()
                 .to_string();
             player.active_weapon = character.active_weapon_id().key().to_string();
+            player.inspection_protocol =
+                inspection_protocol_for_answers(self.game.inspection_answer_count(player_index));
             player.weapons = character
                 .weapons
                 .iter()
@@ -399,6 +406,21 @@ impl EutherDogsRuntime {
                 .collect();
         }
     }
+
+    fn update_inspection_protocol_state(&mut self) {
+        for player_index in 0..2 {
+            let player_key = (player_index + 1).to_string();
+            if let Some(player) = self.config.player.get_mut(&player_key) {
+                player.inspection_protocol = inspection_protocol_for_answers(
+                    self.game.inspection_answer_count(player_index),
+                );
+            }
+        }
+    }
+}
+
+fn inspection_protocol_for_answers(answers: i32) -> i32 {
+    i32::from(answers >= INSPECTION_PROTOCOL_THRESHOLD)
 }
 
 fn input_command(input: EutherDogsInput) -> PlayerCommand {
@@ -537,12 +559,18 @@ pub fn eutherdogs_frame(
     game: &Game,
     config: &EutherDogsConfig,
     mission: i32,
+    player_index: usize,
     frame: u64,
     audio_events: &[eutherdogs_core::AudioEvent],
     highscore_count: usize,
     visibility: Vec<u8>,
 ) -> EutherDogsFrame {
     let summary = game.summary();
+    let inspection_answers = game.inspection_answer_count(player_index);
+    let inspection_protocol = config
+        .player_config(player_index + 1)
+        .map(|player| player.inspection_protocol)
+        .unwrap_or_else(|| inspection_protocol_for_answers(inspection_answers));
     EutherDogsFrame {
         frame,
         width: game.world().width(),
@@ -641,6 +669,8 @@ pub fn eutherdogs_frame(
             boss_max_armor: summary.boss.map(|boss| boss.max_armor),
             routine_read: summary.routine_read,
             routine_total: summary.routine_total,
+            inspection_answers,
+            inspection_protocol,
         },
         store: game_store_items(game, config),
         audio_events: audio_events
@@ -998,6 +1028,12 @@ mod tests {
 
         assert_eq!(players[0].sprite, "neon_pharmacist");
         assert_eq!(players[1].sprite, "neon_pharmacist_alt");
+    }
+
+    #[test]
+    fn inspection_protocol_requires_ten_answers() {
+        assert_eq!(inspection_protocol_for_answers(9), 0);
+        assert_eq!(inspection_protocol_for_answers(10), 1);
     }
 
     #[test]

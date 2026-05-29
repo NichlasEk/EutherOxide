@@ -113,6 +113,10 @@ const NGR3_MISSION: i32 = 3;
 const NGR3_ARMOR: i32 = 780;
 const NGR3_FIRE_WAVE_RANGE: i32 = 152;
 const NGR3_NAME: &str = "NGR3";
+const SENIOR_LMA_NAME: &str = "Senior LMA";
+const SENIOR_LMA_ARMOR_PER_BODY: i32 = 620;
+const SENIOR_LMA_MUTATION_DELAY_TICKS: u32 = 120;
+const SENIOR_LMA_CONTACT_DAMAGE: i32 = 11;
 const INSPECTION_MISSION: i32 = 2;
 const INSPECTION_ALERT_TICKS: u32 = 15 * 60;
 const INSPECTION_ROUTINES: i32 = 17;
@@ -267,6 +271,11 @@ pub struct Game {
     inspection_alert_triggered: bool,
     routine_total: i32,
     inspectors: Vec<InspectorState>,
+    inspection_answer_counts: [i32; 2],
+    inspection_complete_ticks: Option<u32>,
+    senior_lma_boss_ids: Vec<u32>,
+    senior_lma_max_armor: i32,
+    senior_lma_defeated: bool,
 }
 
 impl Default for Game {
@@ -292,6 +301,11 @@ impl Default for Game {
             inspection_alert_triggered: false,
             routine_total: 0,
             inspectors: Vec::new(),
+            inspection_answer_counts: [0, 0],
+            inspection_complete_ticks: None,
+            senior_lma_boss_ids: Vec::new(),
+            senior_lma_max_armor: 0,
+            senior_lma_defeated: false,
         }
     }
 }
@@ -325,6 +339,11 @@ impl Game {
             inspection_alert_triggered: false,
             routine_total: 0,
             inspectors: Vec::new(),
+            inspection_answer_counts: [0, 0],
+            inspection_complete_ticks: None,
+            senior_lma_boss_ids: Vec::new(),
+            senior_lma_max_armor: 0,
+            senior_lma_defeated: false,
         };
         game.mission_goal_count =
             game.world.stats().targets_left + game.world.stats().objects_to_collect;
@@ -408,6 +427,7 @@ impl Game {
         self.remove_dead_characters();
         self.update_inspector_state(dt);
         self.update_inspector_dialogues(dt);
+        self.update_senior_lma_state(dt);
         self.update_boss_state();
         self.update_status();
     }
@@ -452,6 +472,13 @@ impl Game {
                     })
             })
             .collect()
+    }
+
+    pub fn inspection_answer_count(&self, player_index: usize) -> i32 {
+        self.inspection_answer_counts
+            .get(player_index)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub const fn status(&self) -> MissionStatus {
@@ -655,6 +682,39 @@ impl Game {
         }
     }
 
+    fn fire_directed_weapon_from(
+        &mut self,
+        character_index: usize,
+        weapon_id: WeaponId,
+        origin_x: i32,
+        origin_y: i32,
+        dx: i32,
+        dy: i32,
+        emit_sound: bool,
+    ) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let weapon = weapon_id.data();
+        let character = &self.characters[character_index];
+        self.bullets.push(Bullet {
+            id: self.next_bullet_id,
+            x: origin_x,
+            y: origin_y,
+            dx: dx.signum() * weapon.speed,
+            dy: dy.signum() * weapon.speed,
+            range: weapon.range,
+            owner: character.id,
+            owner_faction: character.faction,
+            weapon: weapon_id,
+        });
+        self.next_bullet_id += 1;
+        self.progress.shots_fired += 1;
+        if emit_sound {
+            self.audio_events.push(AudioEvent::Sfx(weapon.sound));
+        }
+    }
+
     fn fire_boss_ring(&mut self, character_index: usize, weapon_id: WeaponId) {
         for (dx, dy) in [
             (1, 0),
@@ -757,6 +817,10 @@ impl Game {
             .collect::<Vec<_>>();
 
         for index in hostile_indices {
+            if self.is_senior_lma_boss_index(index) {
+                self.move_senior_lma_boss(index, dt);
+                continue;
+            }
             if self.is_active_boss_index(index) {
                 self.move_boss(index, dt);
                 continue;
@@ -876,6 +940,106 @@ impl Game {
         };
         self.characters[index].direction = direction;
         self.move_character(index, direction, dt);
+    }
+
+    fn move_senior_lma_boss(&mut self, index: usize, dt: FixedStep) {
+        let (x, y, armor) = (
+            self.characters[index].x,
+            self.characters[index].y,
+            self.characters[index].armor,
+        );
+        let Some((player_index, player_x, player_y)) = self.nearest_living_player(x, y) else {
+            return;
+        };
+        let second_phase = armor <= SENIOR_LMA_ARMOR_PER_BODY / 2;
+        let distance = (x - player_x).abs().max((y - player_y).abs());
+
+        if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
+            && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
+        {
+            let damage = if second_phase {
+                SENIOR_LMA_CONTACT_DAMAGE + 6
+            } else {
+                SENIOR_LMA_CONTACT_DAMAGE
+            };
+            self.hurt_player_index(player_index, damage * dt.ticks as i32);
+            return;
+        }
+
+        if self.characters[index].weapon_cooldown == 0 {
+            if second_phase && self.progress.elapsed_ticks % 4 == 0 {
+                self.fire_senior_lma_spiral(index);
+                self.characters[index].weapon_cooldown = 28;
+            } else if self.progress.elapsed_ticks % 3 == 0 {
+                self.fire_senior_lma_triple_laser(index, player_x, player_y);
+                self.characters[index].weapon_cooldown = if second_phase { 24 } else { 34 };
+            } else {
+                self.fire_senior_lma_sweep(index);
+                self.characters[index].weapon_cooldown = if second_phase { 32 } else { 44 };
+            }
+        }
+
+        let direction = if second_phase && distance < 190 {
+            direction_toward(player_x, player_y, x, y)
+        } else if distance > 150 {
+            direction_toward(x, y, player_x, player_y)
+        } else {
+            return;
+        };
+        self.characters[index].direction = direction;
+        self.move_character(index, direction, dt);
+    }
+
+    fn fire_senior_lma_triple_laser(&mut self, index: usize, player_x: i32, player_y: i32) {
+        let character = &self.characters[index];
+        let origins = [
+            (character.x - 10, character.y + 12),
+            (character.x + crate::world::CHARACTER_WIDTH / 2, character.y - 8),
+            (character.x + crate::world::CHARACTER_WIDTH + 10, character.y + 12),
+        ];
+        for (origin_x, origin_y) in origins {
+            self.fire_directed_weapon_from(
+                index,
+                WeaponId::ComplianceLaser,
+                origin_x,
+                origin_y,
+                player_x - origin_x,
+                player_y - origin_y,
+                false,
+            );
+        }
+        self.audio_events
+            .push(AudioEvent::Sfx(WeaponId::ComplianceLaser.data().sound));
+    }
+
+    fn fire_senior_lma_sweep(&mut self, index: usize) {
+        let direction = self.characters[index].direction;
+        let (dx, dy) = direction.delta();
+        let vectors = if dx != 0 {
+            [(dx, 0), (dx, -1), (dx, 1)]
+        } else if dy != 0 {
+            [(0, dy), (-1, dy), (1, dy)]
+        } else {
+            [(1, 0), (0, -1), (0, 1)]
+        };
+        for (dx, dy) in vectors {
+            self.fire_directed_weapon(index, WeaponId::ComplianceLaser, dx, dy, false);
+        }
+        self.audio_events
+            .push(AudioEvent::Sfx(WeaponId::ComplianceLaser.data().sound));
+    }
+
+    fn fire_senior_lma_spiral(&mut self, index: usize) {
+        let vectors = if (self.progress.elapsed_ticks / 30) % 2 == 0 {
+            [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)]
+        } else {
+            [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1)]
+        };
+        for (dx, dy) in vectors {
+            self.fire_directed_weapon(index, WeaponId::ComplianceLaser, dx, dy, false);
+        }
+        self.audio_events
+            .push(AudioEvent::Sfx(WeaponId::ComplianceLaser.data().sound));
     }
 
     fn damage_bullet_hit(&mut self, character_index: usize, damage: i32, owner_faction: Faction) {
@@ -1070,6 +1234,82 @@ impl Game {
         self.boss = Some(boss);
     }
 
+    fn update_senior_lma_state(&mut self, dt: FixedStep) {
+        if !self.senior_lma_boss_ids.is_empty() {
+            let alive_ids = self
+                .characters
+                .iter()
+                .filter(|character| character.alive)
+                .map(|character| character.id)
+                .collect::<Vec<_>>();
+            self.senior_lma_boss_ids
+                .retain(|boss_id| alive_ids.contains(boss_id));
+            if self.senior_lma_boss_ids.is_empty() {
+                self.senior_lma_defeated = true;
+                self.senior_lma_max_armor = 0;
+            }
+            return;
+        }
+
+        if self.senior_lma_defeated
+            || self.mission != INSPECTION_MISSION
+            || self.routine_total == 0
+            || self.progress.routines_read < self.routine_total
+        {
+            return;
+        }
+
+        let ticks = self.inspection_complete_ticks.get_or_insert(0);
+        *ticks = ticks.saturating_add(dt.ticks);
+        if *ticks < SENIOR_LMA_MUTATION_DELAY_TICKS {
+            return;
+        }
+        self.mutate_inspectors_into_senior_lma();
+    }
+
+    fn mutate_inspectors_into_senior_lma(&mut self) {
+        let boss_ids = self
+            .inspectors
+            .iter()
+            .filter_map(|inspector| inspector.character_id)
+            .filter(|character_id| {
+                self.characters
+                    .iter()
+                    .any(|character| character.id == *character_id && character.alive)
+            })
+            .collect::<Vec<_>>();
+        if boss_ids.is_empty() {
+            return;
+        }
+
+        for boss_id in &boss_ids {
+            if let Some(character) = self
+                .characters
+                .iter_mut()
+                .find(|character| character.id == *boss_id)
+            {
+                character.faction = Faction::HostileCustomer;
+                character.sprite = AssetId::SeniorLma;
+                character.armor = SENIOR_LMA_ARMOR_PER_BODY;
+                character.speed = 2;
+                character.weapon = WeaponId::ComplianceLaser;
+                character.weapons = vec![WeaponSlot {
+                    weapon: WeaponId::ComplianceLaser,
+                    ammo: -1,
+                }];
+                character.active_weapon = 0;
+                character.weapon_cooldown = 24;
+                character.is_target = true;
+            }
+        }
+        self.inspectors.clear();
+        self.senior_lma_max_armor = boss_ids.len() as i32 * SENIOR_LMA_ARMOR_PER_BODY;
+        self.senior_lma_boss_ids = boss_ids;
+        self.audio_events.push(AudioEvent::Sfx(AssetId::PortalReady));
+        self.audio_events
+            .push(AudioEvent::Sfx(WeaponId::ComplianceLaser.data().sound));
+    }
+
     fn update_inspection_alert(&mut self, previous_elapsed_ticks: u32) {
         if self.inspection_alert_triggered
             || self.mission != INSPECTION_MISSION
@@ -1236,6 +1476,9 @@ impl Game {
         }) {
             inspector.active_question = None;
             inspector.question_cooldown = INSPECTOR_QUESTION_COOLDOWN_TICKS;
+            if let Some(count) = self.inspection_answer_counts.get_mut(player_index) {
+                *count += 1;
+            }
         }
     }
 
@@ -1430,6 +1673,12 @@ impl Game {
         {
             return 1;
         }
+        if !self.senior_lma_defeated
+            && (!self.senior_lma_boss_ids.is_empty()
+                || (self.routine_total > 0 && self.progress.routines_read >= self.routine_total))
+        {
+            return 1;
+        }
         0
     }
 
@@ -1441,11 +1690,30 @@ impl Game {
                 character.faction == Faction::HostileCustomer
                     && character.alive
                     && Some(character.id) != boss_id
+                    && !self.senior_lma_boss_ids.contains(&character.id)
             })
             .count() as i32
     }
 
     fn boss_summary(&self) -> Option<BossSummary> {
+        if !self.senior_lma_boss_ids.is_empty() {
+            let armor = self
+                .characters
+                .iter()
+                .filter(|character| {
+                    character.alive && self.senior_lma_boss_ids.contains(&character.id)
+                })
+                .map(|character| character.armor.max(0))
+                .sum::<i32>();
+            if armor > 0 {
+                return Some(BossSummary {
+                    active: true,
+                    name: SENIOR_LMA_NAME,
+                    armor,
+                    max_armor: self.senior_lma_max_armor.max(armor).max(1),
+                });
+            }
+        }
         let boss = self.boss?;
         let boss_id = boss.boss_id?;
         let character = self
@@ -1464,6 +1732,12 @@ impl Game {
         self.boss
             .and_then(|boss| boss.boss_id)
             .is_some_and(|boss_id| self.characters.get(index).is_some_and(|character| character.id == boss_id))
+    }
+
+    fn is_senior_lma_boss_index(&self, index: usize) -> bool {
+        self.characters
+            .get(index)
+            .is_some_and(|character| self.senior_lma_boss_ids.contains(&character.id))
     }
 
     fn has_line_of_sight(&self, x: i32, y: i32, target_x: i32, target_y: i32) -> bool {
@@ -2039,6 +2313,48 @@ mod tests {
             FixedStep { ticks: 1 },
         );
         assert!(game.inspection_dialogues().is_empty());
+        assert_eq!(game.inspection_answer_count(0), 1);
+    }
+
+    #[test]
+    fn inspection_complete_mutates_inspectors_into_senior_lma() {
+        let mut game = Game::new_mission(
+            29,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 1,
+            },
+        );
+        game.progress.elapsed_ticks = 899;
+        game.tick(&[], FixedStep { ticks: 1 });
+        let inspector_id = game
+            .characters()
+            .iter()
+            .find(|character| character.faction == Faction::Inspector)
+            .expect("inspection spawns an inspector")
+            .id;
+        game.progress.routines_read = game.routine_total;
+
+        game.tick(
+            &[],
+            FixedStep {
+                ticks: super::SENIOR_LMA_MUTATION_DELAY_TICKS,
+            },
+        );
+
+        let senior_lma = game
+            .characters()
+            .iter()
+            .find(|character| character.id == inspector_id)
+            .expect("mutated inspector keeps its character id");
+        assert_eq!(senior_lma.faction, Faction::HostileCustomer);
+        assert_eq!(senior_lma.sprite, AssetId::SeniorLma);
+        assert_eq!(senior_lma.armor, super::SENIOR_LMA_ARMOR_PER_BODY);
+        let boss = game.summary().boss.expect("Senior LMA has a boss bar");
+        assert_eq!(boss.name, super::SENIOR_LMA_NAME);
+        assert_eq!(boss.armor, super::SENIOR_LMA_ARMOR_PER_BODY);
     }
 
     #[test]

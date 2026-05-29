@@ -44,6 +44,8 @@ pub struct PlayerConfig {
     pub score: i32,
     pub armor: i32,
     pub lives: i32,
+    #[serde(alias = "inspection_protocoll", alias = "inspectionprotocoll")]
+    pub inspection_protocol: i32,
     pub character: String,
     pub active_weapon: String,
     pub weapons: Vec<ConfigWeaponSlot>,
@@ -265,6 +267,7 @@ impl Default for PlayerConfig {
             score: 0,
             armor: 100,
             lives: 3,
+            inspection_protocol: 0,
             character: AssetId::NightShiftTech.manifest_key().to_string(),
             active_weapon: WeaponId::ScannerBlaster.key().to_string(),
             weapons: vec![
@@ -458,7 +461,21 @@ mod tests {
         assert_eq!(config.seed(), 0xC0FFEE);
         assert_eq!(config.mission_rules().player_count, 1);
         assert!(!config.store.is_empty());
+        assert_eq!(config.player_config(1).unwrap().inspection_protocol, 0);
         assert_eq!(config.high_score_table().entries()[0].name, "ANON");
+    }
+
+    #[test]
+    fn accepts_inspection_protocoll_alias() {
+        let config = EutherDogsConfig::from_toml_str(
+            r#"
+            [player.1]
+            inspectionprotocoll = 1
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.player_config(1).unwrap().inspection_protocol, 1);
     }
 
     #[test]

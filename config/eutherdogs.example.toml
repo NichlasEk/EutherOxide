@@ -15,6 +15,7 @@ cash = 500
 score = 0
 armor = 100
 lives = 3
+inspection_protocol = 0
 character = "night_shift_tech"
 active_weapon = "scanner_blaster"
 
@@ -32,6 +33,7 @@ cash = 500
 score = 0
 armor = 100
 lives = 3
+inspection_protocol = 0
 character = "neon_pharmacist"
 active_weapon = "scanner_blaster"
 

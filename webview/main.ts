@@ -376,6 +376,8 @@ type DogsCoreSummary = {
   bossMaxArmor?: number | null;
   routineRead?: number;
   routineTotal?: number;
+  inspectionAnswers?: number;
+  inspectionProtocol?: number;
 };
 
 type DogsStoreItem = {
@@ -4361,6 +4363,7 @@ function dogsEnemyKey(actor: DogsCoreActor): string {
     "district_manager",
     "inspector_cyan",
     "inspector_magenta",
+    "senior_lma",
   ];
   return actor.sprite && dogsAsset("sprites.enemies", actor.sprite) ? actor.sprite : enemies[actor.id % enemies.length];
 }
@@ -4442,6 +4445,7 @@ const dogsProjectileStyles: Record<string, DogsProjectileStyle> = {
   autoinjector: { asset: "injector_dart", color: "#ff79c8", size: 13, trail: 13, glow: 8, impact: 16 },
   needlegun: { asset: "needle_stream", color: "#d5f7ff", size: 8, trail: 32, glow: 5, impact: 8 },
   handsanitizer_flamethrower: { asset: "sanitizer_flame", color: "#ff7a24", size: 30, trail: 9, glow: 28, impact: 44 },
+  compliance_laser: { asset: "compliance_laser", color: "#54ff70", size: 16, trail: 58, glow: 24, impact: 20 },
 };
 
 function dogsProjectileStyle(weapon: string): DogsProjectileStyle {
@@ -6565,7 +6569,8 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       continue;
     }
     if (actor.faction !== "player" && dogsPixelVisibility(frame, actor.x, actor.y) < 255) continue;
-    const spriteUnit = actor.faction !== "player" && dogsEnemyKey(actor) === "district_manager" ? 44 : 32;
+    const enemyKey = actor.faction !== "player" ? dogsEnemyKey(actor) : "";
+    const spriteUnit = enemyKey === "senior_lma" ? 56 : enemyKey === "district_manager" ? 44 : 32;
     const spriteW = Math.max(8, Math.ceil(spriteUnit * scale));
     const spriteH = Math.max(8, Math.ceil(spriteUnit * scale));
     const bodyW = frame.characterWidth * scale;
@@ -6638,8 +6643,11 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const routineText = routineTotal > 0
       ? ` | RUTINE ${frame.summary.routineRead ?? 0}/${routineTotal} READ`
       : "";
+    const inspectionText = (frame.summary.inspectionAnswers ?? 0) > 0 || (frame.summary.inspectionProtocol ?? 0) > 0
+      ? ` | INSPECT ${frame.summary.inspectionAnswers ?? 0}/10 | PROTOCOL ${frame.summary.inspectionProtocol ?? 0}`
+      : "";
     hud.innerHTML = `
-      <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${dogsQueueLeft(frame)}</strong>${routineText} | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
+      <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${dogsQueueLeft(frame)}</strong>${routineText}${inspectionText} | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
       ${bossActive ? `<span class="eutherdogs-boss"><strong>BOSS:${bossName}</strong><span class="eutherdogs-boss-bar"><span style="width: ${bossPercent}%"></span></span></span>` : ""}
     `;
   }
