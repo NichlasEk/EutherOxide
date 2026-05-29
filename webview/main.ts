@@ -369,6 +369,10 @@ type DogsCoreSummary = {
   objectsLeft: number;
   minimumKills: number;
   timeRemainingTicks?: number | null;
+  bossActive?: boolean;
+  bossName?: string | null;
+  bossArmor?: number | null;
+  bossMaxArmor?: number | null;
 };
 
 type DogsStoreItem = {
@@ -1608,6 +1612,11 @@ eutherDogsMenuBody.addEventListener("click", (event) => {
   if (staffButton) {
     const staff = staffButton.dataset.staffId === "2" ? 2 : 1;
     void selectDogsStaff(staff);
+    return;
+  }
+  const missionButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-dogs-mission]");
+  if (missionButton) {
+    void selectDogsMission(Number(missionButton.dataset.dogsMission) || 1);
     return;
   }
   const buyButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-store-buy]");
@@ -4242,6 +4251,10 @@ function dogsTileImageFit(tile: string): "contain" | "cover" {
 
 function dogsQueueLeft(frame: DogsCoreFrame | null | undefined): number {
   if (!frame) return 0;
+  if (frame.summary.bossActive) {
+    dogsSawHostileQueue = true;
+    return 1;
+  }
   const hostileActors = frame.characters.filter((actor) => actor.faction === "hostile_customer");
   if (hostileActors.length > 0) {
     dogsSawHostileQueue = true;
@@ -4920,6 +4933,7 @@ function resolveDogsLocalExit(frame: DogsCoreFrame): boolean {
 }
 
 function dogsGameplaySfxGain(sound: string): number {
+  if (sound === "portal_ready") return 0.95;
   if (sound === "customer_defeated" || sound === "impact_heavy") return 0.95;
   if (sound === "pickup_rx" || sound === "weapon_switch") return 0.82;
   return 0.88;
@@ -5007,10 +5021,13 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   eutherDogsWeapon.textContent = weapon;
   eutherDogsWeapon.style.setProperty("--dogs-active-weapon", weaponIcon ? `url("${weaponIcon}")` : "none");
   eutherDogsAlert.textContent =
-    status === "RUNNING" ? `Mission ${frame.summary.mission}/${frame.summary.maxMission}` : `Mission ${status}`;
+    frame.summary.bossActive
+      ? `BOSS:${frame.summary.bossName ?? "NGR3"}`
+      : status === "RUNNING" ? `Mission ${frame.summary.mission}/${frame.summary.maxMission}` : `Mission ${status}`;
   eutherDogsHealthFill.style.width = `${healthPercent}%`;
   eutherDogsLamp.classList.toggle("is-hot", queueLeft > 0 && frame.summary.status === "running");
   eutherDogsConsole.classList.toggle("is-alert", queueLeft > 0);
+  eutherDogsConsole.classList.toggle("is-boss", Boolean(frame.summary.bossActive));
   eutherDogsConsole.classList.toggle("is-closed", frame.summary.status !== "running");
   if (dogsMenuMode) {
     renderDogsMenu();
@@ -5623,6 +5640,18 @@ function renderDogsMenu(): void {
         <div><span>Policy</span><strong>No refunds after laser contact</strong></div>
         <div><span>Uniform</span><strong>White coat, zero patience</strong></div>
       </div>
+      <div class="eutherdogs-level-select" aria-label="mission select">
+        ${Array.from({ length: maxMission }, (_, index) => index + 1)
+          .map(
+            (level) => `
+              <button class="${level === selectedDogsMission ? "is-selected" : ""}" data-dogs-mission="${level}" type="button">
+                <span>Level</span>
+                <strong>${level}</strong>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
     `;
     return;
   }
@@ -5723,7 +5752,6 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
   selectedDogsStaff = staff;
   selectedDogsCharacters[playerPort] = dogsStaffOptions.find((option) => option.id === staff)?.character ?? "night_shift_tech";
   writeStoredDogsCharacters();
-  selectedDogsMission = 1;
   try {
     dogsFrame = await startDogsCore();
     selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
@@ -5735,6 +5763,23 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
     pushTrace(`EutherDogs P${playerPort} selected ${dogsCharacterName(selectedDogsCharacters[playerPort])}`);
   } catch (err) {
     pushTrace(`EutherDogs staff select failed: ${err instanceof Error ? err.message : String(err)}`);
+    renderDogsMenu();
+  }
+}
+
+async function selectDogsMission(mission: number): Promise<void> {
+  selectedDogsMission = Math.min(10, Math.max(1, Math.trunc(mission)));
+  try {
+    dogsFrame = await startDogsCore();
+    selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
+    dogsLastExitReady = dogsExitReady(dogsFrame);
+    dogsLastPortalHumFrame = -9999;
+    dogsPreviousAudioFrame = dogsFrame;
+    drawDogsFrame(dogsFrame);
+    showDogsMenu("briefing");
+    pushTrace(`EutherDogs level ${selectedDogsMission} selected`);
+  } catch (err) {
+    pushTrace(`EutherDogs level select failed: ${err instanceof Error ? err.message : String(err)}`);
     renderDogsMenu();
   }
 }
@@ -6338,7 +6383,16 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   if (hud) {
     const hero = dogsLocalPlayer(frame);
     const ammo = hero?.ammo ?? -1;
-    hud.textContent = `COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE ${dogsQueueLeft(frame)} | AMMO ${ammo < 0 ? "INF" : ammo} | ${frame.summary.status.toUpperCase()}`;
+    const bossActive = Boolean(frame.summary.bossActive);
+    const bossArmor = Math.max(0, frame.summary.bossArmor ?? 0);
+    const bossMaxArmor = Math.max(1, frame.summary.bossMaxArmor ?? 1);
+    const bossPercent = Math.round(Math.min(100, (bossArmor / bossMaxArmor) * 100));
+    const bossName = escapeHtml(frame.summary.bossName ?? "NGR3");
+    const status = escapeHtml(frame.summary.status.toUpperCase());
+    hud.innerHTML = `
+      <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${dogsQueueLeft(frame)}</strong> | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
+      ${bossActive ? `<span class="eutherdogs-boss"><strong>BOSS:${bossName}</strong><span class="eutherdogs-boss-bar"><span style="width: ${bossPercent}%"></span></span></span>` : ""}
+    `;
   }
   updateDogsConsole(frame);
 }

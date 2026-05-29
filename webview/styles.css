@@ -278,6 +278,16 @@ button:disabled {
   color: #ffef6e;
 }
 
+.eutherdogs-console.is-boss .eutherdogs-console-top {
+  border-color: rgba(255, 48, 79, 0.62);
+  box-shadow: inset 0 -1px 0 rgba(255, 48, 79, 0.28);
+}
+
+.eutherdogs-console.is-boss .eutherdogs-shift strong {
+  color: #ff304f;
+  text-shadow: 0 0 8px rgba(255, 48, 79, 0.55);
+}
+
 .eutherdogs-console.is-closed .eutherdogs-shift strong {
   color: #9cff75;
 }
@@ -596,6 +606,51 @@ button:disabled {
   gap: 7px;
 }
 
+.eutherdogs-level-select {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.eutherdogs-level-select button {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-height: 42px;
+  padding: 6px;
+  border-radius: 0;
+  background: rgba(0, 5, 7, 0.74);
+  text-align: center;
+}
+
+.eutherdogs-level-select button.is-selected {
+  border-color: rgba(255, 239, 110, 0.62);
+  background: rgba(45, 39, 7, 0.76);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 239, 110, 0.22),
+    0 0 16px rgba(255, 239, 110, 0.12);
+}
+
+.eutherdogs-level-select span,
+.eutherdogs-level-select strong {
+  display: block;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.eutherdogs-level-select span {
+  color: #92f4ee;
+  font-size: 0.52rem;
+  font-weight: 900;
+}
+
+.eutherdogs-level-select strong {
+  color: #ffffff;
+  font-size: 0.86rem;
+  font-weight: 950;
+}
+
 .eutherdogs-scoreboard {
   grid-template-columns: 1fr;
   align-content: start;
@@ -841,6 +896,8 @@ button:disabled {
   bottom: 9px;
   z-index: 4;
   display: none;
+  align-items: center;
+  gap: 12px;
   min-height: 24px;
   padding: 5px 8px;
   border: 1px solid rgba(39, 242, 255, 0.35);
@@ -854,12 +911,57 @@ button:disabled {
     inset 0 0 18px rgba(39, 242, 255, 0.08),
     0 8px 24px rgba(0, 0, 0, 0.24);
   overflow: hidden;
+  white-space: normal;
+}
+
+.eutherdogs-mode .eutherdogs-hud {
+  display: flex;
+}
+
+.eutherdogs-hud-main {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.eutherdogs-mode .eutherdogs-hud {
+.eutherdogs-queue {
+  color: #eaffff;
+}
+
+.eutherdogs-queue.is-boss {
+  color: #ff304f;
+  text-shadow: 0 0 8px rgba(255, 48, 79, 0.8);
+}
+
+.eutherdogs-boss {
+  display: grid;
+  grid-template-columns: auto minmax(90px, 180px);
+  align-items: center;
+  gap: 8px;
+  min-width: min(260px, 42%);
+  color: #ffef6e;
+}
+
+.eutherdogs-boss strong {
+  color: #ff304f;
+  font-size: 0.68rem;
+  text-shadow: 0 0 8px rgba(255, 48, 79, 0.5);
+}
+
+.eutherdogs-boss-bar {
+  height: 9px;
+  border: 1px solid rgba(255, 48, 79, 0.45);
+  background: rgba(30, 0, 8, 0.82);
+  overflow: hidden;
+}
+
+.eutherdogs-boss-bar span {
   display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ff304f, #ffef6e);
+  box-shadow: 0 0 10px rgba(255, 48, 79, 0.65);
 }
 
 #molecule-field {

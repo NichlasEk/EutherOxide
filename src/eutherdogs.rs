@@ -137,6 +137,10 @@ pub struct EutherDogsSummary {
     pub objects_left: i32,
     pub minimum_kills: i32,
     pub time_remaining_ticks: Option<u32>,
+    pub boss_active: bool,
+    pub boss_name: Option<&'static str>,
+    pub boss_armor: Option<i32>,
+    pub boss_max_armor: Option<i32>,
 }
 
 impl EutherDogsRuntime {
@@ -585,6 +589,10 @@ pub fn eutherdogs_frame(
             objects_left: summary.objects_left,
             minimum_kills: summary.minimum_kills,
             time_remaining_ticks: summary.time_remaining_ticks,
+            boss_active: summary.boss.is_some_and(|boss| boss.active),
+            boss_name: summary.boss.map(|boss| boss.name),
+            boss_armor: summary.boss.map(|boss| boss.armor),
+            boss_max_armor: summary.boss.map(|boss| boss.max_armor),
         },
         store: game_store_items(game, config),
         audio_events: audio_events

@@ -4,7 +4,7 @@ use crate::{
     command::PlayerCommand,
     config::ConfigStoreItem,
     direction::Direction,
-    entity::{Bullet, Character, Faction},
+    entity::{Bullet, Character, Faction, WeaponSlot},
     rng::Lcg,
     weapon::WeaponId,
     world::{MissionSpec, Tile, World, WorldParams, TILE_HEIGHT, TILE_WIDTH},
@@ -91,6 +91,29 @@ struct HostileProfile {
     straight_shooter: bool,
 }
 
+const NGR3_MISSION: i32 = 3;
+const NGR3_ARMOR: i32 = 460;
+const NGR3_NAME: &str = "NGR3";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BossState {
+    active: bool,
+    defeated: bool,
+    boss_id: Option<u32>,
+    max_armor: i32,
+}
+
+impl BossState {
+    const fn ngr3() -> Self {
+        Self {
+            active: false,
+            defeated: false,
+            boss_id: None,
+            max_armor: NGR3_ARMOR,
+        }
+    }
+}
+
 impl Default for MissionRules {
     fn default() -> Self {
         Self {
@@ -117,6 +140,14 @@ impl Default for ScoringRules {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BossSummary {
+    pub active: bool,
+    pub name: &'static str,
+    pub armor: i32,
+    pub max_armor: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MissionSummary {
     pub status: MissionStatus,
     pub progress: MissionProgress,
@@ -124,6 +155,7 @@ pub struct MissionSummary {
     pub objects_left: i32,
     pub minimum_kills: i32,
     pub time_remaining_ticks: Option<u32>,
+    pub boss: Option<BossSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +171,8 @@ pub struct Game {
     progress: MissionProgress,
     mission_goal_count: i32,
     rules: MissionRules,
+    mission: i32,
+    boss: Option<BossState>,
 }
 
 impl Default for Game {
@@ -159,6 +193,8 @@ impl Default for Game {
             progress: MissionProgress::default(),
             mission_goal_count: 0,
             rules: MissionRules::default(),
+            mission: 0,
+            boss: None,
         }
     }
 }
@@ -187,6 +223,8 @@ impl Game {
             progress: MissionProgress::default(),
             mission_goal_count: 0,
             rules,
+            mission: mission.mission,
+            boss: (mission.mission == NGR3_MISSION).then_some(BossState::ngr3()),
         };
         game.mission_goal_count =
             game.world.stats().targets_left + game.world.stats().objects_to_collect;
@@ -229,7 +267,7 @@ impl Game {
                 self.spawn_hostile_at(x, y, sprite);
             }
         }
-        if mission > 0 && mission % 3 == 0 {
+        if mission > 0 && mission % 3 == 0 && mission != NGR3_MISSION {
             self.spawn_boss();
         }
     }
@@ -262,6 +300,7 @@ impl Game {
         self.move_bullets(dt);
         self.collect_pickups();
         self.remove_dead_characters();
+        self.update_boss_state();
         self.update_status();
     }
 
@@ -307,6 +346,7 @@ impl Game {
                 .rules
                 .time_limit_ticks
                 .map(|limit| limit.saturating_sub(self.progress.elapsed_ticks)),
+            boss: self.boss_summary(),
         }
     }
 
@@ -443,6 +483,53 @@ impl Game {
         self.audio_events.push(AudioEvent::Sfx(weapon.sound));
     }
 
+    fn fire_directed_weapon(
+        &mut self,
+        character_index: usize,
+        weapon_id: WeaponId,
+        dx: i32,
+        dy: i32,
+        emit_sound: bool,
+    ) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let weapon = weapon_id.data();
+        let character = &self.characters[character_index];
+        self.bullets.push(Bullet {
+            id: self.next_bullet_id,
+            x: character.x + crate::world::CHARACTER_WIDTH / 2,
+            y: character.y + crate::world::CHARACTER_HEIGHT / 2,
+            dx: dx.signum() * weapon.speed,
+            dy: dy.signum() * weapon.speed,
+            range: weapon.range,
+            owner: character.id,
+            owner_faction: character.faction,
+            weapon: weapon_id,
+        });
+        self.next_bullet_id += 1;
+        self.progress.shots_fired += 1;
+        if emit_sound {
+            self.audio_events.push(AudioEvent::Sfx(weapon.sound));
+        }
+    }
+
+    fn fire_boss_ring(&mut self, character_index: usize, weapon_id: WeaponId) {
+        for (dx, dy) in [
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+        ] {
+            self.fire_directed_weapon(character_index, weapon_id, dx, dy, false);
+        }
+        self.audio_events.push(AudioEvent::Sfx(weapon_id.data().sound));
+    }
+
     fn move_bullets(&mut self, dt: FixedStep) {
         let bullets = std::mem::take(&mut self.bullets);
         let mut kept = Vec::with_capacity(bullets.len());
@@ -505,6 +592,10 @@ impl Game {
             .collect::<Vec<_>>();
 
         for index in hostile_indices {
+            if self.is_active_boss_index(index) {
+                self.move_boss(index, dt);
+                continue;
+            }
             let (x, y) = (self.characters[index].x, self.characters[index].y);
             let Some((player_index, player_x, player_y)) = self.nearest_living_player(x, y) else {
                 return;
@@ -541,6 +632,53 @@ impl Game {
                 self.move_character(index, direction, dt);
             }
         }
+    }
+
+    fn move_boss(&mut self, index: usize, dt: FixedStep) {
+        let (x, y, armor) = (
+            self.characters[index].x,
+            self.characters[index].y,
+            self.characters[index].armor,
+        );
+        let Some((player_index, player_x, player_y)) = self.nearest_living_player(x, y) else {
+            return;
+        };
+        let max_armor = self.boss.map(|boss| boss.max_armor).unwrap_or(NGR3_ARMOR);
+        let second_phase = armor <= max_armor / 2;
+        let distance = (x - player_x).abs().max((y - player_y).abs());
+
+        if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
+            && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
+        {
+            self.hurt_player_index(player_index, if second_phase { 12 } else { 7 } * dt.ticks as i32);
+            return;
+        }
+
+        if self.characters[index].weapon_cooldown == 0 {
+            if second_phase && distance < 132 {
+                self.fire_boss_ring(index, WeaponId::TurboPriorAuth);
+                self.characters[index].weapon_cooldown = 24;
+            } else if self.progress.elapsed_ticks % 3 == 0 {
+                self.fire_boss_ring(index, WeaponId::FormularyZapper);
+                self.characters[index].weapon_cooldown = if second_phase { 44 } else { 58 };
+            } else {
+                let direction = direction_toward(x, y, player_x, player_y);
+                let (dx, dy) = direction.delta();
+                self.characters[index].direction = direction;
+                self.fire_directed_weapon(index, WeaponId::NeonPriorAuth, dx, dy, true);
+                self.characters[index].weapon_cooldown = if second_phase { 28 } else { 36 };
+            }
+        }
+
+        let direction = if second_phase && distance < 220 {
+            direction_toward(player_x, player_y, x, y)
+        } else if !second_phase && distance > 180 {
+            direction_toward(x, y, player_x, player_y)
+        } else {
+            return;
+        };
+        self.characters[index].direction = direction;
+        self.move_character(index, direction, dt);
     }
 
     fn damage_bullet_hit(&mut self, character_index: usize, damage: i32, owner_faction: Faction) {
@@ -700,6 +838,87 @@ impl Game {
             .retain(|character| character.alive || character.faction == Faction::Player);
     }
 
+    fn update_boss_state(&mut self) {
+        let Some(mut boss) = self.boss else {
+            return;
+        };
+
+        if let Some(boss_id) = boss.boss_id {
+            if self
+                .characters
+                .iter()
+                .any(|character| character.id == boss_id && character.alive)
+            {
+                self.boss = Some(boss);
+                return;
+            }
+            boss.active = false;
+            boss.defeated = true;
+            boss.boss_id = None;
+            self.boss = Some(boss);
+            return;
+        }
+
+        if !boss.defeated && self.regular_hostile_queue_left() == 0 {
+            if let Some(boss_id) = self.spawn_ngr3_boss(boss.max_armor) {
+                boss.active = true;
+                boss.boss_id = Some(boss_id);
+                self.audio_events.push(AudioEvent::Sfx(AssetId::PortalReady));
+            }
+        }
+        self.boss = Some(boss);
+    }
+
+    fn spawn_ngr3_boss(&mut self, armor: i32) -> Option<u32> {
+        let (x, y) = self.farthest_boss_spawn_point()?;
+        let boss_id = self.next_character_id;
+        let mut boss = Character::hostile_customer(boss_id, x, y, AssetId::DistrictManager);
+        boss.armor = armor;
+        boss.speed = 2;
+        boss.weapon = WeaponId::FormularyZapper;
+        boss.weapons = vec![
+            WeaponSlot {
+                weapon: WeaponId::FormularyZapper,
+                ammo: -1,
+            },
+            WeaponSlot {
+                weapon: WeaponId::TurboPriorAuth,
+                ammo: -1,
+            },
+        ];
+        boss.active_weapon = 0;
+        boss.weapon_cooldown = 36;
+        self.characters.push(boss);
+        self.next_character_id += 1;
+        Some(boss_id)
+    }
+
+    fn farthest_boss_spawn_point(&self) -> Option<(i32, i32)> {
+        let candidates = [
+            (self.world.width().saturating_sub(3), 2),
+            (
+                self.world.width().saturating_sub(3),
+                self.world.height().saturating_sub(3),
+            ),
+            (2, self.world.height().saturating_sub(3)),
+        ];
+        candidates
+            .into_iter()
+            .filter_map(|(x, y)| nearest_open_spawn_tile(&self.world, x, y, 7))
+            .max_by_key(|(x, y)| {
+                self.characters
+                    .iter()
+                    .filter(|character| character.faction == Faction::Player && character.alive)
+                    .map(|player| {
+                        let dx = player.x - *x;
+                        let dy = player.y - *y;
+                        dx * dx + dy * dy
+                    })
+                    .min()
+                    .unwrap_or(0)
+            })
+    }
+
     fn update_status(&mut self) {
         if self
             .rules
@@ -785,10 +1004,50 @@ impl Game {
     }
 
     fn hostile_queue_left(&self) -> i32 {
+        let regular = self.regular_hostile_queue_left();
+        if regular > 0 {
+            return regular;
+        }
+        if self
+            .boss
+            .is_some_and(|boss| !boss.defeated && (boss.active || self.mission == NGR3_MISSION))
+        {
+            return 1;
+        }
+        0
+    }
+
+    fn regular_hostile_queue_left(&self) -> i32 {
+        let boss_id = self.boss.and_then(|boss| boss.boss_id);
         self.characters
             .iter()
-            .filter(|character| character.faction == Faction::HostileCustomer && character.alive)
+            .filter(|character| {
+                character.faction == Faction::HostileCustomer
+                    && character.alive
+                    && Some(character.id) != boss_id
+            })
             .count() as i32
+    }
+
+    fn boss_summary(&self) -> Option<BossSummary> {
+        let boss = self.boss?;
+        let boss_id = boss.boss_id?;
+        let character = self
+            .characters
+            .iter()
+            .find(|character| character.id == boss_id && character.alive)?;
+        Some(BossSummary {
+            active: boss.active,
+            name: NGR3_NAME,
+            armor: character.armor.max(0),
+            max_armor: boss.max_armor,
+        })
+    }
+
+    fn is_active_boss_index(&self, index: usize) -> bool {
+        self.boss
+            .and_then(|boss| boss.boss_id)
+            .is_some_and(|boss_id| self.characters.get(index).is_some_and(|character| character.id == boss_id))
     }
 
     fn has_line_of_sight(&self, x: i32, y: i32, target_x: i32, target_y: i32) -> bool {
@@ -1040,12 +1299,51 @@ fn random_spawn_point(world: &World, rng: &mut Lcg) -> Option<(i32, i32)> {
     None
 }
 
+fn nearest_open_spawn_tile(world: &World, origin_x: usize, origin_y: usize, radius: usize) -> Option<(i32, i32)> {
+    let mut best = None;
+    for search_radius in 0..=radius {
+        for y in origin_y.saturating_sub(search_radius)..=(origin_y + search_radius).min(world.height().saturating_sub(1)) {
+            for x in origin_x.saturating_sub(search_radius)..=(origin_x + search_radius).min(world.width().saturating_sub(1)) {
+                if x <= 1
+                    || y <= 1
+                    || x >= world.width().saturating_sub(1)
+                    || y >= world.height().saturating_sub(1)
+                    || matches!(world.tile(x, y), Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2))
+                    || world.blocks_walk(x, y)
+                {
+                    continue;
+                }
+                let dx = x as i32 - origin_x as i32;
+                let dy = y as i32 - origin_y as i32;
+                let distance = dx * dx + dy * dy;
+                if best
+                    .map(|(_, _, best_distance)| distance < best_distance)
+                    .unwrap_or(true)
+                {
+                    best = Some((
+                        x as i32 * TILE_WIDTH + 8,
+                        y as i32 * TILE_HEIGHT + 2,
+                        distance,
+                    ));
+                }
+            }
+        }
+        if best.is_some() {
+            break;
+        }
+    }
+    best.map(|(x, y, _)| (x, y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FixedStep, Game, PlayerInput};
     use crate::{
+        assets::AssetId,
         command::PlayerCommand,
+        entity::Faction,
         world::{MissionSpec, Tile, WorldParams, TILE_HEIGHT, TILE_WIDTH},
+        AudioEvent,
     };
 
     #[test]
@@ -1056,8 +1354,8 @@ mod tests {
     }
 
     #[test]
-    fn every_third_mission_spawns_district_manager_boss() {
-        let game = Game::new_mission(
+    fn level_three_boss_spawns_after_queue_is_clear() {
+        let mut game = Game::new_mission(
             7,
             WorldParams::default(),
             MissionSpec {
@@ -1067,10 +1365,29 @@ mod tests {
             },
         );
 
+        assert!(!game
+            .characters()
+            .iter()
+            .any(|character| character.sprite == AssetId::DistrictManager));
+        let initial_queue = game.summary().targets_left;
+        assert!(initial_queue > 1);
+
+        for character in &mut game.characters {
+            if character.faction == Faction::HostileCustomer {
+                character.alive = false;
+            }
+        }
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert_eq!(game.summary().targets_left, 1);
         assert!(game
             .characters()
             .iter()
-            .any(|character| character.sprite == crate::assets::AssetId::DistrictManager));
+            .any(|character| character.sprite == AssetId::DistrictManager));
+        assert!(game
+            .drain_audio_events()
+            .into_iter()
+            .any(|event| event == AudioEvent::Sfx(AssetId::PortalReady)));
     }
 
     #[test]
