@@ -468,8 +468,9 @@ const bridgeAudioMaximumLeadSeconds = 0.65;
 const mobileBridgeAudioTargetLeadSeconds = 0.24;
 const mobileBridgeAudioMinimumLeadSeconds = 0.16;
 const mobileBridgeAudioMaximumLeadSeconds = 1.0;
-const eutherDogsCameraWorldWidth = 430;
-const eutherDogsCameraWorldHeight = 300;
+const eutherDogsCameraWorldWidth = 330;
+const eutherDogsCameraWorldHeight = 230;
+const eutherDogsRenderYScale = 4 / 3;
 const eutherDogsTopHudSafePx = 50;
 const eutherDogsBottomHudSafePx = 30;
 const inputState: InputState = {
@@ -4174,6 +4175,13 @@ function dogsWallAsset(frame: DogsCoreFrame, x: number, y: number, tile: string)
   return dogsAsset("tiles.walls", prefix);
 }
 
+function dogsTileImageFit(tile: string): "contain" | "cover" {
+  if (tile === "floor" || tile === "sterile_floor" || tile === "neon_floor" || tile === "warning_floor" || tile === "fan_floor") {
+    return "cover";
+  }
+  return "contain";
+}
+
 function dogsQueueLeft(frame: DogsCoreFrame | null | undefined): number {
   if (!frame) return 0;
   const hostileActors = frame.characters.filter((actor) => actor.faction === "hostile_customer");
@@ -4362,6 +4370,8 @@ function drawDogsImage(
   width: number,
   height: number,
   fallbackColor: string,
+  fit: "stretch" | "contain" | "cover" = "stretch",
+  fillBackground = false,
 ): void {
   if (!url) {
     dogsContext.fillStyle = fallbackColor;
@@ -4378,7 +4388,20 @@ function drawDogsImage(
     dogsImageCache.set(url, image);
   }
   if (image.complete && image.naturalWidth > 0) {
-    dogsContext.drawImage(image, x, y, width, height);
+    if (fillBackground) {
+      dogsContext.fillStyle = fallbackColor;
+      dogsContext.fillRect(x, y, width, height);
+    }
+    if (fit === "stretch") {
+      dogsContext.drawImage(image, x, y, width, height);
+      return;
+    }
+    const sourceAspect = image.naturalWidth / image.naturalHeight;
+    const targetAspect = width / height;
+    const scaleByWidth = fit === "contain" ? sourceAspect > targetAspect : sourceAspect < targetAspect;
+    const drawW = scaleByWidth ? width : height * sourceAspect;
+    const drawH = scaleByWidth ? width / sourceAspect : height;
+    dogsContext.drawImage(image, x + (width - drawW) / 2, y + (height - drawH) / 2, drawW, drawH);
   } else {
     dogsContext.fillStyle = fallbackColor;
     dogsContext.fillRect(x, y, width, height);
@@ -4511,6 +4534,7 @@ function drawDogsVisibilityFog(
   cameraX: number,
   cameraY: number,
   scale: number,
+  yScale: number,
   firstTileX: number,
   firstTileY: number,
   lastTileX: number,
@@ -4523,9 +4547,9 @@ function drawDogsVisibilityFog(
       const visibility = dogsVisibilityAt(frame, x, y);
       if (visibility >= 255) continue;
       const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
-      const tileY = Math.floor((y * frame.tileHeight - cameraY) * scale);
+      const tileY = Math.floor((y * frame.tileHeight - cameraY) * yScale * scale);
       const tileW = Math.ceil(frame.tileWidth * scale);
-      const tileH = Math.ceil(frame.tileHeight * scale);
+      const tileH = Math.ceil(frame.tileHeight * yScale * scale);
       const ripple = (Math.sin(x * 0.73 + y * 1.17 + time) + 1) * 0.5;
       if (visibility <= 0) {
         dogsContext.fillStyle = "#00040a";
@@ -5935,23 +5959,27 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       ? smoothDogsActor(localPlayerTarget, true)
       : undefined;
   const player = localPlayer ?? frame.characters[0];
+  const yScale = eutherDogsRenderYScale;
   const scale = Math.max(
     0.18,
-    Math.min(dogsCanvas.width / eutherDogsCameraWorldWidth, dogsCanvas.height / eutherDogsCameraWorldHeight),
+    Math.min(
+      dogsCanvas.width / eutherDogsCameraWorldWidth,
+      dogsCanvas.height / (eutherDogsCameraWorldHeight * yScale),
+    ),
   );
   const viewW = dogsCanvas.width / scale;
-  const viewH = dogsCanvas.height / scale;
+  const viewH = dogsCanvas.height / (scale * yScale);
   const cameraX = Math.max(0, Math.min(worldW - viewW, (player?.x ?? 0) - viewW / 2));
   const rawCameraY = Math.max(0, Math.min(worldH - viewH, (player?.y ?? 0) - viewH / 2));
   const playerY = player?.y ?? 0;
-  const playerScreenY = (playerY - rawCameraY) * scale;
+  const playerScreenY = (playerY - rawCameraY) * yScale * scale;
   const safeTop = eutherDogsTopHudSafePx + frame.characterHeight * scale * 0.25;
   const safeBottom = dogsCanvas.height - eutherDogsBottomHudSafePx - frame.characterHeight * scale;
   const cameraY =
     playerScreenY < safeTop
-      ? Math.max(0, Math.min(worldH - viewH, playerY - safeTop / scale))
+      ? Math.max(0, Math.min(worldH - viewH, playerY - safeTop / (scale * yScale)))
       : playerScreenY > safeBottom
-        ? Math.max(0, Math.min(worldH - viewH, playerY - safeBottom / scale))
+        ? Math.max(0, Math.min(worldH - viewH, playerY - safeBottom / (scale * yScale)))
         : rawCameraY;
   const colors: Record<string, string> = {
     floor: "#dfe8dc",
@@ -5982,18 +6010,20 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const lastTileX = Math.min(frame.width - 1, Math.ceil((cameraX + viewW) / frame.tileWidth));
   const lastTileY = Math.min(frame.height - 1, Math.ceil((cameraY + viewH) / frame.tileHeight));
   const exitReady = dogsExitReady(frame);
+  const baseFloorAsset = dogsAsset("tiles.floor", "sterile_tile");
   for (let y = firstTileY; y <= lastTileY; y += 1) {
     for (let x = firstTileX; x <= lastTileX; x += 1) {
       const tile = frame.tiles[y * frame.width + x] ?? "floor";
       const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
-      const tileY = Math.floor((y * frame.tileHeight - cameraY) * scale);
+      const tileY = Math.floor((y * frame.tileHeight - cameraY) * yScale * scale);
       const tileW = Math.ceil(frame.tileWidth * scale);
-      const tileH = Math.ceil(frame.tileHeight * scale);
+      const tileH = Math.ceil(frame.tileHeight * yScale * scale);
       const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
+      drawDogsImage(baseFloorAsset, tileX, tileY, tileW, tileH, colors.floor, "cover");
       if (tile === "spilled_syrup") {
         drawDogsVentFan(tileX, tileY, tileW, tileH, frame.frame);
       } else {
-        drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b");
+        drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b", dogsTileImageFit(tile));
       }
       if (tile === "service_elevator") {
         drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, frame.frame);
@@ -6006,7 +6036,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       const tile = frame.tiles[y * frame.width + x] ?? "floor";
       if (!dogsWallTile(tile) || dogsWallTile(dogsTileAt(frame, x, y + 1))) continue;
       const shadowX = Math.floor((x * frame.tileWidth - cameraX + 3) * scale);
-      const shadowY = Math.floor(((y + 1) * frame.tileHeight - cameraY - 3) * scale);
+      const shadowY = Math.floor(((y + 1) * frame.tileHeight - cameraY - 3) * yScale * scale);
       const shadowW = Math.ceil((frame.tileWidth - 4) * scale);
       const shadowH = Math.max(2, Math.ceil(7 * scale));
       dogsContext.fillRect(shadowX, shadowY, shadowW, shadowH);
@@ -6031,9 +6061,9 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const spriteW = Math.max(8, Math.ceil(32 * scale));
     const spriteH = Math.max(8, Math.ceil(32 * scale));
     const bodyW = frame.characterWidth * scale;
-    const bodyH = frame.characterHeight * scale;
+    const bodyH = frame.characterHeight * yScale * scale;
     const x = Math.floor((actor.x - cameraX) * scale - (spriteW - bodyW) / 2);
-    const y = Math.floor((actor.y - cameraY) * scale - Math.max(0, spriteH - bodyH));
+    const y = Math.floor((actor.y - cameraY) * yScale * scale - Math.max(0, spriteH - bodyH));
     const actorKey = `${actor.faction}:${actor.id}`;
     const serverPrevious = dogsPreviousActorPositions.get(actorKey);
     const moving = Boolean(serverPrevious && (serverPrevious.x !== targetActor.x || serverPrevious.y !== targetActor.y));
@@ -6080,13 +6110,13 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     drawDogsImage(
       dogsProjectileAsset(bullet),
       Math.floor((bullet.x - cameraX) * scale - projectileSize / 2),
-      Math.floor((bullet.y - cameraY) * scale - projectileSize / 2),
+      Math.floor((bullet.y - cameraY) * yScale * scale - projectileSize / 2),
       projectileSize,
       projectileSize,
       bullet.ownerFaction === "player" ? "#39f7c8" : "#ff3030",
     );
   }
-  drawDogsVisibilityFog(frame, cameraX, cameraY, scale, firstTileX, firstTileY, lastTileX, lastTileY);
+  drawDogsVisibilityFog(frame, cameraX, cameraY, scale, yScale, firstTileX, firstTileY, lastTileX, lastTileY);
   if (dogsMapOpen) {
     drawDogsMapOverlay(frame, cameraX, cameraY, viewW, viewH);
   }
