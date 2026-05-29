@@ -6323,8 +6323,9 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       continue;
     }
     if (actor.faction !== "player" && dogsPixelVisibility(frame, actor.x, actor.y) < 255) continue;
-    const spriteW = Math.max(8, Math.ceil(32 * scale));
-    const spriteH = Math.max(8, Math.ceil(32 * scale));
+    const spriteUnit = actor.faction !== "player" && dogsEnemyKey(actor) === "district_manager" ? 44 : 32;
+    const spriteW = Math.max(8, Math.ceil(spriteUnit * scale));
+    const spriteH = Math.max(8, Math.ceil(spriteUnit * scale));
     const bodyW = frame.characterWidth * scale;
     const bodyH = frame.characterHeight * yScale * scale;
     const x = Math.floor((actor.x - cameraX) * scale - (spriteW - bodyW) / 2);

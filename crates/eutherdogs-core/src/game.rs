@@ -92,7 +92,8 @@ struct HostileProfile {
 }
 
 const NGR3_MISSION: i32 = 3;
-const NGR3_ARMOR: i32 = 460;
+const NGR3_ARMOR: i32 = 780;
+const NGR3_FIRE_WAVE_RANGE: i32 = 152;
 const NGR3_NAME: &str = "NGR3";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -491,6 +492,18 @@ impl Game {
         dy: i32,
         emit_sound: bool,
     ) {
+        self.fire_directed_weapon_with_range(character_index, weapon_id, dx, dy, None, emit_sound);
+    }
+
+    fn fire_directed_weapon_with_range(
+        &mut self,
+        character_index: usize,
+        weapon_id: WeaponId,
+        dx: i32,
+        dy: i32,
+        range_override: Option<i32>,
+        emit_sound: bool,
+    ) {
         if dx == 0 && dy == 0 {
             return;
         }
@@ -502,7 +515,7 @@ impl Game {
             y: character.y + crate::world::CHARACTER_HEIGHT / 2,
             dx: dx.signum() * weapon.speed,
             dy: dy.signum() * weapon.speed,
-            range: weapon.range,
+            range: range_override.unwrap_or(weapon.range),
             owner: character.id,
             owner_faction: character.faction,
             weapon: weapon_id,
@@ -528,6 +541,30 @@ impl Game {
             self.fire_directed_weapon(character_index, weapon_id, dx, dy, false);
         }
         self.audio_events.push(AudioEvent::Sfx(weapon_id.data().sound));
+    }
+
+    fn fire_boss_fire_wave(&mut self, character_index: usize) {
+        for (dx, dy) in [
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+        ] {
+            self.fire_directed_weapon_with_range(
+                character_index,
+                WeaponId::HandSanitizerFlamethrower,
+                dx,
+                dy,
+                Some(NGR3_FIRE_WAVE_RANGE),
+                false,
+            );
+        }
+        self.audio_events
+            .push(AudioEvent::Sfx(WeaponId::HandSanitizerFlamethrower.data().sound));
     }
 
     fn move_bullets(&mut self, dt: FixedStep) {
@@ -657,16 +694,19 @@ impl Game {
         if self.characters[index].weapon_cooldown == 0 {
             if second_phase && distance < 132 {
                 self.fire_boss_ring(index, WeaponId::TurboPriorAuth);
-                self.characters[index].weapon_cooldown = 24;
+                self.characters[index].weapon_cooldown = 30;
+            } else if self.progress.elapsed_ticks % 5 == 0 {
+                self.fire_boss_fire_wave(index);
+                self.characters[index].weapon_cooldown = if second_phase { 36 } else { 52 };
             } else if self.progress.elapsed_ticks % 3 == 0 {
                 self.fire_boss_ring(index, WeaponId::FormularyZapper);
-                self.characters[index].weapon_cooldown = if second_phase { 44 } else { 58 };
+                self.characters[index].weapon_cooldown = if second_phase { 46 } else { 64 };
             } else {
                 let direction = direction_toward(x, y, player_x, player_y);
                 let (dx, dy) = direction.delta();
                 self.characters[index].direction = direction;
                 self.fire_directed_weapon(index, WeaponId::NeonPriorAuth, dx, dy, true);
-                self.characters[index].weapon_cooldown = if second_phase { 28 } else { 36 };
+                self.characters[index].weapon_cooldown = if second_phase { 32 } else { 42 };
             }
         }
 
@@ -883,6 +923,10 @@ impl Game {
             },
             WeaponSlot {
                 weapon: WeaponId::TurboPriorAuth,
+                ammo: -1,
+            },
+            WeaponSlot {
+                weapon: WeaponId::HandSanitizerFlamethrower,
                 ammo: -1,
             },
         ];
