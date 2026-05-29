@@ -20,6 +20,22 @@ pub struct PlayerInput {
     pub player_index: usize,
     pub command: PlayerCommand,
     pub weapon_slot: Option<usize>,
+    pub inspection_answer: Option<InspectionAnswer>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InspectionAnswer {
+    Yes,
+    No,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InspectionDialogue {
+    pub player_index: usize,
+    pub inspector_id: u32,
+    pub question: &'static str,
+    pub complete: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,6 +117,61 @@ const INSPECTION_MISSION: i32 = 2;
 const INSPECTION_ALERT_TICKS: u32 = 15 * 60;
 const INSPECTION_ROUTINES: i32 = 17;
 const INSPECTOR_RESPAWN_TICKS: u32 = 90;
+const INSPECTOR_QUESTION_RANGE: i32 = TILE_WIDTH * 2;
+const INSPECTOR_QUESTION_COOLDOWN_TICKS: u32 = 120;
+const INSPECTION_COMPLETE_LINE: &str = "Inspection complete. Your survival has been provisionally accepted.";
+const INSPECTION_QUESTIONS: [&str; 50] = [
+    "Is your GDPR Officer compliant with rule 407?",
+    "Have you verified that the verification process has itself been verified?",
+    "Can you show documentation proving that this document is documentable?",
+    "Is your queue management policy aligned with the latest queue neutrality framework?",
+    "Have all labels been labelled according to the approved label labelling protocol?",
+    "Who approved the approval chain for this approval?",
+    "Are expired routines stored separately from routines that have merely lost relevance?",
+    "Has the deviation been deviated from the correct deviation pathway?",
+    "Can you confirm that all staff know where the folder about folders is located?",
+    "Is this clipboard included in the annual clipboard risk assessment?",
+    "Have you archived the archive instructions in the correct archive?",
+    "Why is this shelf emotionally unprepared for audit?",
+    "Can you demonstrate that the emergency binder has not developed informal authority?",
+    "Has the printer jam been escalated to the Printer Jam Reflection Group?",
+    "Are all barcode scanners calibrated against the approved beep standard?",
+    "Have you performed a freshness check on the freshness check routine?",
+    "Is there a documented reason why this undocumented reason exists?",
+    "Can you show evidence that all evidence has been evidenced?",
+    "Has the risk matrix been risk-assessed for excessive matrix behavior?",
+    "Why is this temporary workaround beginning to look permanent?",
+    "Have you confirmed that your confirmation process confirms the right confirmations?",
+    "Is the staff fridge covered by the biological incident escalation ladder?",
+    "Can you explain why the deviation report contains signs of human emotion?",
+    "Have all bins been informed of their new inventory identity?",
+    "Is your action plan actionable, or merely plan-shaped?",
+    "Have you checked that the checklist is not operating outside checklist scope?",
+    "Can you prove that the missing signature was absent in a compliant manner?",
+    "Is the routine version displayed here the true routine version, or a routine-adjacent artifact?",
+    "Has the customer flow been mapped using approved customer-fluid dynamics?",
+    "Why does this drawer contain historical optimism?",
+    "Have all expired passwords been disposed of in the correct conceptual container?",
+    "Is the label printer authorized to express itself this loudly?",
+    "Can you confirm that all incidents have been incidented before closure?",
+    "Have you performed a root cause analysis on the root cause analysis backlog?",
+    "Is this medicine crate compliant with the emotional load-bearing policy?",
+    "Have staff received training in recognizing training requirements?",
+    "Can you identify the owner of this orphaned procedure?",
+    "Why is there a non-approved pen inside the approved pen zone?",
+    "Has the NGR rollout been rolled out in accordance with rollout containment guidelines?",
+    "Are you aware that informal competence is not a substitute for documented confusion?",
+    "Can you demonstrate that this corridor supports safe bureaucratic passage?",
+    "Have you logged the absence of logs for this event?",
+    "Is this PDA synchronized with the central doubt repository?",
+    "Why has no one signed the unsigned signature register?",
+    "Have all team members acknowledged the acknowledgment policy?",
+    "Is your emergency plan available during non-emergency emergencies?",
+    "Can you explain why this routine appears to be useful?",
+    "Have you reported the recurring recurrence of recurring reports?",
+    "Is the local interpretation of the central interpretation locally interpretable?",
+    "Can you please remain still while I complete this minor procedural life-drain?",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InspectorState {
@@ -108,6 +179,9 @@ struct InspectorState {
     sprite: AssetId,
     character_id: Option<u32>,
     respawn_ticks: u32,
+    question_index: usize,
+    question_cooldown: u32,
+    active_question: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -322,6 +396,9 @@ impl Game {
             character.weapon_cooldown = character.weapon_cooldown.saturating_sub(dt.ticks as u8);
         }
         for input in input {
+            if let Some(answer) = input.inspection_answer {
+                self.answer_inspection_question(input.player_index, answer);
+            }
             self.apply_player_input(*input, dt);
         }
         self.move_hostiles(dt);
@@ -330,6 +407,7 @@ impl Game {
         self.collect_pickups();
         self.remove_dead_characters();
         self.update_inspector_state(dt);
+        self.update_inspector_dialogues(dt);
         self.update_boss_state();
         self.update_status();
     }
@@ -355,6 +433,25 @@ impl Game {
 
     pub fn bullets(&self) -> &[Bullet] {
         &self.bullets
+    }
+
+    pub fn inspection_dialogues(&self) -> Vec<InspectionDialogue> {
+        self.inspectors
+            .iter()
+            .filter_map(|inspector| {
+                let inspector_id = inspector.character_id?;
+                let question = inspector.active_question?;
+                self.characters
+                    .iter()
+                    .any(|character| character.id == inspector_id && character.alive)
+                    .then_some(InspectionDialogue {
+                        player_index: inspector.player_index,
+                        inspector_id,
+                        question,
+                        complete: question == INSPECTION_COMPLETE_LINE,
+                    })
+            })
+            .collect()
     }
 
     pub const fn status(&self) -> MissionStatus {
@@ -1016,6 +1113,9 @@ impl Game {
                 sprite,
                 character_id,
                 respawn_ticks: 0,
+                question_index: self.rng.range(INSPECTION_QUESTIONS.len() as i32) as usize,
+                question_cooldown: 30,
+                active_question: None,
             });
         }
     }
@@ -1069,6 +1169,7 @@ impl Game {
                 }
                 self.inspectors[inspector_index].character_id = None;
                 self.inspectors[inspector_index].respawn_ticks = INSPECTOR_RESPAWN_TICKS;
+                self.inspectors[inspector_index].active_question = None;
             }
 
             let respawn_ticks = self.inspectors[inspector_index]
@@ -1084,6 +1185,57 @@ impl Game {
                     self.inspectors[inspector_index].respawn_ticks = INSPECTOR_RESPAWN_TICKS;
                 }
             }
+        }
+    }
+
+    fn update_inspector_dialogues(&mut self, dt: FixedStep) {
+        let inspection_complete = self.routine_total > 0 && self.progress.routines_read >= self.routine_total;
+        for inspector_index in 0..self.inspectors.len() {
+            let Some(character_id) = self.inspectors[inspector_index].character_id else {
+                continue;
+            };
+            let Some(inspector) = self
+                .characters
+                .iter()
+                .find(|character| character.id == character_id && character.alive)
+            else {
+                continue;
+            };
+            if inspection_complete {
+                self.inspectors[inspector_index].active_question = Some(INSPECTION_COMPLETE_LINE);
+                continue;
+            }
+            if self.inspectors[inspector_index].active_question.is_some() {
+                continue;
+            }
+            self.inspectors[inspector_index].question_cooldown = self.inspectors[inspector_index]
+                .question_cooldown
+                .saturating_sub(dt.ticks);
+            if self.inspectors[inspector_index].question_cooldown > 0 {
+                continue;
+            }
+            let player_index = self.inspectors[inspector_index].player_index;
+            let Some((_, player_x, player_y)) = self.living_player_by_offset(player_index) else {
+                continue;
+            };
+            let distance = (inspector.x - player_x).abs().max((inspector.y - player_y).abs());
+            if distance > INSPECTOR_QUESTION_RANGE {
+                continue;
+            }
+            let question_index = self.inspectors[inspector_index].question_index % INSPECTION_QUESTIONS.len();
+            self.inspectors[inspector_index].active_question = Some(INSPECTION_QUESTIONS[question_index]);
+            self.inspectors[inspector_index].question_index = question_index + 1;
+        }
+    }
+
+    fn answer_inspection_question(&mut self, player_index: usize, _answer: InspectionAnswer) {
+        if let Some(inspector) = self.inspectors.iter_mut().find(|inspector| {
+            inspector.player_index == player_index
+                && inspector.active_question.is_some()
+                && inspector.active_question != Some(INSPECTION_COMPLETE_LINE)
+        }) {
+            inspector.active_question = None;
+            inspector.question_cooldown = INSPECTOR_QUESTION_COOLDOWN_TICKS;
         }
     }
 
@@ -1834,6 +1986,62 @@ mod tests {
     }
 
     #[test]
+    fn nearby_inspector_asks_and_accepts_answer() {
+        let mut game = Game::new_mission(
+            23,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 1,
+            },
+        );
+        game.progress.elapsed_ticks = 899;
+        game.tick(&[], FixedStep { ticks: 1 });
+        let player = game
+            .characters()
+            .iter()
+            .find(|character| character.faction == Faction::Player)
+            .expect("player exists")
+            .clone();
+        let inspector_id = game
+            .characters()
+            .iter()
+            .find(|character| character.faction == Faction::Inspector)
+            .expect("inspection spawns an inspector")
+            .id;
+        let inspector = game
+            .characters
+            .iter_mut()
+            .find(|character| character.id == inspector_id)
+            .expect("inspector is present");
+        inspector.x = player.x + TILE_WIDTH;
+        inspector.y = player.y;
+        game.inspectors[0].question_cooldown = 0;
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        let dialogue = game
+            .inspection_dialogues()
+            .pop()
+            .expect("nearby inspector asks a question");
+        assert_eq!(dialogue.player_index, 0);
+        assert_eq!(dialogue.inspector_id, inspector_id);
+        assert!(!dialogue.question.is_empty());
+
+        game.tick(
+            &[PlayerInput {
+                player_index: 0,
+                command: PlayerCommand::empty(),
+                weapon_slot: None,
+                inspection_answer: Some(super::InspectionAnswer::Yes),
+            }],
+            FixedStep { ticks: 1 },
+        );
+        assert!(game.inspection_dialogues().is_empty());
+    }
+
+    #[test]
     fn tick_moves_player() {
         let mut game = Game::default();
         game.characters.push(crate::entity::Character::player(
@@ -1848,6 +2056,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1870,6 +2079,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 10 },
         );
@@ -1890,6 +2100,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1912,6 +2123,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -1941,6 +2153,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -2001,6 +2214,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::SWITCH),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -2014,6 +2228,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -2034,6 +2249,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::empty(),
                 weapon_slot: Some(1),
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );
@@ -2370,6 +2586,7 @@ mod tests {
                 player_index: 0,
                 command: PlayerCommand::from_bits(PlayerCommand::RIGHT | PlayerCommand::SHOOT),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             FixedStep { ticks: 1 },
         );

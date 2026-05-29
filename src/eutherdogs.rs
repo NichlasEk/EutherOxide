@@ -36,6 +36,15 @@ pub struct EutherDogsInput {
     pub c: bool,
     pub start: bool,
     pub weapon_slot: Option<usize>,
+    pub inspection_answer: Option<EutherDogsInspectionAnswer>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EutherDogsInspectionAnswer {
+    Yes,
+    No,
+    Other,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -68,10 +77,20 @@ pub struct EutherDogsFrame {
     pub visibility: Vec<u8>,
     pub characters: Vec<EutherDogsActor>,
     pub bullets: Vec<EutherDogsBullet>,
+    pub inspection_dialogues: Vec<EutherDogsInspectionDialogue>,
     pub summary: EutherDogsSummary,
     pub store: Vec<EutherDogsStoreItem>,
     pub audio_events: Vec<&'static str>,
     pub highscore_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EutherDogsInspectionDialogue {
+    pub player: usize,
+    pub inspector_id: u32,
+    pub question: &'static str,
+    pub complete: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -247,6 +266,7 @@ impl EutherDogsRuntime {
                 player_index,
                 command: self.input_command_for_player(player_index, input),
                 weapon_slot: input.weapon_slot,
+                inspection_answer: inspection_answer(input.inspection_answer),
             })
             .collect();
         self.game.tick(&player_inputs, FixedStep { ticks: 1 });
@@ -257,6 +277,7 @@ impl EutherDogsRuntime {
             .zip(self.weapon_switch_cooldowns.iter_mut())
         {
             input.weapon_slot = None;
+            input.inspection_answer = None;
             *cooldown = cooldown.saturating_sub(1);
         }
         let audio_events = self.game.drain_audio_events();
@@ -401,6 +422,17 @@ fn input_command(input: EutherDogsInput) -> PlayerCommand {
         command |= PlayerCommand::SWITCH;
     }
     PlayerCommand::from_bits(command)
+}
+
+fn inspection_answer(
+    value: Option<EutherDogsInspectionAnswer>,
+) -> Option<eutherdogs_core::InspectionAnswer> {
+    match value {
+        Some(EutherDogsInspectionAnswer::Yes) => Some(eutherdogs_core::InspectionAnswer::Yes),
+        Some(EutherDogsInspectionAnswer::No) => Some(eutherdogs_core::InspectionAnswer::No),
+        Some(EutherDogsInspectionAnswer::Other) => Some(eutherdogs_core::InspectionAnswer::Other),
+        _ => None,
+    }
 }
 
 pub fn demo_game() -> Game {
@@ -570,6 +602,16 @@ pub fn eutherdogs_frame(
                     eutherdogs_core::entity::Faction::Inspector => "inspector",
                 },
                 weapon: bullet.weapon.key(),
+            })
+            .collect(),
+        inspection_dialogues: game
+            .inspection_dialogues()
+            .into_iter()
+            .map(|dialogue| EutherDogsInspectionDialogue {
+                player: dialogue.player_index + 1,
+                inspector_id: dialogue.inspector_id,
+                question: dialogue.question,
+                complete: dialogue.complete,
             })
             .collect(),
         summary: EutherDogsSummary {

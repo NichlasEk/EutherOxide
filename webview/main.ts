@@ -116,6 +116,7 @@ type DogsBridgeInput = InputState & {
   player: PlayerPort;
   seq?: number;
   weaponSlot?: number;
+  inspectionAnswer?: "yes" | "no" | "other";
 };
 
 type LobbyPlayer = {
@@ -403,11 +404,19 @@ type DogsCoreFrame = {
   visibility: number[];
   characters: DogsCoreActor[];
   bullets: DogsCoreBullet[];
+  inspectionDialogues?: DogsInspectionDialogue[];
   summary: DogsCoreSummary;
   store: DogsStoreItem[];
   audioEvents?: string[];
   highscoreCount: number;
   ackedInputSeq?: number;
+};
+
+type DogsInspectionDialogue = {
+  player: number;
+  inspectorId: number;
+  question: string;
+  complete: boolean;
 };
 
 type DogsStreamFrame = Partial<DogsCoreFrame> &
@@ -684,6 +693,13 @@ let dogsSawHostileQueue = false;
 let dogsTrackedBullets = new Map<number, DogsCoreBullet>();
 let dogsImpactEffects: DogsImpactEffect[] = [];
 let dogsLastImpactFrameProcessed = -1;
+let dogsInspectionAnswerRects: Array<{
+  answer: "yes" | "no" | "other";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}> = [];
 let lastDogsInputJson = "";
 let lastDogsInputSentAt = 0;
 let lastDogsSnapshotAt = 0;
@@ -1751,6 +1767,23 @@ bindingRows.addEventListener("click", (event) => {
   renderBindings();
 });
 
+dogsCanvas.addEventListener("pointerdown", (event) => {
+  if (!dogsMode || !dogsFrame || dogsInspectionAnswerRects.length === 0) {
+    return;
+  }
+  const bounds = dogsCanvas.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) * (dogsCanvas.width / bounds.width);
+  const y = (event.clientY - bounds.top) * (dogsCanvas.height / bounds.height);
+  const hit = dogsInspectionAnswerRects.find((rect) =>
+    x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
+  );
+  if (!hit) {
+    return;
+  }
+  event.preventDefault();
+  void answerDogsInspection(hit.answer);
+});
+
 window.addEventListener("keydown", (event) => {
   if (controlsOpen && event.key === "Escape") {
     closeControls();
@@ -1782,6 +1815,15 @@ window.addEventListener("keydown", (event) => {
       void syncDogsWeaponSlot(dogsWeaponSlot);
     }
     return;
+  }
+  if (dogsMode && dogsFrame && !event.repeat) {
+    const dialogue = dogsLocalInspectionDialogue(dogsFrame);
+    const answer = event.key.toLowerCase();
+    if (dialogue && !dialogue.complete && (answer === "y" || answer === "n" || answer === "o")) {
+      event.preventDefault();
+      void answerDogsInspection(answer === "y" ? "yes" : answer === "n" ? "no" : "other");
+      return;
+    }
   }
   const key = keyForEvent(event.key);
   if (!key || keyboardState[key]) {
@@ -4899,6 +4941,89 @@ function drawDogsMapOverlay(frame: DogsCoreFrame, cameraX: number, cameraY: numb
   dogsContext.restore();
 }
 
+function dogsLocalInspectionDialogue(frame: DogsCoreFrame): DogsInspectionDialogue | undefined {
+  return (frame.inspectionDialogues ?? []).find((dialogue) => dialogue.player === playerPort);
+}
+
+function wrapDogsDialogueText(text: string, maxWidth: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  dogsContext.font = "900 12px monospace";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && dogsContext.measureText(next).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 5);
+}
+
+function drawDogsInspectionDialogues(
+  frame: DogsCoreFrame,
+  cameraX: number,
+  cameraY: number,
+  scale: number,
+  yScale: number,
+): void {
+  dogsInspectionAnswerRects = [];
+  if (dogsMapOpen) return;
+  const dialogue = dogsLocalInspectionDialogue(frame);
+  if (!dialogue) return;
+  const inspector = frame.characters.find((actor) => actor.id === dialogue.inspectorId && actor.alive);
+  if (!inspector || dogsPixelVisibility(frame, inspector.x, inspector.y) < 255) return;
+
+  const targetX = (inspector.x - cameraX + frame.characterWidth / 2) * scale;
+  const targetY = (inspector.y - cameraY) * yScale * scale;
+  const bubbleW = Math.min(330, Math.max(230, dogsCanvas.width * 0.48));
+  const lines = wrapDogsDialogueText(dialogue.question, bubbleW - 28);
+  const buttonH = dialogue.complete ? 0 : 24;
+  const bubbleH = 34 + lines.length * 15 + (dialogue.complete ? 0 : buttonH + 10);
+  const x = Math.max(8, Math.min(dogsCanvas.width - bubbleW - 8, targetX - bubbleW / 2));
+  const y = Math.max(56, Math.min(dogsCanvas.height - bubbleH - 36, targetY - bubbleH - 14));
+
+  dogsContext.save();
+  dogsContext.fillStyle = "rgba(3, 9, 10, 0.94)";
+  dogsContext.strokeStyle = dialogue.complete ? "#70ffe8" : "#ff405f";
+  dogsContext.lineWidth = 1;
+  dogsContext.shadowColor = dialogue.complete ? "#39f7c8" : "#ff305f";
+  dogsContext.shadowBlur = 12;
+  dogsContext.fillRect(x, y, bubbleW, bubbleH);
+  dogsContext.strokeRect(x + 0.5, y + 0.5, bubbleW - 1, bubbleH - 1);
+  dogsContext.shadowBlur = 0;
+  dogsContext.fillStyle = dialogue.complete ? "#a7f7d0" : "#ff9aad";
+  dogsContext.font = "900 10px monospace";
+  dogsContext.textAlign = "left";
+  dogsContext.textBaseline = "top";
+  dogsContext.fillText("INSPECTOR QUERY", x + 12, y + 10);
+  dogsContext.fillStyle = "#ecffe4";
+  dogsContext.font = "900 12px monospace";
+  lines.forEach((line, index) => dogsContext.fillText(line, x + 12, y + 28 + index * 15));
+
+  if (!dialogue.complete) {
+    const labels: Array<["yes" | "no" | "other", string]> = [["yes", "Y YES"], ["no", "N NO"], ["other", "O OTHER"]];
+    const gap = 7;
+    const buttonW = (bubbleW - 24 - gap * 2) / 3;
+    const buttonY = y + bubbleH - buttonH - 10;
+    for (const [index, [answer, label]] of labels.entries()) {
+      const buttonX = x + 12 + index * (buttonW + gap);
+      dogsContext.fillStyle = "rgba(255, 255, 255, 0.06)";
+      dogsContext.strokeStyle = answer === "yes" ? "#70ffe8" : answer === "no" ? "#ff5f7a" : "#ffef7a";
+      dogsContext.fillRect(buttonX, buttonY, buttonW, buttonH);
+      dogsContext.strokeRect(buttonX + 0.5, buttonY + 0.5, buttonW - 1, buttonH - 1);
+      dogsContext.fillStyle = "#ecffe4";
+      dogsContext.textAlign = "center";
+      dogsContext.fillText(label, buttonX + buttonW / 2, buttonY + 7);
+      dogsInspectionAnswerRects.push({ answer, x: buttonX, y: buttonY, w: buttonW, h: buttonH });
+    }
+  }
+  dogsContext.restore();
+}
+
 function drawDogsInspectionOverlay(frame: DogsCoreFrame, viewW: number, viewH: number): void {
   if (frame.frame < dogsInspectionAlertStartFrame || frame.frame > dogsInspectionAlertUntilFrame) return;
   const elapsed = frame.frame - dogsInspectionAlertStartFrame;
@@ -6156,6 +6281,7 @@ function mergeDogsStreamFrame(previous: DogsCoreFrame | null, patch: DogsStreamF
     visibility: patch.visibility ?? base.visibility,
     characters: patch.characters,
     bullets: patch.bullets,
+    inspectionDialogues: patch.inspectionDialogues ?? base.inspectionDialogues ?? [],
     summary: patch.summary,
     store: patch.store ?? base.store,
     audioEvents: patch.audioEvents ?? [],
@@ -6281,6 +6407,17 @@ async function syncDogsWeaponSlot(slot: number): Promise<void> {
   }
 }
 
+async function answerDogsInspection(answer: "yes" | "no" | "other"): Promise<void> {
+  try {
+    await syncDogsBridgeInput({ ...inputState, player: playerPort, inspectionAnswer: answer });
+    pushTrace(`Inspection answer ${answer.toUpperCase()}`);
+  } catch (err) {
+    dogsSnapshotMisses += 1;
+    ui.transportMode = "DOGS INSPECTION HOLD";
+    ui.lastError = err instanceof Error ? err.message : String(err);
+  }
+}
+
 async function syncDogsBridgeInput(input: DogsBridgeInput): Promise<void> {
   const now = performance.now();
   const changedInput = { ...input, seq: undefined };
@@ -6313,6 +6450,7 @@ async function purchaseDogsCoreItem(itemId: string): Promise<DogsCoreFrame> {
 }
 
 function drawDogsFrame(frame: DogsCoreFrame | null): void {
+  dogsInspectionAnswerRects = [];
   dogsContext.fillStyle = "#07100d";
   dogsContext.fillRect(0, 0, dogsCanvas.width, dogsCanvas.height);
   if (!frame) return;
@@ -6481,6 +6619,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     drawDogsProjectile(bullet, cameraX, cameraY, scale, yScale, frame.frame);
   }
   drawDogsVisibilityFog(frame, cameraX, cameraY, scale, yScale, firstTileX, firstTileY, lastTileX, lastTileY);
+  drawDogsInspectionDialogues(frame, cameraX, cameraY, scale, yScale);
   if (dogsMapOpen) {
     drawDogsMapOverlay(frame, cameraX, cameraY, viewW, viewH);
   }

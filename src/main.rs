@@ -321,6 +321,7 @@ fn run_eutherdogs_demo(config_path: Option<&std::path::Path>) -> io::Result<()> 
                         | euther_oxide::eutherdogs::PlayerCommand::SHOOT,
                 ),
                 weapon_slot: None,
+                inspection_answer: None,
             }],
             euther_oxide::eutherdogs::FixedStep { ticks: 1 },
         );
@@ -2623,6 +2624,7 @@ fn eutherdogs_stream_payload(
         "frame": frame.frame,
         "characters": frame.characters,
         "bullets": frame.bullets,
+        "inspectionDialogues": frame.inspection_dialogues,
         "summary": frame.summary,
         "audioEvents": frame.audio_events,
         "highscoreCount": frame.highscore_count,

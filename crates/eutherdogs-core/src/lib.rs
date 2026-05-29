@@ -20,8 +20,9 @@ pub use config::{
 };
 pub use direction::Direction;
 pub use game::{
-    AudioEvent, BossSummary, FixedStep, Game, MissionProgress, MissionRules, MissionStatus,
-    MissionSummary, PlayerInput, PurchaseError, RenderSnapshot, ScoringRules,
+    AudioEvent, BossSummary, FixedStep, Game, InspectionAnswer, InspectionDialogue,
+    MissionProgress, MissionRules, MissionStatus, MissionSummary, PlayerInput, PurchaseError,
+    RenderSnapshot, ScoringRules,
 };
 pub use highscore::{HighScoreEntry, HighScoreTable};
 pub use mobile::{MobileInput, TouchButtons, VirtualStick};
