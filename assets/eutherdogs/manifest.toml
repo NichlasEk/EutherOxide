@@ -240,6 +240,7 @@ pill_sample = "highres/2x/sprites/items/pill_sample.png"
 lab_coat_armor = "highres/2x/sprites/items/lab_coat_armor.png"
 hazard_sleeves = "highres/2x/sprites/items/hazard_sleeves.png"
 pill_splitter = "highres/2x/sprites/items/pill_splitter.png"
+routine_directive = "highres/2x/sprites/items/routine_directive.png"
 
 [highres.ui]
 icon_player = "highres/2x/ui/icons/icon_player.png"
@@ -270,6 +271,7 @@ pill_sample = "sprites/items/pill_sample.png"
 lab_coat_armor = "sprites/items/lab_coat_armor.png"
 hazard_sleeves = "sprites/items/hazard_sleeves.png"
 pill_splitter = "sprites/items/pill_splitter.png"
+routine_directive = "sprites/items/routine_directive.png"
 
 [ui]
 icon_player = "ui/icons/icon_player.png"

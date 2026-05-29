@@ -31,6 +31,7 @@ pub struct RenderSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioEvent {
     Sfx(crate::assets::AssetId),
+    InspectionAlarm,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,6 +57,7 @@ pub struct MissionProgress {
     pub kills: i32,
     pub targets_destroyed: i32,
     pub objects_collected: i32,
+    pub routines_read: i32,
     pub shots_fired: i32,
     pub hits: i32,
     pub damage_taken: i32,
@@ -95,6 +97,9 @@ const NGR3_MISSION: i32 = 3;
 const NGR3_ARMOR: i32 = 780;
 const NGR3_FIRE_WAVE_RANGE: i32 = 152;
 const NGR3_NAME: &str = "NGR3";
+const INSPECTION_MISSION: i32 = 2;
+const INSPECTION_ALERT_TICKS: u32 = 15 * 60;
+const INSPECTION_ROUTINES: i32 = 17;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BossState {
@@ -157,6 +162,8 @@ pub struct MissionSummary {
     pub minimum_kills: i32,
     pub time_remaining_ticks: Option<u32>,
     pub boss: Option<BossSummary>,
+    pub routine_read: i32,
+    pub routine_total: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +181,8 @@ pub struct Game {
     rules: MissionRules,
     mission: i32,
     boss: Option<BossState>,
+    inspection_alert_triggered: bool,
+    routine_total: i32,
 }
 
 impl Default for Game {
@@ -196,6 +205,8 @@ impl Default for Game {
             rules: MissionRules::default(),
             mission: 0,
             boss: None,
+            inspection_alert_triggered: false,
+            routine_total: 0,
         }
     }
 }
@@ -226,6 +237,8 @@ impl Game {
             rules,
             mission: mission.mission,
             boss: (mission.mission == NGR3_MISSION).then_some(BossState::ngr3()),
+            inspection_alert_triggered: false,
+            routine_total: 0,
         };
         game.mission_goal_count =
             game.world.stats().targets_left + game.world.stats().objects_to_collect;
@@ -290,7 +303,9 @@ impl Game {
         if self.status != MissionStatus::Running {
             return;
         }
+        let previous_elapsed_ticks = self.progress.elapsed_ticks;
         self.progress.elapsed_ticks = self.progress.elapsed_ticks.saturating_add(dt.ticks);
+        self.update_inspection_alert(previous_elapsed_ticks);
         for character in &mut self.characters {
             character.weapon_cooldown = character.weapon_cooldown.saturating_sub(dt.ticks as u8);
         }
@@ -348,6 +363,8 @@ impl Game {
                 .time_limit_ticks
                 .map(|limit| limit.saturating_sub(self.progress.elapsed_ticks)),
             boss: self.boss_summary(),
+            routine_read: self.progress.routines_read,
+            routine_total: self.routine_total,
         }
     }
 
@@ -858,6 +875,10 @@ impl Game {
                 Tile::DataWafer => {
                     character.add_weapon_ammo(crate::weapon::WeaponId::NeonPriorAuth, 8)
                 }
+                Tile::RoutineDirective => {
+                    self.progress.routines_read =
+                        (self.progress.routines_read + 1).min(self.routine_total);
+                }
                 _ => {
                     self.progress.objects_collected += 1;
                     self.progress.score += self.rules.scoring.pickup_score;
@@ -907,6 +928,61 @@ impl Game {
             }
         }
         self.boss = Some(boss);
+    }
+
+    fn update_inspection_alert(&mut self, previous_elapsed_ticks: u32) {
+        if self.inspection_alert_triggered
+            || self.mission != INSPECTION_MISSION
+            || previous_elapsed_ticks >= INSPECTION_ALERT_TICKS
+            || self.progress.elapsed_ticks < INSPECTION_ALERT_TICKS
+        {
+            return;
+        }
+        self.inspection_alert_triggered = true;
+        self.spawn_inspection_routines();
+        self.audio_events.push(AudioEvent::InspectionAlarm);
+    }
+
+    fn spawn_inspection_routines(&mut self) {
+        self.routine_total = 0;
+        for _ in 0..INSPECTION_ROUTINES {
+            if self.spawn_one_inspection_routine() {
+                self.routine_total += 1;
+            }
+        }
+    }
+
+    fn spawn_one_inspection_routine(&mut self) -> bool {
+        for _ in 0..400 {
+            let x = self.rng.range(self.world.width() as i32) as usize;
+            let y = self.rng.range(self.world.height() as i32) as usize;
+            if x <= 1 || y <= 1 || x >= self.world.width() - 1 || y >= self.world.height() - 1 {
+                continue;
+            }
+            if !matches!(
+                self.world.tile(x, y),
+                Some(
+                    Tile::Floor
+                        | Tile::SterileFloor
+                        | Tile::NeonFloor
+                        | Tile::WarningFloor
+                        | Tile::FanFloor
+                )
+            ) {
+                continue;
+            }
+            let px = x as i32 * TILE_WIDTH + TILE_WIDTH / 2;
+            let py = y as i32 * TILE_HEIGHT + TILE_HEIGHT / 2;
+            if self.characters.iter().any(|character| {
+                character.alive
+                    && (character.x - px).abs() < TILE_WIDTH * 2
+                    && (character.y - py).abs() < TILE_HEIGHT * 2
+            }) {
+                continue;
+            }
+            return self.world.set_tile(x, y, Tile::RoutineDirective);
+        }
+        false
     }
 
     fn spawn_ngr3_boss(&mut self, armor: i32) -> Option<u32> {
@@ -1450,6 +1526,60 @@ mod tests {
             .characters()
             .iter()
             .any(|character| character.sprite == crate::assets::AssetId::DistrictManager));
+    }
+
+    #[test]
+    fn mission_two_triggers_inspection_alarm_once_at_fifteen_seconds() {
+        let mut game = Game::new_mission(
+            7,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 1,
+            },
+        );
+        game.progress.elapsed_ticks = 899;
+        game.drain_audio_events();
+
+        game.tick(&[], FixedStep { ticks: 1 });
+        let routine_tiles = game
+            .world
+            .tiles()
+            .iter()
+            .filter(|tile| **tile == Tile::RoutineDirective)
+            .count();
+        assert_eq!(routine_tiles, 17);
+        assert_eq!(game.summary().routine_total, 17);
+        assert_eq!(game.summary().routine_read, 0);
+        let routine_position = game
+            .world
+            .tiles()
+            .iter()
+            .position(|tile| *tile == Tile::RoutineDirective)
+            .expect("inspection spawns routine directives");
+        let routine_x = routine_position % game.world.width();
+        let routine_y = routine_position / game.world.width();
+        assert!(game
+            .drain_audio_events()
+            .into_iter()
+            .any(|event| event == AudioEvent::InspectionAlarm));
+
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = routine_x as i32 * TILE_WIDTH + 8;
+            player.y = routine_y as i32 * TILE_HEIGHT + 2;
+        }
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.summary().routine_read, 1);
+        assert_eq!(game.world.tile(routine_x, routine_y), Some(Tile::Floor));
+        assert!(!game
+            .drain_audio_events()
+            .into_iter()
+            .any(|event| event == AudioEvent::InspectionAlarm));
     }
 
     #[test]

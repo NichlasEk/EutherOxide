@@ -373,6 +373,8 @@ type DogsCoreSummary = {
   bossName?: string | null;
   bossArmor?: number | null;
   bossMaxArmor?: number | null;
+  routineRead?: number;
+  routineTotal?: number;
 };
 
 type DogsStoreItem = {
@@ -643,7 +645,7 @@ let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
 let audioGain: GainNode | null = null;
 let audioCursor = 0;
-const activeAudioSources = new Set<AudioBufferSourceNode>();
+const activeAudioSources = new Set<AudioScheduledSourceNode>();
 let nextFrameDue = performance.now();
 let nativeSurfaceRectTimer: number | null = null;
 let controlsOpen = false;
@@ -676,6 +678,8 @@ let dogsActorFacings = new Map<string, DogsActorFacing>();
 let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
 let dogsPreviousAudioFrame: DogsCoreFrame | null = null;
+let dogsInspectionAlertStartFrame = -1;
+let dogsInspectionAlertUntilFrame = -1;
 let dogsSawHostileQueue = false;
 let dogsTrackedBullets = new Map<number, DogsCoreBullet>();
 let dogsImpactEffects: DogsImpactEffect[] = [];
@@ -4166,6 +4170,7 @@ function dogsTileAsset(tile: string): string | null {
     lab_coat_armor: ["items", "lab_coat_armor"],
     hazard_sleeves: ["items", "hazard_sleeves"],
     pill_splitter: ["items", "pill_splitter"],
+    routine_directive: ["items", "routine_directive"],
     scorch_mark: ["sprites.effects", "scorch_mark"],
     spilled_syrup: ["sprites.effects", "spilled_syrup"],
   };
@@ -4885,10 +4890,43 @@ function drawDogsMapOverlay(frame: DogsCoreFrame, cameraX: number, cameraY: numb
   dogsContext.restore();
 }
 
+function drawDogsInspectionOverlay(frame: DogsCoreFrame, viewW: number, viewH: number): void {
+  if (frame.frame < dogsInspectionAlertStartFrame || frame.frame > dogsInspectionAlertUntilFrame) return;
+  const elapsed = frame.frame - dogsInspectionAlertStartFrame;
+  const flashIndex = Math.floor(elapsed / 36);
+  const flashFrame = elapsed % 36;
+  if (flashIndex >= 3 || flashFrame >= 22) return;
+  const alpha = flashFrame < 4 ? flashFrame / 4 : flashFrame > 17 ? (22 - flashFrame) / 5 : 1;
+  dogsContext.save();
+  dogsContext.globalAlpha = alpha;
+  dogsContext.fillStyle = "rgba(110, 0, 8, 0.34)";
+  dogsContext.fillRect(0, 0, viewW, viewH);
+  dogsContext.textAlign = "center";
+  dogsContext.textBaseline = "middle";
+  dogsContext.font = `900 ${Math.max(32, Math.floor(viewW / 13))}px "Arial Black", Impact, sans-serif`;
+  dogsContext.lineWidth = Math.max(3, Math.floor(viewW / 160));
+  dogsContext.strokeStyle = "rgba(0, 0, 0, 0.92)";
+  dogsContext.fillStyle = flashIndex % 2 === 0 ? "#ff304f" : "#ffef6e";
+  dogsContext.shadowColor = "#ff304f";
+  dogsContext.shadowBlur = 26;
+  dogsContext.strokeText("INSPECTION!!!", viewW / 2, viewH * 0.38);
+  dogsContext.fillText("INSPECTION!!!", viewW / 2, viewH * 0.38);
+  dogsContext.font = `900 ${Math.max(12, Math.floor(viewW / 42))}px monospace`;
+  dogsContext.fillStyle = "#ffffff";
+  dogsContext.shadowBlur = 8;
+  dogsContext.fillText("RETAIL COMPLIANCE BREACH", viewW / 2, viewH * 0.48);
+  dogsContext.restore();
+}
+
 function processDogsAudio(frame: DogsCoreFrame): void {
   const events = frame.audioEvents ?? [];
   for (const event of events) {
-    void playDogsSfx(event, dogsGameplaySfxGain(event));
+    if (event === "inspection_alarm") {
+      triggerDogsInspectionAlert(frame);
+      void playDogsInspectionSiren();
+    } else {
+      void playDogsSfx(event, dogsGameplaySfxGain(event));
+    }
   }
   if (events.length === 0) {
     processDogsAudioFallback(frame, dogsPreviousAudioFrame);
@@ -4909,6 +4947,15 @@ function processDogsAudio(frame: DogsCoreFrame): void {
 
 function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame | null): void {
   if (!previous) return;
+  if (
+    frame.summary.mission === 2 &&
+    previous.summary.mission === 2 &&
+    previous.summary.elapsedTicks < 900 &&
+    frame.summary.elapsedTicks >= 900
+  ) {
+    triggerDogsInspectionAlert(frame);
+    void playDogsInspectionSiren();
+  }
   if (frame.bullets.length > previous.bullets.length) {
     const hero = dogsLocalPlayer(frame);
     void playDogsSfx(hero?.activeWeapon ?? "scanner_blaster", 0.9);
@@ -4920,6 +4967,52 @@ function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame 
     void playDogsSfx("customer_defeated", 0.95);
   } else if (frame.summary.hits > previous.summary.hits || frame.summary.damageTaken > previous.summary.damageTaken) {
     void playDogsSfx("impact_heavy", 0.9);
+  }
+}
+
+function triggerDogsInspectionAlert(frame: DogsCoreFrame): void {
+  dogsInspectionAlertStartFrame = frame.frame;
+  dogsInspectionAlertUntilFrame = frame.frame + 108;
+}
+
+async function playDogsInspectionSiren(): Promise<void> {
+  try {
+    const context = await ensureAudio();
+    if (!context) return;
+    const scheduleBurst = (startTime: number): void => {
+      const alarmGain = context.createGain();
+      alarmGain.gain.setValueAtTime(0.0001, startTime);
+      alarmGain.gain.exponentialRampToValueAtTime(0.42, startTime + 0.03);
+      alarmGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.46);
+      alarmGain.connect(audioGain ?? context.destination);
+      let endedOscillators = 0;
+      const makeOscillator = (offset: number): void => {
+        const oscillator = context.createOscillator();
+        oscillator.type = "sawtooth";
+        oscillator.frequency.setValueAtTime(420 + offset, startTime);
+        oscillator.frequency.linearRampToValueAtTime(980 + offset, startTime + 0.23);
+        oscillator.frequency.linearRampToValueAtTime(360 + offset, startTime + 0.46);
+        oscillator.connect(alarmGain);
+        activeAudioSources.add(oscillator);
+        oscillator.onended = () => {
+          activeAudioSources.delete(oscillator);
+          oscillator.disconnect();
+          endedOscillators += 1;
+          if (endedOscillators >= 2) {
+            alarmGain.disconnect();
+          }
+        };
+        oscillator.start(startTime);
+        oscillator.stop(startTime + 0.5);
+      };
+      makeOscillator(0);
+      makeOscillator(-14);
+    };
+    for (let index = 0; index < 3; index += 1) {
+      scheduleBurst(context.currentTime + index * 0.62);
+    }
+  } catch {
+    pushTrace("EutherDogs inspection siren skipped");
   }
 }
 
@@ -5932,6 +6025,8 @@ function leaveDogsMode(): void {
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
+  dogsInspectionAlertStartFrame = -1;
+  dogsInspectionAlertUntilFrame = -1;
   dogsSawHostileQueue = false;
   ui.playing = false;
   ui.loaded = false;
@@ -6380,6 +6475,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   if (dogsMapOpen) {
     drawDogsMapOverlay(frame, cameraX, cameraY, viewW, viewH);
   }
+  drawDogsInspectionOverlay(frame, viewW, viewH);
   const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
   if (hud) {
     const hero = dogsLocalPlayer(frame);
@@ -6390,8 +6486,12 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const bossPercent = Math.round(Math.min(100, (bossArmor / bossMaxArmor) * 100));
     const bossName = escapeHtml(frame.summary.bossName ?? "NGR3");
     const status = escapeHtml(frame.summary.status.toUpperCase());
+    const routineTotal = frame.summary.routineTotal ?? 0;
+    const routineText = routineTotal > 0
+      ? ` | RUTINE ${frame.summary.routineRead ?? 0}/${routineTotal} READ`
+      : "";
     hud.innerHTML = `
-      <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${dogsQueueLeft(frame)}</strong> | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
+      <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${dogsQueueLeft(frame)}</strong>${routineText} | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
       ${bossActive ? `<span class="eutherdogs-boss"><strong>BOSS:${bossName}</strong><span class="eutherdogs-boss-bar"><span style="width: ${bossPercent}%"></span></span></span>` : ""}
     `;
   }

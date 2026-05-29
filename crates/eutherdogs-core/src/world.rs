@@ -32,6 +32,7 @@ pub enum Tile {
     LabCoatArmor,
     HazardSleeves,
     PillSplitter,
+    RoutineDirective,
     ScorchMark,
     SpilledSyrup,
     PlayerSpawn1,
@@ -62,6 +63,7 @@ impl Tile {
                 | Self::LabCoatArmor
                 | Self::HazardSleeves
                 | Self::PillSplitter
+                | Self::RoutineDirective
         )
     }
 

@@ -141,6 +141,8 @@ pub struct EutherDogsSummary {
     pub boss_name: Option<&'static str>,
     pub boss_armor: Option<i32>,
     pub boss_max_armor: Option<i32>,
+    pub routine_read: i32,
+    pub routine_total: i32,
 }
 
 impl EutherDogsRuntime {
@@ -593,12 +595,15 @@ pub fn eutherdogs_frame(
             boss_name: summary.boss.map(|boss| boss.name),
             boss_armor: summary.boss.map(|boss| boss.armor),
             boss_max_armor: summary.boss.map(|boss| boss.max_armor),
+            routine_read: summary.routine_read,
+            routine_total: summary.routine_total,
         },
         store: game_store_items(game, config),
         audio_events: audio_events
             .iter()
             .map(|event| match event {
                 eutherdogs_core::AudioEvent::Sfx(asset) => asset.manifest_key(),
+                eutherdogs_core::AudioEvent::InspectionAlarm => "inspection_alarm",
             })
             .collect(),
         highscore_count,
@@ -836,6 +841,7 @@ fn tile_key(tile: Tile) -> &'static str {
         Tile::LabCoatArmor => "lab_coat_armor",
         Tile::HazardSleeves => "hazard_sleeves",
         Tile::PillSplitter => "pill_splitter",
+        Tile::RoutineDirective => "routine_directive",
         Tile::ScorchMark => "scorch_mark",
         Tile::SpilledSyrup => "spilled_syrup",
         Tile::PlayerSpawn1 => "player_spawn_1",
