@@ -4,6 +4,7 @@ use crate::{assets::AssetId, direction::Direction, weapon::WeaponId};
 pub enum Faction {
     Player,
     HostileCustomer,
+    Inspector,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,6 +84,29 @@ impl Character {
             speed: 2,
             direction: Direction::Down,
             armor: 35,
+            lives: 1,
+            weapon: WeaponId::CouponPistol,
+            weapons: vec![WeaponSlot {
+                weapon: WeaponId::CouponPistol,
+                ammo: -1,
+            }],
+            active_weapon: 0,
+            weapon_cooldown: 0,
+            sprite,
+            is_target: false,
+            alive: true,
+        }
+    }
+
+    pub fn inspector(id: u32, x: i32, y: i32, sprite: AssetId) -> Self {
+        Self {
+            id,
+            faction: Faction::Inspector,
+            x,
+            y,
+            speed: 3,
+            direction: Direction::Down,
+            armor: 55,
             lives: 1,
             weapon: WeaponId::CouponPistol,
             weapons: vec![WeaponSlot {

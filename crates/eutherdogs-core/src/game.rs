@@ -100,6 +100,15 @@ const NGR3_NAME: &str = "NGR3";
 const INSPECTION_MISSION: i32 = 2;
 const INSPECTION_ALERT_TICKS: u32 = 15 * 60;
 const INSPECTION_ROUTINES: i32 = 17;
+const INSPECTOR_RESPAWN_TICKS: u32 = 90;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InspectorState {
+    player_index: usize,
+    sprite: AssetId,
+    character_id: Option<u32>,
+    respawn_ticks: u32,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BossState {
@@ -183,6 +192,7 @@ pub struct Game {
     boss: Option<BossState>,
     inspection_alert_triggered: bool,
     routine_total: i32,
+    inspectors: Vec<InspectorState>,
 }
 
 impl Default for Game {
@@ -207,6 +217,7 @@ impl Default for Game {
             boss: None,
             inspection_alert_triggered: false,
             routine_total: 0,
+            inspectors: Vec::new(),
         }
     }
 }
@@ -239,6 +250,7 @@ impl Game {
             boss: (mission.mission == NGR3_MISSION).then_some(BossState::ngr3()),
             inspection_alert_triggered: false,
             routine_total: 0,
+            inspectors: Vec::new(),
         };
         game.mission_goal_count =
             game.world.stats().targets_left + game.world.stats().objects_to_collect;
@@ -313,9 +325,11 @@ impl Game {
             self.apply_player_input(*input, dt);
         }
         self.move_hostiles(dt);
+        self.move_inspectors(dt);
         self.move_bullets(dt);
         self.collect_pickups();
         self.remove_dead_characters();
+        self.update_inspector_state(dt);
         self.update_boss_state();
         self.update_status();
     }
@@ -688,6 +702,35 @@ impl Game {
         }
     }
 
+    fn move_inspectors(&mut self, dt: FixedStep) {
+        let inspector_indices = self
+            .characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| character.faction == Faction::Inspector && character.alive)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        for index in inspector_indices {
+            let Some(player_index) = self.inspector_player_index(self.characters[index].id) else {
+                continue;
+            };
+            let Some((_, player_x, player_y)) = self.living_player_by_offset(player_index) else {
+                continue;
+            };
+            let (x, y) = (self.characters[index].x, self.characters[index].y);
+            if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
+                && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
+            {
+                self.characters[index].direction = direction_toward(x, y, player_x, player_y);
+                continue;
+            }
+            let direction = direction_toward(x, y, player_x, player_y);
+            self.characters[index].direction = direction;
+            self.move_character(index, direction, dt);
+        }
+    }
+
     fn move_boss(&mut self, index: usize, dt: FixedStep) {
         let (x, y, armor) = (
             self.characters[index].x,
@@ -940,7 +983,108 @@ impl Game {
         }
         self.inspection_alert_triggered = true;
         self.spawn_inspection_routines();
+        self.spawn_inspectors();
         self.audio_events.push(AudioEvent::InspectionAlarm);
+    }
+
+    fn spawn_inspectors(&mut self) {
+        self.inspectors.clear();
+        let player_count = self
+            .characters
+            .iter()
+            .filter(|character| character.faction == Faction::Player)
+            .count()
+            .clamp(1, 2);
+        let first_sprite = if self.rng.range(2) == 0 {
+            AssetId::InspectorCyan
+        } else {
+            AssetId::InspectorMagenta
+        };
+        let second_sprite = if first_sprite == AssetId::InspectorCyan {
+            AssetId::InspectorMagenta
+        } else {
+            AssetId::InspectorCyan
+        };
+        for (player_index, sprite) in [first_sprite, second_sprite]
+            .into_iter()
+            .take(player_count)
+            .enumerate()
+        {
+            let character_id = self.spawn_inspector_for_player(player_index, sprite);
+            self.inspectors.push(InspectorState {
+                player_index,
+                sprite,
+                character_id,
+                respawn_ticks: 0,
+            });
+        }
+    }
+
+    fn spawn_inspector_for_player(&mut self, player_index: usize, sprite: AssetId) -> Option<u32> {
+        let (x, y) = self.inspector_spawn_point(player_index)?;
+        let id = self.next_character_id;
+        self.next_character_id += 1;
+        self.characters.push(Character::inspector(id, x, y, sprite));
+        Some(id)
+    }
+
+    fn inspector_spawn_point(&mut self, player_index: usize) -> Option<(i32, i32)> {
+        let player = self
+            .living_player_by_offset(player_index)
+            .map(|(_, x, y)| (x, y));
+        for _ in 0..180 {
+            let x = self.rng.range(self.world.width() as i32) as usize;
+            let y = self.rng.range(self.world.height() as i32) as usize;
+            if x <= 1
+                || y <= 1
+                || x >= self.world.width() - 1
+                || y >= self.world.height() - 1
+                || self.world.blocks_walk(x, y)
+                || matches!(self.world.tile(x, y), Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2))
+            {
+                continue;
+            }
+            let px = x as i32 * TILE_WIDTH + 8;
+            let py = y as i32 * TILE_HEIGHT + 2;
+            if player
+                .is_some_and(|(player_x, player_y)| (player_x - px).abs() < TILE_WIDTH * 5 && (player_y - py).abs() < TILE_HEIGHT * 5)
+            {
+                continue;
+            }
+            return Some((px, py));
+        }
+        random_spawn_point(&self.world, &mut self.rng)
+    }
+
+    fn update_inspector_state(&mut self, dt: FixedStep) {
+        for inspector_index in 0..self.inspectors.len() {
+            let character_id = self.inspectors[inspector_index].character_id;
+            if let Some(character_id) = character_id {
+                if self
+                    .characters
+                    .iter()
+                    .any(|character| character.id == character_id && character.alive)
+                {
+                    continue;
+                }
+                self.inspectors[inspector_index].character_id = None;
+                self.inspectors[inspector_index].respawn_ticks = INSPECTOR_RESPAWN_TICKS;
+            }
+
+            let respawn_ticks = self.inspectors[inspector_index]
+                .respawn_ticks
+                .saturating_sub(dt.ticks);
+            self.inspectors[inspector_index].respawn_ticks = respawn_ticks;
+            if respawn_ticks == 0 {
+                let player_index = self.inspectors[inspector_index].player_index;
+                let sprite = self.inspectors[inspector_index].sprite;
+                if let Some(character_id) = self.spawn_inspector_for_player(player_index, sprite) {
+                    self.inspectors[inspector_index].character_id = Some(character_id);
+                } else {
+                    self.inspectors[inspector_index].respawn_ticks = INSPECTOR_RESPAWN_TICKS;
+                }
+            }
+        }
     }
 
     fn spawn_inspection_routines(&mut self) {
@@ -1189,6 +1333,22 @@ impl Game {
             .filter(|(_, character)| character.faction == Faction::Player && character.alive)
             .min_by_key(|(_, character)| (character.x - x).abs() + (character.y - y).abs())
             .map(|(index, character)| (index, character.x, character.y))
+    }
+
+    fn living_player_by_offset(&self, player_index: usize) -> Option<(usize, i32, i32)> {
+        self.characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| character.faction == Faction::Player && character.alive)
+            .nth(player_index)
+            .map(|(index, character)| (index, character.x, character.y))
+    }
+
+    fn inspector_player_index(&self, character_id: u32) -> Option<usize> {
+        self.inspectors
+            .iter()
+            .find(|inspector| inspector.character_id == Some(character_id))
+            .map(|inspector| inspector.player_index)
     }
 }
 
@@ -1552,6 +1712,16 @@ mod tests {
         assert_eq!(routine_tiles, 17);
         assert_eq!(game.summary().routine_total, 17);
         assert_eq!(game.summary().routine_read, 0);
+        let inspectors = game
+            .characters()
+            .iter()
+            .filter(|character| character.faction == Faction::Inspector)
+            .collect::<Vec<_>>();
+        assert_eq!(inspectors.len(), 1);
+        assert!(matches!(
+            inspectors[0].sprite,
+            AssetId::InspectorCyan | AssetId::InspectorMagenta
+        ));
         let routine_position = game
             .world
             .tiles()
@@ -1580,6 +1750,87 @@ mod tests {
             .drain_audio_events()
             .into_iter()
             .any(|event| event == AudioEvent::InspectionAlarm));
+    }
+
+    #[test]
+    fn two_player_inspection_bonds_one_inspector_per_player() {
+        let mut game = Game::new_mission_with_rules(
+            11,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 1,
+            },
+            super::MissionRules {
+                player_count: 2,
+                ..super::MissionRules::default()
+            },
+        );
+        game.progress.elapsed_ticks = 899;
+        game.drain_audio_events();
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        let inspector_sprites = game
+            .characters()
+            .iter()
+            .filter(|character| character.faction == Faction::Inspector)
+            .map(|character| character.sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(inspector_sprites.len(), 2);
+        assert!(inspector_sprites.contains(&AssetId::InspectorCyan));
+        assert!(inspector_sprites.contains(&AssetId::InspectorMagenta));
+        assert_eq!(
+            game.inspectors
+                .iter()
+                .map(|inspector| inspector.player_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn killed_inspector_respawns_quickly() {
+        let mut game = Game::new_mission(
+            17,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 2,
+                targets: 0,
+                objects: 1,
+            },
+        );
+        game.progress.elapsed_ticks = 899;
+        game.tick(&[], FixedStep { ticks: 1 });
+        let inspector_id = game
+            .characters()
+            .iter()
+            .find(|character| character.faction == Faction::Inspector)
+            .expect("inspection spawns an inspector")
+            .id;
+
+        game.characters
+            .iter_mut()
+            .find(|character| character.id == inspector_id)
+            .expect("inspector is present")
+            .alive = false;
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert!(!game
+            .characters()
+            .iter()
+            .any(|character| character.id == inspector_id));
+
+        game.tick(
+            &[],
+            FixedStep {
+                ticks: super::INSPECTOR_RESPAWN_TICKS,
+            },
+        );
+        assert!(game
+            .characters()
+            .iter()
+            .any(|character| character.faction == Faction::Inspector && character.alive));
     }
 
     #[test]

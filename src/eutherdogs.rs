@@ -541,6 +541,7 @@ pub fn eutherdogs_frame(
                     faction: match character.faction {
                         eutherdogs_core::entity::Faction::Player => "player",
                         eutherdogs_core::entity::Faction::HostileCustomer => "hostile_customer",
+                        eutherdogs_core::entity::Faction::Inspector => "inspector",
                     },
                     x: character.x,
                     y: character.y,
@@ -566,6 +567,7 @@ pub fn eutherdogs_frame(
                 owner_faction: match bullet.owner_faction {
                     eutherdogs_core::entity::Faction::Player => "player",
                     eutherdogs_core::entity::Faction::HostileCustomer => "hostile_customer",
+                    eutherdogs_core::entity::Faction::Inspector => "inspector",
                 },
                 weapon: bullet.weapon.key(),
             })

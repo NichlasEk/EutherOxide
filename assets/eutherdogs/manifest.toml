@@ -39,6 +39,10 @@ black_market_courier = "sprites/enemies/black_market_courier.png"
 black_market_courier_walk = "sprites/enemies/black_market_courier_walk.png"
 district_manager = "sprites/enemies/district_manager.png"
 district_manager_walk = "sprites/enemies/district_manager_walk.png"
+inspector_cyan = "sprites/enemies/inspector_cyan.png"
+inspector_cyan_walk = "sprites/enemies/inspector_cyan_walk.png"
+inspector_magenta = "sprites/enemies/inspector_magenta.png"
+inspector_magenta_walk = "sprites/enemies/inspector_magenta_walk.png"
 
 [sprites.weapons]
 rx_cannon = "sprites/weapons/rx_cannon.png"
@@ -191,6 +195,10 @@ black_market_courier = "highres/2x/sprites/enemies/black_market_courier.png"
 black_market_courier_walk = "highres/2x/sprites/enemies/black_market_courier_walk.png"
 district_manager = "highres/2x/sprites/enemies/district_manager.png"
 district_manager_walk = "highres/2x/sprites/enemies/district_manager_walk.png"
+inspector_cyan = "highres/2x/sprites/enemies/inspector_cyan.png"
+inspector_cyan_walk = "highres/2x/sprites/enemies/inspector_cyan_walk.png"
+inspector_magenta = "highres/2x/sprites/enemies/inspector_magenta.png"
+inspector_magenta_walk = "highres/2x/sprites/enemies/inspector_magenta_walk.png"
 
 [highres.sprites.weapons]
 rx_cannon = "highres/2x/sprites/weapons/rx_cannon.png"

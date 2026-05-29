@@ -4310,7 +4310,16 @@ function dogsHeroKey(actor: DogsCoreActor, animated: boolean): string {
 }
 
 function dogsEnemyKey(actor: DogsCoreActor): string {
-  const enemies = ["angry_customer", "claim_denier", "inventory_drone", "recall_enforcer", "black_market_courier", "district_manager"];
+  const enemies = [
+    "angry_customer",
+    "claim_denier",
+    "inventory_drone",
+    "recall_enforcer",
+    "black_market_courier",
+    "district_manager",
+    "inspector_cyan",
+    "inspector_magenta",
+  ];
   return actor.sprite && dogsAsset("sprites.enemies", actor.sprite) ? actor.sprite : enemies[actor.id % enemies.length];
 }
 
