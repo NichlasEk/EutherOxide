@@ -211,6 +211,32 @@ impl EutherDogsRuntime {
         runtime
     }
 
+    pub fn start(&mut self, start: EutherDogsStart) -> Result<EutherDogsFrame, ConfigError> {
+        self.persist_player_state();
+        let staff = start.staff.unwrap_or(self.staff).clamp(1, 2);
+        let players = start
+            .players
+            .unwrap_or(self.config.settings.player_count)
+            .clamp(1, 2);
+        let mission = start.mission.unwrap_or(self.mission).max(1);
+        self.config.settings.player_count = players;
+        self.config.settings.starting_mission = mission;
+        apply_start_characters(
+            &mut self.config,
+            staff,
+            players,
+            start.characters.as_deref(),
+        );
+        self.staff = staff;
+        self.mission = mission;
+        self.game = Game::new_mission_from_config(&campaign_config(&self.config, self.mission))?;
+        self.frame = 0;
+        self.clear_visibility_history();
+        self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
+        self.weapon_switch_cooldowns = [0, 0];
+        Ok(self.snapshot())
+    }
+
     pub fn reset(&mut self) -> Result<(), ConfigError> {
         self.game = Game::new_mission_from_config(&campaign_config(&self.config, self.mission))?;
         self.frame = 0;
@@ -318,6 +344,7 @@ impl EutherDogsRuntime {
             purchase.player.unwrap_or(1).saturating_sub(1) as usize,
         )?;
         let audio_events = self.game.drain_audio_events();
+        self.persist_player_state();
         let player_index = purchase.player.unwrap_or(1).clamp(1, 2).saturating_sub(1) as usize;
         Ok(self.snapshot_for_player_with_audio_events(player_index, &audio_events))
     }
@@ -672,7 +699,7 @@ pub fn eutherdogs_frame(
             inspection_answers,
             inspection_protocol,
         },
-        store: game_store_items(game, config),
+        store: game_store_items(game, config, player_index),
         audio_events: audio_events
             .iter()
             .map(|event| match event {
@@ -686,12 +713,17 @@ pub fn eutherdogs_frame(
     }
 }
 
-fn game_store_items(game: &Game, config: &EutherDogsConfig) -> Vec<EutherDogsStoreItem> {
+fn game_store_items(
+    game: &Game,
+    config: &EutherDogsConfig,
+    player_index: usize,
+) -> Vec<EutherDogsStoreItem> {
     let cash = game.summary().progress.cash;
     let player = game
         .characters()
         .iter()
-        .find(|character| character.faction == eutherdogs_core::entity::Faction::Player);
+        .filter(|character| character.faction == eutherdogs_core::entity::Faction::Player)
+        .nth(player_index);
     complete_store_items(&config.store)
         .into_iter()
         .map(|item| {
@@ -955,6 +987,84 @@ mod tests {
                 .store
                 .iter()
                 .any(|item| item.id == "autoinjector" && item.active)
+        );
+    }
+
+    #[test]
+    fn runtime_carries_purchased_weapon_into_selected_mission() {
+        let mut runtime = EutherDogsRuntime::demo_with_start(EutherDogsStart {
+            staff: Some(1),
+            mission: Some(1),
+            players: Some(2),
+            characters: None,
+        });
+
+        runtime
+            .purchase(EutherDogsPurchase {
+                item_id: "handsanitizer_flamethrower".to_string(),
+                player: Some(1),
+            })
+            .unwrap();
+        let player = runtime.config.player_config(1).unwrap();
+        assert_eq!(player.active_weapon, "handsanitizer_flamethrower");
+        assert!(
+            player
+                .weapons
+                .iter()
+                .any(|slot| slot.id == "handsanitizer_flamethrower")
+        );
+
+        let frame = runtime
+            .start(EutherDogsStart {
+                staff: Some(1),
+                mission: Some(10),
+                players: Some(2),
+                characters: None,
+            })
+            .unwrap();
+        let hero = frame
+            .characters
+            .iter()
+            .find(|character| character.faction == "player" && character.id == 0)
+            .unwrap();
+
+        assert_eq!(frame.summary.mission, 10);
+        assert_eq!(hero.active_weapon, "handsanitizer_flamethrower");
+        assert!(
+            frame.store.iter().any(|item| {
+                item.id == "handsanitizer_flamethrower" && item.owned && item.active
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_store_uses_requested_player_inventory() {
+        let mut runtime = EutherDogsRuntime::demo_with_start(EutherDogsStart {
+            staff: Some(1),
+            mission: Some(1),
+            players: Some(2),
+            characters: None,
+        });
+
+        let frame = runtime
+            .purchase(EutherDogsPurchase {
+                item_id: "needlegun".to_string(),
+                player: Some(2),
+            })
+            .unwrap();
+
+        assert!(
+            frame
+                .store
+                .iter()
+                .any(|item| item.id == "needlegun" && item.owned && item.active)
+        );
+        let player_one_frame = runtime.snapshot();
+        assert!(
+            player_one_frame
+                .store
+                .iter()
+                .any(|item| item.id == "needlegun" && !item.owned && !item.active)
         );
     }
 

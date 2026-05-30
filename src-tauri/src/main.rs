@@ -545,14 +545,13 @@ fn start_eutherdogs(
     start: Option<euther_oxide::eutherdogs::EutherDogsStart>,
 ) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
     let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
-    *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_start(start.unwrap_or(
-        euther_oxide::eutherdogs::EutherDogsStart {
-            staff: None,
-            mission: None,
-            players: Some(2),
-        },
-    ));
-    Ok(dogs.snapshot())
+    let start = start.unwrap_or(euther_oxide::eutherdogs::EutherDogsStart {
+        staff: None,
+        mission: None,
+        players: Some(2),
+        characters: None,
+    });
+    dogs.start(start).map_err(|err| err.to_string())
 }
 
 #[tauri::command]

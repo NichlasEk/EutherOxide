@@ -5534,8 +5534,8 @@ function dogsVisibleStoreItems(frame: DogsCoreFrame | null, cash: number, hero: 
     byId.set(item.id, {
       ...existing,
       ...item,
-      owned: item.armor > 0 ? Boolean(existing?.owned) : active || Boolean(existing?.owned && !item.weapon),
-      currentAmmo: active ? hero?.ammo : null,
+      owned: item.armor > 0 ? Boolean(existing?.owned) : active || Boolean(existing?.owned),
+      currentAmmo: active ? hero?.ammo : existing?.currentAmmo ?? null,
       active,
       affordable: cash >= (existing?.price ?? item.price),
     });

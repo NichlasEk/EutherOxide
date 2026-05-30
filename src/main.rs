@@ -1781,8 +1781,9 @@ fn handle_bridge_route_with_user(
                 .eutherdogs
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            *dogs = euther_oxide::eutherdogs::EutherDogsRuntime::demo_with_start(start);
-            let frame = dogs.snapshot();
+            let frame = dogs
+                .start(start)
+                .map_err(|err| invalid_request(err.to_string()))?;
             drop(dogs);
             publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
