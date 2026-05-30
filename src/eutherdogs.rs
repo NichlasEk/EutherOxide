@@ -679,6 +679,7 @@ pub fn eutherdogs_frame(
                 eutherdogs_core::AudioEvent::Sfx(asset) => asset.manifest_key(),
                 eutherdogs_core::AudioEvent::InspectionAlarm => "inspection_alarm",
                 eutherdogs_core::AudioEvent::ExternalInspectionAlarm => "external_inspection_alarm",
+                eutherdogs_core::AudioEvent::MpaHum => "mpa_hum",
             })
             .collect(),
         highscore_count,

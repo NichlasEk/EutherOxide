@@ -49,6 +49,7 @@ pub enum AudioEvent {
     Sfx(crate::assets::AssetId),
     InspectionAlarm,
     ExternalInspectionAlarm,
+    MpaHum,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +130,8 @@ const MPA_MISSION: i32 = 10;
 const MPA_ALERT_TICKS: u32 = 15 * 60;
 const MPA_AGENT_COUNT: usize = 50;
 const MPA_AGENT_INSPECT_TICKS: u32 = 180;
+const MPA_AGENT_WATCH_RANGE: i32 = TILE_WIDTH * 7;
+const MPA_HUM_COOLDOWN_TICKS: u32 = 210;
 const MPA_CHIEF_QUESTION_RANGE: i32 = TILE_WIDTH * 3;
 const MPA_CHIEF_QUESTION_COOLDOWN_TICKS: u32 = 90;
 const MPA_PROTOCOL_QUESTIONS: i32 = 3;
@@ -311,6 +314,7 @@ pub struct Game {
     mpa_triggered: bool,
     mpa_complete: bool,
     mpa_agents: Vec<MpaAgentState>,
+    mpa_hum_cooldown: u32,
     mpa_chief_id: Option<u32>,
     mpa_chief_player_index: usize,
     mpa_chief_answers: i32,
@@ -351,6 +355,7 @@ impl Default for Game {
             mpa_triggered: false,
             mpa_complete: false,
             mpa_agents: Vec::new(),
+            mpa_hum_cooldown: 0,
             mpa_chief_id: None,
             mpa_chief_player_index: 0,
             mpa_chief_answers: 0,
@@ -399,6 +404,7 @@ impl Game {
             mpa_triggered: false,
             mpa_complete: false,
             mpa_agents: Vec::new(),
+            mpa_hum_cooldown: 0,
             mpa_chief_id: None,
             mpa_chief_player_index: 0,
             mpa_chief_answers: 0,
@@ -476,6 +482,7 @@ impl Game {
         for character in &mut self.characters {
             character.weapon_cooldown = character.weapon_cooldown.saturating_sub(dt.ticks as u8);
         }
+        self.mpa_hum_cooldown = self.mpa_hum_cooldown.saturating_sub(dt.ticks);
         for input in input {
             if let Some(answer) = input.inspection_answer {
                 self.answer_inspection_question(input.player_index, answer);
@@ -988,6 +995,12 @@ impl Game {
                 self.mpa_agents[agent_index].inspect_ticks = self.mpa_agents[agent_index]
                     .inspect_ticks
                     .saturating_sub(dt.ticks);
+                if self.mpa_agent_tracks_visible_player(character_index)
+                    && self.mpa_hum_cooldown == 0
+                {
+                    self.mpa_hum_cooldown = MPA_HUM_COOLDOWN_TICKS;
+                    self.audio_events.push(AudioEvent::MpaHum);
+                }
                 continue;
             }
             let target_tile = if let Some(target_tile) = self.mpa_agents[agent_index].target_tile {
@@ -1014,6 +1027,22 @@ impl Game {
             self.characters[character_index].direction = direction;
             self.move_character(character_index, direction, dt);
         }
+    }
+
+    fn mpa_agent_tracks_visible_player(&mut self, character_index: usize) -> bool {
+        let (x, y) = (
+            self.characters[character_index].x,
+            self.characters[character_index].y,
+        );
+        let Some((_, player_x, player_y)) = self.nearest_living_player(x, y) else {
+            return false;
+        };
+        let distance = (x - player_x).abs().max((y - player_y).abs());
+        if distance > MPA_AGENT_WATCH_RANGE || !self.has_line_of_sight(x, y, player_x, player_y) {
+            return false;
+        }
+        self.characters[character_index].direction = direction_toward(x, y, player_x, player_y);
+        true
     }
 
     fn move_mpa_chief(&mut self, dt: FixedStep) {
@@ -2798,6 +2827,51 @@ mod tests {
             .drain_audio_events()
             .into_iter()
             .any(|event| event == AudioEvent::ExternalInspectionAlarm));
+    }
+
+    #[test]
+    fn level_ten_mpa_agents_watch_player_and_hum_while_inspecting() {
+        let mut game = Game::new_mission(
+            44,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 10,
+                targets: 0,
+                objects: 0,
+            },
+        );
+        game.progress.elapsed_ticks = super::MPA_ALERT_TICKS - 1;
+        game.tick(&[], FixedStep { ticks: 1 });
+        let agent_id = game.mpa_agents[0].character_id;
+        let agent_index = game.character_index(agent_id).expect("MPA agent exists");
+        let tile_y = 5;
+        for tile_x in 5..=8 {
+            game.world.set_tile(tile_x, tile_y, Tile::Floor);
+        }
+        game.characters[agent_index].x = 5 * TILE_WIDTH as i32 + 8;
+        game.characters[agent_index].y = tile_y as i32 * TILE_HEIGHT + 2;
+        game.mpa_agents[0].inspect_ticks = 20;
+        game.mpa_hum_cooldown = 0;
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = 8 * TILE_WIDTH as i32 + 8;
+            player.y = tile_y as i32 * TILE_HEIGHT + 2;
+        }
+        game.drain_audio_events();
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert_eq!(
+            game.characters[agent_index].direction,
+            crate::direction::Direction::Right
+        );
+        assert!(game
+            .drain_audio_events()
+            .into_iter()
+            .any(|event| event == AudioEvent::MpaHum));
     }
 
     #[test]

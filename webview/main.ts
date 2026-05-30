@@ -5098,6 +5098,8 @@ function processDogsAudio(frame: DogsCoreFrame): void {
     } else if (event === "external_inspection_alarm") {
       triggerDogsExternalInspectionAlert(frame);
       void playDogsExternalInspectionSiren();
+    } else if (event === "mpa_hum") {
+      void playDogsMpaHum();
     } else {
       void playDogsSfx(event, dogsGameplaySfxGain(event));
     }
@@ -5247,6 +5249,41 @@ async function playDogsExternalInspectionSiren(): Promise<void> {
     }
   } catch {
     pushTrace("EutherDogs external inspection siren skipped");
+  }
+}
+
+async function playDogsMpaHum(): Promise<void> {
+  try {
+    const context = await ensureAudio();
+    if (!context) return;
+    const startTime = context.currentTime;
+    const humGain = context.createGain();
+    humGain.gain.setValueAtTime(0.0001, startTime);
+    humGain.gain.exponentialRampToValueAtTime(0.08, startTime + 0.04);
+    humGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.7);
+    humGain.connect(audioGain ?? context.destination);
+    const oscillators: OscillatorNode[] = [];
+    for (const [index, frequency] of [82, 123].entries()) {
+      const oscillator = context.createOscillator();
+      oscillator.type = index === 0 ? "sine" : "triangle";
+      oscillator.frequency.setValueAtTime(frequency, startTime);
+      oscillator.frequency.linearRampToValueAtTime(frequency + 9, startTime + 0.28);
+      oscillator.frequency.linearRampToValueAtTime(frequency - 4, startTime + 0.68);
+      oscillator.connect(humGain);
+      activeAudioSources.add(oscillator);
+      oscillator.onended = () => {
+        activeAudioSources.delete(oscillator);
+        oscillator.disconnect();
+        if (oscillators.every((node) => !activeAudioSources.has(node))) {
+          humGain.disconnect();
+        }
+      };
+      oscillators.push(oscillator);
+      oscillator.start(startTime);
+      oscillator.stop(startTime + 0.72);
+    }
+  } catch {
+    pushTrace("EutherDogs MPA hum skipped");
   }
 }
 
