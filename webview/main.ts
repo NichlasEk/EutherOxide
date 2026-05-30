@@ -693,6 +693,8 @@ let dogsLastPortalHumFrame = -9999;
 let dogsPreviousAudioFrame: DogsCoreFrame | null = null;
 let dogsInspectionAlertStartFrame = -1;
 let dogsInspectionAlertUntilFrame = -1;
+let dogsInspectionAlertTitle = "INSPECTION!!!";
+let dogsInspectionAlertSubtitle = "RETAIL COMPLIANCE BREACH";
 let dogsSawHostileQueue = false;
 let dogsTrackedBullets = new Map<number, DogsCoreBullet>();
 let dogsImpactEffects: DogsImpactEffect[] = [];
@@ -5052,28 +5054,38 @@ function drawDogsInspectionDialogues(
 function drawDogsInspectionOverlay(frame: DogsCoreFrame, viewW: number, viewH: number): void {
   if (frame.frame < dogsInspectionAlertStartFrame || frame.frame > dogsInspectionAlertUntilFrame) return;
   const elapsed = frame.frame - dogsInspectionAlertStartFrame;
-  const flashIndex = Math.floor(elapsed / 36);
-  const flashFrame = elapsed % 36;
-  if (flashIndex >= 3 || flashFrame >= 22) return;
-  const alpha = flashFrame < 4 ? flashFrame / 4 : flashFrame > 17 ? (22 - flashFrame) / 5 : 1;
+  const external = dogsInspectionAlertTitle.startsWith("WARNING");
+  const flashIndex = Math.floor(elapsed / (external ? 48 : 36));
+  const flashFrame = elapsed % (external ? 48 : 36);
+  if (!external && (flashIndex >= 3 || flashFrame >= 22)) return;
+  const visibleFrameLimit = external ? 38 : 22;
+  if (flashFrame >= visibleFrameLimit) return;
+  const alpha =
+    flashFrame < 5
+      ? flashFrame / 5
+      : flashFrame > visibleFrameLimit - 7
+        ? (visibleFrameLimit - flashFrame) / 7
+        : 1;
   dogsContext.save();
   dogsContext.globalAlpha = alpha;
   dogsContext.fillStyle = "rgba(110, 0, 8, 0.34)";
   dogsContext.fillRect(0, 0, viewW, viewH);
   dogsContext.textAlign = "center";
   dogsContext.textBaseline = "middle";
-  dogsContext.font = `900 ${Math.max(32, Math.floor(viewW / 13))}px "Arial Black", Impact, sans-serif`;
+  dogsContext.font = `900 ${Math.max(28, Math.floor(viewW / (external ? 19 : 13)))}px "Arial Black", Impact, sans-serif`;
   dogsContext.lineWidth = Math.max(3, Math.floor(viewW / 160));
   dogsContext.strokeStyle = "rgba(0, 0, 0, 0.92)";
   dogsContext.fillStyle = flashIndex % 2 === 0 ? "#ff304f" : "#ffef6e";
   dogsContext.shadowColor = "#ff304f";
   dogsContext.shadowBlur = 26;
-  dogsContext.strokeText("INSPECTION!!!", viewW / 2, viewH * 0.38);
-  dogsContext.fillText("INSPECTION!!!", viewW / 2, viewH * 0.38);
-  dogsContext.font = `900 ${Math.max(12, Math.floor(viewW / 42))}px monospace`;
+  dogsContext.strokeText(dogsInspectionAlertTitle, viewW / 2, viewH * 0.35);
+  dogsContext.fillText(dogsInspectionAlertTitle, viewW / 2, viewH * 0.35);
+  dogsContext.font = `900 ${Math.max(12, Math.floor(viewW / (external ? 48 : 42)))}px monospace`;
   dogsContext.fillStyle = "#ffffff";
   dogsContext.shadowBlur = 8;
-  dogsContext.fillText("RETAIL COMPLIANCE BREACH", viewW / 2, viewH * 0.48);
+  for (const [index, line] of dogsInspectionAlertSubtitle.split("\n").entries()) {
+    dogsContext.fillText(line, viewW / 2, viewH * 0.46 + index * Math.max(16, viewW / 46));
+  }
   dogsContext.restore();
 }
 
@@ -5083,6 +5095,9 @@ function processDogsAudio(frame: DogsCoreFrame): void {
     if (event === "inspection_alarm") {
       triggerDogsInspectionAlert(frame);
       void playDogsInspectionSiren();
+    } else if (event === "external_inspection_alarm") {
+      triggerDogsExternalInspectionAlert(frame);
+      void playDogsExternalInspectionSiren();
     } else {
       void playDogsSfx(event, dogsGameplaySfxGain(event));
     }
@@ -5115,6 +5130,15 @@ function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame 
     triggerDogsInspectionAlert(frame);
     void playDogsInspectionSiren();
   }
+  if (
+    frame.summary.mission === 10 &&
+    previous.summary.mission === 10 &&
+    previous.summary.elapsedTicks < 900 &&
+    frame.summary.elapsedTicks >= 900
+  ) {
+    triggerDogsExternalInspectionAlert(frame);
+    void playDogsExternalInspectionSiren();
+  }
   if (frame.bullets.length > previous.bullets.length) {
     const hero = dogsLocalPlayer(frame);
     void playDogsSfx(hero?.activeWeapon ?? "scanner_blaster", 0.9);
@@ -5132,6 +5156,15 @@ function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame 
 function triggerDogsInspectionAlert(frame: DogsCoreFrame): void {
   dogsInspectionAlertStartFrame = frame.frame;
   dogsInspectionAlertUntilFrame = frame.frame + 108;
+  dogsInspectionAlertTitle = "INSPECTION!!!";
+  dogsInspectionAlertSubtitle = "RETAIL COMPLIANCE BREACH";
+}
+
+function triggerDogsExternalInspectionAlert(frame: DogsCoreFrame): void {
+  dogsInspectionAlertStartFrame = frame.frame;
+  dogsInspectionAlertUntilFrame = frame.frame + 210;
+  dogsInspectionAlertTitle = "WARNING EXTERNAL INSPECTION!";
+  dogsInspectionAlertSubtitle = "The Medical Product Agency have arrived.\nBrace yourself.";
 }
 
 async function playDogsInspectionSiren(): Promise<void> {
@@ -5172,6 +5205,48 @@ async function playDogsInspectionSiren(): Promise<void> {
     }
   } catch {
     pushTrace("EutherDogs inspection siren skipped");
+  }
+}
+
+async function playDogsExternalInspectionSiren(): Promise<void> {
+  try {
+    const context = await ensureAudio();
+    if (!context) return;
+    const scheduleWail = (startTime: number): void => {
+      const alarmGain = context.createGain();
+      alarmGain.gain.setValueAtTime(0.0001, startTime);
+      alarmGain.gain.exponentialRampToValueAtTime(0.34, startTime + 0.08);
+      alarmGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 1.2);
+      alarmGain.connect(audioGain ?? context.destination);
+      let endedOscillators = 0;
+      const makeOscillator = (offset: number): void => {
+        const oscillator = context.createOscillator();
+        oscillator.type = "sawtooth";
+        oscillator.frequency.setValueAtTime(190 + offset, startTime);
+        oscillator.frequency.linearRampToValueAtTime(620 + offset, startTime + 0.58);
+        oscillator.frequency.linearRampToValueAtTime(180 + offset, startTime + 1.18);
+        oscillator.connect(alarmGain);
+        activeAudioSources.add(oscillator);
+        oscillator.onended = () => {
+          activeAudioSources.delete(oscillator);
+          oscillator.disconnect();
+          endedOscillators += 1;
+          if (endedOscillators >= 3) {
+            alarmGain.disconnect();
+          }
+        };
+        oscillator.start(startTime);
+        oscillator.stop(startTime + 1.22);
+      };
+      makeOscillator(0);
+      makeOscillator(-9);
+      makeOscillator(-23);
+    };
+    for (let index = 0; index < 3; index += 1) {
+      scheduleWail(context.currentTime + index * 1.15);
+    }
+  } catch {
+    pushTrace("EutherDogs external inspection siren skipped");
   }
 }
 
@@ -6216,6 +6291,8 @@ function leaveDogsMode(): void {
   dogsPreviousAudioFrame = null;
   dogsInspectionAlertStartFrame = -1;
   dogsInspectionAlertUntilFrame = -1;
+  dogsInspectionAlertTitle = "INSPECTION!!!";
+  dogsInspectionAlertSubtitle = "RETAIL COMPLIANCE BREACH";
   dogsSawHostileQueue = false;
   ui.playing = false;
   ui.loaded = false;

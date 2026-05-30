@@ -48,6 +48,7 @@ pub struct RenderSnapshot {
 pub enum AudioEvent {
     Sfx(crate::assets::AssetId),
     InspectionAlarm,
+    ExternalInspectionAlarm,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,7 +126,7 @@ const INSPECTOR_QUESTION_RANGE: i32 = TILE_WIDTH * 2;
 const INSPECTOR_QUESTION_COOLDOWN_TICKS: u32 = 120;
 const INSPECTION_COMPLETE_LINE: &str = "Inspection complete. Your survival has been provisionally accepted.";
 const MPA_MISSION: i32 = 10;
-const MPA_ALERT_TICKS: u32 = 20 * 60;
+const MPA_ALERT_TICKS: u32 = 15 * 60;
 const MPA_AGENT_COUNT: usize = 50;
 const MPA_AGENT_INSPECT_TICKS: u32 = 180;
 const MPA_CHIEF_QUESTION_RANGE: i32 = TILE_WIDTH * 3;
@@ -1512,7 +1513,7 @@ impl Game {
             }
         }
         self.spawn_mpa_chief();
-        self.audio_events.push(AudioEvent::InspectionAlarm);
+        self.audio_events.push(AudioEvent::ExternalInspectionAlarm);
     }
 
     fn spawn_mpa_chief(&mut self) {
@@ -2727,6 +2728,17 @@ mod tests {
         assert_eq!(game.hostile_queue_left(), 1);
         assert!(!game.mission_goals_satisfied());
 
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = TILE_WIDTH + 8;
+            player.y = TILE_HEIGHT + 2;
+        }
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Running);
+
         let chief_id = game.mpa_chief_id.expect("MPA chief exists");
         let (player_x, player_y) = game
             .characters()
@@ -2765,6 +2777,30 @@ mod tests {
     }
 
     #[test]
+    fn level_ten_mpa_triggers_external_alarm_at_fifteen_seconds() {
+        let mut game = Game::new_mission(
+            42,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 10,
+                targets: 0,
+                objects: 0,
+            },
+        );
+        game.progress.elapsed_ticks = super::MPA_ALERT_TICKS - 1;
+        game.drain_audio_events();
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert_eq!(game.mpa_agents.len(), super::MPA_AGENT_COUNT);
+        assert!(game.mpa_chief_id.is_some());
+        assert!(game
+            .drain_audio_events()
+            .into_iter()
+            .any(|event| event == AudioEvent::ExternalInspectionAlarm));
+    }
+
+    #[test]
     fn level_ten_mpa_without_protocol_keeps_questioning() {
         let mut game = Game::new_mission(
             43,
@@ -2778,6 +2814,7 @@ mod tests {
         game.characters
             .retain(|character| character.faction == Faction::Player);
         game.mission_goal_count = 1;
+        game.world.set_tile(1, 1, Tile::ServiceElevator);
 
         game.progress.elapsed_ticks = super::MPA_ALERT_TICKS - 1;
         game.tick(&[], FixedStep { ticks: 1 });
@@ -2802,6 +2839,16 @@ mod tests {
         assert_eq!(game.mpa_chief_answers, super::MPA_PROTOCOL_QUESTIONS + 2);
         assert_eq!(game.hostile_queue_left(), 1);
         assert!(!game.mission_goals_satisfied());
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = TILE_WIDTH + 8;
+            player.y = TILE_HEIGHT + 2;
+        }
+        game.tick(&[], FixedStep { ticks: 1 });
+        assert_eq!(game.status(), super::MissionStatus::Running);
     }
 
     #[test]
