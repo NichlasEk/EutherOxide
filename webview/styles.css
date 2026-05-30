@@ -659,6 +659,21 @@ button:disabled {
   overflow: auto;
 }
 
+.eutherdogs-score-back {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  justify-self: start;
+  min-height: 30px;
+  padding: 0 14px;
+  border-color: rgba(255, 239, 110, 0.42);
+  background: rgba(30, 29, 5, 0.92);
+  color: #ffef6e;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
 .eutherdogs-score-row,
 .eutherdogs-score-detail,
 .eutherdogs-score-empty {

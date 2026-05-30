@@ -681,6 +681,7 @@ let dogsHighscoreInitials = ["A", "A", "A"];
 let dogsHighscoreInitialIndex = 0;
 let dogsHighscoreSavedName: string | null = null;
 let dogsSelectedHighScoreIndex = 0;
+let dogsScoresReturnMode: Exclude<DogsMenuMode, null> = "briefing";
 let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
@@ -1595,12 +1596,13 @@ eutherDogsBriefingOpen.addEventListener("click", () => {
 
 eutherDogsScoresOpen.addEventListener("click", () => {
   dogsSelectedHighScoreIndex = 0;
+  dogsScoresReturnMode = dogsMenuMode && dogsMenuMode !== "scores" ? dogsMenuMode : "briefing";
   showDogsMenu("scores");
 });
 
 eutherDogsStartShift.addEventListener("click", () => {
-  if (dogsMenuMode === "scores" && dogsFrame?.summary.status && dogsFrame.summary.status !== "running") {
-    showDogsMenu("result");
+  if (dogsMenuMode === "scores") {
+    showDogsMenu(dogsScoresReturnMode);
     return;
   }
   if (dogsMenuMode === "result") {
@@ -1634,6 +1636,11 @@ eutherDogsMenuBody.addEventListener("click", (event) => {
   const scoreSubmit = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-submit]");
   if (scoreSubmit) {
     void submitPendingDogsHighScore();
+    return;
+  }
+  const scoreBack = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-back]");
+  if (scoreBack) {
+    showDogsMenu(dogsScoresReturnMode);
     return;
   }
   const scoreRow = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-row]");
@@ -5733,15 +5740,22 @@ function dogsHighScoreBoardMarkup(): string {
   const entries = readDogsHighScores();
   dogsSelectedHighScoreIndex = Math.max(0, Math.min(dogsSelectedHighScoreIndex, entries.length - 1));
   const selected = entries[dogsSelectedHighScoreIndex] ?? null;
+  const backMarkup = `
+    <button class="eutherdogs-score-back" data-score-back="true" type="button">
+      Back
+    </button>
+  `;
   if (!entries.length) {
     return `
       <div class="eutherdogs-scoreboard">
+        ${backMarkup}
         <div class="eutherdogs-score-empty">No closures logged</div>
       </div>
     `;
   }
   return `
     <div class="eutherdogs-scoreboard">
+      ${backMarkup}
       ${
         selected
           ? `
@@ -5852,7 +5866,7 @@ function renderDogsMenu(): void {
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
   eutherDogsScoresOpen.classList.toggle("is-active", dogsMenuMode === "scores");
   eutherDogsStartShift.textContent =
-    dogsMenuMode === "scores" && dogsFrame?.summary.status && dogsFrame.summary.status !== "running"
+    dogsMenuMode === "scores"
       ? "Back"
       : dogsMenuMode === "result" && dogsFrame?.summary.status === "won"
       ? mission >= maxMission
