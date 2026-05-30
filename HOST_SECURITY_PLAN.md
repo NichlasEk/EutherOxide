@@ -8,17 +8,22 @@ This is the deferred hardening track for exposing EutherHost beyond a trusted LA
 - Keep `.euther-host/` private and out of git.
 - ROMs are exposed only through the configured ROM root and canonicalized relative paths.
 - Login uses Argon2 password hashes and an HttpOnly session cookie.
+- Login failures are rate-limited per IP and username in memory.
+- Session timeout and Secure-cookie mode are configurable in `.euther-host/config.toml`.
+- Login attempts and ROM launches are written to `.euther-host/audit.log`.
+- Mutating authenticated routes require a per-session CSRF token.
+- Host stream routes reject mismatched request origins when an `Origin` header is present.
 
 ## Before Internet Exposure
 
 1. Put EutherHost behind Caddy or another reverse proxy with HTTPS.
 2. Set cookies as `Secure`, keep `HttpOnly`, and keep `SameSite=Lax` or stricter.
-3. Add login rate limiting per IP and per username.
-4. Add CSRF protection for mutating HTTP routes.
-5. Check `Origin` on WebSocket/future streaming routes.
-6. Add session expiry settings in `.euther-host/config.toml`.
+3. Keep login rate limiting enabled per IP and per username.
+4. Keep CSRF protection enabled for mutating HTTP routes.
+5. Keep checking `Origin` on stream routes, and repeat that for future WebSocket routes.
+6. Tune session expiry settings in `.euther-host/config.toml`.
 7. Move sessions from memory to a persisted or restart-aware store if needed.
-8. Add audit logging for login success/failure and ROM launches.
+8. Review audit logging for login success/failure and ROM launches.
 9. Add a read-only library mode and explicit per-user permissions before sharing broadly.
 10. Review all file-serving paths for canonicalization and root containment.
 

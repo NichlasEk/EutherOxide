@@ -169,6 +169,7 @@ type AuthStatus = {
   authenticated: boolean;
   user?: string;
   isAdmin?: boolean;
+  csrfToken?: string | null;
 };
 
 type ChatMessage = {
@@ -457,7 +458,11 @@ const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
 const pageParams = new URLSearchParams(window.location.search);
 const explicitBridgeBase = pageParams.get("bridge");
-const autoStartEutherDogs = pageParams.get("eutherdogs") === "1";
+const hostedServerMode =
+  !import.meta.env.DEV && !isTauri && !explicitBridgeBase && window.location.port !== "" && window.location.port !== "5173";
+const forceMegaDriveStartup = pageParams.get("megadrive") === "1" || pageParams.get("eutherdogs") === "0";
+const autoStartEutherDogs =
+  pageParams.get("eutherdogs") === "1" || (hostedServerMode && !forceMegaDriveStartup);
 const bridgeBase =
   explicitBridgeBase ??
   (window.location.port && window.location.port !== "5173"
@@ -647,6 +652,7 @@ let activeLobbyInstanceId = "main";
 let claimedLobbyPlayer: PlayerPort | null = null;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
+let hostCsrfToken: string | null = null;
 let lobbyStatus: LobbyStatus | null = null;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
@@ -735,12 +741,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </div>
 
-      <label class="rom-drop" id="rom-drop">
-        <input id="rom-input" type="file" accept=".bin,.gen,.md,.smd,.rom" />
-        <span>ROM Reagent</span>
-        <strong id="rom-name">Load Mega Drive</strong>
-      </label>
-
       <div class="rail-section lobby-section">
         <div class="section-head">
           <p class="section-label">Lobby</p>
@@ -768,35 +768,73 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </div>
 
-      <div class="rail-section rom-browser-section">
-        <div class="section-head">
-          <p class="section-label">ROM Directory</p>
-          <button id="rom-dir-set" class="mini-action" type="button">Set</button>
-        </div>
-        <div class="rom-dir-path" id="rom-dir-path">No directory</div>
-        <div class="rom-dir-manual" id="rom-dir-manual">
-          <input id="rom-dir-input" type="text" placeholder="/path/to/roms" aria-label="ROM directory path" />
-          <button id="rom-dir-apply" class="mini-action" type="button">Use</button>
-        </div>
-        <div class="rom-breadcrumb" id="rom-breadcrumb">/</div>
-        <div class="rom-list" id="rom-list">
-          <button type="button" disabled>Set ROM directory</button>
-        </div>
-      </div>
-
-      <div class="rail-section transport-section">
-        <p class="section-label">Transport</p>
-        <div class="transport-grid">
-          <button id="play-toggle" class="primary-action" type="button">Play</button>
-          <button id="step-frame" type="button">Step</button>
-          <button id="reset-core" type="button">Reset</button>
-          <button id="eutherdogs-toggle" type="button">EutherDogs</button>
-        </div>
+      <div class="rail-section dogs-mode-section">
+        <p class="section-label">EutherDogs</p>
+        <button id="eutherdogs-toggle" class="primary-action" type="button">EutherDogs</button>
         <div class="dogs-asset-switch" aria-label="EutherDogs asset resolution">
           <button data-dogs-asset-mode="classic" type="button">Low</button>
           <button data-dogs-asset-mode="2x" type="button">2x</button>
         </div>
       </div>
+
+      <details id="megadrive-panel" class="rail-section megadrive-panel" ${forceMegaDriveStartup ? "open" : ""}>
+        <summary>
+          <span>MegaDrive</span>
+          <strong id="rom-name">Load Mega Drive</strong>
+        </summary>
+
+        <label class="rom-drop" id="rom-drop">
+          <input id="rom-input" type="file" accept=".bin,.gen,.md,.smd,.rom" />
+          <span>ROM Reagent</span>
+          <strong>Choose ROM</strong>
+        </label>
+
+        <div class="rail-section rom-browser-section">
+          <div class="section-head">
+            <p class="section-label">ROM Directory</p>
+            <button id="rom-dir-set" class="mini-action" type="button">Set</button>
+          </div>
+          <div class="rom-dir-path" id="rom-dir-path">No directory</div>
+          <div class="rom-dir-manual" id="rom-dir-manual">
+            <input id="rom-dir-input" type="text" placeholder="/path/to/roms" aria-label="ROM directory path" />
+            <button id="rom-dir-apply" class="mini-action" type="button">Use</button>
+          </div>
+          <div class="rom-breadcrumb" id="rom-breadcrumb">/</div>
+          <div class="rom-list" id="rom-list">
+            <button type="button" disabled>Set ROM directory</button>
+          </div>
+        </div>
+
+        <div class="rail-section transport-section">
+          <p class="section-label">Transport</p>
+          <div class="transport-grid">
+            <button id="play-toggle" class="primary-action" type="button">Play</button>
+            <button id="step-frame" type="button">Step</button>
+            <button id="reset-core" type="button">Reset</button>
+          </div>
+        </div>
+
+        <div class="rail-section state-section">
+          <p class="section-label">Argon States</p>
+          <div class="state-grid" id="state-grid">
+            <div class="state-slot" data-slot-row="1">
+              <span>1</span><strong>Empty</strong>
+              <button data-state-action="save" data-slot="1" type="button">Save</button>
+              <button data-state-action="load" data-slot="1" type="button">Load</button>
+            </div>
+            <div class="state-slot" data-slot-row="2">
+              <span>2</span><strong>Empty</strong>
+              <button data-state-action="save" data-slot="2" type="button">Save</button>
+              <button data-state-action="load" data-slot="2" type="button">Load</button>
+            </div>
+            <div class="state-slot" data-slot-row="3">
+              <span>3</span><strong>Empty</strong>
+              <button data-state-action="save" data-slot="3" type="button">Save</button>
+              <button data-state-action="load" data-slot="3" type="button">Load</button>
+            </div>
+          </div>
+        </div>
+      </details>
 
       <div class="rail-section volume-section">
         <div class="volume-head">
@@ -804,27 +842,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <strong id="volume-value">80%</strong>
         </div>
         <input id="volume-slider" type="range" min="0" max="100" value="80" aria-label="volume" />
-      </div>
-
-      <div class="rail-section state-section">
-        <p class="section-label">Argon States</p>
-        <div class="state-grid" id="state-grid">
-          <div class="state-slot" data-slot-row="1">
-            <span>1</span><strong>Empty</strong>
-            <button data-state-action="save" data-slot="1" type="button">Save</button>
-            <button data-state-action="load" data-slot="1" type="button">Load</button>
-          </div>
-          <div class="state-slot" data-slot-row="2">
-            <span>2</span><strong>Empty</strong>
-            <button data-state-action="save" data-slot="2" type="button">Save</button>
-            <button data-state-action="load" data-slot="2" type="button">Load</button>
-          </div>
-          <div class="state-slot" data-slot-row="3">
-            <span>3</span><strong>Empty</strong>
-            <button data-state-action="save" data-slot="3" type="button">Save</button>
-            <button data-state-action="load" data-slot="3" type="button">Load</button>
-          </div>
-        </div>
       </div>
 
       <div class="rail-section">
@@ -1117,6 +1134,7 @@ const chatForm = document.querySelector<HTMLFormElement>("#chat-form")!;
 const chatInput = document.querySelector<HTMLInputElement>("#chat-input")!;
 const romInput = document.querySelector<HTMLInputElement>("#rom-input")!;
 const romDrop = document.querySelector<HTMLLabelElement>("#rom-drop")!;
+const megaDrivePanel = document.querySelector<HTMLDetailsElement>("#megadrive-panel")!;
 const lobbyRefresh = document.querySelector<HTMLButtonElement>("#lobby-refresh")!;
 const lobbyTitle = document.querySelector<HTMLElement>("#lobby-title")!;
 const lobbyMeta = document.querySelector<HTMLElement>("#lobby-meta")!;
@@ -1995,6 +2013,10 @@ async function refreshRomDir(path: string): Promise<void> {
 }
 
 async function loadRomDirEntry(path: string, name: string): Promise<void> {
+  if (dogsMode) {
+    leaveDogsMode();
+  }
+  updateStartupModePreference("megadrive");
   ui.playing = false;
   playToggle.textContent = "Play";
   stopBridgeStream();
@@ -2842,7 +2864,28 @@ async function chooseDesktopRom(): Promise<void> {
   }
 }
 
+function updateStartupModePreference(mode: "dogs" | "megadrive"): void {
+  if (!hostedServerMode) {
+    return;
+  }
+  const url = new URL(window.location.href);
+  if (mode === "dogs") {
+    url.searchParams.set("eutherdogs", "1");
+    url.searchParams.delete("megadrive");
+    megaDrivePanel.open = false;
+  } else {
+    url.searchParams.set("megadrive", "1");
+    url.searchParams.delete("eutherdogs");
+    megaDrivePanel.open = true;
+  }
+  window.history.replaceState({}, "", url);
+}
+
 async function loadRomPath(path: string): Promise<void> {
+  if (dogsMode) {
+    leaveDogsMode();
+  }
+  updateStartupModePreference("megadrive");
   ui.playing = false;
   playToggle.textContent = "Play";
   stopBridgeStream();
@@ -2864,6 +2907,10 @@ async function loadRomPath(path: string): Promise<void> {
 }
 
 async function loadFile(file: File): Promise<void> {
+  if (dogsMode) {
+    leaveDogsMode();
+  }
+  updateStartupModePreference("megadrive");
   ui.playing = false;
   playToggle.textContent = "Play";
   stopBridgeStream();
@@ -3263,10 +3310,12 @@ async function refreshAuthStatus(): Promise<void> {
     const status = await bridgeJson<AuthStatus>("/api/auth/status", {}, 700);
     hostUsername = status.authenticated ? status.user ?? null : null;
     hostIsAdmin = Boolean(status.authenticated && status.isAdmin);
+    hostCsrfToken = status.authenticated ? status.csrfToken ?? null : null;
     updateChatPolling(status.authenticated);
   } catch {
     hostUsername = null;
     hostIsAdmin = false;
+    hostCsrfToken = null;
     updateChatPolling(false);
   }
   renderAdminAccess();
@@ -3880,6 +3929,10 @@ async function bridgeRequest(
     const headers = new Headers(init.headers);
     if (init.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
+    }
+    const method = (init.method ?? "GET").toUpperCase();
+    if (hostCsrfToken && !["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("X-CSRF-Token")) {
+      headers.set("X-CSRF-Token", hostCsrfToken);
     }
     const response = await fetch(bridgeUrl(path), {
       ...init,
@@ -6277,6 +6330,7 @@ function renderDogsAssetMode(): void {
 
 async function enterDogsMode(): Promise<void> {
   dogsMode = true;
+  updateStartupModePreference("dogs");
   resetScheduledAudio();
   stopBridgeStream();
   preloadDogsCombatAssets();
@@ -6322,6 +6376,7 @@ async function enterDogsMode(): Promise<void> {
 
 function leaveDogsMode(): void {
   dogsMode = false;
+  updateStartupModePreference("megadrive");
   stopDogsSnapshotStream();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;

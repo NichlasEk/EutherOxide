@@ -668,6 +668,7 @@ struct HostState {
     config: HostConfig,
     users: Arc<Mutex<Vec<HostUser>>>,
     sessions: Arc<Mutex<Vec<HostSession>>>,
+    login_attempts: Arc<Mutex<Vec<LoginAttempt>>>,
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
     next_chat_id: Arc<Mutex<u64>>,
 }
@@ -685,6 +686,11 @@ struct HostInstance {
 struct HostConfig {
     bind: String,
     rom_dir: Option<String>,
+    session_timeout_minutes: u64,
+    login_rate_limit_window_secs: u64,
+    login_rate_limit_max_attempts: usize,
+    secure_cookies: bool,
+    allowed_origins: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -697,8 +703,26 @@ struct HostUser {
 
 struct HostSession {
     token: String,
+    csrf_token: String,
     user: String,
     updated_unix_ms: u64,
+}
+
+struct LoginAttempt {
+    remote_addr: String,
+    username: String,
+    unix_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostAuditEvent<'a> {
+    event: &'a str,
+    user: Option<&'a str>,
+    remote_addr: &'a str,
+    ok: bool,
+    detail: &'a str,
+    created_unix_ms: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -781,6 +805,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         config,
         users,
         sessions: Arc::new(Mutex::new(Vec::new())),
+        login_attempts: Arc::new(Mutex::new(Vec::new())),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
     };
@@ -811,18 +836,23 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         return send_empty(stream, 204);
     }
     let path = request.path.split('?').next().unwrap_or(&request.path);
+    if request.method != "GET" && path != "/api/login" && !valid_csrf_token(state, &request)? {
+        return send_error(stream, 403, "csrf token required");
+    }
     match (request.method.as_str(), path) {
         ("GET", "/login") => send_login_page(stream, None),
         ("POST", "/api/login") => host_login(stream, state, &request),
         ("POST", "/api/logout") => host_logout(stream, state, &request),
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
+                let csrf_token = csrf_token_for_request(state, &request)?;
                 send_json(
                     stream,
                     &serde_json::json!({
                         "authenticated": true,
                         "user": user,
                         "isAdmin": is_host_admin(state, &user)?,
+                        "csrfToken": csrf_token,
                     }),
                 )
             } else {
@@ -982,23 +1012,55 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     send_login_page(stream, None)
                 };
             };
+            if request.method != "GET" && !valid_csrf_token(state, &request)? {
+                return send_error(stream, 403, "csrf token required");
+            }
             if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
                 return send_host_static(stream, path);
             }
             let instance_id = host_instance_id(&request.path)?;
             let bridge = host_instance_bridge(state, &instance_id)?;
+            if host_route_requires_origin_check(path) && !valid_request_origin(state, &request)? {
+                return send_error(stream, 403, "origin rejected");
+            }
             if host_route_requires_owner(path, &request.method) {
                 if let Err(err) = require_host_owner(state, &instance_id, &user) {
                     return send_error(stream, 403, &err.to_string());
                 }
             }
-            handle_bridge_route_with_user(stream, &bridge, request, Some(&user))
+            let audit_rom_launch =
+                request.method == "POST" && matches!(path, "/load" | "/rom-dir/load");
+            let audit_detail = if path == "/rom-dir/load" {
+                query_string_value(&request.path, "path")?.unwrap_or_default()
+            } else {
+                upload_rom_name(&request).to_string_lossy().to_string()
+            };
+            let result = handle_bridge_route_with_user(stream, &bridge, request, Some(&user));
+            if audit_rom_launch {
+                let remote_addr = stream
+                    .peer_addr()
+                    .map(|addr| addr.ip().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                audit_host_event(
+                    state,
+                    "rom_launch",
+                    Some(&user),
+                    &remote_addr,
+                    result.is_ok(),
+                    &audit_detail,
+                )?;
+            }
+            result
         }
     }
 }
 
 fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) -> io::Result<()> {
     let form = parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+    let remote_addr = stream
+        .peer_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     let username = form
         .iter()
         .find_map(|(name, value)| (name == "username").then_some(value.as_str()))
@@ -1007,18 +1069,62 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
         .iter()
         .find_map(|(name, value)| (name == "password").then_some(value.as_str()))
         .unwrap_or_default();
+    if login_rate_limited(state, &remote_addr, username)? {
+        audit_host_event(
+            state,
+            "login",
+            Some(username),
+            &remote_addr,
+            false,
+            "rate_limited",
+        )?;
+        return send_response_with_headers(
+            stream,
+            429,
+            "text/html; charset=utf-8",
+            login_page_html(Some("Too many attempts; wait before retrying")).as_bytes(),
+            &[("Retry-After", "60")],
+        );
+    }
     let users = state
         .users
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     let Some(user) = users.iter().find(|user| user.name == username) else {
-        return send_login_page(stream, Some("Unknown reagent"));
+        record_login_failure(state, &remote_addr, username)?;
+        audit_host_event(
+            state,
+            "login",
+            Some(username),
+            &remote_addr,
+            false,
+            "unknown_user",
+        )?;
+        return send_login_page(stream, Some("Login rejected"));
     };
     if user.banned {
-        return send_login_page(stream, Some("User reagent quarantined"));
+        record_login_failure(state, &remote_addr, username)?;
+        audit_host_event(
+            state,
+            "login",
+            Some(username),
+            &remote_addr,
+            false,
+            "banned_user",
+        )?;
+        return send_login_page(stream, Some("Login rejected"));
     }
     if !verify_password(password, &user.password_hash) {
-        return send_login_page(stream, Some("Reaction key rejected"));
+        record_login_failure(state, &remote_addr, username)?;
+        audit_host_event(
+            state,
+            "login",
+            Some(username),
+            &remote_addr,
+            false,
+            "bad_password",
+        )?;
+        return send_login_page(stream, Some("Login rejected"));
     }
     let token = random_token()?;
     let mut sessions = state
@@ -1027,21 +1133,19 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
         .map_err(|err| io::Error::other(err.to_string()))?;
     sessions.push(HostSession {
         token: token.clone(),
+        csrf_token: random_token()?,
         user: user.name.clone(),
         updated_unix_ms: unix_ms_now(),
     });
+    clear_login_failures(state, &remote_addr, username)?;
+    audit_host_event(state, "login", Some(username), &remote_addr, true, "ok")?;
+    let cookie = host_session_cookie(state, &token, None);
     send_response_with_headers(
         stream,
         303,
         "text/plain; charset=utf-8",
         b"",
-        &[
-            ("Location", "/"),
-            (
-                "Set-Cookie",
-                &format!("euther_session={token}; HttpOnly; SameSite=Lax; Path=/"),
-            ),
-        ],
+        &[("Location", "/?eutherdogs=1"), ("Set-Cookie", &cookie)],
     )
 }
 
@@ -1053,18 +1157,13 @@ fn host_logout(stream: &mut TcpStream, state: &HostState, request: &HttpRequest)
             .map_err(|err| io::Error::other(err.to_string()))?;
         sessions.retain(|session| session.token != token);
     }
+    let cookie = host_session_cookie(state, "", Some(0));
     send_response_with_headers(
         stream,
         303,
         "text/plain; charset=utf-8",
         b"",
-        &[
-            ("Location", "/login"),
-            (
-                "Set-Cookie",
-                "euther_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
-            ),
-        ],
+        &[("Location", "/login"), ("Set-Cookie", &cookie)],
     )
 }
 
@@ -1077,7 +1176,11 @@ fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Op
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     let now = unix_ms_now();
-    sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < 24 * 60 * 60 * 1000);
+    let timeout_ms = state
+        .config
+        .session_timeout_minutes
+        .saturating_mul(60 * 1000);
+    sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < timeout_ms);
     if let Some(session) = sessions.iter_mut().find(|session| session.token == token) {
         let users = state
             .users
@@ -1213,6 +1316,13 @@ fn host_route_requires_owner(path: &str, method: &str) -> bool {
             | ("POST", "/rom-dir/load")
             | ("POST", "/state/save")
             | ("POST", "/state/load")
+    )
+}
+
+fn host_route_requires_origin_check(path: &str) -> bool {
+    matches!(
+        path,
+        "/stream-frame-audio.bin" | "/stream-frame.bin" | "/eutherdogs/stream"
     )
 }
 
@@ -1489,6 +1599,136 @@ fn session_token(request: &HttpRequest) -> Option<String> {
     })
 }
 
+fn csrf_token_for_request(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
+    let Some(token) = session_token(request) else {
+        return Ok(None);
+    };
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(sessions
+        .iter()
+        .find(|session| session.token == token)
+        .map(|session| session.csrf_token.clone()))
+}
+
+fn valid_csrf_token(state: &HostState, request: &HttpRequest) -> io::Result<bool> {
+    let Some(expected) = csrf_token_for_request(state, request)? else {
+        return Ok(false);
+    };
+    let Some(provided) = header_value(request, "x-csrf-token") else {
+        return Ok(false);
+    };
+    Ok(provided.as_bytes() == expected.as_bytes())
+}
+
+fn host_session_cookie(state: &HostState, token: &str, max_age: Option<u64>) -> String {
+    let mut cookie = format!("euther_session={token}; HttpOnly; SameSite=Lax; Path=/");
+    if state.config.secure_cookies {
+        cookie.push_str("; Secure");
+    }
+    if let Some(max_age) = max_age {
+        cookie.push_str(&format!("; Max-Age={max_age}"));
+    }
+    cookie
+}
+
+fn login_rate_limited(state: &HostState, remote_addr: &str, username: &str) -> io::Result<bool> {
+    let now = unix_ms_now();
+    let window_ms = state
+        .config
+        .login_rate_limit_window_secs
+        .saturating_mul(1000);
+    let username = username.trim().to_ascii_lowercase();
+    let mut attempts = state
+        .login_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    attempts.retain(|attempt| now.saturating_sub(attempt.unix_ms) < window_ms);
+    let ip_count = attempts
+        .iter()
+        .filter(|attempt| attempt.remote_addr == remote_addr)
+        .count();
+    let username_count = attempts
+        .iter()
+        .filter(|attempt| attempt.username == username)
+        .count();
+    Ok(ip_count >= state.config.login_rate_limit_max_attempts
+        || username_count >= state.config.login_rate_limit_max_attempts)
+}
+
+fn record_login_failure(state: &HostState, remote_addr: &str, username: &str) -> io::Result<()> {
+    let mut attempts = state
+        .login_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    attempts.push(LoginAttempt {
+        remote_addr: remote_addr.to_string(),
+        username: username.trim().to_ascii_lowercase(),
+        unix_ms: unix_ms_now(),
+    });
+    Ok(())
+}
+
+fn clear_login_failures(state: &HostState, remote_addr: &str, username: &str) -> io::Result<()> {
+    let username = username.trim().to_ascii_lowercase();
+    let mut attempts = state
+        .login_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    attempts
+        .retain(|attempt| !(attempt.remote_addr == remote_addr && attempt.username == username));
+    Ok(())
+}
+
+fn audit_host_event(
+    _state: &HostState,
+    event: &str,
+    user: Option<&str>,
+    remote_addr: &str,
+    ok: bool,
+    detail: &str,
+) -> io::Result<()> {
+    let audit = HostAuditEvent {
+        event,
+        user,
+        remote_addr,
+        ok,
+        detail,
+        created_unix_ms: unix_ms_now(),
+    };
+    append_host_audit_event(&audit)
+}
+
+fn valid_request_origin(state: &HostState, request: &HttpRequest) -> io::Result<bool> {
+    let Some(origin) = header_value(request, "origin") else {
+        return Ok(true);
+    };
+    if origin == "null" {
+        return Ok(false);
+    }
+    if state
+        .config
+        .allowed_origins
+        .iter()
+        .any(|allowed| allowed == origin)
+    {
+        return Ok(true);
+    }
+    let Some(host) = header_value(request, "host") else {
+        return Ok(false);
+    };
+    Ok(origin_host(origin).as_deref() == Some(host))
+}
+
+fn origin_host(origin: &str) -> Option<String> {
+    let rest = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))?;
+    Some(rest.split('/').next()?.to_string())
+}
+
 fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let relative = if path == "/" || path == "/index.html" {
         PathBuf::from("index.html")
@@ -1517,10 +1757,15 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
 }
 
 fn send_login_page(stream: &mut TcpStream, error: Option<&str>) -> io::Result<()> {
+    let body = login_page_html(error);
+    send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
+}
+
+fn login_page_html(error: Option<&str>) -> String {
     let error_html = error
         .map(|error| format!("<p class=\"error\">{}</p>", html_escape(error)))
         .unwrap_or_default();
-    let body = format!(
+    format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
@@ -1553,8 +1798,7 @@ fn send_login_page(stream: &mut TcpStream, error: Option<&str>) -> io::Result<()
   </main>
 </body>
 </html>"#
-    );
-    send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
+    )
 }
 
 fn handle_bridge_request(stream: &mut TcpStream, state: &BridgeState) -> io::Result<()> {
@@ -2521,6 +2765,7 @@ fn send_response_with_headers(
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        429 => "Too Many Requests",
         _ => "Error",
     };
     write!(
@@ -2528,7 +2773,7 @@ fn send_response_with_headers(
         "HTTP/1.1 {status} {reason}\r\n\
          Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
@@ -2550,7 +2795,7 @@ fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<
         "HTTP/1.1 200 OK\r\n\
          Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
@@ -2565,7 +2810,7 @@ fn send_event_stream_header(stream: &mut TcpStream) -> io::Result<()> {
         "HTTP/1.1 200 OK\r\n\
          Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
@@ -3115,14 +3360,49 @@ fn load_host_config() -> io::Result<HostConfig> {
     ensure_host_dir()?;
     let path = host_config_path();
     if !path.exists() {
-        fs::write(&path, "bind = \"127.0.0.1:32162\"\nrom_dir = \"\"\n")?;
+        fs::write(
+            &path,
+            "bind = \"127.0.0.1:32162\"\n\
+             rom_dir = \"\"\n\
+             session_timeout_minutes = 1440\n\
+             login_rate_limit_window_secs = 900\n\
+             login_rate_limit_max_attempts = 8\n\
+             secure_cookies = false\n\
+             allowed_origins = \"\"\n",
+        )?;
     }
     let contents = fs::read_to_string(&path)?;
     let bind = parse_toml_string(&contents, "bind")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "127.0.0.1:32162".to_string());
     let rom_dir = parse_toml_string(&contents, "rom_dir").filter(|value| !value.is_empty());
-    Ok(HostConfig { bind, rom_dir })
+    let session_timeout_minutes = parse_toml_u64(&contents, "session_timeout_minutes")
+        .filter(|value| *value > 0)
+        .unwrap_or(1440);
+    let login_rate_limit_window_secs = parse_toml_u64(&contents, "login_rate_limit_window_secs")
+        .filter(|value| *value > 0)
+        .unwrap_or(900);
+    let login_rate_limit_max_attempts = parse_toml_u64(&contents, "login_rate_limit_max_attempts")
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
+        .min(usize::MAX as u64) as usize;
+    let secure_cookies = parse_toml_bool(&contents, "secure_cookies").unwrap_or(false);
+    let allowed_origins = parse_toml_string(&contents, "allowed_origins")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(HostConfig {
+        bind,
+        rom_dir,
+        session_timeout_minutes,
+        login_rate_limit_window_secs,
+        login_rate_limit_max_attempts,
+        secure_cookies,
+        allowed_origins,
+    })
 }
 
 fn load_host_users() -> io::Result<Vec<HostUser>> {
@@ -3239,6 +3519,16 @@ fn append_host_chat_message(message: &HostChatMessage) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
+fn append_host_audit_event(event: &HostAuditEvent<'_>) -> io::Result<()> {
+    ensure_host_dir()?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(host_audit_path())?;
+    serde_json::to_writer(&mut file, event).map_err(|err| io::Error::other(err.to_string()))?;
+    file.write_all(b"\n")
+}
+
 fn ensure_host_dir() -> io::Result<()> {
     fs::create_dir_all(host_dir())
 }
@@ -3257,6 +3547,10 @@ fn host_users_path() -> PathBuf {
 
 fn host_chat_path() -> PathBuf {
     host_dir().join("chat.log")
+}
+
+fn host_audit_path() -> PathBuf {
+    host_dir().join("audit.log")
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
@@ -3321,6 +3615,22 @@ fn parse_toml_assignment(line: &str, key: &str) -> Option<String> {
 fn parse_toml_bool_assignment(line: &str, key: &str) -> Option<bool> {
     let (name, value) = line.split_once('=')?;
     (name.trim() == key).then(|| matches!(value.trim(), "true" | "1"))
+}
+
+fn parse_toml_u64(contents: &str, key: &str) -> Option<u64> {
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| value.trim().parse::<u64>().ok())?
+    })
+}
+
+fn parse_toml_bool(contents: &str, key: &str) -> Option<bool> {
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| matches!(value.trim(), "true" | "1"))
+    })
 }
 
 fn toml_escape(value: &str) -> String {

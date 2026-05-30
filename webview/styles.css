@@ -1358,6 +1358,79 @@ h2 {
   padding: 14px;
 }
 
+.megadrive-panel {
+  padding: 0;
+  border: 1px solid rgba(245, 215, 125, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 14, 11, 0.42);
+}
+
+.megadrive-panel summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 46px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #fff4c6;
+  cursor: pointer;
+  list-style: none;
+}
+
+.megadrive-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.megadrive-panel summary::after {
+  content: "+";
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(245, 215, 125, 0.26);
+  border-radius: 999px;
+  color: #f0dc91;
+  font-weight: 900;
+}
+
+.megadrive-panel[open] summary::after {
+  content: "-";
+}
+
+.megadrive-panel summary:hover {
+  background: rgba(245, 215, 125, 0.08);
+}
+
+.megadrive-panel summary span {
+  color: #f0dc91;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.megadrive-panel summary strong {
+  min-width: 0;
+  color: #fff4c6;
+  font-size: 0.78rem;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.megadrive-panel[open] {
+  padding-bottom: 10px;
+}
+
+.megadrive-panel > :not(summary) {
+  margin-inline: 10px;
+}
+
+.megadrive-panel > :not(summary) + :not(summary) {
+  margin-top: 10px;
+}
+
 .rom-browser-section {
   min-height: auto;
 }
