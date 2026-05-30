@@ -42,14 +42,27 @@ password_hash="$(cargo run --quiet --bin euther-oxide -- --host-hash-password "$
 cat > "$CONFIG_FILE" <<EOF
 bind = "127.0.0.1:32162"
 rom_dir = "$rom_dir"
+session_timeout_minutes = 1440
+login_rate_limit_window_secs = 900
+login_rate_limit_max_attempts = 8
+secure_cookies = false
+allowed_origins = ""
+library_read_only = true
 EOF
 
 cat > "$USERS_FILE" <<EOF
 [[user]]
 name = "$username"
 password_hash = "$password_hash"
+banned = false
+admin = true
+can_play = true
+can_launch_roms = true
+can_upload_roms = true
+can_manage_library = true
 EOF
 
+chmod 600 "$CONFIG_FILE"
 chmod 600 "$USERS_FILE"
 
 echo "[host-init] wrote $CONFIG_FILE"

@@ -2,7 +2,7 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -691,6 +691,7 @@ struct HostConfig {
     login_rate_limit_max_attempts: usize,
     secure_cookies: bool,
     allowed_origins: Vec<String>,
+    library_read_only: bool,
 }
 
 #[derive(Clone)]
@@ -699,6 +700,19 @@ struct HostUser {
     password_hash: String,
     banned: bool,
     admin: bool,
+    can_play: bool,
+    can_launch_roms: bool,
+    can_upload_roms: bool,
+    can_manage_library: bool,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostPermissions {
+    can_play: bool,
+    can_launch_roms: bool,
+    can_upload_roms: bool,
+    can_manage_library: bool,
 }
 
 struct HostSession {
@@ -852,6 +866,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                         "authenticated": true,
                         "user": user,
                         "isAdmin": is_host_admin(state, &user)?,
+                        "permissions": host_permissions(state, &user)?,
                         "csrfToken": csrf_token,
                     }),
                 )
@@ -865,6 +880,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/lobby/start") => {
             let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
             let instance_id = create_host_instance(state, &user)?;
             send_json(
                 stream,
@@ -881,6 +899,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let requested =
                 query_string_value(&request.path, "player")?.unwrap_or_else(|| "auto".to_string());
             let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
             let bridge = host_instance_bridge(state, &host_instance_id(&request.path)?)?;
             let role = join_lobby_instance(&bridge, &client_id, &user, &requested)?;
             send_json(
@@ -988,6 +1009,22 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             set_host_user_admin(state, &username, admin)?;
             send_json(stream, &host_user_list(state)?)
         }
+        ("POST", "/api/admin/users/permissions") => {
+            if let Err(err) = require_host_admin(state, &request) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let form =
+                parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+            let username = form_value(&form, "username").unwrap_or_default();
+            let permissions = HostPermissions {
+                can_play: form_bool(&form, "can_play"),
+                can_launch_roms: form_bool(&form, "can_launch_roms"),
+                can_upload_roms: form_bool(&form, "can_upload_roms"),
+                can_manage_library: form_bool(&form, "can_manage_library"),
+            };
+            set_host_user_permissions(state, &username, permissions)?;
+            send_json(stream, &host_user_list(state)?)
+        }
         ("POST", "/api/admin/invites/placeholder") => {
             if let Err(err) = require_host_admin(state, &request) {
                 return send_error(stream, 403, &err.to_string());
@@ -1027,6 +1064,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 if let Err(err) = require_host_owner(state, &instance_id, &user) {
                     return send_error(stream, 403, &err.to_string());
                 }
+            }
+            if let Some(permission) = host_route_permission(path, &request.method) {
+                if let Err(err) = require_host_permission(state, &user, permission) {
+                    return send_error(stream, 403, &err.to_string());
+                }
+            }
+            if host_route_requires_writable_library(path, &request.method)
+                && state.config.library_read_only
+                && !is_host_admin(state, &user)?
+            {
+                return send_error(stream, 403, "library is read-only");
             }
             let audit_rom_launch =
                 request.method == "POST" && matches!(path, "/load" | "/rom-dir/load");
@@ -1224,6 +1272,72 @@ fn require_host_admin(state: &HostState, request: &HttpRequest) -> io::Result<St
     }
 }
 
+#[derive(Clone, Copy)]
+enum HostPermission {
+    Play,
+    LaunchRoms,
+    UploadRoms,
+    ManageLibrary,
+}
+
+fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermissions> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(user) = users
+        .iter()
+        .find(|user| user.name == username && !user.banned)
+    else {
+        return Ok(HostPermissions {
+            can_play: false,
+            can_launch_roms: false,
+            can_upload_roms: false,
+            can_manage_library: false,
+        });
+    };
+    Ok(host_permissions_for_user(user))
+}
+
+fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
+    if user.admin {
+        return HostPermissions {
+            can_play: true,
+            can_launch_roms: true,
+            can_upload_roms: true,
+            can_manage_library: true,
+        };
+    }
+    HostPermissions {
+        can_play: user.can_play,
+        can_launch_roms: user.can_launch_roms,
+        can_upload_roms: user.can_upload_roms,
+        can_manage_library: user.can_manage_library,
+    }
+}
+
+fn require_host_permission(
+    state: &HostState,
+    username: &str,
+    permission: HostPermission,
+) -> io::Result<()> {
+    let permissions = host_permissions(state, username)?;
+    let allowed = match permission {
+        HostPermission::Play => permissions.can_play,
+        HostPermission::LaunchRoms => permissions.can_launch_roms,
+        HostPermission::UploadRoms => permissions.can_upload_roms,
+        HostPermission::ManageLibrary => permissions.can_manage_library,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "user permission required",
+        ))
+    }
+}
+
 fn host_instance_id(path: &str) -> io::Result<String> {
     Ok(query_string_value(path, "instance")?
         .filter(|value| !value.trim().is_empty())
@@ -1317,6 +1431,44 @@ fn host_route_requires_owner(path: &str, method: &str) -> bool {
             | ("POST", "/state/save")
             | ("POST", "/state/load")
     )
+}
+
+fn host_route_permission(path: &str, method: &str) -> Option<HostPermission> {
+    match (method, path) {
+        ("POST", "/load") => Some(HostPermission::UploadRoms),
+        ("POST", "/rom-dir/load")
+        | ("POST", "/reset")
+        | ("POST", "/state/save")
+        | ("POST", "/state/load") => Some(HostPermission::LaunchRoms),
+        ("POST", "/rom-dir") | ("POST", "/shader-config") => Some(HostPermission::ManageLibrary),
+        ("POST", "/build/release") | ("POST", "/build/profile") => {
+            Some(HostPermission::ManageLibrary)
+        }
+        ("POST", "/input")
+        | ("GET", "/frame")
+        | ("POST", "/frame")
+        | ("GET", "/frame.bin")
+        | ("POST", "/frame.bin")
+        | ("GET", "/frame-audio.bin")
+        | ("POST", "/frame-audio.bin")
+        | ("GET", "/stream-frame-audio.bin")
+        | ("GET", "/audio.bin")
+        | ("POST", "/audio.bin")
+        | ("POST", "/eutherdogs/start")
+        | ("POST", "/eutherdogs/next")
+        | ("POST", "/eutherdogs/reset")
+        | ("POST", "/eutherdogs/frame")
+        | ("POST", "/eutherdogs/input")
+        | ("GET", "/eutherdogs/snapshot")
+        | ("GET", "/eutherdogs/stream")
+        | ("POST", "/eutherdogs/purchase")
+        | ("POST", "/eutherdogs-highscores") => Some(HostPermission::Play),
+        _ => None,
+    }
+}
+
+fn host_route_requires_writable_library(path: &str, method: &str) -> bool {
+    matches!((method, path), ("POST", "/load") | ("POST", "/rom-dir"))
 }
 
 fn host_route_requires_origin_check(path: &str) -> bool {
@@ -1493,12 +1645,15 @@ fn host_user_list(state: &HostState) -> io::Result<serde_json::Value> {
     Ok(serde_json::json!({
         "users": users
             .iter()
-            .map(|user| serde_json::json!({
-                "name": user.name,
-                "banned": user.banned,
-                "admin": user.admin,
-            }))
-            .collect::<Vec<_>>()
+            .map(|user| {
+                Ok(serde_json::json!({
+                    "name": user.name,
+                    "banned": user.banned,
+                    "admin": user.admin,
+                    "permissions": host_permissions_for_user(user),
+                }))
+            })
+            .collect::<io::Result<Vec<_>>>()?
     }))
 }
 
@@ -1519,6 +1674,10 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         password_hash: hash_host_password(password)?,
         banned: false,
         admin: username == "nichlas",
+        can_play: true,
+        can_launch_roms: false,
+        can_upload_roms: false,
+        can_manage_library: false,
     });
     save_host_users(&users)
 }
@@ -1573,6 +1732,25 @@ fn set_host_user_admin(state: &HostState, username: &str, admin: bool) -> io::Re
         return Err(invalid_request("at least one active admin is required"));
     }
     user.admin = admin;
+    save_host_users(&users)
+}
+
+fn set_host_user_permissions(
+    state: &HostState,
+    username: &str,
+    permissions: HostPermissions,
+) -> io::Result<()> {
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(user) = users.iter_mut().find(|user| user.name == username) else {
+        return Err(invalid_request("user not found"));
+    };
+    user.can_play = permissions.can_play;
+    user.can_launch_roms = permissions.can_launch_roms;
+    user.can_upload_roms = permissions.can_upload_roms;
+    user.can_manage_library = permissions.can_manage_library;
     save_host_users(&users)
 }
 
@@ -1730,18 +1908,16 @@ fn origin_host(origin: &str) -> Option<String> {
 }
 
 fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
-    let relative = if path == "/" || path == "/index.html" {
-        PathBuf::from("index.html")
-    } else {
-        PathBuf::from(path.trim_start_matches('/'))
+    let file_path = match resolve_host_static_path(path) {
+        Ok(file_path) => file_path,
+        Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+            return send_error(stream, 404, "not found");
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return send_error(stream, 404, "not found");
+        }
+        Err(err) => return Err(err),
     };
-    if relative
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return send_error(stream, 404, "not found");
-    }
-    let file_path = PathBuf::from("dist").join(relative);
     let bytes = fs::read(&file_path)?;
     let content_type = match file_path
         .extension()
@@ -1754,6 +1930,20 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         _ => "application/octet-stream",
     };
     send_response(stream, 200, content_type, &bytes)
+}
+
+fn resolve_host_static_path(path: &str) -> io::Result<PathBuf> {
+    let root = PathBuf::from("dist").canonicalize()?;
+    let relative = if path == "/" || path == "/index.html" {
+        safe_relative_path("index.html")?
+    } else {
+        safe_relative_path(path.trim_start_matches('/'))?
+    };
+    let canonical = root.join(relative).canonicalize()?;
+    if !canonical.starts_with(&root) || !canonical.is_file() {
+        return Err(invalid_request("static file is outside dist root"));
+    }
+    Ok(canonical)
 }
 
 fn send_login_page(stream: &mut TcpStream, error: Option<&str>) -> io::Result<()> {
@@ -3368,7 +3558,8 @@ fn load_host_config() -> io::Result<HostConfig> {
              login_rate_limit_window_secs = 900\n\
              login_rate_limit_max_attempts = 8\n\
              secure_cookies = false\n\
-             allowed_origins = \"\"\n",
+             allowed_origins = \"\"\n\
+             library_read_only = true\n",
         )?;
     }
     let contents = fs::read_to_string(&path)?;
@@ -3394,6 +3585,7 @@ fn load_host_config() -> io::Result<HostConfig> {
         .filter(|origin| !origin.is_empty())
         .map(str::to_string)
         .collect();
+    let library_read_only = parse_toml_bool(&contents, "library_read_only").unwrap_or(true);
     Ok(HostConfig {
         bind,
         rom_dir,
@@ -3402,6 +3594,7 @@ fn load_host_config() -> io::Result<HostConfig> {
         login_rate_limit_max_attempts,
         secure_cookies,
         allowed_origins,
+        library_read_only,
     })
 }
 
@@ -3423,6 +3616,10 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut password_hash = None;
     let mut banned = false;
     let mut admin = false;
+    let mut can_play = true;
+    let mut can_launch_roms = false;
+    let mut can_upload_roms = false;
+    let mut can_manage_library = false;
     for line in contents.lines().map(str::trim) {
         if line.starts_with("[[user]]") {
             if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
@@ -3432,10 +3629,18 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     password_hash,
                     banned,
                     admin,
+                    can_play,
+                    can_launch_roms,
+                    can_upload_roms,
+                    can_manage_library,
                 });
             }
             banned = false;
             admin = false;
+            can_play = true;
+            can_launch_roms = false;
+            can_upload_roms = false;
+            can_manage_library = false;
             continue;
         }
         if line.starts_with('#') || line.is_empty() {
@@ -3449,6 +3654,14 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             banned = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "admin") {
             admin = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_play") {
+            can_play = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_launch_roms") {
+            can_launch_roms = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_upload_roms") {
+            can_upload_roms = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_manage_library") {
+            can_manage_library = value;
         }
     }
     if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
@@ -3458,6 +3671,10 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             password_hash,
             banned,
             admin,
+            can_play,
+            can_launch_roms,
+            can_upload_roms,
+            can_manage_library,
         });
     }
     if users.is_empty() {
@@ -3486,6 +3703,13 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
         ));
         contents.push_str(&format!("banned = {}\n", user.banned));
         contents.push_str(&format!("admin = {}\n", user.admin));
+        contents.push_str(&format!("can_play = {}\n", user.can_play));
+        contents.push_str(&format!("can_launch_roms = {}\n", user.can_launch_roms));
+        contents.push_str(&format!("can_upload_roms = {}\n", user.can_upload_roms));
+        contents.push_str(&format!(
+            "can_manage_library = {}\n",
+            user.can_manage_library
+        ));
     }
     fs::write(host_users_path(), contents)
 }
@@ -3593,6 +3817,10 @@ fn parse_urlencoded_form(value: &str) -> io::Result<Vec<(String, String)>> {
 fn form_value<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
     form.iter()
         .find_map(|(key, value)| (key == name).then_some(value.as_str()))
+}
+
+fn form_bool(form: &[(String, String)], name: &str) -> bool {
+    form_value(form, name).is_some_and(|value| value == "true" || value == "1")
 }
 
 fn html_escape(value: &str) -> String {
@@ -3711,7 +3939,7 @@ fn list_rom_dir(relative: &str) -> io::Result<RomDirListing> {
 }
 
 fn resolve_rom_dir_path(root: &std::path::Path, relative: &str) -> io::Result<PathBuf> {
-    let joined = root.join(relative);
+    let joined = root.join(safe_relative_path(relative)?);
     let canonical = joined.canonicalize()?;
     if !canonical.starts_with(root) || !canonical.is_dir() {
         return Err(invalid_request("directory is outside ROM root"));
@@ -3721,13 +3949,29 @@ fn resolve_rom_dir_path(root: &std::path::Path, relative: &str) -> io::Result<Pa
 
 fn resolve_rom_file_path(relative: &str) -> io::Result<PathBuf> {
     let root = rom_root_path()?;
-    let canonical = root.join(relative).canonicalize()?;
+    let canonical = root.join(safe_relative_path(relative)?).canonicalize()?;
     if !canonical.starts_with(&root) || !canonical.is_file() || !is_rom_path(&canonical) {
         return Err(invalid_request(
             "ROM path is outside root or not a supported ROM",
         ));
     }
     Ok(canonical)
+}
+
+fn safe_relative_path(relative: &str) -> io::Result<PathBuf> {
+    let path = Path::new(relative);
+    if path.is_absolute() {
+        return Err(invalid_request("absolute paths are not allowed"));
+    }
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => safe.push(part),
+            Component::CurDir => {}
+            _ => return Err(invalid_request("unsafe relative path")),
+        }
+    }
+    Ok(safe)
 }
 
 fn is_rom_path(path: &std::path::Path) -> bool {
@@ -3995,4 +4239,28 @@ fn write_ppm(
         ])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_relative_path_accepts_normal_paths() {
+        assert_eq!(
+            safe_relative_path("Games/Sonic.md").unwrap(),
+            PathBuf::from("Games/Sonic.md")
+        );
+        assert_eq!(
+            safe_relative_path("./Games/./Sonic.md").unwrap(),
+            PathBuf::from("Games/Sonic.md")
+        );
+    }
+
+    #[test]
+    fn safe_relative_path_rejects_escape_paths() {
+        assert!(safe_relative_path("../secret.md").is_err());
+        assert!(safe_relative_path("Games/../../secret.md").is_err());
+        assert!(safe_relative_path("/tmp/secret.md").is_err());
+    }
 }

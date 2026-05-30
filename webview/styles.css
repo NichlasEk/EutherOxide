@@ -2473,6 +2473,28 @@ h2 {
   font-size: 0.68rem;
 }
 
+.admin-permissions {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.admin-permissions button {
+  min-height: 30px;
+  padding: 0 6px;
+  border-color: rgba(165, 222, 114, 0.16);
+  color: #8fae85;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.admin-permissions button.is-active {
+  border-color: rgba(214, 233, 95, 0.44);
+  background: rgba(95, 97, 12, 0.42);
+  color: #f4ffde;
+}
+
 .admin-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 86px;

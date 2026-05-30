@@ -1,0 +1,18 @@
+[Unit]
+Description=EutherHost
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nichlas/EutherOxide
+ExecStart=/home/nichlas/EutherOxide/scripts/host-server.sh
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/nichlas/EutherOxide/.euther-host /home/nichlas/EutherOxide/.euther-bridge /home/nichlas/EutherOxide/target /home/nichlas/roms
+
+[Install]
+WantedBy=multi-user.target

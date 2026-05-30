@@ -159,16 +159,25 @@ type HostUserSummary = {
   name: string;
   banned: boolean;
   admin: boolean;
+  permissions: HostPermissions;
 };
 
 type HostUserList = {
   users: HostUserSummary[];
 };
 
+type HostPermissions = {
+  canPlay: boolean;
+  canLaunchRoms: boolean;
+  canUploadRoms: boolean;
+  canManageLibrary: boolean;
+};
+
 type AuthStatus = {
   authenticated: boolean;
   user?: string;
   isAdmin?: boolean;
+  permissions?: HostPermissions;
   csrfToken?: string | null;
 };
 
@@ -653,6 +662,12 @@ let claimedLobbyPlayer: PlayerPort | null = null;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
+let hostPermissions: HostPermissions = {
+  canPlay: false,
+  canLaunchRoms: false,
+  canUploadRoms: false,
+  canManageLibrary: false,
+};
 let lobbyStatus: LobbyStatus | null = null;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
@@ -1351,21 +1366,50 @@ adminUsers.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest<HTMLButtonElement>("[data-admin-ban]");
-  if (!button) {
+  if (button) {
+    const username = button.dataset.adminBan ?? "";
+    const banned = button.dataset.banned === "1";
+    const result = await bridgeJson<HostUserList>(
+      "/api/admin/users/ban",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username, banned: String(banned) }),
+      },
+      1200,
+    );
+    hostUsers = result.users;
+    renderHostUsers();
     return;
   }
-  const username = button.dataset.adminBan ?? "";
-  const banned = button.dataset.banned === "1";
+  const permissionButton = target.closest<HTMLButtonElement>("[data-admin-permission]");
+  if (!permissionButton) {
+    return;
+  }
+  const username = permissionButton.dataset.adminPermissionUser ?? "";
+  const key = permissionButton.dataset.adminPermission as keyof HostPermissions;
+  const user = hostUsers.find((entry) => entry.name === username);
+  if (!user || !key) {
+    return;
+  }
+  const next = { ...user.permissions, [key]: !user.permissions[key] };
   const result = await bridgeJson<HostUserList>(
-    "/api/admin/users/ban",
+    "/api/admin/users/permissions",
     {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ username, banned: String(banned) }),
+      body: new URLSearchParams({
+        username,
+        can_play: String(next.canPlay),
+        can_launch_roms: String(next.canLaunchRoms),
+        can_upload_roms: String(next.canUploadRoms),
+        can_manage_library: String(next.canManageLibrary),
+      }),
     },
     1200,
   );
   hostUsers = result.users;
+  selectedAdminUser = username;
   renderHostUsers();
 });
 
@@ -1421,8 +1465,8 @@ romDrop.addEventListener("click", async (event) => {
 romInput.addEventListener("change", async () => {
   const file = romInput.files?.[0];
   if (file) {
-    if (!canHostMutate()) {
-      pushTrace("Host owner required");
+    if (!canHostUploadRoms()) {
+      pushTrace("ROM upload permission required");
       return;
     }
     await loadFile(file);
@@ -1485,8 +1529,8 @@ romDrop.addEventListener("drop", async (event) => {
   romDrop.classList.remove("is-dragging");
   const file = event.dataTransfer?.files?.[0];
   if (file) {
-    if (!canHostMutate()) {
-      pushTrace("Host owner required");
+    if (!canHostUploadRoms()) {
+      pushTrace("ROM upload permission required");
       return;
     }
     const filePath = tauriFilePath(file);
@@ -1969,6 +2013,10 @@ async function loadRomDirSetting(): Promise<void> {
 async function setRomDir(path: string): Promise<void> {
   const trimmed = path.trim();
   if (!trimmed) {
+    return;
+  }
+  if (!isTauri && !canHostManageLibrary()) {
+    pushTrace("Library permission required");
     return;
   }
   try {
@@ -3311,11 +3359,25 @@ async function refreshAuthStatus(): Promise<void> {
     hostUsername = status.authenticated ? status.user ?? null : null;
     hostIsAdmin = Boolean(status.authenticated && status.isAdmin);
     hostCsrfToken = status.authenticated ? status.csrfToken ?? null : null;
+    hostPermissions = status.authenticated && status.permissions
+      ? status.permissions
+      : {
+          canPlay: false,
+          canLaunchRoms: false,
+          canUploadRoms: false,
+          canManageLibrary: false,
+        };
     updateChatPolling(status.authenticated);
   } catch {
     hostUsername = null;
     hostIsAdmin = false;
     hostCsrfToken = null;
+    hostPermissions = {
+      canPlay: false,
+      canLaunchRoms: false,
+      canUploadRoms: false,
+      canManageLibrary: false,
+    };
     updateChatPolling(false);
   }
   renderAdminAccess();
@@ -3567,7 +3629,16 @@ function ownsCurrentSlot(): boolean {
 
 function canHostMutate(): boolean {
   const host = activeLobbyInstance()?.host;
-  return !host || host === hostUsername;
+  return Boolean(hostPermissions.canLaunchRoms && (!host || host === hostUsername));
+}
+
+function canHostUploadRoms(): boolean {
+  const host = activeLobbyInstance()?.host;
+  return Boolean(hostPermissions.canUploadRoms && (!host || host === hostUsername));
+}
+
+function canHostManageLibrary(): boolean {
+  return Boolean(hostPermissions.canManageLibrary);
 }
 
 function renderAdminAccess(): void {
@@ -3586,7 +3657,7 @@ function renderHostUsers(): void {
             <div class="admin-user ${user.name === selectedAdminUser ? "is-selected" : ""}">
               <button data-admin-select="${escapeHtml(user.name)}" type="button">
                 <strong>${escapeHtml(user.name)}</strong>
-                <span>${user.admin ? "Admin" : "User"} | ${user.banned ? "Banned" : "Active"}</span>
+                <span>${user.admin ? "Admin" : "User"} | ${user.banned ? "Banned" : "Active"} | ${hostPermissionSummary(user.permissions)}</span>
               </button>
               <button data-admin-admin="${escapeHtml(user.name)}" data-admin="${user.admin ? "0" : "1"}" type="button">
                 ${user.admin ? "User" : "Admin"}
@@ -3594,11 +3665,40 @@ function renderHostUsers(): void {
               <button data-admin-ban="${escapeHtml(user.name)}" data-banned="${user.banned ? "0" : "1"}" type="button">
                 ${user.banned ? "Unban" : "Ban"}
               </button>
+              <div class="admin-permissions">
+                ${hostPermissionButton(user, "canPlay", "Play")}
+                ${hostPermissionButton(user, "canLaunchRoms", "Launch")}
+                ${hostPermissionButton(user, "canUploadRoms", "Upload")}
+                ${hostPermissionButton(user, "canManageLibrary", "Library")}
+              </div>
             </div>
           `,
         )
         .join("")
     : `<span>No users loaded</span>`;
+}
+
+function hostPermissionSummary(permissions: HostPermissions): string {
+  const labels = [
+    permissions.canPlay ? "Play" : "",
+    permissions.canLaunchRoms ? "Launch" : "",
+    permissions.canUploadRoms ? "Upload" : "",
+    permissions.canManageLibrary ? "Library" : "",
+  ].filter(Boolean);
+  return labels.length ? labels.join(", ") : "Read-only";
+}
+
+function hostPermissionButton(user: HostUserSummary, key: keyof HostPermissions, label: string): string {
+  const active = user.permissions[key];
+  return `
+    <button
+      class="${active ? "is-active" : ""}"
+      data-admin-permission-user="${escapeHtml(user.name)}"
+      data-admin-permission="${key}"
+      type="button"
+      ${user.admin ? "disabled" : ""}
+    >${label}</button>
+  `;
 }
 
 function renderChat(): void {
@@ -6800,10 +6900,13 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const actorKey = `${actor.faction}:${actor.id}`;
     const serverPrevious = dogsPreviousActorPositions.get(actorKey);
     const moving = Boolean(serverPrevious && (serverPrevious.x !== targetActor.x || serverPrevious.y !== targetActor.y));
-    const fallbackFacing = dogsActorFacings.get(actorKey) ?? dogsActorDirectionFacing(actor);
+    const serverFacing = dogsActorDirectionFacing(actor);
+    const fallbackFacing = dogsActorFacings.get(actorKey) ?? serverFacing;
     const facing = serverPrevious
-      ? dogsFacingFromMovement(targetActor.x - serverPrevious.x, targetActor.y - serverPrevious.y, fallbackFacing)
-      : fallbackFacing;
+      ? moving
+        ? dogsFacingFromMovement(targetActor.x - serverPrevious.x, targetActor.y - serverPrevious.y, fallbackFacing)
+        : serverFacing
+      : serverFacing;
     nextActorPositions.set(actorKey, { x: targetActor.x, y: targetActor.y });
     nextActorFacings.set(actorKey, facing);
     const sheetAsset = dogsActorSheetAsset(actor);
