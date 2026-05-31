@@ -131,6 +131,7 @@ const MPA_ALERT_TICKS: u32 = 15 * 60;
 const MPA_AGENT_COUNT: usize = 50;
 const MPA_AGENT_INSPECT_TICKS: u32 = 180;
 const MPA_AGENT_WATCH_RANGE: i32 = TILE_WIDTH * 7;
+const MPA_AGENT_GAZE_RANGE: i32 = TILE_WIDTH * 4;
 const MPA_HUM_COOLDOWN_TICKS: u32 = 210;
 const MPA_CHIEF_QUESTION_RANGE: i32 = TILE_WIDTH * 3;
 const MPA_CHIEF_QUESTION_COOLDOWN_TICKS: u32 = 90;
@@ -991,16 +992,18 @@ impl Game {
             if !self.characters[character_index].alive {
                 continue;
             }
+            let watched_player = self.mpa_agent_tracks_visible_player(character_index);
+            if watched_player && self.mpa_hum_cooldown == 0 {
+                self.mpa_hum_cooldown = MPA_HUM_COOLDOWN_TICKS;
+                self.audio_events.push(AudioEvent::MpaHum);
+            }
             if self.mpa_agents[agent_index].inspect_ticks > 0 {
                 self.mpa_agents[agent_index].inspect_ticks = self.mpa_agents[agent_index]
                     .inspect_ticks
                     .saturating_sub(dt.ticks);
-                if self.mpa_agent_tracks_visible_player(character_index)
-                    && self.mpa_hum_cooldown == 0
-                {
-                    self.mpa_hum_cooldown = MPA_HUM_COOLDOWN_TICKS;
-                    self.audio_events.push(AudioEvent::MpaHum);
-                }
+                continue;
+            }
+            if watched_player {
                 continue;
             }
             let target_tile = if let Some(target_tile) = self.mpa_agents[agent_index].target_tile {
@@ -1041,8 +1044,9 @@ impl Game {
         if distance > MPA_AGENT_WATCH_RANGE || !self.has_line_of_sight(x, y, player_x, player_y) {
             return false;
         }
-        self.characters[character_index].direction = direction_toward(x, y, player_x, player_y);
-        true
+        let direction = direction_toward(x, y, player_x, player_y);
+        self.characters[character_index].direction = direction;
+        distance <= MPA_AGENT_GAZE_RANGE || matches!(direction, Direction::Left | Direction::Right)
     }
 
     fn move_mpa_chief(&mut self, dt: FixedStep) {
@@ -2864,6 +2868,54 @@ mod tests {
 
         game.tick(&[], FixedStep { ticks: 1 });
 
+        assert_eq!(
+            game.characters[agent_index].direction,
+            crate::direction::Direction::Right
+        );
+        assert!(game
+            .drain_audio_events()
+            .into_iter()
+            .any(|event| event == AudioEvent::MpaHum));
+    }
+
+    #[test]
+    fn level_ten_mpa_agents_pause_to_watch_nearby_player() {
+        let mut game = Game::new_mission(
+            44,
+            WorldParams::default(),
+            MissionSpec {
+                mission: 10,
+                targets: 0,
+                objects: 0,
+            },
+        );
+        game.progress.elapsed_ticks = super::MPA_ALERT_TICKS - 1;
+        game.tick(&[], FixedStep { ticks: 1 });
+        let agent_id = game.mpa_agents[0].character_id;
+        let agent_index = game.character_index(agent_id).expect("MPA agent exists");
+        let tile_y = 6;
+        for tile_x in 4..=9 {
+            game.world.set_tile(tile_x, tile_y, Tile::Floor);
+        }
+        game.characters[agent_index].x = 5 * TILE_WIDTH as i32 + 8;
+        game.characters[agent_index].y = tile_y as i32 * TILE_HEIGHT + 2;
+        game.mpa_agents[0].inspect_ticks = 0;
+        game.mpa_agents[0].target_tile = Some((4, tile_y));
+        game.mpa_hum_cooldown = 0;
+        if let Some(player) = game
+            .characters
+            .iter_mut()
+            .find(|character| character.faction == Faction::Player)
+        {
+            player.x = 8 * TILE_WIDTH as i32 + 8;
+            player.y = tile_y as i32 * TILE_HEIGHT + 2;
+        }
+        game.drain_audio_events();
+        let x_before = game.characters[agent_index].x;
+
+        game.tick(&[], FixedStep { ticks: 1 });
+
+        assert_eq!(game.characters[agent_index].x, x_before);
         assert_eq!(
             game.characters[agent_index].direction,
             crate::direction::Direction::Right
