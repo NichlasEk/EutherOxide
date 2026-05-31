@@ -6,6 +6,9 @@
 /tmp/
 .euther-bridge/
 .euther-host/
+/deploy/Caddyfile
+/deploy/eutherhost.service
+/deploy/*.local
 **/*.rs.bk
 *.argon
 *.srm
