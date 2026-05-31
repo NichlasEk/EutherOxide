@@ -369,14 +369,36 @@ button:disabled {
   overflow: hidden;
 }
 
-.eutherdogs-menu-panel header,
-.eutherdogs-menu-panel footer {
+.eutherdogs-menu-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 9px;
   background: rgba(0, 5, 7, 0.72);
+}
+
+.eutherdogs-menu-panel footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 6px;
+  padding: 9px;
+  background: rgba(0, 5, 7, 0.72);
+}
+
+.eutherdogs-menu-panel footer button {
+  flex: 1 1 82px;
+}
+
+.eutherdogs-menu-panel footer button.primary-action {
+  flex-grow: 1.4;
+}
+
+.eutherdogs-menu-panel header {
+  min-width: 0;
 }
 
 .eutherdogs-menu-panel header span {
@@ -598,6 +620,247 @@ button:disabled {
 .eutherdogs-store-buy:disabled {
   color: #8da09d;
   cursor: not-allowed;
+}
+
+.eutherdogs-inventory-popup {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: none;
+  place-items: center;
+  padding: 10px;
+  background: rgba(0, 3, 4, 0.32);
+  pointer-events: none;
+}
+
+.eutherdogs-inventory-popup.is-open {
+  display: grid;
+  pointer-events: auto;
+}
+
+.eutherdogs-inventory-popup-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(780px, calc(100% - 20px));
+  height: min(560px, calc(100% - 20px));
+  min-height: 0;
+  border: 1px solid rgba(39, 242, 255, 0.44);
+  background:
+    linear-gradient(180deg, rgba(6, 8, 8, 0.9), rgba(2, 5, 5, 0.96)),
+    var(--dogs-menu-panel, none),
+    #050706;
+  background-size: cover;
+  box-shadow:
+    inset 0 0 42px rgba(255, 48, 208, 0.09),
+    0 20px 70px rgba(0, 0, 0, 0.58);
+}
+
+.eutherdogs-inventory-popup-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  background: rgba(0, 5, 7, 0.76);
+}
+
+.eutherdogs-inventory-popup-panel header span {
+  display: block;
+  color: #92f4ee;
+  font-size: 0.62rem;
+  font-weight: 950;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.eutherdogs-inventory-popup-panel h3 {
+  margin: 2px 0 0;
+  color: #ffffff;
+  font-size: 0.92rem;
+  line-height: 1.1;
+}
+
+#eutherdogs-inventory-close {
+  flex: none;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 0;
+  color: #ffef6e;
+  font-size: 0.8rem;
+  font-weight: 950;
+}
+
+.eutherdogs-inventory-body {
+  min-height: 0;
+  padding: 8px;
+  overflow: auto;
+  scrollbar-color: rgba(39, 242, 255, 0.55) rgba(0, 5, 7, 0.65);
+}
+
+.eutherdogs-inventory-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 8px;
+  min-height: 0;
+  height: 100%;
+  overflow: visible;
+}
+
+.eutherdogs-paperdoll {
+  display: grid;
+  grid-template-rows: minmax(92px, auto) minmax(0, 1fr) minmax(92px, auto);
+  gap: 7px;
+  min-height: 0;
+}
+
+.eutherdogs-hero-stand,
+.eutherdogs-equipment-slot,
+.eutherdogs-inventory-slot,
+.eutherdogs-inventory-stats > div {
+  border: 1px solid rgba(145, 244, 238, 0.2);
+  background:
+    linear-gradient(135deg, rgba(9, 20, 17, 0.86), rgba(2, 6, 6, 0.92)),
+    radial-gradient(circle at 50% 20%, rgba(57, 247, 200, 0.12), transparent 52%);
+}
+
+.eutherdogs-hero-stand {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  min-height: 0;
+  padding: 10px;
+  box-shadow: inset 0 0 32px rgba(255, 48, 208, 0.08);
+}
+
+.eutherdogs-hero-stand img {
+  width: min(160px, 70%);
+  max-height: 220px;
+  image-rendering: pixelated;
+  object-fit: contain;
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.55));
+}
+
+.eutherdogs-hero-stand strong,
+.eutherdogs-equipment-slot strong,
+.eutherdogs-inventory-slot strong,
+.eutherdogs-inventory-stats strong {
+  color: #ffffff;
+  font-size: 0.72rem;
+  line-height: 1.08;
+  text-transform: uppercase;
+}
+
+.eutherdogs-hero-stand span,
+.eutherdogs-equipment-slot span,
+.eutherdogs-equipment-slot small,
+.eutherdogs-inventory-slot small,
+.eutherdogs-inventory-stats span {
+  color: #9ee9de;
+  font-size: 0.56rem;
+  font-weight: 850;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.eutherdogs-equipment-slot {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px;
+}
+
+.eutherdogs-equipment-slot > span {
+  grid-column: 1 / -1;
+  color: #ffef6e;
+}
+
+.eutherdogs-equipment-slot .eutherdogs-weapon-icon {
+  grid-row: 2 / 4;
+  width: 50px;
+  height: 50px;
+}
+
+.eutherdogs-inventory-ledger {
+  display: grid;
+  grid-template-rows: auto auto minmax(92px, 0.8fr) auto minmax(108px, 1fr);
+  gap: 7px;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-color: rgba(39, 242, 255, 0.55) rgba(0, 5, 7, 0.65);
+}
+
+.eutherdogs-inventory-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.eutherdogs-inventory-stats > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px;
+}
+
+.eutherdogs-inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: rgba(39, 242, 255, 0.55) rgba(0, 5, 7, 0.65);
+}
+
+.eutherdogs-inventory-slot {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  gap: 3px 6px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 5px;
+}
+
+.eutherdogs-inventory-slot .eutherdogs-weapon-icon {
+  grid-row: 1 / 3;
+  width: 36px;
+  height: 36px;
+  align-self: center;
+}
+
+.eutherdogs-inventory-slot strong,
+.eutherdogs-inventory-slot small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherdogs-inventory-slot.is-active {
+  border-color: rgba(255, 239, 110, 0.58);
+  background: rgba(45, 39, 7, 0.74);
+}
+
+.eutherdogs-inventory-slot.is-artifact {
+  border-color: rgba(255, 48, 208, 0.42);
+  box-shadow: inset 0 0 18px rgba(255, 48, 208, 0.12);
+}
+
+.eutherdogs-inventory-slot.is-locked {
+  opacity: 0.58;
+}
+
+.eutherdogs-inventory-slot.is-empty {
+  min-height: 48px;
+  background:
+    linear-gradient(135deg, rgba(8, 12, 12, 0.52), rgba(1, 4, 4, 0.72));
 }
 
 .eutherdogs-briefing-grid,
@@ -2922,6 +3185,26 @@ h2 {
   .eutherdogs-shift strong,
   .eutherdogs-dispensary strong {
     font-size: 0.64rem;
+  }
+
+  .eutherdogs-inventory-layout,
+  .eutherdogs-armory-layout {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .eutherdogs-paperdoll {
+    grid-template-rows: auto minmax(180px, auto) auto;
+  }
+
+  .eutherdogs-inventory-ledger {
+    grid-template-rows: auto auto auto auto auto;
+    overflow: visible;
+  }
+
+  .eutherdogs-inventory-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
   }
 
   .controls-modal {

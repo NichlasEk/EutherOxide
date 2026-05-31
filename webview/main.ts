@@ -703,6 +703,7 @@ let dogsHighscoreInitialIndex = 0;
 let dogsHighscoreSavedName: string | null = null;
 let dogsSelectedHighScoreIndex = 0;
 let dogsScoresReturnMode: Exclude<DogsMenuMode, null> = "briefing";
+let dogsInventoryOpen = false;
 let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
@@ -958,6 +959,18 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               </footer>
             </div>
           </div>
+          <div id="eutherdogs-inventory-popup" class="eutherdogs-inventory-popup" aria-hidden="true">
+            <div class="eutherdogs-inventory-popup-panel">
+              <header>
+                <div>
+                  <span>Inventory</span>
+                  <h3 id="eutherdogs-inventory-title">Field Kit</h3>
+                </div>
+                <button id="eutherdogs-inventory-close" type="button" aria-label="Close inventory">X</button>
+              </header>
+              <div id="eutherdogs-inventory-body" class="eutherdogs-inventory-body"></div>
+            </div>
+          </div>
           <div class="scanlines"></div>
           <div class="oxidation-ring"></div>
         </div>
@@ -1196,6 +1209,10 @@ const eutherDogsMenuKicker = document.querySelector<HTMLElement>("#eutherdogs-me
 const eutherDogsMenuTitle = document.querySelector<HTMLElement>("#eutherdogs-menu-title")!;
 const eutherDogsMenuCash = document.querySelector<HTMLElement>("#eutherdogs-menu-cash")!;
 const eutherDogsMenuBody = document.querySelector<HTMLDivElement>("#eutherdogs-menu-body")!;
+const eutherDogsInventoryPopup = document.querySelector<HTMLDivElement>("#eutherdogs-inventory-popup")!;
+const eutherDogsInventoryTitle = document.querySelector<HTMLElement>("#eutherdogs-inventory-title")!;
+const eutherDogsInventoryBody = document.querySelector<HTMLDivElement>("#eutherdogs-inventory-body")!;
+const eutherDogsInventoryClose = document.querySelector<HTMLButtonElement>("#eutherdogs-inventory-close")!;
 const eutherDogsStaffOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-staff-open")!;
 const eutherDogsStoreOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-store-open")!;
 const eutherDogsBriefingOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-briefing-open")!;
@@ -1684,6 +1701,16 @@ eutherDogsStartShift.addEventListener("click", () => {
   startDogsShift();
 });
 
+eutherDogsInventoryClose.addEventListener("click", () => {
+  hideDogsInventory();
+});
+
+eutherDogsInventoryPopup.addEventListener("pointerdown", (event) => {
+  if (event.target === eutherDogsInventoryPopup) {
+    hideDogsInventory();
+  }
+});
+
 eutherDogsMenuBody.addEventListener("click", (event) => {
   const initialButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-initial]");
   if (initialButton) {
@@ -1875,6 +1902,11 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
+  if (dogsInventoryOpen && event.key === "Escape") {
+    hideDogsInventory();
+    event.preventDefault();
+    return;
+  }
   if (isEditableEventTarget(event.target)) {
     return;
   }
@@ -1891,6 +1923,11 @@ window.addEventListener("keydown", (event) => {
     dogsMapOpen = true;
     drawDogsFrame(dogsFrame);
     event.preventDefault();
+    return;
+  }
+  if (dogsMode && event.key.toLowerCase() === "q") {
+    event.preventDefault();
+    toggleDogsInventory();
     return;
   }
   const dogsWeaponSlot = dogsWeaponSlotForKey(event);
@@ -5747,6 +5784,95 @@ function dogsStorePreviewMarkup(item: DogsStoreItem | null): string {
   `;
 }
 
+function dogsInventoryMarkup(hero: DogsCoreActor | null, storeItems: DogsStoreItem[], cash: number): string {
+  const ownedWeapons = storeItems.filter((item) => item.weapon && item.owned);
+  const protocolOwned = (dogsFrame?.summary.inspectionProtocol ?? 0) > 0;
+  const heroAsset = hero ? dogsActorAsset(hero) : null;
+  const activeWeapon = hero?.activeWeapon ?? "scanner_blaster";
+  const activeWeaponItem = storeItems.find((item) => item.weapon === activeWeapon);
+  const armorOn = (hero?.armor ?? 0) > 100;
+  const artifactSlots = [
+    ...(protocolOwned
+      ? [
+          dogsInventoryArtifactSlot(
+            "Inspection Protocol",
+            "Level 2 audit artifact",
+            dogsAsset("items", "routine_directive") ?? dogsAsset("items", "folder"),
+          ),
+        ]
+      : []),
+    ...Array.from({ length: protocolOwned ? 17 : 18 }, () => dogsInventoryEmptySlot()),
+  ].join("");
+  const weaponSlots = [
+    ...ownedWeapons.map((item) => dogsInventoryWeaponSlot(item, item.weapon === activeWeapon)),
+    ...Array.from({ length: Math.max(0, 12 - ownedWeapons.length) }, () => dogsInventoryEmptySlot()),
+  ].join("");
+  return `
+    <div class="eutherdogs-inventory-layout">
+      <section class="eutherdogs-paperdoll" aria-label="character equipment">
+        <div class="eutherdogs-equipment-slot is-weapon">
+          <span>Weapon</span>
+          ${dogsWeaponIconMarkup(activeWeapon, activeWeapon)}
+          <strong>${activeWeaponItem?.label ?? activeWeapon.replaceAll("_", " ")}</strong>
+          <small>Ammo ${dogsAmmoLabel(hero?.ammo)}</small>
+        </div>
+        <div class="eutherdogs-hero-stand">
+          ${heroAsset ? `<img src="${heroAsset}" alt="${dogsCharacterName(selectedDogsCharacters[playerPort])}" />` : ""}
+          <strong>${dogsCharacterName(selectedDogsCharacters[playerPort])}</strong>
+          <span>${armorOn ? "Armored coat engaged" : "Standard coat"}</span>
+        </div>
+        <div class="eutherdogs-equipment-slot is-armor">
+          <span>Coat</span>
+          ${dogsInventoryItemIcon(dogsAsset("items", "lab_coat_armor"), "coat")}
+          <strong>${armorOn ? "Armored coat" : "White coat"}</strong>
+          <small>Integrity ${hero?.armor ?? 0}</small>
+        </div>
+      </section>
+      <section class="eutherdogs-inventory-ledger" aria-label="inventory slots">
+        <div class="eutherdogs-inventory-stats">
+          <div><span>Cash</span><strong>$${cash}</strong></div>
+          <div><span>RX</span><strong>${dogsFrame?.summary.objectsCollected ?? 0}</strong></div>
+          <div><span>Score</span><strong>${dogsFrame?.summary.score ?? 0}</strong></div>
+        </div>
+        <p class="section-label">Weapons</p>
+        <div class="eutherdogs-inventory-grid is-weapons">${weaponSlots}</div>
+        <p class="section-label">Artifacts</p>
+        <div class="eutherdogs-inventory-grid is-artifacts">${artifactSlots}</div>
+      </section>
+    </div>
+  `;
+}
+
+function dogsInventoryWeaponSlot(item: DogsStoreItem, active: boolean): string {
+  return `
+    <div class="eutherdogs-inventory-slot ${active ? "is-active" : ""}">
+      ${dogsStoreItemIconMarkup(item)}
+      <strong>${item.label}</strong>
+      <small>${active ? "Equipped" : "Stored"} | Ammo ${dogsAmmoLabel(item.currentAmmo)}</small>
+    </div>
+  `;
+}
+
+function dogsInventoryArtifactSlot(label: string, detail: string, icon: string | null): string {
+  return `
+    <div class="eutherdogs-inventory-slot is-artifact">
+      ${dogsInventoryItemIcon(icon, label)}
+      <strong>${label}</strong>
+      <small>${detail}</small>
+    </div>
+  `;
+}
+
+function dogsInventoryEmptySlot(): string {
+  return `<div class="eutherdogs-inventory-slot is-empty" aria-hidden="true"></div>`;
+}
+
+function dogsInventoryItemIcon(url: string | null, label: string): string {
+  return url
+    ? `<img class="eutherdogs-weapon-icon" src="${url}" alt="${label}" />`
+    : `<span class="eutherdogs-weapon-icon is-empty" aria-hidden="true"></span>`;
+}
+
 function dogsDefaultHighScores(): DogsHighScoreEntry[] {
   return [
     {
@@ -6091,6 +6217,7 @@ function dogsHighScoreSavedMarkup(): string {
 }
 
 function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
+  hideDogsInventory();
   dogsMenuMode = mode;
   ui.playing = false;
   playToggle.textContent = "Play";
@@ -6101,6 +6228,40 @@ function showDogsMenu(mode: Exclude<DogsMenuMode, null>): void {
   eutherDogsMenu.classList.add("is-open");
 }
 
+function toggleDogsInventory(): void {
+  if (!dogsFrame) return;
+  if (dogsInventoryOpen) {
+    hideDogsInventory();
+    return;
+  }
+  if (dogsMenuMode) {
+    hideDogsMenu();
+  }
+  showDogsInventory();
+}
+
+function showDogsInventory(): void {
+  if (!dogsFrame) return;
+  dogsInventoryOpen = true;
+  renderDogsInventoryPopup();
+  eutherDogsInventoryPopup.setAttribute("aria-hidden", "false");
+  eutherDogsInventoryPopup.classList.add("is-open");
+}
+
+function hideDogsInventory(): void {
+  dogsInventoryOpen = false;
+  eutherDogsInventoryPopup.setAttribute("aria-hidden", "true");
+  eutherDogsInventoryPopup.classList.remove("is-open");
+}
+
+function renderDogsInventoryPopup(): void {
+  const cash = dogsCurrentCash();
+  const hero = dogsCurrentHero();
+  const storeItems = dogsVisibleStoreItems(dogsFrame, cash, hero);
+  eutherDogsInventoryTitle.textContent = `${dogsCharacterName(selectedDogsCharacters[playerPort])} Field Kit`;
+  eutherDogsInventoryBody.innerHTML = dogsInventoryMarkup(hero, storeItems, cash);
+}
+
 function hideDogsMenu(): void {
   dogsMenuMode = null;
   eutherDogsMenu.setAttribute("aria-hidden", "true");
@@ -6109,6 +6270,7 @@ function hideDogsMenu(): void {
 
 function startDogsShift(): void {
   hideDogsMenu();
+  hideDogsInventory();
   ui.playing = true;
   ui.status = "DOGS RUNNING";
   playToggle.textContent = "Pause";
@@ -6477,6 +6639,7 @@ async function enterDogsMode(): Promise<void> {
 function leaveDogsMode(): void {
   dogsMode = false;
   updateStartupModePreference("megadrive");
+  hideDogsInventory();
   stopDogsSnapshotStream();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
@@ -6975,6 +7138,9 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     `;
   }
   updateDogsConsole(frame);
+  if (dogsInventoryOpen) {
+    renderDogsInventoryPopup();
+  }
 }
 
 function readStoredPlayerPort(): PlayerPort {
