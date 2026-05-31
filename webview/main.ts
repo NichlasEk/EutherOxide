@@ -108,6 +108,19 @@ type InputState = {
 };
 
 type InputName = keyof InputState;
+type DogsBindingName =
+  | InputName
+  | "inventory"
+  | "map"
+  | "weapon1"
+  | "weapon2"
+  | "weapon3"
+  | "weapon4"
+  | "weapon5"
+  | "answerYes"
+  | "answerNo"
+  | "answerOther";
+type BindingScope = "global" | "dogs";
 type PlayerPort = 1 | 2;
 type LobbyRole = "player" | "spectator";
 type DogsAssetMode = "classic" | "2x";
@@ -504,6 +517,7 @@ const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
 const bindingsStorageKey = "eutheroxide-input-bindings";
+const dogsBindingsStorageKey = "eutheroxide-eutherdogs-input-bindings";
 const shaderStorageKey = "eutheroxide-video-shader";
 const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 const mobileModeStorageKey = "eutheroxide-mobile-mode";
@@ -552,6 +566,39 @@ const inputLabels: Record<InputName, string> = {
   c: "Button C",
   start: "Start",
 };
+const dogsBindingNames: DogsBindingName[] = [
+  "up",
+  "down",
+  "left",
+  "right",
+  "a",
+  "b",
+  "c",
+  "start",
+  "inventory",
+  "map",
+  "weapon1",
+  "weapon2",
+  "weapon3",
+  "weapon4",
+  "weapon5",
+  "answerYes",
+  "answerNo",
+  "answerOther",
+];
+const dogsBindingLabels: Record<DogsBindingName, string> = {
+  ...inputLabels,
+  inventory: "Inventory",
+  map: "Map Hold",
+  weapon1: "Weapon Slot 1",
+  weapon2: "Weapon Slot 2",
+  weapon3: "Weapon Slot 3",
+  weapon4: "Weapon Slot 4",
+  weapon5: "Weapon Slot 5",
+  answerYes: "Inspection Yes",
+  answerNo: "Inspection No",
+  answerOther: "Inspection Other",
+};
 const defaultBindings: Record<InputName, ControlBinding> = {
   up: { key: "ArrowUp", pad: { kind: "button", code: "DPadUp" } },
   down: { key: "ArrowDown", pad: { kind: "button", code: "DPadDown" } },
@@ -562,7 +609,21 @@ const defaultBindings: Record<InputName, ControlBinding> = {
   c: { key: "c", pad: { kind: "button", code: "RightTrigger" } },
   start: { key: "Enter", pad: { kind: "button", code: "Start" } },
 };
+const defaultDogsBindings: Record<DogsBindingName, ControlBinding> = {
+  ...defaultBindings,
+  inventory: { key: "q", pad: { kind: "button", code: "Select" } },
+  map: { key: "Shift", pad: { kind: "button", code: "LeftTrigger" } },
+  weapon1: { key: "1", pad: { kind: "button", code: "North" } },
+  weapon2: { key: "2", pad: { kind: "button", code: "LeftTrigger2" } },
+  weapon3: { key: "3", pad: { kind: "button", code: "RightTrigger2" } },
+  weapon4: { key: "4", pad: { kind: "button", code: "LeftThumb" } },
+  weapon5: { key: "5", pad: { kind: "button", code: "RightThumb" } },
+  answerYes: { key: "y", pad: { kind: "button", code: "South" } },
+  answerNo: { key: "n", pad: { kind: "button", code: "East" } },
+  answerOther: { key: "o", pad: { kind: "button", code: "West" } },
+};
 let controlBindings = readStoredBindings();
+let dogsControlBindings = readStoredDogsBindings();
 const shaderParamNames: ShaderParamName[] = [
   "scanlines",
   "phosphor_glow",
@@ -681,9 +742,22 @@ const activeAudioSources = new Set<AudioScheduledSourceNode>();
 let nextFrameDue = performance.now();
 let nativeSurfaceRectTimer: number | null = null;
 let controlsOpen = false;
-let captureTarget: InputName | null = null;
+let controlsScope: BindingScope = "global";
+let captureTarget: InputName | DogsBindingName | null = null;
 let captureMode: "key" | "pad" | null = null;
 let gamepadPollTimer: number | null = null;
+const dogsGamepadActionState: Record<Exclude<DogsBindingName, InputName>, boolean> = {
+  inventory: false,
+  map: false,
+  weapon1: false,
+  weapon2: false,
+  weapon3: false,
+  weapon4: false,
+  weapon5: false,
+  answerYes: false,
+  answerNo: false,
+  answerOther: false,
+};
 let shaderSaveTimer: number | null = null;
 let shaderConfigLoadAttempted = false;
 let mobileMode = readStoredMobileMode();
@@ -955,6 +1029,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <button id="eutherdogs-store-open" type="button">RX Store</button>
                 <button id="eutherdogs-briefing-open" type="button">Briefing</button>
                 <button id="eutherdogs-scores-open" type="button">Scores</button>
+                <button id="eutherdogs-controls-open" type="button">Controls</button>
                 <button id="eutherdogs-start-shift" class="primary-action" type="button">Start shift</button>
               </footer>
             </div>
@@ -1217,6 +1292,7 @@ const eutherDogsStaffOpen = document.querySelector<HTMLButtonElement>("#eutherdo
 const eutherDogsStoreOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-store-open")!;
 const eutherDogsBriefingOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-briefing-open")!;
 const eutherDogsScoresOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-scores-open")!;
+const eutherDogsControlsOpen = document.querySelector<HTMLButtonElement>("#eutherdogs-controls-open")!;
 const eutherDogsStartShift = document.querySelector<HTMLButtonElement>("#eutherdogs-start-shift")!;
 const mobileToggle = document.querySelector<HTMLButtonElement>("#mobile-toggle")!;
 const mobilePlay = document.querySelector<HTMLButtonElement>('[data-mobile-command="play"]')!;
@@ -1224,6 +1300,9 @@ const releaseBuild = document.querySelector<HTMLButtonElement>("#release-build")
 const buildLamp = document.querySelector<HTMLSpanElement>("#build-lamp")!;
 const controlsOpenButton = document.querySelector<HTMLButtonElement>("#controls-open")!;
 const controlsModal = document.querySelector<HTMLDivElement>("#controls-modal")!;
+const controlsModalHome = controlsModal.parentElement!;
+const controlsEyebrow = controlsModal.querySelector<HTMLElement>(".eyebrow")!;
+const controlsTitle = document.querySelector<HTMLElement>("#controls-title")!;
 const controlsClose = document.querySelector<HTMLButtonElement>("#controls-close")!;
 const controlsReset = document.querySelector<HTMLButtonElement>("#controls-reset")!;
 const bindingRows = document.querySelector<HTMLDivElement>("#binding-rows")!;
@@ -1711,6 +1790,25 @@ eutherDogsInventoryPopup.addEventListener("pointerdown", (event) => {
   }
 });
 
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key !== "F11") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void toggleScreenFullscreen();
+  },
+  true,
+);
+
+document.addEventListener("fullscreenchange", () => {
+  if (document.fullscreenElement !== screenGlass) {
+    screenGlass.classList.remove("is-app-fullscreen");
+  }
+});
+
 eutherDogsMenuBody.addEventListener("click", (event) => {
   const initialButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-score-initial]");
   if (initialButton) {
@@ -1855,10 +1953,16 @@ document.querySelectorAll<HTMLButtonElement>("[data-mobile-command]").forEach((b
 });
 
 controlsOpenButton.addEventListener("click", () => openControls());
+eutherDogsControlsOpen.addEventListener("click", () => openControls("dogs"));
 controlsClose.addEventListener("click", () => closeControls());
 controlsReset.addEventListener("click", () => {
-  controlBindings = cloneDefaultBindings();
-  storeBindings();
+  if (controlsScope === "dogs") {
+    dogsControlBindings = cloneDefaultDogsBindings();
+    storeDogsBindings();
+  } else {
+    controlBindings = cloneDefaultBindings();
+    storeBindings();
+  }
   captureTarget = null;
   captureMode = null;
   renderBindings();
@@ -1874,7 +1978,7 @@ bindingRows.addEventListener("click", (event) => {
   if (!button) {
     return;
   }
-  captureTarget = button.dataset.input as InputName;
+  captureTarget = button.dataset.input as InputName | DogsBindingName;
   captureMode = button.dataset.bind === "pad" ? "pad" : "key";
   renderBindings();
 });
@@ -1912,20 +2016,25 @@ window.addEventListener("keydown", (event) => {
   }
   if (captureTarget && captureMode === "key") {
     event.preventDefault();
-    controlBindings[captureTarget].key = event.key;
-    storeBindings();
+    if (controlsScope === "dogs") {
+      dogsControlBindings[captureTarget as DogsBindingName].key = event.key;
+      storeDogsBindings();
+    } else {
+      controlBindings[captureTarget as InputName].key = event.key;
+      storeBindings();
+    }
     captureTarget = null;
     captureMode = null;
     renderBindings();
     return;
   }
-  if (event.key === "Shift" && dogsMode && dogsFrame) {
+  if (dogsMode && dogsFrame && dogsActionMatchesKey("map", event.key)) {
     dogsMapOpen = true;
     drawDogsFrame(dogsFrame);
     event.preventDefault();
     return;
   }
-  if (dogsMode && event.key.toLowerCase() === "q") {
+  if (dogsMode && dogsActionMatchesKey("inventory", event.key)) {
     event.preventDefault();
     toggleDogsInventory();
     return;
@@ -1939,15 +2048,14 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (dogsMode && dogsFrame && !event.repeat) {
-    const dialogue = dogsLocalInspectionDialogue(dogsFrame);
-    const answer = event.key.toLowerCase();
-    if (dialogue && !dialogue.complete && (answer === "y" || answer === "n" || answer === "o")) {
+    const answer = dogsInspectionAnswerForKey(event.key);
+    if (answer) {
       event.preventDefault();
-      void answerDogsInspection(answer === "y" ? "yes" : answer === "n" ? "no" : "other");
+      void answerDogsInspection(answer);
       return;
     }
   }
-  const key = keyForEvent(event.key);
+  const key = dogsMode ? dogsInputKeyForEvent(event.key) : keyForEvent(event.key);
   if (!key || keyboardState[key]) {
     return;
   }
@@ -1960,13 +2068,13 @@ window.addEventListener("keyup", (event) => {
   if (isEditableEventTarget(event.target)) {
     return;
   }
-  if (event.key === "Shift" && dogsMapOpen) {
+  if (dogsMode && dogsActionMatchesKey("map", event.key) && dogsMapOpen) {
     dogsMapOpen = false;
     if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
     event.preventDefault();
     return;
   }
-  const key = keyForEvent(event.key);
+  const key = dogsMode ? dogsInputKeyForEvent(event.key) : keyForEvent(event.key);
   if (!key) {
     return;
   }
@@ -1987,18 +2095,64 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   );
 }
 
+async function toggleScreenFullscreen(): Promise<void> {
+  try {
+    if (document.fullscreenElement === screenGlass) {
+      await document.exitFullscreen();
+      screenGlass.classList.remove("is-app-fullscreen");
+      return;
+    }
+    if (screenGlass.classList.contains("is-app-fullscreen")) {
+      screenGlass.classList.remove("is-app-fullscreen");
+      return;
+    }
+    const requestFullscreen =
+      screenGlass.requestFullscreen?.bind(screenGlass) ??
+      (screenGlass as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void }).webkitRequestFullscreen?.bind(screenGlass);
+    if (requestFullscreen) {
+      await requestFullscreen();
+      if (document.fullscreenElement === screenGlass) {
+        return;
+      }
+    }
+  } catch (err) {
+    pushTrace(`Fullscreen missed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  screenGlass.classList.add("is-app-fullscreen");
+}
+
 function dogsWeaponSlotForKey(event: KeyboardEvent): number | null {
   if (!dogsMode || !dogsFrame || event.ctrlKey || event.altKey || event.metaKey) {
     return null;
   }
-  if (/^Digit[1-9]$/.test(event.code)) {
-    return Number(event.code.slice(5)) - 1;
+  for (let slot = 0; slot < 5; slot += 1) {
+    if (dogsActionMatchesKey(`weapon${slot + 1}` as DogsBindingName, event.key)) {
+      return slot;
+    }
   }
-  if (/^Numpad[1-9]$/.test(event.code)) {
-    return Number(event.code.slice(6)) - 1;
+  return null;
+}
+
+function dogsActionMatchesKey(action: DogsBindingName, key: string): boolean {
+  return dogsControlBindings[action]?.key === key;
+}
+
+function dogsInspectionAnswerForKey(key: string): "yes" | "no" | "other" | null {
+  if (!dogsFrame) {
+    return null;
   }
-  if (event.code === "Digit0" || event.code === "Numpad0") {
-    return 9;
+  const dialogue = dogsLocalInspectionDialogue(dogsFrame);
+  if (!dialogue || dialogue.complete) {
+    return null;
+  }
+  if (dogsActionMatchesKey("answerYes", key)) {
+    return "yes";
+  }
+  if (dogsActionMatchesKey("answerNo", key)) {
+    return "no";
+  }
+  if (dogsActionMatchesKey("answerOther", key)) {
+    return "other";
   }
   return null;
 }
@@ -2018,6 +2172,10 @@ function emptyInputState(): InputState {
 
 function keyForEvent(key: string): InputName | null {
   return inputNames.find((name) => controlBindings[name].key === key) ?? null;
+}
+
+function dogsInputKeyForEvent(key: string): InputName | null {
+  return inputNames.find((name) => dogsControlBindings[name].key === key) ?? null;
 }
 
 function recomputeInputState(): void {
@@ -2184,6 +2342,18 @@ function cloneDefaultBindings(): Record<InputName, ControlBinding> {
   ) as Record<InputName, ControlBinding>;
 }
 
+function cloneDefaultDogsBindings(): Record<DogsBindingName, ControlBinding> {
+  return Object.fromEntries(
+    dogsBindingNames.map((name) => [
+      name,
+      {
+        key: defaultDogsBindings[name].key,
+        pad: { ...defaultDogsBindings[name].pad },
+      },
+    ]),
+  ) as Record<DogsBindingName, ControlBinding>;
+}
+
 function readStoredBindings(): Record<InputName, ControlBinding> {
   const defaults = cloneDefaultBindings();
   try {
@@ -2211,11 +2381,53 @@ function readStoredBindings(): Record<InputName, ControlBinding> {
   return defaults;
 }
 
+function readStoredDogsBindings(): Record<DogsBindingName, ControlBinding> {
+  const defaults = cloneDefaultDogsBindings();
+  try {
+    const raw = window.localStorage.getItem(dogsBindingsStorageKey);
+    const parsed = raw ? (JSON.parse(raw) as Partial<Record<DogsBindingName, ControlBinding>>) : null;
+    if (!parsed) {
+      return defaults;
+    }
+    for (const name of dogsBindingNames) {
+      const binding = parsed[name];
+      if (binding?.key && binding.pad?.kind && binding.pad.code) {
+        defaults[name] = {
+          key: binding.key,
+          pad: {
+            kind: binding.pad.kind,
+            code: binding.pad.code,
+            direction: binding.pad.direction,
+          },
+        };
+      }
+    }
+  } catch {
+    return defaults;
+  }
+  return defaults;
+}
+
 function storeBindings(): void {
   window.localStorage.setItem(bindingsStorageKey, JSON.stringify(controlBindings));
 }
 
-function openControls(): void {
+function storeDogsBindings(): void {
+  window.localStorage.setItem(dogsBindingsStorageKey, JSON.stringify(dogsControlBindings));
+}
+
+function openControls(scope: "global" | "dogs" = dogsMode ? "dogs" : "global"): void {
+  controlsScope = scope;
+  controlsEyebrow.textContent = scope === "dogs" ? "EutherDogs Input Matrix" : "Input Matrix";
+  controlsTitle.textContent = scope === "dogs" ? "EutherDogs Controls" : "Controls";
+  if (scope === "dogs") {
+    hideDogsInventory();
+    screenGlass.appendChild(controlsModal);
+    controlsModal.classList.add("is-dogs");
+  } else {
+    controlsModalHome.appendChild(controlsModal);
+    controlsModal.classList.remove("is-dogs");
+  }
   controlsOpen = true;
   controlsModal.classList.add("is-open");
   controlsModal.setAttribute("aria-hidden", "false");
@@ -2233,14 +2445,15 @@ function closeControls(): void {
 }
 
 function renderBindings(): void {
-  bindingRows.innerHTML = inputNames
+  const names: Array<InputName | DogsBindingName> = controlsScope === "dogs" ? dogsBindingNames : inputNames;
+  bindingRows.innerHTML = names
     .map((name) => {
-      const binding = controlBindings[name];
+      const binding = controlsBindingForName(name);
       const isKeyCapture = captureTarget === name && captureMode === "key";
       const isPadCapture = captureTarget === name && captureMode === "pad";
       return `
         <div class="binding-row" data-binding-row="${name}">
-          <strong>${inputLabels[name]}</strong>
+          <strong>${controlsLabelForName(name)}</strong>
           <button data-bind="key" data-input="${name}" type="button">${isKeyCapture ? "Press key" : labelKey(binding.key)}</button>
           <button data-bind="pad" data-input="${name}" type="button">${isPadCapture ? "Press pad" : labelPad(binding.pad)}</button>
         </div>
@@ -2249,9 +2462,19 @@ function renderBindings(): void {
     .join("");
   captureReadout.textContent =
     captureTarget && captureMode
-      ? `Listening for ${captureMode === "key" ? "keyboard" : "pad"} input: ${inputLabels[captureTarget]}`
-      : "Ready";
+      ? `Listening for ${captureMode === "key" ? "keyboard" : "pad"} input: ${controlsLabelForName(captureTarget)}`
+      : controlsScope === "dogs"
+        ? "EutherDogs bindings"
+        : "Ready";
   renderGamepadList();
+}
+
+function controlsBindingForName(name: InputName | DogsBindingName): ControlBinding {
+  return controlsScope === "dogs" ? dogsControlBindings[name as DogsBindingName] : controlBindings[name as InputName];
+}
+
+function controlsLabelForName(name: InputName | DogsBindingName): string {
+  return controlsScope === "dogs" ? dogsBindingLabels[name as DogsBindingName] : inputLabels[name as InputName];
 }
 
 function labelKey(key: string): string {
@@ -2374,28 +2597,40 @@ function browserPadControls(pad: Gamepad): PadControl[] {
 
 function applyGamepadSnapshot(snapshot: GamepadSnapshot): void {
   const next = emptyInputState();
+  let capturedPad = false;
   for (const pad of snapshot.gamepads) {
     for (const control of pad.controls) {
       if (!control.pressed) {
         continue;
       }
       if (captureTarget && captureMode === "pad") {
-        controlBindings[captureTarget].pad = {
+        const binding = {
           kind: control.kind,
           code: control.kind === "axis" ? control.id.replace(/-(negative|positive)$/, "") : control.id,
           direction: control.direction,
-        };
-        storeBindings();
+        } as PadBinding;
+        if (controlsScope === "dogs") {
+          dogsControlBindings[captureTarget as DogsBindingName].pad = binding;
+          storeDogsBindings();
+        } else {
+          controlBindings[captureTarget as InputName].pad = binding;
+          storeBindings();
+        }
         captureTarget = null;
         captureMode = null;
+        capturedPad = true;
         renderBindings();
       }
       for (const name of inputNames) {
-        if (padMatches(control, controlBindings[name].pad)) {
+        const binding = dogsMode ? dogsControlBindings[name].pad : controlBindings[name].pad;
+        if (padMatches(control, binding)) {
           next[name] = true;
         }
       }
     }
+  }
+  if (dogsMode && !capturedPad) {
+    applyDogsGamepadActions(snapshot);
   }
   let changed = false;
   for (const name of inputNames) {
@@ -2404,6 +2639,57 @@ function applyGamepadSnapshot(snapshot: GamepadSnapshot): void {
   }
   if (changed) {
     recomputeInputState();
+  }
+}
+
+function applyDogsGamepadActions(snapshot: GamepadSnapshot): void {
+  const pressed = new Set<Exclude<DogsBindingName, InputName>>();
+  for (const pad of snapshot.gamepads) {
+    for (const control of pad.controls) {
+      if (!control.pressed) {
+        continue;
+      }
+      for (const action of Object.keys(dogsGamepadActionState) as Array<Exclude<DogsBindingName, InputName>>) {
+        if (padMatches(control, dogsControlBindings[action].pad)) {
+          pressed.add(action);
+        }
+      }
+    }
+  }
+
+  const becamePressed = (action: Exclude<DogsBindingName, InputName>) => {
+    const isPressed = pressed.has(action);
+    const wasPressed = dogsGamepadActionState[action];
+    dogsGamepadActionState[action] = isPressed;
+    return isPressed && !wasPressed;
+  };
+
+  if (becamePressed("inventory")) {
+    toggleDogsInventory();
+  }
+  const mapPressed = pressed.has("map");
+  dogsGamepadActionState.map = mapPressed;
+  if (dogsMapOpen !== mapPressed) {
+    dogsMapOpen = mapPressed;
+    if (dogsFrame) drawDogsFrame(dogsFrame);
+  }
+  for (let slot = 0; slot < 5; slot += 1) {
+    if (becamePressed(`weapon${slot + 1}` as Exclude<DogsBindingName, InputName>)) {
+      void syncDogsWeaponSlot(slot);
+    }
+  }
+  const answer = becamePressed("answerYes")
+    ? "yes"
+    : becamePressed("answerNo")
+      ? "no"
+      : becamePressed("answerOther")
+        ? "other"
+        : null;
+  if (answer && dogsFrame) {
+    const dialogue = dogsLocalInspectionDialogue(dogsFrame);
+    if (dialogue && !dialogue.complete) {
+      void answerDogsInspection(answer);
+    }
   }
 }
 
@@ -6271,6 +6557,9 @@ function hideDogsMenu(): void {
 function startDogsShift(): void {
   hideDogsMenu();
   hideDogsInventory();
+  if (controlsOpen) {
+    closeControls();
+  }
   ui.playing = true;
   ui.status = "DOGS RUNNING";
   playToggle.textContent = "Pause";
@@ -6640,6 +6929,9 @@ function leaveDogsMode(): void {
   dogsMode = false;
   updateStartupModePreference("megadrive");
   hideDogsInventory();
+  if (controlsOpen) {
+    closeControls();
+  }
   stopDogsSnapshotStream();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
