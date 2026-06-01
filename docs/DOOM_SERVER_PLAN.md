@@ -64,12 +64,13 @@ Add Doom as a sibling mode to the current hosted emulator sessions:
 
 ## Milestones
 
-1. Add a tiny in-memory Doom match server with two player slots and tic relay.
-2. Add a debug HTML client that sends fake tic commands and verifies both clients
+1. Add a tiny in-memory Doom match server with two player slots and tic relay. Done.
+2. Add a debug TCP server that lets two terminal clients send fake tic commands. Done.
+3. Add a debug HTML client that sends fake tic commands and verifies both clients
    receive identical ordered tic frames.
-3. Add match timeout and disconnect cleanup.
-4. Connect a minimal Doom-compatible client loop using Freedoom data.
-5. Add replay logging so a desync can be reproduced from recorded tic commands.
+4. Add stronger disconnect cleanup and match reset controls.
+5. Connect a minimal Doom-compatible client loop using Freedoom data.
+6. Add replay logging so a desync can be reproduced from recorded tic commands.
 
 ## Non-Goals For MVP
 
