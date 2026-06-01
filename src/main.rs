@@ -3265,7 +3265,8 @@ fn bridge_stream_video_mp4(stream: &mut TcpStream, state: &BridgeState) -> io::R
             return send_error(stream, 409, "no ROM loaded");
         }
         let (width, height) = emulator.frame_size();
-        (width, height, emulator.frame_rate().min(30.0))
+        let (_, output_height) = bridge_video_output_size(width, height);
+        (width, output_height, emulator.frame_rate().min(30.0))
     };
 
     let mut child = Command::new("ffmpeg")
@@ -3347,7 +3348,7 @@ fn bridge_stream_video_mp4(stream: &mut TcpStream, state: &BridgeState) -> io::R
             if emulator.bus.rom.is_empty() {
                 break Ok(());
             }
-            push_frame_rgb24(&mut rgb, &emulator);
+            push_frame_rgb24_visible(&mut rgb, &emulator);
         }
         if let Err(err) = stdin.write_all(&rgb) {
             if err.kind() == io::ErrorKind::BrokenPipe {
@@ -3374,7 +3375,8 @@ fn bridge_webrtc_offer(
     let offer: webrtc::peer_connection::sdp::session_description::RTCSessionDescription =
         serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
 
-    let (peer, answer, track, stop) = state.webrtc_runtime.block_on(async move {
+    let (peer, answer, video_track, audio_track, stop) =
+        state.webrtc_runtime.block_on(async move {
         let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
         media_engine
             .register_default_codecs()
@@ -3424,6 +3426,29 @@ fn bridge_webrtc_offer(
         tokio::spawn(async move {
             let mut rtcp_buf = vec![0u8; 1500];
             while video_sender.read(&mut rtcp_buf).await.is_ok() {}
+        });
+        let audio_track = Arc::new(
+            webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample::new(
+                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                    mime_type: webrtc::api::media_engine::MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: 48_000,
+                    channels: 2,
+                    ..Default::default()
+                },
+                "megadrive-audio".to_string(),
+                "eutheroxide".to_string(),
+            ),
+        );
+        let audio_sender = peer
+            .add_track(
+                Arc::clone(&audio_track)
+                    as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>,
+            )
+            .await
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        tokio::spawn(async move {
+            let mut rtcp_buf = vec![0u8; 1500];
+            while audio_sender.read(&mut rtcp_buf).await.is_ok() {}
         });
 
         peer.on_data_channel(Box::new(
@@ -3482,9 +3507,10 @@ fn bridge_webrtc_offer(
             .local_description()
             .await
             .ok_or_else(|| io::Error::other("missing WebRTC answer"))?;
-        Ok::<_, io::Error>((peer, answer, video_track, video_stop))
+        Ok::<_, io::Error>((peer, answer, video_track, audio_track, video_stop))
     })?;
-    spawn_bridge_webrtc_h264(state.clone(), track, Arc::clone(&stop));
+    spawn_bridge_webrtc_h264(state.clone(), video_track, Arc::clone(&stop));
+    spawn_bridge_webrtc_opus(state.clone(), audio_track, Arc::clone(&stop));
 
     let mut peers = state
         .webrtc_peers
@@ -3518,6 +3544,230 @@ fn spawn_bridge_webrtc_h264(
     });
 }
 
+fn spawn_bridge_webrtc_opus(
+    state: BridgeState,
+    track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
+    stop: Arc<AtomicBool>,
+) {
+    let runtime = Arc::clone(&state.webrtc_runtime);
+    thread::spawn(move || {
+        if let Err(err) = bridge_webrtc_opus_loop(state, track, runtime, stop) {
+            eprintln!("webrtc opus stream ended: {err}");
+        }
+    });
+}
+
+fn bridge_webrtc_opus_loop(
+    state: BridgeState,
+    track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    stop: Arc<AtomicBool>,
+) -> io::Result<()> {
+    add_bridge_subscriber(&state)?;
+    if let Err(err) = ensure_bridge_runner(&state) {
+        remove_bridge_subscriber(&state)?;
+        return Err(err);
+    }
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "s16le",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-i",
+            "pipe:0",
+            "-vn",
+            "-c:a",
+            "libopus",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-application",
+            "lowdelay",
+            "-frame_duration",
+            "20",
+            "-vbr",
+            "off",
+            "-b:a",
+            "96k",
+            "-f",
+            "opus",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| io::Error::other(format!("ffmpeg opus unavailable: {err}")))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg opus stdin unavailable"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg opus stdout unavailable"))?;
+
+    let reader_stop = Arc::clone(&stop);
+    let reader = thread::spawn(move || -> io::Result<()> {
+        let sample_duration = Duration::from_millis(20);
+        let mut read_buf = [0u8; 8 * 1024];
+        let mut ogg_buf = Vec::new();
+        let mut opus_packet = Vec::new();
+        loop {
+            if reader_stop.load(Ordering::SeqCst) {
+                break Ok(());
+            }
+            let read = match stdout.read(&mut read_buf) {
+                Ok(0) => break Ok(()),
+                Ok(read) => read,
+                Err(err) => break Err(err),
+            };
+            ogg_buf.extend_from_slice(&read_buf[..read]);
+            for packet in drain_ogg_opus_packets(&mut ogg_buf, &mut opus_packet)? {
+                if packet.starts_with(b"OpusHead") || packet.starts_with(b"OpusTags") {
+                    continue;
+                }
+                let sample = media::Sample {
+                    data: bytes::Bytes::from(packet),
+                    duration: sample_duration,
+                    ..Default::default()
+                };
+                if runtime.block_on(track.write_sample(&sample)).is_err() {
+                    reader_stop.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        }
+    });
+
+    let result = bridge_webrtc_pcm_writer(&state, &mut stdin, Arc::clone(&stop));
+    stop.store(true, Ordering::SeqCst);
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let reader_result = match reader.join() {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::other("opus reader panicked")),
+    };
+    remove_bridge_subscriber(&state)?;
+    result.and(reader_result)
+}
+
+fn bridge_webrtc_pcm_writer(
+    state: &BridgeState,
+    stdin: &mut impl Write,
+    stop: Arc<AtomicBool>,
+) -> io::Result<()> {
+    let (packet_lock, condvar) = &*state.latest_packet;
+    let mut last_frame = 0u32;
+    loop {
+        if stop.load(Ordering::SeqCst) || state.shutdown.load(Ordering::SeqCst) {
+            break Ok(());
+        }
+        let mut packet = packet_lock
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        while packet
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.frame == last_frame)
+        {
+            if stop.load(Ordering::SeqCst) || state.shutdown.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let wait = condvar
+                .wait_timeout(packet, Duration::from_secs(2))
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            packet = wait.0;
+        }
+        let Some(snapshot) = packet.as_ref() else {
+            continue;
+        };
+        last_frame = snapshot.frame;
+        let stopped = snapshot.stopped;
+        let pcm = bridge_pcm_from_frame_packet(&snapshot.bytes)?.map(|audio| audio.pcm);
+        drop(packet);
+        if let Some(pcm) = pcm {
+            stdin.write_all(&pcm)?;
+        }
+        if stopped {
+            break Ok(());
+        }
+    }
+}
+
+struct BridgePcmPacket {
+    pcm: Vec<u8>,
+}
+
+fn bridge_pcm_from_frame_packet(packet: &[u8]) -> io::Result<Option<BridgePcmPacket>> {
+    if packet.len() < 52 || &packet[..4] != b"EOX4" {
+        return Ok(None);
+    }
+    let video_len = u32::from_le_bytes(packet[40..44].try_into().unwrap()) as usize;
+    let pcm_len = u32::from_le_bytes(packet[44..48].try_into().unwrap()) as usize;
+    let pcm_offset = 52;
+    let video_offset = pcm_offset + pcm_len;
+    if packet.len() != video_offset + video_len {
+        return Err(invalid_request("bad bridge frame/audio packet"));
+    }
+    Ok(Some(BridgePcmPacket {
+        pcm: packet[pcm_offset..video_offset].to_vec(),
+    }))
+}
+
+fn drain_ogg_opus_packets(
+    buffer: &mut Vec<u8>,
+    current: &mut Vec<u8>,
+) -> io::Result<Vec<Vec<u8>>> {
+    let mut emitted = Vec::new();
+    let mut offset = 0usize;
+    while buffer.len().saturating_sub(offset) >= 27 {
+        if &buffer[offset..offset + 4] != b"OggS" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad ogg opus page",
+            ));
+        }
+        let segments = buffer[offset + 26] as usize;
+        let table_start = offset + 27;
+        let body_start = table_start + segments;
+        if buffer.len() < body_start {
+            break;
+        }
+        let body_len: usize = buffer[table_start..body_start]
+            .iter()
+            .map(|&segment| segment as usize)
+            .sum();
+        let page_end = body_start + body_len;
+        if buffer.len() < page_end {
+            break;
+        }
+        let mut body_offset = body_start;
+        for &segment in &buffer[table_start..body_start] {
+            let next_offset = body_offset + segment as usize;
+            current.extend_from_slice(&buffer[body_offset..next_offset]);
+            body_offset = next_offset;
+            if segment < 255 {
+                emitted.push(std::mem::take(current));
+            }
+        }
+        offset = page_end;
+    }
+    if offset > 0 {
+        buffer.drain(..offset);
+    }
+    Ok(emitted)
+}
+
 fn bridge_webrtc_h264_loop(
     state: BridgeState,
     track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
@@ -3529,7 +3779,8 @@ fn bridge_webrtc_h264_loop(
         if emulator.bus.rom.is_empty() {
             return Ok(());
         }
-        emulator.frame_size()
+        let (width, height) = emulator.frame_size();
+        bridge_video_output_size(width, height)
     };
     add_bridge_subscriber(&state)?;
     if let Err(err) = ensure_bridge_runner(&state) {
@@ -3606,7 +3857,7 @@ fn bridge_webrtc_h264_loop(
                 if emulator.bus.rom.is_empty() {
                     break;
                 }
-                push_frame_rgb24(&mut rgb, &emulator);
+                push_frame_rgb24_visible(&mut rgb, &emulator);
             }
             if stdin.write_all(&rgb).is_err() {
                 break;
@@ -3943,13 +4194,19 @@ fn push_frame_rgb565(bytes: &mut Vec<u8>, emulator: &Emulator) {
     }
 }
 
-fn push_frame_rgb24(bytes: &mut Vec<u8>, emulator: &Emulator) {
+fn push_frame_rgb24_visible(bytes: &mut Vec<u8>, emulator: &Emulator) {
     let (width, height) = emulator.frame_size();
-    for &pixel in emulator.framebuffer().iter().take(width * height) {
+    let (_, output_height) = bridge_video_output_size(width, height);
+    for &pixel in emulator.framebuffer().iter().take(width * output_height) {
         bytes.push(((pixel >> 16) & 0xff) as u8);
         bytes.push(((pixel >> 8) & 0xff) as u8);
         bytes.push((pixel & 0xff) as u8);
     }
+}
+
+fn bridge_video_output_size(width: usize, height: usize) -> (usize, usize) {
+    let output_height = if height > 240 { height / 2 } else { height };
+    (width, output_height)
 }
 
 fn bridge_frame_without_run(emulator: &Emulator) -> BridgeFrame {

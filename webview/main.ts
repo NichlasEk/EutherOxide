@@ -725,6 +725,7 @@ let bridgeWebRtcChannel: RTCDataChannel | null = null;
 let bridgeWebRtcGeneration = 0;
 let bridgeWebRtcActive = false;
 let bridgeWebRtcVideoActive = false;
+let bridgeWebRtcAudioActive = false;
 let bridgeWebRtcMode: "idle" | "connecting" | "active" | "blocked" | "failed" = "idle";
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
@@ -999,6 +1000,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <canvas id="video" width="320" height="224"></canvas>
           <canvas id="shader-video" width="320" height="224"></canvas>
           <video id="bridge-video" muted playsinline autoplay></video>
+          <audio id="bridge-audio" autoplay></audio>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
           <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
           <div id="eutherdogs-console" class="eutherdogs-console" aria-hidden="true">
@@ -1227,6 +1229,7 @@ videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
 videoContext = videoCanvas.getContext("2d", { alpha: false })!;
 shaderCanvas = document.querySelector<HTMLCanvasElement>("#shader-video")!;
 const bridgeVideo = document.querySelector<HTMLVideoElement>("#bridge-video")!;
+const bridgeRtcAudio = document.querySelector<HTMLAudioElement>("#bridge-audio")!;
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 
@@ -4450,6 +4453,27 @@ function stopBridgeStream(): void {
   resetScheduledAudio();
 }
 
+function stopBridgeFrameAudioStream(): void {
+  bridgeStreamGeneration += 1;
+  bridgeStreamAbort?.abort();
+  bridgeStreamAbort = null;
+  bridgeStreamActive = false;
+  resetScheduledAudio();
+}
+
+function bridgeWebRtcMediaActive(): boolean {
+  return bridgeWebRtcVideoActive && bridgeWebRtcAudioActive;
+}
+
+function resumeBridgeRtcAudio(): void {
+  if (!bridgeRtcAudio.srcObject) {
+    return;
+  }
+  bridgeRtcAudio.play().catch(() => {
+    pushTrace("WebRTC audio waiting");
+  });
+}
+
 async function startBridgeWebRtcProbe(): Promise<boolean> {
   if (isTauri) {
     return false;
@@ -4475,34 +4499,59 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
   });
   bridgeWebRtcPeer = peer;
   peer.addTransceiver("video", { direction: "recvonly" });
+  peer.addTransceiver("audio", { direction: "recvonly" });
   peer.ontrack = (event) => {
-    if (generation !== bridgeWebRtcGeneration || event.track.kind !== "video") {
+    if (generation !== bridgeWebRtcGeneration) {
       return;
     }
-    stopBridgeVideoStream();
-    const stream = event.streams[0] ?? new MediaStream([event.track]);
-    bridgeWebRtcVideoActive = true;
-    bridgeVideo.srcObject = stream;
-    screenGlass.classList.add("has-bridge-video");
-    bridgeVideo.play().catch(() => {
-      bridgeWebRtcVideoActive = false;
-      screenGlass.classList.remove("has-bridge-video");
-    });
-    pushTrace("WebRTC video active");
-    if (ui.playing && ui.runtime === "bridge") {
-      void ensureAudio();
-      void bridgeStreamLoop();
-    }
-    renderUi();
-    event.track.onended = () => {
-      if (generation === bridgeWebRtcGeneration) {
+    if (event.track.kind === "video") {
+      stopBridgeVideoStream();
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      bridgeWebRtcVideoActive = true;
+      bridgeVideo.srcObject = stream;
+      screenGlass.classList.add("has-bridge-video");
+      bridgeVideo.play().catch(() => {
         bridgeWebRtcVideoActive = false;
-        bridgeVideo.srcObject = null;
         screenGlass.classList.remove("has-bridge-video");
-        pushTrace("WebRTC video ended");
-        renderUi();
+      });
+      pushTrace("WebRTC video active");
+      if (bridgeWebRtcMediaActive()) {
+        stopBridgeFrameAudioStream();
+        ui.transportMode = bridgeTransportLabel("BRIDGE WEBRTC");
       }
-    };
+      renderUi();
+      event.track.onended = () => {
+        if (generation === bridgeWebRtcGeneration) {
+          bridgeWebRtcVideoActive = false;
+          bridgeVideo.srcObject = null;
+          screenGlass.classList.remove("has-bridge-video");
+          pushTrace("WebRTC video ended");
+          renderUi();
+        }
+      };
+      return;
+    }
+    if (event.track.kind === "audio") {
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      bridgeWebRtcAudioActive = true;
+      bridgeRtcAudio.srcObject = stream;
+      resumeBridgeRtcAudio();
+      resetScheduledAudio();
+      pushTrace("WebRTC audio active");
+      if (bridgeWebRtcMediaActive()) {
+        stopBridgeFrameAudioStream();
+        ui.transportMode = bridgeTransportLabel("BRIDGE WEBRTC");
+      }
+      renderUi();
+      event.track.onended = () => {
+        if (generation === bridgeWebRtcGeneration) {
+          bridgeWebRtcAudioActive = false;
+          bridgeRtcAudio.srcObject = null;
+          pushTrace("WebRTC audio ended");
+          renderUi();
+        }
+      };
+    }
   };
   const channel = peer.createDataChannel("eutheroxide-control", {
     ordered: false,
@@ -4570,9 +4619,13 @@ function stopBridgeWebRtcProbe(): void {
   bridgeWebRtcGeneration += 1;
   bridgeWebRtcActive = false;
   bridgeWebRtcVideoActive = false;
+  bridgeWebRtcAudioActive = false;
   if (bridgeVideo.srcObject) {
     bridgeVideo.srcObject = null;
     screenGlass.classList.remove("has-bridge-video");
+  }
+  if (bridgeRtcAudio.srcObject) {
+    bridgeRtcAudio.srcObject = null;
   }
   bridgeWebRtcMode = "idle";
   bridgeWebRtcChannel?.close();
@@ -4582,6 +4635,9 @@ function stopBridgeWebRtcProbe(): void {
 }
 
 function bridgeTransportLabel(label: string): string {
+  if (bridgeWebRtcMediaActive()) {
+    return `${label} + WEBRTC A/V`;
+  }
   if (bridgeWebRtcVideoActive) {
     return `${label} + WEBRTC VIDEO`;
   }
@@ -4780,7 +4836,8 @@ function fallbackBridgeVideoStream(): void {
 }
 
 async function bridgeStreamLoop(): Promise<void> {
-  if (bridgeStreamActive) {
+  if (bridgeStreamActive || bridgeWebRtcMediaActive()) {
+    resumeBridgeRtcAudio();
     return;
   }
   stopBridgeVideoStream();
@@ -4893,7 +4950,12 @@ async function bridgeStreamLoop(): Promise<void> {
       bridgeStreamAbort = null;
       if (rebondStream && ui.playing && ui.runtime === "bridge" && !bridgeRestarting) {
         window.setTimeout(() => {
-          if (generation === bridgeStreamGeneration && ui.playing && ui.runtime === "bridge") {
+          if (
+            generation === bridgeStreamGeneration &&
+            ui.playing &&
+            ui.runtime === "bridge" &&
+            !bridgeWebRtcMediaActive()
+          ) {
             void bridgeStreamLoop();
           }
         }, 180);
