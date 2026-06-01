@@ -386,6 +386,7 @@ fn match_error_text(err: &MatchError) -> String {
         MatchError::Full => "match full".to_string(),
         MatchError::InvalidPlayer => "invalid player".to_string(),
         MatchError::PlayerNameEmpty => "player name is empty".to_string(),
+        MatchError::SlotOccupied => "player slot occupied".to_string(),
         MatchError::PlayerNotReady => "player not ready".to_string(),
         MatchError::CommandTicMismatch { expected, actual } => {
             format!("tic mismatch expected={expected} actual={actual}")

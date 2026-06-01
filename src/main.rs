@@ -697,9 +697,33 @@ struct HostState {
 struct HostInstance {
     id: String,
     name: String,
+    kind: HostInstanceKind,
     bridge: BridgeState,
+    doom: Option<Arc<Mutex<eutherdoom_server::DoomMatch>>>,
     host_owner: Option<String>,
     created_unix_ms: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostInstanceKind {
+    MegaDrive,
+    EutherDoom,
+}
+
+impl HostInstanceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MegaDrive => "megadrive",
+            Self::EutherDoom => "eutherdoom",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::MegaDrive => "MegaDrive",
+            Self::EutherDoom => "EutherDoom",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -837,7 +861,9 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     let instances = Arc::new(Mutex::new(vec![HostInstance {
         id: "main".to_string(),
         name: "Main Reaction Vessel".to_string(),
+        kind: HostInstanceKind::MegaDrive,
         bridge: bridge.clone(),
+        doom: None,
         host_owner: None,
         created_unix_ms: unix_ms_now(),
     }]));
@@ -914,7 +940,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
                 return send_error(stream, 403, &err.to_string());
             }
-            let instance_id = create_host_instance(state, &user)?;
+            let kind = host_instance_kind(&request.path)?;
+            let instance_id = create_host_instance(state, &user, kind)?;
             send_json(
                 stream,
                 &serde_json::json!({
@@ -933,8 +960,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
                 return send_error(stream, 403, &err.to_string());
             }
-            let bridge = host_instance_bridge(state, &host_instance_id(&request.path)?)?;
-            let role = join_lobby_instance(&bridge, &client_id, &user, &requested)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let role =
+                join_host_lobby_instance(state, &instance_id, &client_id, &user, &requested)?;
             send_json(
                 stream,
                 &serde_json::json!({
@@ -948,8 +976,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let client_id = query_string_value(&request.path, "client")?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| invalid_request("missing client id"))?;
-            let bridge = host_instance_bridge(state, &host_instance_id(&request.path)?)?;
-            release_lobby_client(&bridge, &client_id)?;
+            let instance_id = host_instance_id(&request.path)?;
+            release_host_lobby_client(state, &instance_id, &client_id)?;
             send_json(stream, &host_lobby_status(state)?)
         }
         ("POST", "/api/lobby/kick") => {
@@ -962,9 +990,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|player| *player == 1 || *player == 2)
                 .ok_or_else(|| invalid_request("player must be 1 or 2"))?;
-            let bridge = host_instance_bridge(state, &instance_id)?;
-            release_lobby_player(&bridge, player - 1)?;
-            clear_bridge_input(&bridge, player - 1)?;
+            release_host_lobby_player(state, &instance_id, player - 1)?;
             send_json(stream, &host_lobby_status(state)?)
         }
         ("POST", "/api/lobby/close") => {
@@ -975,6 +1001,47 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
             close_host_instance(state, &instance_id)?;
             send_json(stream, &host_lobby_status(state)?)
+        }
+        ("GET", "/api/doom/status") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            send_json(stream, &host_doom_status(state, &instance_id)?)
+        }
+        ("POST", "/api/doom/ready") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = query_string_value(&request.path, "client")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_request("missing client id"))?;
+            let player = bridge_player_index(&request)?;
+            set_host_doom_ready(state, &instance_id, &client_id, player)?;
+            send_json(stream, &host_doom_status(state, &instance_id)?)
+        }
+        ("POST", "/api/doom/cmd") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = query_string_value(&request.path, "client")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_request("missing client id"))?;
+            let player = bridge_player_index(&request)?;
+            let command = host_doom_command(&request)?;
+            submit_host_doom_command(state, &instance_id, &client_id, player, command)?;
+            send_json(stream, &host_doom_status(state, &instance_id)?)
+        }
+        ("POST", "/api/doom/reset") => {
+            let user = require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            reset_host_doom(state, &instance_id)?;
+            send_json(stream, &host_doom_status(state, &instance_id)?)
         }
         ("GET", "/api/chat") => {
             require_host_user(state, &request)?;
@@ -1375,14 +1442,37 @@ fn host_instance_id(path: &str) -> io::Result<String> {
         .unwrap_or_else(|| "main".to_string()))
 }
 
-fn create_host_instance(state: &HostState, user: &str) -> io::Result<String> {
+fn host_instance_kind(path: &str) -> io::Result<HostInstanceKind> {
+    match query_string_value(path, "kind")?.as_deref() {
+        None | Some("") | Some("megadrive") => Ok(HostInstanceKind::MegaDrive),
+        Some("eutherdoom") | Some("doom") => Ok(HostInstanceKind::EutherDoom),
+        Some(_) => Err(invalid_request("unknown instance kind")),
+    }
+}
+
+fn create_host_instance(
+    state: &HostState,
+    user: &str,
+    kind: HostInstanceKind,
+) -> io::Result<String> {
     let mut next = state
         .next_instance_id
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
-    let id = format!("vessel-{}", *next);
+    let prefix = match kind {
+        HostInstanceKind::MegaDrive => "vessel",
+        HostInstanceKind::EutherDoom => "doom",
+    };
+    let id = format!("{prefix}-{}", *next);
     *next += 1;
-    let name = format!("Reaction Vessel {}", id.trim_start_matches("vessel-"));
+    let ordinal = id
+        .split_once('-')
+        .map(|(_, value)| value)
+        .unwrap_or(id.as_str());
+    let name = match kind {
+        HostInstanceKind::MegaDrive => format!("Reaction Vessel {ordinal}"),
+        HostInstanceKind::EutherDoom => format!("EutherDoom Server {ordinal}"),
+    };
     let mut instances = state
         .instances
         .lock()
@@ -1390,7 +1480,13 @@ fn create_host_instance(state: &HostState, user: &str) -> io::Result<String> {
     instances.push(HostInstance {
         id: id.clone(),
         name,
+        kind,
         bridge: new_bridge_state(Emulator::new()),
+        doom: (kind == HostInstanceKind::EutherDoom).then(|| {
+            Arc::new(Mutex::new(eutherdoom_server::DoomMatch::new(
+                Duration::from_millis(250),
+            )))
+        }),
         host_owner: Some(user.to_string()),
         created_unix_ms: unix_ms_now(),
     });
@@ -1398,6 +1494,10 @@ fn create_host_instance(state: &HostState, user: &str) -> io::Result<String> {
 }
 
 fn host_instance_bridge(state: &HostState, instance_id: &str) -> io::Result<BridgeState> {
+    Ok(host_instance_snapshot(state, instance_id)?.bridge)
+}
+
+fn host_instance_snapshot(state: &HostState, instance_id: &str) -> io::Result<HostInstance> {
     let instances = state
         .instances
         .lock()
@@ -1405,7 +1505,7 @@ fn host_instance_bridge(state: &HostState, instance_id: &str) -> io::Result<Brid
     instances
         .iter()
         .find(|instance| instance.id == instance_id)
-        .map(|instance| instance.bridge.clone())
+        .cloned()
         .ok_or_else(|| invalid_request("instance not found"))
 }
 
@@ -1522,16 +1622,36 @@ fn host_lobby_status(state: &HostState) -> io::Result<serde_json::Value> {
         .map_err(|err| io::Error::other(err.to_string()))?;
     let mut payload = Vec::with_capacity(instances.len());
     for instance in instances.iter() {
-        let emulator = lock_bridge_emulator(&instance.bridge)?;
-        let status = bridge_status(&emulator);
         let slots = bridge_player_slots_json(&instance.bridge)?;
         let subscribers = bridge_subscriber_count(&instance.bridge)?;
+        let (loaded, title, frame) = match instance.kind {
+            HostInstanceKind::MegaDrive => {
+                let emulator = lock_bridge_emulator(&instance.bridge)?;
+                let status = bridge_status(&emulator);
+                (status.loaded, status.title, status.frame)
+            }
+            HostInstanceKind::EutherDoom => {
+                let doom = instance
+                    .doom
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("doom instance missing state"))?
+                    .lock()
+                    .map_err(|err| io::Error::other(err.to_string()))?;
+                (
+                    true,
+                    "Lockstep Relay".to_string(),
+                    doom.current_tic() as u64,
+                )
+            }
+        };
         payload.push(serde_json::json!({
             "id": instance.id,
             "name": instance.name,
-            "loaded": status.loaded,
-            "title": status.title,
-            "frame": status.frame,
+            "kind": instance.kind.as_str(),
+            "modeLabel": instance.kind.label(),
+            "loaded": loaded,
+            "title": title,
+            "frame": frame,
             "players": slots,
             "subscribers": subscribers,
             "spectators": subscribers.saturating_sub(2),
@@ -1630,20 +1750,137 @@ fn join_lobby_instance(
     }))
 }
 
-fn release_lobby_client(state: &BridgeState, client_id: &str) -> io::Result<()> {
+fn join_host_lobby_instance(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    user: &str,
+    requested: &str,
+) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    match instance.kind {
+        HostInstanceKind::MegaDrive => {
+            join_lobby_instance(&instance.bridge, client_id, user, requested)
+        }
+        HostInstanceKind::EutherDoom => {
+            release_expired_doom_players(&instance)?;
+            let choices: &[usize] = match requested {
+                "1" | "p1" | "P1" => &[0],
+                "2" | "p2" | "P2" => &[1],
+                _ => &[0, 1],
+            };
+            for &player_index in choices {
+                if claim_bridge_player(&instance.bridge, client_id, user, player_index).is_err() {
+                    continue;
+                }
+                let Some(player_id) = eutherdoom_server::PlayerId::from_index(player_index) else {
+                    release_bridge_player(&instance.bridge, client_id, player_index)?;
+                    continue;
+                };
+                let doom_result = instance
+                    .doom
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("doom instance missing state"))?
+                    .lock()
+                    .map_err(|err| io::Error::other(err.to_string()))?
+                    .claim(player_id, user, Instant::now());
+                match doom_result {
+                    Ok(()) => {
+                        return Ok(serde_json::json!({
+                            "kind": "player",
+                            "player": player_index + 1,
+                            "user": user,
+                        }));
+                    }
+                    Err(_) => {
+                        release_bridge_player(&instance.bridge, client_id, player_index)?;
+                    }
+                }
+            }
+            Ok(serde_json::json!({
+                "kind": "spectator",
+                "player": null,
+            }))
+        }
+    }
+}
+
+fn release_expired_doom_players(instance: &HostInstance) -> io::Result<()> {
+    let expired = {
+        let slots = instance
+            .bridge
+            .player_slots
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let now = Instant::now();
+        slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let expired = slot
+                    .as_ref()
+                    .is_none_or(|lease| now.duration_since(lease.updated) > Duration::from_secs(8));
+                expired.then_some(index)
+            })
+            .collect::<Vec<_>>()
+    };
+    let Some(doom) = &instance.doom else {
+        return Ok(());
+    };
+    let mut doom = doom
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for player_index in expired {
+        if let Some(player_id) = eutherdoom_server::PlayerId::from_index(player_index) {
+            let _ = doom.leave(player_id);
+        }
+    }
+    Ok(())
+}
+
+fn release_host_lobby_client(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+) -> io::Result<()> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    let released = release_lobby_client_with_indices(&instance.bridge, client_id)?;
+    if instance.kind == HostInstanceKind::EutherDoom {
+        let doom = instance
+            .doom
+            .as_ref()
+            .ok_or_else(|| io::Error::other("doom instance missing state"))?;
+        let mut doom = doom
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        for player_index in released {
+            if let Some(player_id) = eutherdoom_server::PlayerId::from_index(player_index) {
+                let _ = doom.leave(player_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn release_lobby_client_with_indices(
+    state: &BridgeState,
+    client_id: &str,
+) -> io::Result<Vec<usize>> {
+    let mut released = Vec::new();
     let mut slots = state
         .player_slots
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
-    for slot in slots.iter_mut() {
+    for (index, slot) in slots.iter_mut().enumerate() {
         if slot
             .as_ref()
             .is_some_and(|lease| lease.client_id == client_id)
         {
             *slot = None;
+            released.push(index);
         }
     }
-    Ok(())
+    Ok(released)
 }
 
 fn release_lobby_player(state: &BridgeState, player_index: usize) -> io::Result<()> {
@@ -1655,6 +1892,201 @@ fn release_lobby_player(state: &BridgeState, player_index: usize) -> io::Result<
         slots[player_index] = None;
     }
     Ok(())
+}
+
+fn release_host_lobby_player(
+    state: &HostState,
+    instance_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    release_lobby_player(&instance.bridge, player_index)?;
+    if instance.kind == HostInstanceKind::MegaDrive {
+        clear_bridge_input(&instance.bridge, player_index)?;
+    } else if let Some(doom) = &instance.doom {
+        if let Some(player_id) = eutherdoom_server::PlayerId::from_index(player_index) {
+            let _ = doom
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?
+                .leave(player_id);
+        }
+    }
+    Ok(())
+}
+
+fn host_doom_status(state: &HostState, instance_id: &str) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherDoom {
+        return Err(invalid_request("selected instance is not EutherDoom"));
+    }
+    let doom = instance
+        .doom
+        .as_ref()
+        .ok_or_else(|| io::Error::other("doom instance missing state"))?
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let players = doom
+        .players()
+        .map(|player| {
+            serde_json::json!({
+                "player": player.id.index() + 1,
+                "user": player.name,
+                "ready": player.ready,
+            })
+        })
+        .collect::<Vec<_>>();
+    let frames = doom
+        .completed_frames()
+        .iter()
+        .rev()
+        .take(8)
+        .rev()
+        .map(|frame| {
+            serde_json::json!({
+                "tic": frame.tic,
+                "commands": frame.commands.iter().map(doom_command_json).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "instance": instance.id,
+        "name": instance.name,
+        "currentTic": doom.current_tic(),
+        "players": players,
+        "frames": frames,
+    }))
+}
+
+fn set_host_doom_ready(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<()> {
+    let instance = host_doom_claimed_instance(state, instance_id, client_id, player_index)?;
+    let player_id = eutherdoom_server::PlayerId::from_index(player_index)
+        .ok_or_else(|| invalid_request("player must be 1 or 2"))?;
+    instance
+        .doom
+        .as_ref()
+        .ok_or_else(|| io::Error::other("doom instance missing state"))?
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .set_ready(player_id, true, Instant::now())
+        .map_err(host_doom_error)
+}
+
+fn submit_host_doom_command(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    player_index: usize,
+    command: eutherdoom_server::TicCommand,
+) -> io::Result<()> {
+    let instance = host_doom_claimed_instance(state, instance_id, client_id, player_index)?;
+    let player_id = eutherdoom_server::PlayerId::from_index(player_index)
+        .ok_or_else(|| invalid_request("player must be 1 or 2"))?;
+    instance
+        .doom
+        .as_ref()
+        .ok_or_else(|| io::Error::other("doom instance missing state"))?
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .submit_command(player_id, command, Instant::now())
+        .map(|_| ())
+        .map_err(host_doom_error)
+}
+
+fn reset_host_doom(state: &HostState, instance_id: &str) -> io::Result<()> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherDoom {
+        return Err(invalid_request("selected instance is not EutherDoom"));
+    }
+    instance
+        .doom
+        .as_ref()
+        .ok_or_else(|| io::Error::other("doom instance missing state"))?
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .reset(Instant::now());
+    Ok(())
+}
+
+fn host_doom_claimed_instance(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<HostInstance> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherDoom {
+        return Err(invalid_request("selected instance is not EutherDoom"));
+    }
+    let mut slots = instance
+        .bridge
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(slot) = slots.get_mut(player_index) else {
+        return Err(invalid_request("player must be 1 or 2"));
+    };
+    match slot.as_mut() {
+        Some(lease) if lease.client_id == client_id => {
+            lease.updated = Instant::now();
+            Ok(instance.clone())
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "claim a Doom player slot first",
+        )),
+    }
+}
+
+fn host_doom_command(request: &HttpRequest) -> io::Result<eutherdoom_server::TicCommand> {
+    Ok(eutherdoom_server::TicCommand {
+        tic: required_query_value(&request.path, "tic")?,
+        forward: required_query_value(&request.path, "forward")?,
+        strafe: required_query_value(&request.path, "strafe")?,
+        turn: required_query_value(&request.path, "turn")?,
+        buttons: required_query_value(&request.path, "buttons")?,
+        weapon: required_query_value(&request.path, "weapon")?,
+    })
+}
+
+fn required_query_value<T: std::str::FromStr>(path: &str, key: &str) -> io::Result<T> {
+    let value = query_string_value(path, key)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_request(format!("missing {key}")))?;
+    value
+        .parse()
+        .map_err(|_| invalid_request(format!("invalid {key}")))
+}
+
+fn doom_command_json(command: &eutherdoom_server::TicCommand) -> serde_json::Value {
+    serde_json::json!({
+        "tic": command.tic,
+        "forward": command.forward,
+        "strafe": command.strafe,
+        "turn": command.turn,
+        "buttons": command.buttons,
+        "weapon": command.weapon,
+    })
+}
+
+fn host_doom_error(err: eutherdoom_server::MatchError) -> io::Error {
+    invalid_request(match err {
+        eutherdoom_server::MatchError::Full => "match full".to_string(),
+        eutherdoom_server::MatchError::InvalidPlayer => "invalid player".to_string(),
+        eutherdoom_server::MatchError::PlayerNameEmpty => "player name is empty".to_string(),
+        eutherdoom_server::MatchError::SlotOccupied => "player slot occupied".to_string(),
+        eutherdoom_server::MatchError::PlayerNotReady => "player not ready".to_string(),
+        eutherdoom_server::MatchError::CommandTicMismatch { expected, actual } => {
+            format!("tic mismatch expected={expected} actual={actual}")
+        }
+        eutherdoom_server::MatchError::CommandAlreadySubmitted { player, tic } => {
+            format!("player {} already submitted tic {tic}", player.index() + 1)
+        }
+    })
 }
 
 fn clear_bridge_input(state: &BridgeState, player_index: usize) -> io::Result<()> {
@@ -2886,8 +3318,7 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
             pending_audio.extend_from_slice(&frame_audio);
             let stopped = run.hit_unsupported_opcode;
             let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
-            let should_publish =
-                stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
+            let should_publish = stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
             let packet = should_publish
                 .then(|| bridge_frame_audio_samples_bytes(&emulator, &run, 44_100, &pending_audio));
             let mut audio = Vec::with_capacity(frame_audio.len() * 2);
@@ -3768,10 +4199,7 @@ fn bridge_webrtc_pcm_writer(
     }
 }
 
-fn drain_ogg_opus_packets(
-    buffer: &mut Vec<u8>,
-    current: &mut Vec<u8>,
-) -> io::Result<Vec<Vec<u8>>> {
+fn drain_ogg_opus_packets(buffer: &mut Vec<u8>, current: &mut Vec<u8>) -> io::Result<Vec<Vec<u8>>> {
     let mut emitted = Vec::new();
     let mut offset = 0usize;
     while buffer.len().saturating_sub(offset) >= 27 {

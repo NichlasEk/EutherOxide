@@ -1011,6 +1011,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "eutherdogs-core",
+ "eutherdoom-server",
  "gilrs",
  "log",
  "pollster",
@@ -1032,6 +1033,10 @@ dependencies = [
  "serde",
  "toml",
 ]
+
+[[package]]
+name = "eutherdoom-server"
+version = "0.1.0"
 
 [[package]]
 name = "ff"

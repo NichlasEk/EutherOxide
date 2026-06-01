@@ -141,6 +141,8 @@ type LobbyPlayer = {
 type LobbyInstance = {
   id: string;
   name: string;
+  kind?: "megadrive" | "eutherdoom";
+  modeLabel?: string;
   loaded: boolean;
   title: string;
   frame: number;
@@ -166,6 +168,34 @@ type LobbyJoinResult = {
 type LobbyStartResult = {
   instance: LobbyStatus;
   id: string;
+};
+
+type DoomCommand = {
+  tic: number;
+  forward: number;
+  strafe: number;
+  turn: number;
+  buttons: number;
+  weapon: number;
+};
+
+type DoomFrame = {
+  tic: number;
+  commands: DoomCommand[];
+};
+
+type DoomPlayer = {
+  player: number;
+  user: string;
+  ready: boolean;
+};
+
+type DoomStatus = {
+  instance: string;
+  name: string;
+  currentTic: number;
+  players: DoomPlayer[];
+  frames: DoomFrame[];
 };
 
 type HostUserSummary = {
@@ -746,6 +776,7 @@ let hostPermissions: HostPermissions = {
   canManageLibrary: false,
 };
 let lobbyStatus: LobbyStatus | null = null;
+let doomStatus: DoomStatus | null = null;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
@@ -863,6 +894,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="lobby-instances" id="lobby-instances"></div>
         <div class="lobby-actions">
           <button id="instance-start" type="button">Start New</button>
+          <button id="doom-instance-start" type="button">Start Doom</button>
           <button id="instance-join" type="button">Join</button>
           <button id="claim-p1" type="button">Claim P1</button>
           <button id="claim-p2" type="button">Claim P2</button>
@@ -881,6 +913,33 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button data-dogs-asset-mode="classic" type="button">Low</button>
           <button data-dogs-asset-mode="2x" type="button">2x</button>
         </div>
+      </div>
+
+      <div class="rail-section doom-debug-panel" id="doom-debug-panel" hidden>
+        <div class="section-head">
+          <p class="section-label">EutherDoom</p>
+          <div class="section-actions">
+            <button id="doom-refresh" class="mini-action" type="button">Scan</button>
+            <button id="doom-reset" class="mini-action" type="button">Reset</button>
+          </div>
+        </div>
+        <div class="doom-card">
+          <strong id="doom-title">Lockstep Relay</strong>
+          <span id="doom-meta">No Doom server selected</span>
+        </div>
+        <div class="doom-actions">
+          <button id="doom-ready" type="button">Ready</button>
+          <button id="doom-send" type="button">Send Tic</button>
+        </div>
+        <div class="doom-command-grid">
+          <label>Tic <input id="doom-tic" type="number" value="0" min="0" step="1" /></label>
+          <label>Forward <input id="doom-forward" type="number" value="10" min="-127" max="127" step="1" /></label>
+          <label>Strafe <input id="doom-strafe" type="number" value="0" min="-127" max="127" step="1" /></label>
+          <label>Turn <input id="doom-turn" type="number" value="0" min="-32768" max="32767" step="1" /></label>
+          <label>Buttons <input id="doom-buttons" type="number" value="1" min="0" max="65535" step="1" /></label>
+          <label>Weapon <input id="doom-weapon" type="number" value="0" min="0" max="255" step="1" /></label>
+        </div>
+        <div class="doom-frame-log" id="doom-frame-log"></div>
       </div>
 
       <details id="megadrive-panel" class="rail-section megadrive-panel" ${forceMegaDriveStartup ? "open" : ""}>
@@ -1265,6 +1324,7 @@ const lobbyHost = document.querySelector<HTMLElement>("#lobby-host")!;
 const lobbyInstances = document.querySelector<HTMLDivElement>("#lobby-instances")!;
 const adminOpen = document.querySelector<HTMLButtonElement>("#admin-open")!;
 const instanceStart = document.querySelector<HTMLButtonElement>("#instance-start")!;
+const doomInstanceStart = document.querySelector<HTMLButtonElement>("#doom-instance-start")!;
 const instanceJoin = document.querySelector<HTMLButtonElement>("#instance-join")!;
 const claimP1 = document.querySelector<HTMLButtonElement>("#claim-p1")!;
 const claimP2 = document.querySelector<HTMLButtonElement>("#claim-p2")!;
@@ -1286,6 +1346,20 @@ const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const eutherDogsToggle = document.querySelector<HTMLButtonElement>("#eutherdogs-toggle")!;
+const doomDebugPanel = document.querySelector<HTMLDivElement>("#doom-debug-panel")!;
+const doomRefresh = document.querySelector<HTMLButtonElement>("#doom-refresh")!;
+const doomReset = document.querySelector<HTMLButtonElement>("#doom-reset")!;
+const doomReady = document.querySelector<HTMLButtonElement>("#doom-ready")!;
+const doomSend = document.querySelector<HTMLButtonElement>("#doom-send")!;
+const doomTitle = document.querySelector<HTMLElement>("#doom-title")!;
+const doomMeta = document.querySelector<HTMLElement>("#doom-meta")!;
+const doomTic = document.querySelector<HTMLInputElement>("#doom-tic")!;
+const doomForward = document.querySelector<HTMLInputElement>("#doom-forward")!;
+const doomStrafe = document.querySelector<HTMLInputElement>("#doom-strafe")!;
+const doomTurn = document.querySelector<HTMLInputElement>("#doom-turn")!;
+const doomButtons = document.querySelector<HTMLInputElement>("#doom-buttons")!;
+const doomWeapon = document.querySelector<HTMLInputElement>("#doom-weapon")!;
+const doomFrameLog = document.querySelector<HTMLDivElement>("#doom-frame-log")!;
 const dogsAssetModeButtons = document.querySelectorAll<HTMLButtonElement>("[data-dogs-asset-mode]");
 const stateGrid = document.querySelector<HTMLDivElement>("#state-grid")!;
 const screenGlass = document.querySelector<HTMLDivElement>("#screen-glass")!;
@@ -1388,11 +1462,19 @@ lobbyInstances.addEventListener("click", async (event) => {
   stopBridgeStream();
   await releaseLobbySlot(false, previousInstanceId);
   renderLobby();
-  await connectBridge(false);
+  if (activeLobbyInstance()?.kind === "eutherdoom") {
+    await refreshDoomStatus();
+  } else {
+    await connectBridge(false);
+  }
 });
 
 instanceStart.addEventListener("click", async () => {
-  await startLobbyInstance();
+  await startLobbyInstance("megadrive");
+});
+
+doomInstanceStart.addEventListener("click", async () => {
+  await startLobbyInstance("eutherdoom");
 });
 
 instanceJoin.addEventListener("click", async () => {
@@ -1429,6 +1511,22 @@ kickP2.addEventListener("click", async () => {
 
 closeInstance.addEventListener("click", async () => {
   await closeLobbyInstance();
+});
+
+doomRefresh.addEventListener("click", async () => {
+  await refreshDoomStatus();
+});
+
+doomReady.addEventListener("click", async () => {
+  await readyDoomPlayer();
+});
+
+doomSend.addEventListener("click", async () => {
+  await sendDoomCommand();
+});
+
+doomReset.addEventListener("click", async () => {
+  await resetDoomMatch();
 });
 
 adminOpen.addEventListener("click", async () => {
@@ -3738,16 +3836,25 @@ async function refreshAuthStatus(): Promise<void> {
   renderAdminAccess();
 }
 
-async function startLobbyInstance(): Promise<void> {
-  const result = await bridgeJson<LobbyStartResult>("/api/lobby/start", { method: "POST" }, 1200);
+async function startLobbyInstance(kind: "megadrive" | "eutherdoom" = "megadrive"): Promise<void> {
+  const result = await bridgeJson<LobbyStartResult>(
+    `/api/lobby/start?kind=${encodeURIComponent(kind)}`,
+    { method: "POST" },
+    1200,
+  );
   lobbyStatus = result.instance;
   activeLobbyInstanceId = result.id;
-  lobbyRole = "player";
-  claimedLobbyPlayer = 1;
-  setPlayerPort(1);
-  pushTrace("New host instance primed");
+  lobbyRole = "spectator";
+  claimedLobbyPlayer = null;
+  pushTrace(kind === "eutherdoom" ? "New Doom server primed" : "New host instance primed");
   renderLobby();
-  await connectBridge(false);
+  await joinLobbyInstance(1);
+  if (kind === "eutherdoom") {
+    await refreshDoomStatus();
+  }
+  if (kind === "megadrive") {
+    await connectBridge(false);
+  }
 }
 
 async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<void> {
@@ -3769,6 +3876,9 @@ async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<vo
     pushTrace("Joined as spectator");
   }
   renderLobby();
+  if (activeLobbyInstance()?.kind === "eutherdoom") {
+    await refreshDoomStatus();
+  }
 }
 
 async function ensureHostedLobbyInstance(): Promise<void> {
@@ -3784,7 +3894,7 @@ async function ensureHostedLobbyInstance(): Promise<void> {
     return;
   }
   if (hostPermissions.canPlay) {
-    await startLobbyInstance();
+    await startLobbyInstance("megadrive");
   }
 }
 
@@ -3801,6 +3911,9 @@ async function releaseLobbySlot(announce = true, instanceId = activeLobbyInstanc
     pushTrace("Released player slot");
   }
   renderLobby();
+  if (activeLobbyInstance()?.kind === "eutherdoom") {
+    await refreshDoomStatus();
+  }
 }
 
 async function kickLobbyPlayer(player: PlayerPort): Promise<void> {
@@ -3811,6 +3924,9 @@ async function kickLobbyPlayer(player: PlayerPort): Promise<void> {
   );
   pushTrace(`Kicked P${player}`);
   renderLobby();
+  if (activeLobbyInstance()?.kind === "eutherdoom") {
+    await refreshDoomStatus();
+  }
 }
 
 async function closeLobbyInstance(): Promise<void> {
@@ -3827,7 +3943,69 @@ async function closeLobbyInstance(): Promise<void> {
   stopBridgeStream();
   pushTrace(`Closed ${closingId}`);
   renderLobby();
-  await connectBridge(false);
+  if (activeLobbyInstance()?.kind !== "eutherdoom") {
+    await connectBridge(false);
+  }
+}
+
+async function refreshDoomStatus(): Promise<void> {
+  const instance = activeLobbyInstance();
+  if (instance?.kind !== "eutherdoom") {
+    doomStatus = null;
+    renderDoomPanel();
+    return;
+  }
+  try {
+    doomStatus = await bridgeJson<DoomStatus>("/api/doom/status", {}, 900);
+  } catch (err) {
+    doomStatus = null;
+    doomMeta.textContent = err instanceof Error ? err.message : "Doom status unavailable";
+  }
+  renderDoomPanel();
+}
+
+async function readyDoomPlayer(): Promise<void> {
+  if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
+    pushTrace("Claim Doom P1 or P2 first");
+    return;
+  }
+  doomStatus = await bridgeJson<DoomStatus>("/api/doom/ready", { method: "POST" }, 1200);
+  pushTrace(`Doom P${claimedLobbyPlayer} ready`);
+  renderDoomPanel();
+}
+
+async function sendDoomCommand(): Promise<void> {
+  if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
+    pushTrace("Claim Doom P1 or P2 first");
+    return;
+  }
+  const params = new URLSearchParams({
+    tic: numberInput(doomTic, 0).toString(),
+    forward: numberInput(doomForward, 0).toString(),
+    strafe: numberInput(doomStrafe, 0).toString(),
+    turn: numberInput(doomTurn, 0).toString(),
+    buttons: numberInput(doomButtons, 0).toString(),
+    weapon: numberInput(doomWeapon, 0).toString(),
+  });
+  doomStatus = await bridgeJson<DoomStatus>(`/api/doom/cmd?${params}`, { method: "POST" }, 1200);
+  doomTic.value = doomStatus.currentTic.toString();
+  pushTrace(`Doom tic submitted`);
+  renderDoomPanel();
+}
+
+async function resetDoomMatch(): Promise<void> {
+  if (activeLobbyInstance()?.kind !== "eutherdoom") {
+    return;
+  }
+  doomStatus = await bridgeJson<DoomStatus>("/api/doom/reset", { method: "POST" }, 1200);
+  doomTic.value = "0";
+  pushTrace("Doom match reset");
+  renderDoomPanel();
+}
+
+function numberInput(input: HTMLInputElement, fallback: number): number {
+  const value = Number(input.value);
+  return Number.isFinite(value) ? Math.trunc(value) : fallback;
 }
 
 async function refreshHostUsers(): Promise<void> {
@@ -3944,11 +4122,12 @@ function renderLobby(): void {
     .join(" ");
   lobbyTitle.textContent = instance.name;
   lobbyMeta.textContent =
-    `${instance.loaded ? instance.title : "No ROM"} | ${occupied} | ${instance.spectators} spec`;
+    `${instance.modeLabel ?? "MegaDrive"} | ${instance.loaded ? instance.title : "No ROM"} | ${occupied} | ${instance.spectators} spec`;
   lobbyHost.textContent = `Host: ${instance.host ?? "open"}`;
   instanceJoin.textContent =
     lobbyRole === "spectator" || claimedLobbyPlayer === null ? "Join Auto" : `Joined P${claimedLobbyPlayer}`;
   instanceStart.disabled = false;
+  doomInstanceStart.disabled = false;
   releaseSlot.disabled = claimedLobbyPlayer === null && !ownsCurrentSlot();
   claimP1.disabled = claimedLobbyPlayer !== null || Boolean(instance.players.find((player) => player.player === 1)?.occupied);
   claimP2.disabled = claimedLobbyPlayer !== null || Boolean(instance.players.find((player) => player.player === 2)?.occupied);
@@ -3964,6 +4143,7 @@ function renderLobby(): void {
   if (dogsMenuMode === "staff") {
     renderDogsMenu();
   }
+  renderDoomPanel();
 }
 
 function activeLobbyInstance(): LobbyInstance | undefined {
@@ -3980,11 +4160,56 @@ function renderLobbyInstances(): void {
       (instance) => `
         <button class="${instance.id === activeLobbyInstanceId ? "is-selected" : ""}" data-instance-id="${escapeHtml(instance.id)}" type="button">
           <strong>${escapeHtml(instance.name)}</strong>
-          <span>${escapeHtml(instance.loaded ? instance.title : "No ROM")} | ${instance.players.filter((player) => player.occupied).length}P ${instance.spectators}S</span>
+          <span>${escapeHtml(instance.modeLabel ?? "MegaDrive")} | ${escapeHtml(instance.loaded ? instance.title : "No ROM")} | ${instance.players.filter((player) => player.occupied).length}P ${instance.spectators}S</span>
         </button>
       `,
     )
     .join("");
+}
+
+function renderDoomPanel(): void {
+  const instance = activeLobbyInstance();
+  const isDoom = instance?.kind === "eutherdoom";
+  doomDebugPanel.hidden = !isDoom;
+  if (!isDoom) {
+    return;
+  }
+
+  const players = doomStatus?.players ?? [];
+  const playerSummary = [1, 2]
+    .map((player) => {
+      const slot = players.find((entry) => entry.player === player);
+      return `P${player}:${slot ? `${slot.user}${slot.ready ? "/ready" : "/wait"}` : "open"}`;
+    })
+    .join(" ");
+
+  doomTitle.textContent = instance?.name ?? "EutherDoom Server";
+  doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${playerSummary}`;
+  doomReady.disabled = claimedLobbyPlayer === null;
+  doomSend.disabled = claimedLobbyPlayer === null;
+  doomReset.disabled = !canHostMutate();
+
+  if (doomStatus && doomTic.value === "") {
+    doomTic.value = doomStatus.currentTic.toString();
+  }
+
+  const frames = doomStatus?.frames ?? [];
+  doomFrameLog.innerHTML = frames.length
+    ? frames
+        .map((frame) => {
+          const p1 = formatDoomCommand(frame.commands[0]);
+          const p2 = formatDoomCommand(frame.commands[1]);
+          return `<div><strong>TIC ${frame.tic}</strong><span>P1 ${escapeHtml(p1)}</span><span>P2 ${escapeHtml(p2)}</span></div>`;
+        })
+        .join("")
+    : `<div><strong>No tic frames</strong><span>Ready both players and send matching tics.</span></div>`;
+}
+
+function formatDoomCommand(command: DoomCommand | undefined): string {
+  if (!command) {
+    return "0 0 0 0 0";
+  }
+  return `${command.forward} ${command.strafe} ${command.turn} ${command.buttons} ${command.weapon}`;
 }
 
 function ownsCurrentSlot(): boolean {

@@ -7,6 +7,10 @@ pub const MAX_PLAYERS: usize = 2;
 pub struct PlayerId(usize);
 
 impl PlayerId {
+    pub fn from_index(index: usize) -> Option<Self> {
+        (index < MAX_PLAYERS).then_some(Self(index))
+    }
+
     pub fn index(self) -> usize {
         self.0
     }
@@ -51,6 +55,7 @@ pub enum MatchError {
     Full,
     InvalidPlayer,
     PlayerNameEmpty,
+    SlotOccupied,
     PlayerNotReady,
     CommandTicMismatch { expected: u32, actual: u32 },
     CommandAlreadySubmitted { player: PlayerId, tic: u32 },
@@ -97,6 +102,30 @@ impl DoomMatch {
             ready: false,
         });
         Ok(id)
+    }
+
+    pub fn claim(
+        &mut self,
+        player: PlayerId,
+        name: impl Into<String>,
+        now: Instant,
+    ) -> Result<(), MatchError> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(MatchError::PlayerNameEmpty);
+        }
+        let slot = self.slot_mut(player)?;
+        if slot.is_some() {
+            return Err(MatchError::SlotOccupied);
+        }
+        *slot = Some(PlayerSlot {
+            id: player,
+            name,
+            joined_at: now,
+            last_seen_at: now,
+            ready: false,
+        });
+        Ok(())
     }
 
     pub fn leave(&mut self, player: PlayerId) -> Result<(), MatchError> {
@@ -173,6 +202,16 @@ impl DoomMatch {
 
     pub fn completed_frames(&self) -> &[TicFrame] {
         &self.completed
+    }
+
+    pub fn reset(&mut self, now: Instant) {
+        self.current_tic = 0;
+        self.pending.clear();
+        self.completed.clear();
+        for slot in self.players.iter_mut().flatten() {
+            slot.ready = false;
+            slot.last_seen_at = now;
+        }
     }
 
     fn complete_ready_frames(&mut self, now: Instant) -> Vec<TicFrame> {
@@ -256,6 +295,21 @@ mod tests {
     }
 
     #[test]
+    fn claims_requested_player_slot() {
+        let now = Instant::now();
+        let mut doom_match = DoomMatch::new(Duration::from_millis(250));
+        let p2 = PlayerId::from_index(1).unwrap();
+
+        doom_match.claim(p2, "two", now).unwrap();
+
+        assert_eq!(doom_match.players().next().unwrap().id, p2);
+        assert_eq!(
+            doom_match.claim(p2, "again", now),
+            Err(MatchError::SlotOccupied)
+        );
+    }
+
+    #[test]
     fn completes_frame_when_both_players_submit_current_tic() {
         let now = Instant::now();
         let mut doom_match = DoomMatch::new(Duration::from_millis(250));
@@ -310,5 +364,24 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].commands[0].forward, 10);
         assert_eq!(frames[0].commands[1], TicCommand::neutral(0));
+    }
+
+    #[test]
+    fn reset_keeps_players_and_clears_match_progress() {
+        let now = Instant::now();
+        let mut doom_match = DoomMatch::new(Duration::from_millis(250));
+        let p1 = doom_match.join("one", now).unwrap();
+        let p2 = doom_match.join("two", now).unwrap();
+        doom_match.set_ready(p1, true, now).unwrap();
+        doom_match.set_ready(p2, true, now).unwrap();
+        doom_match.submit_command(p1, command(0, 10), now).unwrap();
+        doom_match.submit_command(p2, command(0, -4), now).unwrap();
+
+        doom_match.reset(now + Duration::from_secs(1));
+
+        assert_eq!(doom_match.current_tic(), 0);
+        assert!(doom_match.completed_frames().is_empty());
+        assert_eq!(doom_match.players().count(), 2);
+        assert!(doom_match.players().all(|player| !player.ready));
     }
 }

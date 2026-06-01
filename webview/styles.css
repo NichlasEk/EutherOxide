@@ -1775,6 +1775,7 @@ h2 {
 }
 
 .lobby-card,
+.doom-card,
 .admin-users {
   display: grid;
   gap: 5px;
@@ -1787,23 +1788,28 @@ h2 {
 
 .lobby-card strong,
 .lobby-card span,
+.doom-card strong,
+.doom-card span,
 .admin-users span {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.lobby-card strong {
+.lobby-card strong,
+.doom-card strong {
   color: #e8ffd2;
   font-size: 0.84rem;
 }
 
-.lobby-card span {
+.lobby-card span,
+.doom-card span {
   color: #aac99c;
   font-size: 0.76rem;
   font-weight: 800;
 }
 
 .lobby-actions,
+.doom-actions,
 .admin-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1851,10 +1857,75 @@ h2 {
 }
 
 .lobby-actions button,
+.doom-actions button,
 .admin-form button {
   min-height: 34px;
   font-size: 0.76rem;
   font-weight: 900;
+}
+
+.doom-command-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.doom-command-grid label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: #aac99c;
+  font-size: 0.65rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.doom-command-grid input {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid rgba(98, 218, 168, 0.18);
+  border-radius: 8px;
+  background: rgba(3, 8, 7, 0.82);
+  color: #eef8dd;
+  font: 800 0.76rem ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.doom-frame-log {
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.doom-frame-log div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(214, 233, 95, 0.14);
+  border-radius: 8px;
+  background: rgba(8, 16, 13, 0.76);
+}
+
+.doom-frame-log strong,
+.doom-frame-log span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.doom-frame-log strong {
+  color: #f0dc91;
+  font-size: 0.68rem;
+}
+
+.doom-frame-log span {
+  color: #aac99c;
+  font-size: 0.66rem;
+  font-weight: 800;
 }
 
 .rail-section {

@@ -24,6 +24,7 @@ ice = { package = "webrtc-ice", version = "0.9.1" }
 media = { package = "webrtc-media", version = "0.6.1" }
 bytes = "1"
 eutherdogs-core = { path = "crates/eutherdogs-core" }
+eutherdoom-server = { path = "crates/eutherdoom-server" }
 z80-emu = { path = "crates/z80-emu", features = ["bincode"] }
 wgpu = { version = "24.0", optional = true }
 winit = { version = "0.30", optional = true }
