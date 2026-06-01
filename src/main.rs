@@ -1992,7 +1992,12 @@ fn set_host_doom_ready(
         .ok_or_else(|| io::Error::other("doom instance missing state"))?
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?
-        .set_ready(player_id, true, Instant::now())
+        .handle_command(
+            player_id,
+            eutherdoom_server::DoomClientCommand::Ready(true),
+            Instant::now(),
+        )
+        .map(|_| ())
         .map_err(host_doom_error)
 }
 
@@ -2012,7 +2017,11 @@ fn submit_host_doom_command(
         .ok_or_else(|| io::Error::other("doom instance missing state"))?
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?
-        .submit_command(player_id, command, Instant::now())
+        .handle_command(
+            player_id,
+            eutherdoom_server::DoomClientCommand::Input(command),
+            Instant::now(),
+        )
         .map(|_| ())
         .map_err(host_doom_error)
 }

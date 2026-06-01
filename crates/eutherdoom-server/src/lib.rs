@@ -51,6 +51,24 @@ pub struct TicFrame {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoomClientCommand {
+    Ready(bool),
+    Heartbeat,
+    Input(TicCommand),
+    Leave,
+    Reset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoomServerEvent {
+    PlayerReady { player: PlayerId, ready: bool },
+    PlayerHeartbeat { player: PlayerId },
+    PlayerLeft { player: PlayerId },
+    TicFrame(TicFrame),
+    Reset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerSnapshot {
     pub player: usize,
     pub name: String,
@@ -153,6 +171,40 @@ impl DoomSession {
 
     pub fn heartbeat(&mut self, player: PlayerId, now: Instant) -> Result<(), MatchError> {
         self.doom_match.heartbeat(player, now)
+    }
+
+    pub fn handle_command(
+        &mut self,
+        player: PlayerId,
+        command: DoomClientCommand,
+        now: Instant,
+    ) -> Result<Vec<DoomServerEvent>, MatchError> {
+        match command {
+            DoomClientCommand::Ready(ready) => {
+                self.set_ready(player, ready, now)?;
+                Ok(vec![DoomServerEvent::PlayerReady { player, ready }])
+            }
+            DoomClientCommand::Heartbeat => {
+                self.heartbeat(player, now)?;
+                Ok(vec![DoomServerEvent::PlayerHeartbeat { player }])
+            }
+            DoomClientCommand::Input(command) => self.submit_command(player, command, now).map(
+                |frames| {
+                    frames
+                        .into_iter()
+                        .map(DoomServerEvent::TicFrame)
+                        .collect()
+                },
+            ),
+            DoomClientCommand::Leave => {
+                self.leave(player)?;
+                Ok(vec![DoomServerEvent::PlayerLeft { player }])
+            }
+            DoomClientCommand::Reset => {
+                self.reset(now);
+                Ok(vec![DoomServerEvent::Reset])
+            }
+        }
     }
 
     pub fn submit_command(
@@ -621,5 +673,39 @@ mod tests {
         assert_eq!(snapshot.players.len(), 2);
         assert_eq!(snapshot.recent_frames.len(), 1);
         assert!(session.replay_text().contains("FRAME 0 P1 0 10 0 0 0 0 P2 0 -4 0 0 0 0"));
+    }
+
+    #[test]
+    fn session_handle_command_emits_protocol_events() {
+        let now = Instant::now();
+        let mut session = DoomSession::new(Duration::from_millis(250));
+        let p1 = session.join("one", now).unwrap();
+        let p2 = session.join("two", now).unwrap();
+
+        assert_eq!(
+            session
+                .handle_command(p1, DoomClientCommand::Ready(true), now)
+                .unwrap(),
+            vec![DoomServerEvent::PlayerReady {
+                player: p1,
+                ready: true,
+            }]
+        );
+        session
+            .handle_command(p2, DoomClientCommand::Ready(true), now)
+            .unwrap();
+        assert!(
+            session
+                .handle_command(p1, DoomClientCommand::Input(command(0, 10)), now)
+                .unwrap()
+                .is_empty()
+        );
+
+        let events = session
+            .handle_command(p2, DoomClientCommand::Input(command(0, -4)), now)
+            .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], DoomServerEvent::TicFrame(_)));
     }
 }
