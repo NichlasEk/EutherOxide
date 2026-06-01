@@ -869,6 +869,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
     if request.method == "OPTIONS" {
         return send_empty(stream, 204);
     }
+    if let Some(location) = host_canonical_redirect(state, &request) {
+        return send_redirect(stream, 308, &location);
+    }
     let path = request.path.split('?').next().unwrap_or(&request.path);
     if request.method != "GET" && path != "/api/login" && !valid_csrf_token(state, &request)? {
         return send_error(stream, 403, "csrf token required");
@@ -1924,6 +1927,36 @@ fn valid_request_origin(state: &HostState, request: &HttpRequest) -> io::Result<
         return Ok(false);
     };
     Ok(origin_host(origin).as_deref() == Some(host))
+}
+
+fn host_canonical_redirect(state: &HostState, request: &HttpRequest) -> Option<String> {
+    if !state.config.secure_cookies {
+        return None;
+    }
+    let public_origin = state
+        .config
+        .allowed_origins
+        .iter()
+        .find(|origin| origin.starts_with("https://"))?;
+    let request_host = header_value(request, "host")?;
+    if origin_host(public_origin).as_deref() == Some(request_host) {
+        return None;
+    }
+    let allowed_host = state
+        .config
+        .allowed_origins
+        .iter()
+        .filter_map(|origin| origin_host(origin))
+        .any(|host| host == request_host);
+    if allowed_host {
+        return None;
+    }
+    let path = if request.path.starts_with('/') {
+        request.path.as_str()
+    } else {
+        "/"
+    };
+    Some(format!("{public_origin}{path}"))
 }
 
 fn origin_host(origin: &str) -> Option<String> {
@@ -3000,6 +3033,16 @@ fn send_empty(stream: &mut TcpStream, status: u16) -> io::Result<()> {
     send_response(stream, status, "text/plain", &[])
 }
 
+fn send_redirect(stream: &mut TcpStream, status: u16, location: &str) -> io::Result<()> {
+    send_response_with_headers(
+        stream,
+        status,
+        "text/plain; charset=utf-8",
+        b"",
+        &[("Location", location)],
+    )
+}
+
 fn send_error(stream: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
     send_response(
         stream,
@@ -3028,6 +3071,7 @@ fn send_response_with_headers(
     let reason = match status {
         200 => "OK",
         303 => "See Other",
+        308 => "Permanent Redirect",
         204 => "No Content",
         401 => "Unauthorized",
         403 => "Forbidden",
