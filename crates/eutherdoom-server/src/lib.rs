@@ -1,0 +1,314 @@
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+pub const MAX_PLAYERS: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerId(usize);
+
+impl PlayerId {
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSlot {
+    pub id: PlayerId,
+    pub name: String,
+    pub joined_at: Instant,
+    pub last_seen_at: Instant,
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TicCommand {
+    pub tic: u32,
+    pub forward: i8,
+    pub strafe: i8,
+    pub turn: i16,
+    pub buttons: u16,
+    pub weapon: u8,
+}
+
+impl TicCommand {
+    pub fn neutral(tic: u32) -> Self {
+        Self {
+            tic,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicFrame {
+    pub tic: u32,
+    pub commands: [TicCommand; MAX_PLAYERS],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchError {
+    Full,
+    InvalidPlayer,
+    PlayerNameEmpty,
+    PlayerNotReady,
+    CommandTicMismatch { expected: u32, actual: u32 },
+    CommandAlreadySubmitted { player: PlayerId, tic: u32 },
+}
+
+#[derive(Debug)]
+pub struct DoomMatch {
+    players: [Option<PlayerSlot>; MAX_PLAYERS],
+    current_tic: u32,
+    pending: BTreeMap<u32, [Option<TicCommand>; MAX_PLAYERS]>,
+    completed: Vec<TicFrame>,
+    command_timeout: Duration,
+}
+
+impl DoomMatch {
+    pub fn new(command_timeout: Duration) -> Self {
+        Self {
+            players: [None, None],
+            current_tic: 0,
+            pending: BTreeMap::new(),
+            completed: Vec::new(),
+            command_timeout,
+        }
+    }
+
+    pub fn join(&mut self, name: impl Into<String>, now: Instant) -> Result<PlayerId, MatchError> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(MatchError::PlayerNameEmpty);
+        }
+
+        let index = self
+            .players
+            .iter()
+            .position(Option::is_none)
+            .ok_or(MatchError::Full)?;
+
+        let id = PlayerId(index);
+        self.players[index] = Some(PlayerSlot {
+            id,
+            name,
+            joined_at: now,
+            last_seen_at: now,
+            ready: false,
+        });
+        Ok(id)
+    }
+
+    pub fn leave(&mut self, player: PlayerId) -> Result<(), MatchError> {
+        let slot = self.slot_mut(player)?;
+        *slot = None;
+
+        for commands in self.pending.values_mut() {
+            commands[player.index()] = None;
+        }
+
+        Ok(())
+    }
+
+    pub fn set_ready(
+        &mut self,
+        player: PlayerId,
+        ready: bool,
+        now: Instant,
+    ) -> Result<(), MatchError> {
+        let slot = self.player_mut(player)?;
+        slot.ready = ready;
+        slot.last_seen_at = now;
+        Ok(())
+    }
+
+    pub fn heartbeat(&mut self, player: PlayerId, now: Instant) -> Result<(), MatchError> {
+        self.player_mut(player)?.last_seen_at = now;
+        Ok(())
+    }
+
+    pub fn submit_command(
+        &mut self,
+        player: PlayerId,
+        command: TicCommand,
+        now: Instant,
+    ) -> Result<Vec<TicFrame>, MatchError> {
+        if command.tic != self.current_tic {
+            return Err(MatchError::CommandTicMismatch {
+                expected: self.current_tic,
+                actual: command.tic,
+            });
+        }
+
+        let slot = self.player_mut(player)?;
+        if !slot.ready {
+            return Err(MatchError::PlayerNotReady);
+        }
+        slot.last_seen_at = now;
+
+        let commands = self.pending.entry(command.tic).or_insert([None, None]);
+        let player_command = &mut commands[player.index()];
+        if player_command.is_some() {
+            return Err(MatchError::CommandAlreadySubmitted {
+                player,
+                tic: command.tic,
+            });
+        }
+        *player_command = Some(command);
+
+        Ok(self.complete_ready_frames(now))
+    }
+
+    pub fn tick(&mut self, now: Instant) -> Vec<TicFrame> {
+        self.complete_ready_frames(now)
+    }
+
+    pub fn players(&self) -> impl Iterator<Item = &PlayerSlot> {
+        self.players.iter().filter_map(Option::as_ref)
+    }
+
+    pub fn current_tic(&self) -> u32 {
+        self.current_tic
+    }
+
+    pub fn completed_frames(&self) -> &[TicFrame] {
+        &self.completed
+    }
+
+    fn complete_ready_frames(&mut self, now: Instant) -> Vec<TicFrame> {
+        let mut frames = Vec::new();
+
+        loop {
+            let tic = self.current_tic;
+            let Some(commands) = self.pending.get(&tic).copied() else {
+                break;
+            };
+
+            let timed_out = self.command_timeout_elapsed(&commands, now);
+            if commands.iter().any(Option::is_none) && !timed_out {
+                break;
+            }
+
+            let frame = TicFrame {
+                tic,
+                commands: [
+                    commands[0].unwrap_or_else(|| TicCommand::neutral(tic)),
+                    commands[1].unwrap_or_else(|| TicCommand::neutral(tic)),
+                ],
+            };
+
+            self.pending.remove(&tic);
+            self.current_tic = self.current_tic.saturating_add(1);
+            self.completed.push(frame.clone());
+            frames.push(frame);
+        }
+
+        frames
+    }
+
+    fn command_timeout_elapsed(
+        &self,
+        commands: &[Option<TicCommand>; MAX_PLAYERS],
+        now: Instant,
+    ) -> bool {
+        self.players.iter().enumerate().any(|(index, player)| {
+            player.as_ref().is_some_and(|slot| {
+                slot.ready
+                    && commands[index].is_none()
+                    && now.duration_since(slot.last_seen_at) >= self.command_timeout
+            })
+        })
+    }
+
+    fn player_mut(&mut self, player: PlayerId) -> Result<&mut PlayerSlot, MatchError> {
+        self.slot_mut(player)?
+            .as_mut()
+            .ok_or(MatchError::InvalidPlayer)
+    }
+
+    fn slot_mut(&mut self, player: PlayerId) -> Result<&mut Option<PlayerSlot>, MatchError> {
+        self.players
+            .get_mut(player.index())
+            .ok_or(MatchError::InvalidPlayer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(tic: u32, forward: i8) -> TicCommand {
+        TicCommand {
+            tic,
+            forward,
+            ..TicCommand::default()
+        }
+    }
+
+    #[test]
+    fn assigns_two_player_slots() {
+        let now = Instant::now();
+        let mut doom_match = DoomMatch::new(Duration::from_millis(250));
+
+        assert_eq!(doom_match.join("one", now).unwrap().index(), 0);
+        assert_eq!(doom_match.join("two", now).unwrap().index(), 1);
+        assert_eq!(doom_match.join("three", now), Err(MatchError::Full));
+    }
+
+    #[test]
+    fn completes_frame_when_both_players_submit_current_tic() {
+        let now = Instant::now();
+        let mut doom_match = DoomMatch::new(Duration::from_millis(250));
+        let p1 = doom_match.join("one", now).unwrap();
+        let p2 = doom_match.join("two", now).unwrap();
+        doom_match.set_ready(p1, true, now).unwrap();
+        doom_match.set_ready(p2, true, now).unwrap();
+
+        assert!(
+            doom_match
+                .submit_command(p1, command(0, 10), now)
+                .unwrap()
+                .is_empty()
+        );
+        let frames = doom_match.submit_command(p2, command(0, -4), now).unwrap();
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].tic, 0);
+        assert_eq!(frames[0].commands[0].forward, 10);
+        assert_eq!(frames[0].commands[1].forward, -4);
+        assert_eq!(doom_match.current_tic(), 1);
+    }
+
+    #[test]
+    fn rejects_future_tic_until_current_frame_is_complete() {
+        let now = Instant::now();
+        let mut doom_match = DoomMatch::new(Duration::from_millis(250));
+        let player = doom_match.join("one", now).unwrap();
+        doom_match.set_ready(player, true, now).unwrap();
+
+        assert_eq!(
+            doom_match.submit_command(player, command(1, 10), now),
+            Err(MatchError::CommandTicMismatch {
+                expected: 0,
+                actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn timeout_fills_missing_ready_player_with_neutral_command() {
+        let now = Instant::now();
+        let mut doom_match = DoomMatch::new(Duration::from_millis(250));
+        let p1 = doom_match.join("one", now).unwrap();
+        let p2 = doom_match.join("two", now).unwrap();
+        doom_match.set_ready(p1, true, now).unwrap();
+        doom_match.set_ready(p2, true, now).unwrap();
+
+        doom_match.submit_command(p1, command(0, 10), now).unwrap();
+        let frames = doom_match.tick(now + Duration::from_millis(251));
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].commands[0].forward, 10);
+        assert_eq!(frames[0].commands[1], TicCommand::neutral(0));
+    }
+}

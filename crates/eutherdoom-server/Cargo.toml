@@ -1,0 +1,8 @@
+[package]
+name = "eutherdoom-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Small lockstep relay core for EutherDoom multiplayer experiments"
+
+[dependencies]
