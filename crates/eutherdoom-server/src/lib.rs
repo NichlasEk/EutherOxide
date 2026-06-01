@@ -51,6 +51,46 @@ pub struct TicFrame {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSnapshot {
+    pub player: usize,
+    pub name: String,
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    pub current_tic: u32,
+    pub players: Vec<PlayerSnapshot>,
+    pub recent_frames: Vec<TicFrame>,
+    pub replay_events: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayEvent {
+    Claim {
+        player: PlayerId,
+        name: String,
+    },
+    Join {
+        player: PlayerId,
+        name: String,
+    },
+    Leave {
+        player: PlayerId,
+    },
+    Ready {
+        player: PlayerId,
+        ready: bool,
+    },
+    Command {
+        player: PlayerId,
+        command: TicCommand,
+    },
+    Frame(TicFrame),
+    Reset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatchError {
     Full,
     InvalidPlayer,
@@ -59,6 +99,138 @@ pub enum MatchError {
     PlayerNotReady,
     CommandTicMismatch { expected: u32, actual: u32 },
     CommandAlreadySubmitted { player: PlayerId, tic: u32 },
+}
+
+#[derive(Debug)]
+pub struct DoomSession {
+    doom_match: DoomMatch,
+    replay: Vec<ReplayEvent>,
+}
+
+impl DoomSession {
+    pub fn new(command_timeout: Duration) -> Self {
+        Self {
+            doom_match: DoomMatch::new(command_timeout),
+            replay: Vec::new(),
+        }
+    }
+
+    pub fn join(&mut self, name: impl Into<String>, now: Instant) -> Result<PlayerId, MatchError> {
+        let name = name.into();
+        let player = self.doom_match.join(name.clone(), now)?;
+        self.replay.push(ReplayEvent::Join { player, name });
+        Ok(player)
+    }
+
+    pub fn claim(
+        &mut self,
+        player: PlayerId,
+        name: impl Into<String>,
+        now: Instant,
+    ) -> Result<(), MatchError> {
+        let name = name.into();
+        self.doom_match.claim(player, name.clone(), now)?;
+        self.replay.push(ReplayEvent::Claim { player, name });
+        Ok(())
+    }
+
+    pub fn leave(&mut self, player: PlayerId) -> Result<(), MatchError> {
+        self.doom_match.leave(player)?;
+        self.replay.push(ReplayEvent::Leave { player });
+        Ok(())
+    }
+
+    pub fn set_ready(
+        &mut self,
+        player: PlayerId,
+        ready: bool,
+        now: Instant,
+    ) -> Result<(), MatchError> {
+        self.doom_match.set_ready(player, ready, now)?;
+        self.replay.push(ReplayEvent::Ready { player, ready });
+        Ok(())
+    }
+
+    pub fn heartbeat(&mut self, player: PlayerId, now: Instant) -> Result<(), MatchError> {
+        self.doom_match.heartbeat(player, now)
+    }
+
+    pub fn submit_command(
+        &mut self,
+        player: PlayerId,
+        command: TicCommand,
+        now: Instant,
+    ) -> Result<Vec<TicFrame>, MatchError> {
+        let frames = self.doom_match.submit_command(player, command, now)?;
+        self.replay.push(ReplayEvent::Command { player, command });
+        self.record_frames(&frames);
+        Ok(frames)
+    }
+
+    pub fn tick(&mut self, now: Instant) -> Vec<TicFrame> {
+        let frames = self.doom_match.tick(now);
+        self.record_frames(&frames);
+        frames
+    }
+
+    pub fn reset(&mut self, now: Instant) {
+        self.doom_match.reset(now);
+        self.replay.push(ReplayEvent::Reset);
+    }
+
+    pub fn current_tic(&self) -> u32 {
+        self.doom_match.current_tic()
+    }
+
+    pub fn players(&self) -> impl Iterator<Item = &PlayerSlot> {
+        self.doom_match.players()
+    }
+
+    pub fn completed_frames(&self) -> &[TicFrame] {
+        self.doom_match.completed_frames()
+    }
+
+    pub fn replay_events(&self) -> &[ReplayEvent] {
+        &self.replay
+    }
+
+    pub fn snapshot(&self, recent_frame_limit: usize) -> SessionSnapshot {
+        let recent_frames = self
+            .completed_frames()
+            .iter()
+            .rev()
+            .take(recent_frame_limit)
+            .rev()
+            .cloned()
+            .collect();
+        let players = self
+            .players()
+            .map(|player| PlayerSnapshot {
+                player: player.id.index() + 1,
+                name: player.name.clone(),
+                ready: player.ready,
+            })
+            .collect();
+        SessionSnapshot {
+            current_tic: self.current_tic(),
+            players,
+            recent_frames,
+            replay_events: self.replay.len(),
+        }
+    }
+
+    pub fn replay_text(&self) -> String {
+        self.replay
+            .iter()
+            .map(format_replay_event)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn record_frames(&mut self, frames: &[TicFrame]) {
+        self.replay
+            .extend(frames.iter().cloned().map(ReplayEvent::Frame));
+    }
 }
 
 #[derive(Debug)]
@@ -272,6 +444,53 @@ impl DoomMatch {
     }
 }
 
+fn format_replay_event(event: &ReplayEvent) -> String {
+    match event {
+        ReplayEvent::Claim { player, name } => {
+            format!("CLAIM {} {}", player.index() + 1, escape_replay_text(name))
+        }
+        ReplayEvent::Join { player, name } => {
+            format!("JOIN {} {}", player.index() + 1, escape_replay_text(name))
+        }
+        ReplayEvent::Leave { player } => format!("LEAVE {}", player.index() + 1),
+        ReplayEvent::Ready { player, ready } => {
+            format!("READY {} {}", player.index() + 1, u8::from(*ready))
+        }
+        ReplayEvent::Command { player, command } => {
+            format!("CMD {} {}", player.index() + 1, format_command(*command))
+        }
+        ReplayEvent::Frame(frame) => {
+            format!(
+                "FRAME {} P1 {} P2 {}",
+                frame.tic,
+                format_command(frame.commands[0]),
+                format_command(frame.commands[1])
+            )
+        }
+        ReplayEvent::Reset => "RESET".to_string(),
+    }
+}
+
+fn format_command(command: TicCommand) -> String {
+    format!(
+        "{} {} {} {} {} {}",
+        command.tic, command.forward, command.strafe, command.turn, command.buttons, command.weapon
+    )
+}
+
+fn escape_replay_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\n' | '\r' | '\t' => ' ',
+            _ => ch,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +602,24 @@ mod tests {
         assert!(doom_match.completed_frames().is_empty());
         assert_eq!(doom_match.players().count(), 2);
         assert!(doom_match.players().all(|player| !player.ready));
+    }
+
+    #[test]
+    fn session_records_replay_events_and_snapshot() {
+        let now = Instant::now();
+        let mut session = DoomSession::new(Duration::from_millis(250));
+        let p1 = session.join("one", now).unwrap();
+        let p2 = session.join("two", now).unwrap();
+        session.set_ready(p1, true, now).unwrap();
+        session.set_ready(p2, true, now).unwrap();
+        session.submit_command(p1, command(0, 10), now).unwrap();
+        session.submit_command(p2, command(0, -4), now).unwrap();
+
+        let snapshot = session.snapshot(4);
+
+        assert_eq!(snapshot.current_tic, 1);
+        assert_eq!(snapshot.players.len(), 2);
+        assert_eq!(snapshot.recent_frames.len(), 1);
+        assert!(session.replay_text().contains("FRAME 0 P1 0 10 0 0 0 0 P2 0 -4 0 0 0 0"));
     }
 }

@@ -1,4 +1,4 @@
-use eutherdoom_server::{DoomMatch, MAX_PLAYERS, MatchError, PlayerId, TicCommand, TicFrame};
+use eutherdoom_server::{DoomSession, MAX_PLAYERS, MatchError, PlayerId, TicCommand, TicFrame};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -14,14 +14,14 @@ type ClientSender = mpsc::Sender<String>;
 
 #[derive(Debug)]
 struct ServerState {
-    doom_match: DoomMatch,
+    doom_session: DoomSession,
     clients: [Option<ClientSender>; MAX_PLAYERS],
 }
 
 impl ServerState {
     fn new() -> Self {
         Self {
-            doom_match: DoomMatch::new(COMMAND_TIMEOUT),
+            doom_session: DoomSession::new(COMMAND_TIMEOUT),
             clients: [None, None],
         }
     }
@@ -75,7 +75,7 @@ fn spawn_timeout_pacer(state: Arc<Mutex<ServerState>>) {
                 Ok(state) => state,
                 Err(_) => return,
             };
-            let frames = state.doom_match.tick(Instant::now());
+            let frames = state.doom_session.tick(Instant::now());
             publish_frames(&mut state, frames);
         }
     });
@@ -112,7 +112,7 @@ fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Resul
 
                 let result = {
                     let mut state = lock_state(&state)?;
-                    match state.doom_match.join(name, Instant::now()) {
+                    match state.doom_session.join(name, Instant::now()) {
                         Ok(id) => {
                             state.clients[id.index()] = Some(tx.clone());
                             Ok(id)
@@ -133,7 +133,7 @@ fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Resul
             Ok(ClientCommand::Ready) => match require_player(player_id, &tx) {
                 Some(id) => {
                     let result = lock_state(&state)?
-                        .doom_match
+                        .doom_session
                         .set_ready(id, true, Instant::now());
                     send_result(&tx, result.map(|()| "READY ok".to_string()));
                     broadcast_status(&state);
@@ -142,7 +142,7 @@ fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Resul
             },
             Ok(ClientCommand::Heartbeat) => match require_player(player_id, &tx) {
                 Some(id) => {
-                    let result = lock_state(&state)?.doom_match.heartbeat(id, Instant::now());
+                    let result = lock_state(&state)?.doom_session.heartbeat(id, Instant::now());
                     send_result(&tx, result.map(|()| "HEARTBEAT ok".to_string()));
                 }
                 None => continue,
@@ -151,7 +151,7 @@ fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Resul
                 Some(id) => {
                     let result = {
                         let mut state = lock_state(&state)?;
-                        let result = state.doom_match.submit_command(id, command, Instant::now());
+                        let result = state.doom_session.submit_command(id, command, Instant::now());
                         if let Ok(frames) = &result {
                             publish_frames(&mut state, frames.clone());
                         }
@@ -180,7 +180,7 @@ fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Resul
 
     if let Some(id) = player_id {
         let mut state = lock_state(&state)?;
-        let _ = state.doom_match.leave(id);
+        let _ = state.doom_session.leave(id);
         state.clients[id.index()] = None;
         publish_line(&state, &format!("LEFT {}", id.index() + 1));
     }
@@ -304,7 +304,7 @@ fn send_status(tx: &ClientSender, state: &Arc<Mutex<ServerState>>) {
     };
 
     let players = state
-        .doom_match
+        .doom_session
         .players()
         .map(|player| {
             format!(
@@ -321,7 +321,7 @@ fn send_status(tx: &ClientSender, state: &Arc<Mutex<ServerState>>) {
         tx,
         &format!(
             "STATUS tic={} players={}",
-            state.doom_match.current_tic(),
+            state.doom_session.current_tic(),
             if players.is_empty() { "-" } else { &players }
         ),
     );
@@ -339,14 +339,14 @@ fn broadcast_status(state: &Arc<Mutex<ServerState>>) {
         &state,
         &format!(
             "STATUS tic={} players={}",
-            state.doom_match.current_tic(),
+            state.doom_session.current_tic(),
             player_count(&state)
         ),
     );
 }
 
 fn player_count(state: &ServerState) -> usize {
-    state.doom_match.players().count()
+    state.doom_session.players().count()
 }
 
 fn publish_frames(state: &mut ServerState, frames: Vec<TicFrame>) {

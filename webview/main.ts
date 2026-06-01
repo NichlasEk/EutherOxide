@@ -194,6 +194,7 @@ type DoomStatus = {
   instance: string;
   name: string;
   currentTic: number;
+  replayEvents?: number;
   players: DoomPlayer[];
   frames: DoomFrame[];
 };
@@ -920,6 +921,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <p class="section-label">EutherDoom</p>
           <div class="section-actions">
             <button id="doom-refresh" class="mini-action" type="button">Scan</button>
+            <button id="doom-replay" class="mini-action" type="button">Replay</button>
             <button id="doom-reset" class="mini-action" type="button">Reset</button>
           </div>
         </div>
@@ -1348,6 +1350,7 @@ const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const eutherDogsToggle = document.querySelector<HTMLButtonElement>("#eutherdogs-toggle")!;
 const doomDebugPanel = document.querySelector<HTMLDivElement>("#doom-debug-panel")!;
 const doomRefresh = document.querySelector<HTMLButtonElement>("#doom-refresh")!;
+const doomReplay = document.querySelector<HTMLButtonElement>("#doom-replay")!;
 const doomReset = document.querySelector<HTMLButtonElement>("#doom-reset")!;
 const doomReady = document.querySelector<HTMLButtonElement>("#doom-ready")!;
 const doomSend = document.querySelector<HTMLButtonElement>("#doom-send")!;
@@ -1519,6 +1522,10 @@ doomRefresh.addEventListener("click", async () => {
 
 doomReady.addEventListener("click", async () => {
   await readyDoomPlayer();
+});
+
+doomReplay.addEventListener("click", async () => {
+  await downloadDoomReplay();
 });
 
 doomSend.addEventListener("click", async () => {
@@ -4003,6 +4010,22 @@ async function resetDoomMatch(): Promise<void> {
   renderDoomPanel();
 }
 
+async function downloadDoomReplay(): Promise<void> {
+  if (activeLobbyInstance()?.kind !== "eutherdoom") {
+    return;
+  }
+  const response = await bridgeRequest("/api/doom/replay", {}, 1200);
+  const replay = await response.text();
+  const blob = new Blob([replay], { type: "text/plain" });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.href = url;
+  link.download = `${activeLobbyInstanceId}-doom.replay.txt`;
+  link.click();
+  URL.revokeObjectURL(url);
+  pushTrace("Doom replay exported");
+}
+
 function numberInput(input: HTMLInputElement, fallback: number): number {
   const value = Number(input.value);
   return Number.isFinite(value) ? Math.trunc(value) : fallback;
@@ -4184,9 +4207,10 @@ function renderDoomPanel(): void {
     .join(" ");
 
   doomTitle.textContent = instance?.name ?? "EutherDoom Server";
-  doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${playerSummary}`;
+  doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${playerSummary} | replay ${doomStatus?.replayEvents ?? 0}`;
   doomReady.disabled = claimedLobbyPlayer === null;
   doomSend.disabled = claimedLobbyPlayer === null;
+  doomReplay.disabled = !doomStatus || doomStatus.replayEvents === 0;
   doomReset.disabled = !canHostMutate();
 
   if (doomStatus && doomTic.value === "") {

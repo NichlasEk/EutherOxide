@@ -699,7 +699,7 @@ struct HostInstance {
     name: String,
     kind: HostInstanceKind,
     bridge: BridgeState,
-    doom: Option<Arc<Mutex<eutherdoom_server::DoomMatch>>>,
+    doom: Option<Arc<Mutex<eutherdoom_server::DoomSession>>>,
     host_owner: Option<String>,
     created_unix_ms: u64,
 }
@@ -1006,6 +1006,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             require_host_user(state, &request)?;
             let instance_id = host_instance_id(&request.path)?;
             send_json(stream, &host_doom_status(state, &instance_id)?)
+        }
+        ("GET", "/api/doom/replay") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let replay = host_doom_replay(state, &instance_id)?;
+            send_response(stream, 200, "text/plain; charset=utf-8", replay.as_bytes())
         }
         ("POST", "/api/doom/ready") => {
             let user = require_host_user(state, &request)?;
@@ -1483,7 +1489,7 @@ fn create_host_instance(
         kind,
         bridge: new_bridge_state(Emulator::new()),
         doom: (kind == HostInstanceKind::EutherDoom).then(|| {
-            Arc::new(Mutex::new(eutherdoom_server::DoomMatch::new(
+            Arc::new(Mutex::new(eutherdoom_server::DoomSession::new(
                 Duration::from_millis(250),
             )))
         }),
@@ -1925,22 +1931,21 @@ fn host_doom_status(state: &HostState, instance_id: &str) -> io::Result<serde_js
         .ok_or_else(|| io::Error::other("doom instance missing state"))?
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
-    let players = doom
-        .players()
+    let snapshot = doom.snapshot(8);
+    let players = snapshot
+        .players
+        .iter()
         .map(|player| {
             serde_json::json!({
-                "player": player.id.index() + 1,
+                "player": player.player,
                 "user": player.name,
                 "ready": player.ready,
             })
         })
         .collect::<Vec<_>>();
-    let frames = doom
-        .completed_frames()
+    let frames = snapshot
+        .recent_frames
         .iter()
-        .rev()
-        .take(8)
-        .rev()
         .map(|frame| {
             serde_json::json!({
                 "tic": frame.tic,
@@ -1951,10 +1956,25 @@ fn host_doom_status(state: &HostState, instance_id: &str) -> io::Result<serde_js
     Ok(serde_json::json!({
         "instance": instance.id,
         "name": instance.name,
-        "currentTic": doom.current_tic(),
+        "currentTic": snapshot.current_tic,
+        "replayEvents": snapshot.replay_events,
         "players": players,
         "frames": frames,
     }))
+}
+
+fn host_doom_replay(state: &HostState, instance_id: &str) -> io::Result<String> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherDoom {
+        return Err(invalid_request("selected instance is not EutherDoom"));
+    }
+    instance
+        .doom
+        .as_ref()
+        .ok_or_else(|| io::Error::other("doom instance missing state"))?
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))
+        .map(|doom| doom.replay_text())
 }
 
 fn set_host_doom_ready(

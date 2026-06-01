@@ -71,7 +71,8 @@ Add Doom as a sibling mode to the current hosted emulator sessions:
    receive identical ordered tic frames. Done for the EutherHost UI.
 5. Add stronger disconnect cleanup and match reset controls.
 6. Connect a minimal Doom-compatible client loop using Freedoom data.
-7. Add replay logging so a desync can be reproduced from recorded tic commands.
+7. Add replay logging so a desync can be reproduced from recorded tic commands. Done for the
+   EutherDoom session layer and host UI export.
 
 ## Non-Goals For MVP
 
