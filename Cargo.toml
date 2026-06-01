@@ -18,6 +18,8 @@ log = "0.4"
 bincode = "2.0.1"
 gilrs = "0.11.1"
 argon2 = "0.5"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+webrtc = "0.8.0"
 eutherdogs-core = { path = "crates/eutherdogs-core" }
 z80-emu = { path = "crates/z80-emu", features = ["bincode"] }
 wgpu = { version = "24.0", optional = true }

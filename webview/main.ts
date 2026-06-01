@@ -716,6 +716,14 @@ let buildPollTimer: number | null = null;
 let bridgeStreamAbort: AbortController | null = null;
 let bridgeStreamActive = false;
 let bridgeStreamGeneration = 0;
+let bridgeVideoActive = false;
+let bridgeVideoFallbackTimer: number | null = null;
+let bridgeVideoAbort: AbortController | null = null;
+let bridgeVideoLatencyTimer: number | null = null;
+let bridgeWebRtcPeer: RTCPeerConnection | null = null;
+let bridgeWebRtcChannel: RTCDataChannel | null = null;
+let bridgeWebRtcGeneration = 0;
+let bridgeWebRtcActive = false;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
@@ -988,6 +996,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="screen-glass" id="screen-glass">
           <canvas id="video" width="320" height="224"></canvas>
           <canvas id="shader-video" width="320" height="224"></canvas>
+          <video id="bridge-video" muted playsinline autoplay></video>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
           <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
           <div id="eutherdogs-console" class="eutherdogs-console" aria-hidden="true">
@@ -1215,6 +1224,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 videoCanvas = document.querySelector<HTMLCanvasElement>("#video")!;
 videoContext = videoCanvas.getContext("2d", { alpha: false })!;
 shaderCanvas = document.querySelector<HTMLCanvasElement>("#shader-video")!;
+const bridgeVideo = document.querySelector<HTMLVideoElement>("#bridge-video")!;
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 
@@ -1667,8 +1677,10 @@ playToggle.addEventListener("click", async () => {
   }
   if (ui.runtime === "bridge" && ui.loaded) {
     if (ui.playing) {
-      void ensureAudio();
-      void bridgeStreamLoop();
+      if (!startBridgeVideoStream()) {
+        void ensureAudio();
+        void bridgeStreamLoop();
+      }
     } else {
       stopBridgeStream();
     }
@@ -3415,6 +3427,14 @@ async function connectBridge(announce = true): Promise<boolean> {
       return true;
     }
     await refreshStateSlots();
+    void startBridgeWebRtcProbe();
+    if (lobbyRole === "spectator") {
+      if (announce) {
+        pushTrace("Headless core bridge online");
+      }
+      renderUi();
+      return true;
+    }
     const frame = await bridgeFrame();
     drawNativeFrame(frame);
     ui.frame = frame.frame;
@@ -3588,8 +3608,10 @@ function restoreBridgePlaybackAfterRestart(wasPlaying: boolean): void {
   ui.status = "RUNNING";
   playToggle.textContent = "Pause";
   resetScheduledAudio();
-  void ensureAudio();
-  void bridgeStreamLoop();
+  if (!startBridgeVideoStream()) {
+    void ensureAudio();
+    void bridgeStreamLoop();
+  }
   renderUi();
 }
 
@@ -4416,13 +4438,274 @@ function stopBridgeStream(): void {
   bridgeStreamAbort?.abort();
   bridgeStreamAbort = null;
   bridgeStreamActive = false;
+  stopBridgeVideoStream();
+  stopBridgeWebRtcProbe();
   resetScheduledAudio();
+}
+
+async function startBridgeWebRtcProbe(): Promise<boolean> {
+  if (isTauri || !window.RTCPeerConnection) {
+    return false;
+  }
+  const generation = bridgeWebRtcGeneration + 1;
+  stopBridgeWebRtcProbe();
+  bridgeWebRtcGeneration = generation;
+  const peer = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  });
+  bridgeWebRtcPeer = peer;
+  const channel = peer.createDataChannel("eutheroxide-control", {
+    ordered: false,
+    maxRetransmits: 0,
+  });
+  bridgeWebRtcChannel = channel;
+
+  channel.onopen = () => {
+    if (generation !== bridgeWebRtcGeneration) {
+      return;
+    }
+    bridgeWebRtcActive = true;
+    channel.send("ping");
+    pushTrace("WebRTC datachannel active");
+    renderUi();
+  };
+  channel.onmessage = (event) => {
+    if (generation !== bridgeWebRtcGeneration) {
+      return;
+    }
+    pushTrace(`WebRTC ${String(event.data)}`);
+  };
+  channel.onclose = () => {
+    if (generation === bridgeWebRtcGeneration) {
+      bridgeWebRtcActive = false;
+      pushTrace("WebRTC datachannel closed");
+      renderUi();
+    }
+  };
+
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer, 1800);
+    if (!peer.localDescription || generation !== bridgeWebRtcGeneration) {
+      return false;
+    }
+    const answer = await bridgeJson<RTCSessionDescriptionInit>(
+      "/webrtc/offer",
+      {
+        method: "POST",
+        body: JSON.stringify(peer.localDescription),
+      },
+      4500,
+    );
+    if (generation !== bridgeWebRtcGeneration) {
+      return false;
+    }
+    await peer.setRemoteDescription(answer);
+    return true;
+  } catch {
+    if (generation === bridgeWebRtcGeneration) {
+      stopBridgeWebRtcProbe();
+      pushTrace("WebRTC probe failed");
+    }
+    return false;
+  }
+}
+
+function stopBridgeWebRtcProbe(): void {
+  bridgeWebRtcGeneration += 1;
+  bridgeWebRtcActive = false;
+  bridgeWebRtcChannel?.close();
+  bridgeWebRtcChannel = null;
+  bridgeWebRtcPeer?.close();
+  bridgeWebRtcPeer = null;
+}
+
+function bridgeTransportLabel(label: string): string {
+  return bridgeWebRtcActive ? `${label} + WEBRTC CTRL` : label;
+}
+
+function waitForIceGathering(peer: RTCPeerConnection, timeoutMs: number): Promise<void> {
+  if (peer.iceGatheringState === "complete") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(done, timeoutMs);
+    function done(): void {
+      window.clearTimeout(timeout);
+      peer.removeEventListener("icegatheringstatechange", onStateChange);
+      resolve();
+    }
+    function onStateChange(): void {
+      if (peer.iceGatheringState === "complete") {
+        done();
+      }
+    }
+    peer.addEventListener("icegatheringstatechange", onStateChange);
+  });
+}
+
+function startBridgeVideoStream(): boolean {
+  if (lobbyRole !== "spectator") {
+    return false;
+  }
+  const mime = "video/mp4; codecs=\"avc1.42E01E\"";
+  const mediaSourceCtor = window.MediaSource;
+  if (!mediaSourceCtor?.isTypeSupported(mime)) {
+    return false;
+  }
+  const generation = bridgeStreamGeneration;
+  bridgeVideoActive = true;
+  bridgeVideoAbort = new AbortController();
+  if (bridgeVideoFallbackTimer !== null) {
+    window.clearTimeout(bridgeVideoFallbackTimer);
+    bridgeVideoFallbackTimer = null;
+  }
+  bridgeVideo.onloadeddata = () => {
+    if (!bridgeVideoActive || generation !== bridgeStreamGeneration) {
+      return;
+    }
+    screenGlass.classList.add("has-bridge-video");
+    ui.transportMode = bridgeTransportLabel("BRIDGE H264 MSE");
+    pushTrace("H.264 video stream active");
+    renderUi();
+  };
+  bridgeVideo.ontimeupdate = () => {
+    trimBridgeVideoLatency();
+  };
+  bridgeVideo.onerror = () => {
+    fallbackBridgeVideoStream();
+  };
+  const mediaSource = new MediaSource();
+  bridgeVideo.src = URL.createObjectURL(mediaSource);
+  mediaSource.addEventListener("sourceopen", () => {
+    const sourceBuffer = mediaSource.addSourceBuffer(mime);
+    const queue: Uint8Array<ArrayBuffer>[] = [];
+    let closed = false;
+    const appendNext = () => {
+      if (closed || sourceBuffer.updating || queue.length === 0) {
+        return;
+      }
+      sourceBuffer.appendBuffer(queue.shift()!);
+    };
+    sourceBuffer.addEventListener("updateend", () => {
+      trimBridgeVideoLatency(sourceBuffer);
+      appendNext();
+    });
+    void (async () => {
+      try {
+        const response = await fetch(bridgeUrl("/stream-video.mp4"), {
+          credentials: "include",
+          signal: bridgeVideoAbort?.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(await response.text());
+        }
+        const reader = response.body.getReader();
+        while (bridgeVideoActive && generation === bridgeStreamGeneration) {
+          const read = await reader.read();
+          if (read.done) {
+            break;
+          }
+          if (read.value) {
+            queue.push(read.value as Uint8Array<ArrayBuffer>);
+            appendNext();
+          }
+        }
+      } catch {
+        if (bridgeVideoActive && generation === bridgeStreamGeneration) {
+          fallbackBridgeVideoStream();
+        }
+      } finally {
+        closed = true;
+        if (mediaSource.readyState === "open") {
+          try {
+            mediaSource.endOfStream();
+          } catch {
+            // Source may already be closing after abort.
+          }
+        }
+      }
+    })();
+  }, { once: true });
+  bridgeVideo.play().catch(() => fallbackBridgeVideoStream());
+  bridgeVideoFallbackTimer = window.setTimeout(() => {
+    if (bridgeVideoActive && bridgeVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      fallbackBridgeVideoStream();
+    }
+  }, 2500);
+  bridgeVideoLatencyTimer = window.setInterval(() => trimBridgeVideoLatency(), 500);
+  ui.transportMode = bridgeTransportLabel("BRIDGE H264 MSE");
+  return true;
+}
+
+function stopBridgeVideoStream(): void {
+  if (bridgeVideoFallbackTimer !== null) {
+    window.clearTimeout(bridgeVideoFallbackTimer);
+    bridgeVideoFallbackTimer = null;
+  }
+  if (bridgeVideoLatencyTimer !== null) {
+    window.clearInterval(bridgeVideoLatencyTimer);
+    bridgeVideoLatencyTimer = null;
+  }
+  bridgeVideo.onloadeddata = null;
+  bridgeVideo.ontimeupdate = null;
+  bridgeVideo.onerror = null;
+  bridgeVideoAbort?.abort();
+  bridgeVideoAbort = null;
+  if (!bridgeVideoActive && !bridgeVideo.src) {
+    return;
+  }
+  bridgeVideoActive = false;
+  bridgeVideo.pause();
+  if (bridgeVideo.src.startsWith("blob:")) {
+    URL.revokeObjectURL(bridgeVideo.src);
+  }
+  bridgeVideo.removeAttribute("src");
+  bridgeVideo.load();
+  screenGlass.classList.remove("has-bridge-video");
+}
+
+function trimBridgeVideoLatency(sourceBuffer?: SourceBuffer): void {
+  if (!bridgeVideoActive || bridgeVideo.buffered.length === 0) {
+    return;
+  }
+  const end = bridgeVideo.buffered.end(bridgeVideo.buffered.length - 1);
+  const lag = end - bridgeVideo.currentTime;
+  if (lag > 0.8) {
+    bridgeVideo.currentTime = Math.max(0, end - 0.18);
+    ui.transportMode = bridgeTransportLabel(`BRIDGE H264 LIVE ${lag.toFixed(1)}s`);
+    renderUi();
+  }
+  const removeBefore = bridgeVideo.currentTime - 1.0;
+  if (
+    sourceBuffer &&
+    !sourceBuffer.updating &&
+    removeBefore > 0 &&
+    bridgeVideo.buffered.length > 0 &&
+    bridgeVideo.buffered.start(0) < removeBefore
+  ) {
+    try {
+      sourceBuffer.remove(0, removeBefore);
+    } catch {
+      // Buffer trimming is opportunistic; playback can continue without it.
+    }
+  }
+}
+
+function fallbackBridgeVideoStream(): void {
+  stopBridgeVideoStream();
+  if (ui.playing && ui.runtime === "bridge") {
+    void ensureAudio();
+    void bridgeStreamLoop();
+  }
 }
 
 async function bridgeStreamLoop(): Promise<void> {
   if (bridgeStreamActive) {
     return;
   }
+  stopBridgeVideoStream();
   bridgeStreamActive = true;
   const generation = bridgeStreamGeneration;
   bridgeStreamAbort = new AbortController();
@@ -4479,8 +4762,9 @@ async function bridgeStreamLoop(): Promise<void> {
         if (latestFrameAudio.videoFormat !== "RGB565_AUDIO_FIRST") {
           ui.audioLeadMs = await scheduleAudio(latestFrameAudio.audio);
         }
-        ui.transportMode =
-          latestFrameAudio.videoFormat?.startsWith("RGB565") ? "BRIDGE RGB565 STREAM" : "BRIDGE STREAM";
+        ui.transportMode = bridgeTransportLabel(
+          latestFrameAudio.videoFormat?.startsWith("RGB565") ? "BRIDGE RGB565 STREAM" : "BRIDGE STREAM",
+        );
         ui.transportMs = received === batchCount ? decoded - started : decoded - before;
         ui.drawMs = drawn - decoded;
         applyBridgeFrame(latestFrameAudio.frame);
@@ -7495,7 +7779,9 @@ function setPlayerPort(port: PlayerPort): void {
   resetScheduledAudio();
   if (ui.runtime === "bridge" && ui.playing) {
     stopBridgeStream();
-    void bridgeStreamLoop();
+    if (!startBridgeVideoStream()) {
+      void bridgeStreamLoop();
+    }
   }
   renderPlayerPort();
 }
@@ -7846,8 +8132,10 @@ async function loadStateSlot(slot: number): Promise<void> {
         ui.playing = true;
         ui.status = "RUNNING";
         playToggle.textContent = "Pause";
-        void ensureAudio();
-        void bridgeStreamLoop();
+        if (!startBridgeVideoStream()) {
+          void ensureAudio();
+          void bridgeStreamLoop();
+        }
       }
       renderUi();
       return;
@@ -7855,7 +8143,9 @@ async function loadStateSlot(slot: number): Promise<void> {
       ui.playing = wasPlaying;
       playToggle.textContent = ui.playing ? "Pause" : "Play";
       if (wasPlaying) {
-        void bridgeStreamLoop();
+        if (!startBridgeVideoStream()) {
+          void bridgeStreamLoop();
+        }
       }
       ui.lastError = String(error);
       pushTrace("Bridge argon load rejected");

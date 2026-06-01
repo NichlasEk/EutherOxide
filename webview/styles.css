@@ -70,7 +70,8 @@ button:disabled {
 }
 
 .eutherdogs-mode #video,
-.eutherdogs-mode #shader-video {
+.eutherdogs-mode #shader-video,
+.eutherdogs-mode #bridge-video {
   opacity: 0;
 }
 
@@ -2202,6 +2203,24 @@ h2 {
   display: none;
 }
 
+#bridge-video {
+  display: none;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  image-rendering: pixelated;
+}
+
+.screen-glass.has-bridge-video #video,
+.screen-glass.has-bridge-video #shader-video {
+  display: none;
+}
+
+.screen-glass.has-bridge-video #bridge-video {
+  display: block;
+}
+
 .screen-glass.has-shader #video {
   position: absolute;
   width: 1px;
@@ -2211,6 +2230,15 @@ h2 {
 }
 
 .screen-glass.has-shader #shader-video {
+  display: block;
+}
+
+.screen-glass.has-bridge-video.has-shader #shader-video,
+.screen-glass.has-bridge-video.has-shader #video {
+  display: none;
+}
+
+.screen-glass.has-bridge-video.has-shader #bridge-video {
   display: block;
 }
 

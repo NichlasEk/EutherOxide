@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::process::{self, Command};
+use std::process::{self, Command, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -20,6 +20,8 @@ use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use gilrs::{Axis, Button, Gilrs};
 use serde::{Deserialize, Serialize};
+
+const BRIDGE_STREAM_VIDEO_DIVISOR: u64 = 2;
 
 fn main() {
     if let Err(err) = run() {
@@ -642,6 +644,8 @@ struct BridgeState {
     eutherdogs_input_seq: Arc<Mutex<[u64; 2]>>,
     eutherdogs_runner_active: Arc<Mutex<bool>>,
     eutherdogs_last_poll: Arc<Mutex<Instant>>,
+    webrtc_runtime: Arc<tokio::runtime::Runtime>,
+    webrtc_peers: Arc<Mutex<Vec<BridgeWebRtcPeer>>>,
 }
 
 struct BridgePlayerLease {
@@ -654,6 +658,11 @@ struct BridgePacketSnapshot {
     frame: u32,
     bytes: Vec<u8>,
     stopped: bool,
+}
+
+struct BridgeWebRtcPeer {
+    _peer: Arc<webrtc::peer_connection::RTCPeerConnection>,
+    created: Instant,
 }
 
 struct GamepadReader {
@@ -770,6 +779,11 @@ fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
 }
 
 fn new_bridge_state(emulator: Emulator) -> BridgeState {
+    let webrtc_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("euther-webrtc")
+        .build()
+        .expect("failed to create WebRTC runtime");
     BridgeState {
         emulator: Arc::new(Mutex::new(emulator)),
         next_frame_due: Arc::new(Mutex::new(Instant::now())),
@@ -787,6 +801,8 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         eutherdogs_input_seq: Arc::new(Mutex::new([0, 0])),
         eutherdogs_runner_active: Arc::new(Mutex::new(false)),
         eutherdogs_last_poll: Arc::new(Mutex::new(Instant::now())),
+        webrtc_runtime: Arc::new(webrtc_runtime),
+        webrtc_peers: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -1452,6 +1468,8 @@ fn host_route_permission(path: &str, method: &str) -> Option<HostPermission> {
         | ("GET", "/frame-audio.bin")
         | ("POST", "/frame-audio.bin")
         | ("GET", "/stream-frame-audio.bin")
+        | ("GET", "/stream-video.mp4")
+        | ("POST", "/webrtc/offer")
         | ("GET", "/audio.bin")
         | ("POST", "/audio.bin")
         | ("POST", "/eutherdogs/start")
@@ -1474,7 +1492,11 @@ fn host_route_requires_writable_library(path: &str, method: &str) -> bool {
 fn host_route_requires_origin_check(path: &str) -> bool {
     matches!(
         path,
-        "/stream-frame-audio.bin" | "/stream-frame.bin" | "/eutherdogs/stream"
+        "/stream-frame-audio.bin"
+            | "/stream-frame.bin"
+            | "/stream-video.mp4"
+            | "/webrtc/offer"
+            | "/eutherdogs/stream"
     )
 }
 
@@ -2065,6 +2087,16 @@ fn handle_bridge_route_with_user(
             if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
+            if bridge_subscriber_count(state)? > 0 {
+                if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                    return send_error(stream, 409, &err.to_string());
+                }
+                let emulator = lock_bridge_emulator(state)?;
+                if emulator.bus.rom.is_empty() {
+                    return send_error(stream, 409, "no ROM loaded");
+                }
+                return send_json(stream, &bridge_frame_without_run(&emulator));
+            }
             match claim_bridge_driver(state, &client_id) {
                 Ok(true) => {}
                 Ok(false) => return send_error(stream, 409, "bridge driver busy"),
@@ -2086,6 +2118,21 @@ fn handle_bridge_route_with_user(
             let player_index = bridge_player_index(&request)?;
             if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
+            }
+            if bridge_subscriber_count(state)? > 0 {
+                if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                    return send_error(stream, 409, &err.to_string());
+                }
+                let emulator = lock_bridge_emulator(state)?;
+                if emulator.bus.rom.is_empty() {
+                    return send_error(stream, 409, "no ROM loaded");
+                }
+                return send_response(
+                    stream,
+                    200,
+                    "application/octet-stream",
+                    &bridge_frame_snapshot_bytes(&emulator),
+                );
             }
             match claim_bridge_driver(state, &client_id) {
                 Ok(true) => {}
@@ -2113,6 +2160,14 @@ fn handle_bridge_route_with_user(
             let player_index = bridge_player_index(&request)?;
             if let Err(err) = claim_bridge_player(state, &client_id, route_user, player_index) {
                 return send_error(stream, 409, &err.to_string());
+            }
+            if bridge_subscriber_count(state)? > 0 {
+                if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
+                    return send_error(stream, 409, &err.to_string());
+                }
+                if let Some(bytes) = latest_bridge_packet(state)? {
+                    return send_response(stream, 200, "application/octet-stream", &bytes);
+                }
             }
             match claim_bridge_driver(state, &client_id) {
                 Ok(true) => {}
@@ -2150,6 +2205,8 @@ fn handle_bridge_route_with_user(
             };
             bridge_stream_frame_audio(stream, state, client_id, player_index)
         }
+        ("GET", "/stream-video.mp4") => bridge_stream_video_mp4(stream, state),
+        ("POST", "/webrtc/offer") => bridge_webrtc_offer(stream, state, request),
         ("GET", "/audio.bin") | ("POST", "/audio.bin") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
@@ -2635,6 +2692,14 @@ fn publish_bridge_packet(
     Ok(())
 }
 
+fn latest_bridge_packet(state: &BridgeState) -> io::Result<Option<Vec<u8>>> {
+    let (packet, _) = &*state.latest_packet;
+    packet
+        .lock()
+        .map(|packet| packet.as_ref().map(|snapshot| snapshot.bytes.clone()))
+        .map_err(|err| io::Error::other(err.to_string()))
+}
+
 fn add_bridge_subscriber(state: &BridgeState) -> io::Result<()> {
     let mut count = state
         .subscriber_count
@@ -2690,6 +2755,7 @@ fn ensure_bridge_runner(state: &BridgeState) -> io::Result<()> {
 
 fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
     let mut idle_since: Option<Instant> = None;
+    let mut pending_audio = Vec::new();
     loop {
         if state.shutdown.load(Ordering::SeqCst) {
             break Ok(());
@@ -2715,12 +2781,19 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
                 break Ok(());
             }
             let run = emulator.run_frame();
+            pending_audio.extend(emulator.render_audio_frame_i16_stereo(44_100));
             let stopped = run.hit_unsupported_opcode;
-            let packet = bridge_frame_audio_bytes(&mut emulator, &run, 44_100);
             let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
+            let should_publish =
+                stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
+            let packet = should_publish
+                .then(|| bridge_frame_audio_samples_bytes(&emulator, &run, 44_100, &pending_audio));
             (packet, frame, stopped)
         };
-        publish_bridge_packet(state, packet, frame, stopped)?;
+        if let Some(packet) = packet {
+            pending_audio.clear();
+            publish_bridge_packet(state, packet, frame, stopped)?;
+        }
         if stopped {
             break Ok(());
         }
@@ -3111,6 +3184,198 @@ fn bridge_stream_frame_audio(
     result
 }
 
+fn bridge_stream_video_mp4(stream: &mut TcpStream, state: &BridgeState) -> io::Result<()> {
+    let (width, height, frame_rate) = {
+        let emulator = lock_bridge_emulator(state)?;
+        if emulator.bus.rom.is_empty() {
+            return send_error(stream, 409, "no ROM loaded");
+        }
+        let (width, height) = emulator.frame_size();
+        (width, height, emulator.frame_rate().min(30.0))
+    };
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            &format!("{width}x{height}"),
+            "-r",
+            &format!("{frame_rate:.3}"),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-bf",
+            "0",
+            "-f",
+            "mp4",
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| io::Error::other(format!("ffmpeg unavailable: {err}")))?;
+
+    stream.set_nodelay(true)?;
+    send_stream_header(stream, "video/mp4")?;
+    add_bridge_subscriber(state)?;
+    if let Err(err) = ensure_bridge_runner(state) {
+        remove_bridge_subscriber(state)?;
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(err);
+    }
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg stdout unavailable"))?;
+    let mut output = stream.try_clone()?;
+    let output_thread = thread::spawn(move || io::copy(&mut stdout, &mut output));
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
+    let frame_time = Duration::from_secs_f64(1.0 / frame_rate.max(1.0));
+    let mut rgb = Vec::with_capacity(width * height * 3);
+
+    let result = loop {
+        if state.shutdown.load(Ordering::SeqCst) {
+            break Ok(());
+        }
+        rgb.clear();
+        {
+            let emulator = lock_bridge_emulator(state)?;
+            if emulator.bus.rom.is_empty() {
+                break Ok(());
+            }
+            push_frame_rgb24(&mut rgb, &emulator);
+        }
+        if let Err(err) = stdin.write_all(&rgb) {
+            if err.kind() == io::ErrorKind::BrokenPipe {
+                break Ok(());
+            }
+            break Err(err);
+        }
+        thread::sleep(frame_time);
+    };
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = output_thread.join();
+    remove_bridge_subscriber(state)?;
+    result
+}
+
+fn bridge_webrtc_offer(
+    stream: &mut TcpStream,
+    state: &BridgeState,
+    request: HttpRequest,
+) -> io::Result<()> {
+    let offer: webrtc::peer_connection::sdp::session_description::RTCSessionDescription =
+        serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
+
+    let (peer, answer) = state.webrtc_runtime.block_on(async move {
+        let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
+        media_engine
+            .register_default_codecs()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let api = webrtc::api::APIBuilder::new()
+            .with_media_engine(media_engine)
+            .build();
+        let config = webrtc::peer_connection::configuration::RTCConfiguration {
+            ice_servers: vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let peer = Arc::new(
+            api.new_peer_connection(config)
+                .await
+                .map_err(|err| io::Error::other(err.to_string()))?,
+        );
+
+        peer.on_data_channel(Box::new(
+            move |channel: Arc<webrtc::data_channel::RTCDataChannel>| {
+                Box::pin(async move {
+                    let reply_channel = Arc::clone(&channel);
+                    channel.on_message(Box::new(
+                        move |message: webrtc::data_channel::data_channel_message::DataChannelMessage| {
+                            let reply_channel = Arc::clone(&reply_channel);
+                            Box::pin(async move {
+                                if message.is_string {
+                                    let text = String::from_utf8_lossy(&message.data);
+                                    let response = if text.trim() == "ping" {
+                                        "pong"
+                                    } else {
+                                        "ack"
+                                    };
+                                    let _ = reply_channel.send_text(response).await;
+                                }
+                            })
+                        },
+                    ));
+                })
+            },
+        ));
+
+        peer.set_remote_description(offer)
+            .await
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let answer = peer
+            .create_answer(None)
+            .await
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let mut gathering_complete = peer.gathering_complete_promise().await;
+        peer.set_local_description(answer)
+            .await
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let _ = tokio::time::timeout(Duration::from_secs(2), gathering_complete.recv()).await;
+        let answer = peer
+            .local_description()
+            .await
+            .ok_or_else(|| io::Error::other("missing WebRTC answer"))?;
+        Ok::<_, io::Error>((peer, answer))
+    })?;
+
+    let mut peers = state
+        .webrtc_peers
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    peers.retain(|peer| peer.created.elapsed() < Duration::from_secs(180));
+    peers.push(BridgeWebRtcPeer {
+        _peer: peer,
+        created: Instant::now(),
+    });
+    send_json(stream, &answer)
+}
+
 fn bridge_stream_subscriber(
     stream: &mut TcpStream,
     state: &BridgeState,
@@ -3245,6 +3510,15 @@ fn bridge_frame(emulator: &Emulator, run: &FrameRun) -> BridgeFrame {
 
 fn bridge_frame_bytes(emulator: &Emulator, run: &FrameRun) -> Vec<u8> {
     let frame = bridge_frame(emulator, run);
+    bridge_frame_to_bytes(&frame)
+}
+
+fn bridge_frame_snapshot_bytes(emulator: &Emulator) -> Vec<u8> {
+    let frame = bridge_frame_without_run(emulator);
+    bridge_frame_to_bytes(&frame)
+}
+
+fn bridge_frame_to_bytes(frame: &BridgeFrame) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(32 + frame.rgba.len());
     bytes.extend_from_slice(b"EOXF");
     bytes.extend_from_slice(&(frame.frame.min(u32::MAX as u64) as u32).to_le_bytes());
@@ -3279,9 +3553,18 @@ fn bridge_frame_audio_bytes(
     run: &FrameRun,
     sample_rate: usize,
 ) -> Vec<u8> {
+    let samples = emulator.render_audio_frame_i16_stereo(sample_rate);
+    bridge_frame_audio_samples_bytes(emulator, run, sample_rate, &samples)
+}
+
+fn bridge_frame_audio_samples_bytes(
+    emulator: &Emulator,
+    run: &FrameRun,
+    sample_rate: usize,
+    samples: &[i16],
+) -> Vec<u8> {
     let (width, height) = emulator.frame_size();
     let channels = 2u32;
-    let samples = emulator.render_audio_frame_i16_stereo(sample_rate);
     let sample_frames = samples.len() / channels as usize;
     let video_len = width * height * 2;
     let pcm_len = samples.len() * 2;
@@ -3299,7 +3582,7 @@ fn bridge_frame_audio_bytes(
     bytes.extend_from_slice(&(video_len as u32).to_le_bytes());
     bytes.extend_from_slice(&(pcm_len as u32).to_le_bytes());
     bytes.extend_from_slice(&channels.to_le_bytes());
-    for sample in samples {
+    for &sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     push_frame_rgb565(&mut bytes, emulator);
@@ -3314,6 +3597,15 @@ fn push_frame_rgb565(bytes: &mut Vec<u8>, emulator: &Emulator) {
         let b = (pixel & 0xff) as u16;
         let rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
         bytes.extend_from_slice(&rgb565.to_le_bytes());
+    }
+}
+
+fn push_frame_rgb24(bytes: &mut Vec<u8>, emulator: &Emulator) {
+    let (width, height) = emulator.frame_size();
+    for &pixel in emulator.framebuffer().iter().take(width * height) {
+        bytes.push(((pixel >> 16) & 0xff) as u8);
+        bytes.push(((pixel >> 8) & 0xff) as u8);
+        bytes.push((pixel & 0xff) as u8);
     }
 }
 
