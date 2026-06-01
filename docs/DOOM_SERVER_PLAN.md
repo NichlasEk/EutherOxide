@@ -75,7 +75,8 @@ Add Doom as a sibling mode to the current hosted emulator sessions:
 7. Add a bounded per-session event queue with incremental reads for polling,
    SSE, or WebSocket transport. Done.
 8. Connect the EutherHost Doom panel to incremental event polling. Done.
-9. Add stronger disconnect cleanup and match reset controls.
+9. Add stronger disconnect cleanup and match reset controls. Done for host
+   lease expiry, `playerLeft` events, reset, and ready/unready controls.
 10. Connect a minimal Doom-compatible client loop using Freedoom data.
 11. Add replay logging so a desync can be reproduced from recorded tic commands. Done for the
    EutherDoom session layer and host UI export.

@@ -972,6 +972,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
         <div class="doom-actions">
           <button id="doom-ready" type="button">Ready</button>
+          <button id="doom-unready" type="button">Unready</button>
           <button id="doom-send" type="button">Send Tic</button>
           <button id="doom-drive" type="button">Drive</button>
         </div>
@@ -1398,6 +1399,7 @@ const doomRefresh = document.querySelector<HTMLButtonElement>("#doom-refresh")!;
 const doomReplay = document.querySelector<HTMLButtonElement>("#doom-replay")!;
 const doomReset = document.querySelector<HTMLButtonElement>("#doom-reset")!;
 const doomReady = document.querySelector<HTMLButtonElement>("#doom-ready")!;
+const doomUnready = document.querySelector<HTMLButtonElement>("#doom-unready")!;
 const doomSend = document.querySelector<HTMLButtonElement>("#doom-send")!;
 const doomDrive = document.querySelector<HTMLButtonElement>("#doom-drive")!;
 const doomTitle = document.querySelector<HTMLElement>("#doom-title")!;
@@ -1569,7 +1571,11 @@ doomRefresh.addEventListener("click", async () => {
 });
 
 doomReady.addEventListener("click", async () => {
-  await readyDoomPlayer();
+  await setDoomReady(true);
+});
+
+doomUnready.addEventListener("click", async () => {
+  await setDoomReady(false);
 });
 
 doomReplay.addEventListener("click", async () => {
@@ -4053,7 +4059,7 @@ async function pollDoomEvents(): Promise<void> {
     doomLastEventId = result.lastEventId;
     if (result.events.length > 0) {
       applyDoomEvents(result.events);
-      renderDoomPanel();
+      renderLobby();
     }
   } catch {
     setDoomEventPolling(false);
@@ -4069,12 +4075,20 @@ function applyDoomEvents(events: DoomServerEvent[]): void {
       case "playerJoined":
       case "playerClaimed":
         upsertDoomPlayer(event.player, event.user, false);
+        setLobbyPlayerSlot(event.player, true, event.user);
         break;
       case "playerReady":
         setDoomPlayerReady(event.player, event.ready);
         break;
       case "playerLeft":
         doomStatus.players = doomStatus.players.filter((player) => player.player !== event.player);
+        setLobbyPlayerSlot(event.player, false);
+        if (event.player === claimedLobbyPlayer) {
+          claimedLobbyPlayer = null;
+          lobbyRole = "spectator";
+          setDoomDriveActive(false);
+          pushTrace("Doom slot released");
+        }
         break;
       case "ticFrame":
         doomStatus.frames = [...doomStatus.frames, { tic: event.tic, commands: event.commands }].slice(-8);
@@ -4092,6 +4106,19 @@ function applyDoomEvents(events: DoomServerEvent[]): void {
         break;
     }
   }
+}
+
+function setLobbyPlayerSlot(player: number, occupied: boolean, user: string | null = null): void {
+  const instance = activeLobbyInstance();
+  if (!instance || instance.kind !== "eutherdoom") {
+    return;
+  }
+  const slot = instance.players.find((entry) => entry.player === player);
+  if (!slot) {
+    return;
+  }
+  slot.occupied = occupied;
+  slot.user = occupied ? user : null;
 }
 
 function upsertDoomPlayer(player: number, user: string, ready: boolean): void {
@@ -4117,14 +4144,15 @@ function setDoomPlayerReady(player: number, ready: boolean): void {
   }
 }
 
-async function readyDoomPlayer(): Promise<void> {
+async function setDoomReady(ready: boolean): Promise<void> {
   if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
     pushTrace("Claim Doom P1 or P2 first");
     return;
   }
-  doomStatus = await bridgeJson<DoomStatus>("/api/doom/ready", { method: "POST" }, 1200);
+  const query = ready ? "" : "?ready=0";
+  doomStatus = await bridgeJson<DoomStatus>(`/api/doom/ready${query}`, { method: "POST" }, 1200);
   doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
-  pushTrace(`Doom P${claimedLobbyPlayer} ready`);
+  pushTrace(`Doom P${claimedLobbyPlayer} ${ready ? "ready" : "unready"}`);
   renderDoomPanel();
 }
 
@@ -4451,6 +4479,7 @@ function renderDoomPanel(): void {
   doomTitle.textContent = instance?.name ?? "EutherDoom Server";
   doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${playerSummary} | replay ${doomStatus?.replayEvents ?? 0}`;
   doomReady.disabled = claimedLobbyPlayer === null;
+  doomUnready.disabled = claimedLobbyPlayer === null;
   doomSend.disabled = claimedLobbyPlayer === null;
   doomDrive.disabled = claimedLobbyPlayer === null;
   doomDrive.classList.toggle("is-selected", doomDriveTimer !== null);

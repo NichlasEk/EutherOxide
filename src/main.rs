@@ -28,6 +28,7 @@ const WEBRTC_VIDEO_FPS: f64 = 60.0;
 const WEBRTC_VIDEO_BITRATE: &str = "1200k";
 const WEBRTC_VIDEO_MAXRATE: &str = "1400k";
 const WEBRTC_VIDEO_BUFSIZE: &str = "350k";
+const HOST_PLAYER_LEASE_TIMEOUT: Duration = Duration::from_secs(8);
 
 fn main() {
     if let Err(err) = run() {
@@ -1054,7 +1055,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| invalid_request("missing client id"))?;
             let player = bridge_player_index(&request)?;
-            set_host_doom_ready(state, &instance_id, &client_id, player)?;
+            let ready = query_string_value(&request.path, "ready")?
+                .map(|value| !matches!(value.as_str(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true);
+            set_host_doom_ready(state, &instance_id, &client_id, player, ready)?;
             send_json(stream, &host_doom_status(state, &instance_id)?)
         }
         ("POST", "/api/doom/cmd") => {
@@ -1659,6 +1663,9 @@ fn host_lobby_status(state: &HostState) -> io::Result<serde_json::Value> {
         .map_err(|err| io::Error::other(err.to_string()))?;
     let mut payload = Vec::with_capacity(instances.len());
     for instance in instances.iter() {
+        if instance.kind == HostInstanceKind::EutherDoom {
+            release_expired_doom_players(instance)?;
+        }
         let slots = bridge_player_slots_json(&instance.bridge)?;
         let subscribers = bridge_subscriber_count(&instance.bridge)?;
         let (loaded, title, frame) = match instance.kind {
@@ -1711,9 +1718,9 @@ fn bridge_player_slots_json(state: &BridgeState) -> io::Result<Vec<serde_json::V
         .iter()
         .enumerate()
         .map(|(index, slot)| {
-            let active = slot
-                .as_ref()
-                .is_some_and(|lease| now.duration_since(lease.updated) <= Duration::from_secs(8));
+            let active = slot.as_ref().is_some_and(|lease| {
+                now.duration_since(lease.updated) <= HOST_PLAYER_LEASE_TIMEOUT
+            });
             serde_json::json!({
                 "player": index + 1,
                 "occupied": active,
@@ -1844,23 +1851,27 @@ fn join_host_lobby_instance(
 
 fn release_expired_doom_players(instance: &HostInstance) -> io::Result<()> {
     let expired = {
-        let slots = instance
+        let mut slots = instance
             .bridge
             .player_slots
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
         let now = Instant::now();
-        slots
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| {
-                let expired = slot
-                    .as_ref()
-                    .is_none_or(|lease| now.duration_since(lease.updated) > Duration::from_secs(8));
-                expired.then_some(index)
-            })
-            .collect::<Vec<_>>()
+        let mut expired = Vec::new();
+        for (index, slot) in slots.iter_mut().enumerate() {
+            if slot
+                .as_ref()
+                .is_some_and(|lease| now.duration_since(lease.updated) > HOST_PLAYER_LEASE_TIMEOUT)
+            {
+                *slot = None;
+                expired.push(index);
+            }
+        }
+        expired
     };
+    if expired.is_empty() {
+        return Ok(());
+    }
     let Some(doom) = &instance.doom else {
         return Ok(());
     };
@@ -1956,6 +1967,7 @@ fn host_doom_status(state: &HostState, instance_id: &str) -> io::Result<serde_js
     if instance.kind != HostInstanceKind::EutherDoom {
         return Err(invalid_request("selected instance is not EutherDoom"));
     }
+    release_expired_doom_players(&instance)?;
     let doom = instance
         .doom
         .as_ref()
@@ -2004,6 +2016,7 @@ fn host_doom_events(
     if instance.kind != HostInstanceKind::EutherDoom {
         return Err(invalid_request("selected instance is not EutherDoom"));
     }
+    release_expired_doom_players(&instance)?;
     let doom = instance
         .doom
         .as_ref()
@@ -2041,6 +2054,7 @@ fn set_host_doom_ready(
     instance_id: &str,
     client_id: &str,
     player_index: usize,
+    ready: bool,
 ) -> io::Result<()> {
     let instance = host_doom_claimed_instance(state, instance_id, client_id, player_index)?;
     let player_id = eutherdoom_server::PlayerId::from_index(player_index)
@@ -2053,7 +2067,7 @@ fn set_host_doom_ready(
         .map_err(|err| io::Error::other(err.to_string()))?
         .handle_command(
             player_id,
-            eutherdoom_server::DoomClientCommand::Ready(true),
+            eutherdoom_server::DoomClientCommand::Ready(ready),
             Instant::now(),
         )
         .map(|_| ())
@@ -3191,7 +3205,7 @@ fn claim_bridge_player(
     for slot in slots.iter_mut() {
         if slot
             .as_ref()
-            .is_some_and(|lease| now.duration_since(lease.updated) > Duration::from_secs(8))
+            .is_some_and(|lease| now.duration_since(lease.updated) > HOST_PLAYER_LEASE_TIMEOUT)
         {
             *slot = None;
         }
@@ -3340,7 +3354,7 @@ fn claim_bridge_driver(state: &BridgeState, client_id: &str) -> io::Result<bool>
     let now = Instant::now();
     if driver
         .as_ref()
-        .is_some_and(|lease| now.duration_since(lease.updated) > Duration::from_secs(8))
+        .is_some_and(|lease| now.duration_since(lease.updated) > HOST_PLAYER_LEASE_TIMEOUT)
     {
         *driver = None;
     }
