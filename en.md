@@ -14,6 +14,8 @@ Date: 2026-06-01
 - `eutherhost` was restarted again at 22:15:07 CEST with the input-snapshot release binary.
 - Another follow-up is deployed locally: the bridge runner now publishes a dedicated `latest_video` RGB snapshot every emulated frame, and the WebRTC H.264 writer consumes that snapshot instead of locking the emulator directly. The browser perf panel also shows WebRTC inbound video stats as `Video age` (`jit`, decode time, and queue).
 - `eutherhost` was restarted again at 22:29:48 CEST with the video-snapshot/frame-age release binary.
+- After testing, input felt fast and audio remained smooth, but video still had occasional drops/hitches. A H.264 stability follow-up is deployed: the encoder now uses capped bitrate/maxrate/bufsize, `superfast` x264, 1-second keyframes, and smaller slices to reduce RTP/UDP burstiness. The `Video age` UI now also shows dropped-frame delta and received FPS.
+- `eutherhost` was restarted again at 23:30:13 CEST with the H.264 stability release binary.
 - Public access was working through `https://play.apothictech.se` / `https://apothictech.se` with Caddy reverse-proxying to `127.0.0.1:32162`.
 - Router/WebRTC UDP forwarding used range `49152-49200/UDP`.
 - On 2026-06-01 at about 21:44 CEST, local Caddy SNI checks worked, but public `https://apothictech.se` / `https://play.apothictech.se` curl checks returned a non-Caddy `400 Page not found` / weak certificate error from the external path. Local `--resolve apothictech.se:443:127.0.0.1` still reached Caddy and EutherHost.
@@ -44,6 +46,7 @@ Date: 2026-06-01
 - For the uncommitted latency-reduction change: `./node_modules/.bin/tsc --noEmit`, `cargo check`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
 - For the input-snapshot follow-up: `cargo check`, `git diff --check`, and `bash scripts/build-release.sh`
 - For the video-snapshot/frame-age follow-up: `cargo check`, `./node_modules/.bin/tsc --noEmit`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
+- For the H.264 stability follow-up: `cargo check`, `./node_modules/.bin/tsc --noEmit`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
 
 ## Verify Next
 
@@ -79,6 +82,7 @@ Date: 2026-06-01
 - The heartbeat/lease and input-error indicators have now been added locally; use them during the next phone/desktop test.
 - Watch CPU during 60 fps WebRTC video. If CPU or heat climbs too much on the server, make the WebRTC FPS configurable or try 45 fps as a middle ground.
 - In the next test, watch `Video age`: sustained queue above `q0` or high `jit` means the last perceived control lag is video playout buffering, not input transport.
+- For the video drop test, watch `Video age`: if `drop` increments while `fps` stays high, lower bitrate/slice size next; if `fps` falls well below 60, try 50/45 fps adaptive cap.
 
 ## Files Touched
 

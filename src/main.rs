@@ -25,6 +25,9 @@ const BRIDGE_STREAM_VIDEO_DIVISOR: u64 = 2;
 const WEBRTC_UDP_PORT_MIN: u16 = 49_152;
 const WEBRTC_UDP_PORT_MAX: u16 = 49_200;
 const WEBRTC_VIDEO_FPS: f64 = 60.0;
+const WEBRTC_VIDEO_BITRATE: &str = "1200k";
+const WEBRTC_VIDEO_MAXRATE: &str = "1400k";
+const WEBRTC_VIDEO_BUFSIZE: &str = "350k";
 
 fn main() {
     if let Err(err) = run() {
@@ -4550,23 +4553,29 @@ fn bridge_webrtc_h264_loop(
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            "superfast",
             "-tune",
             "zerolatency",
             "-profile:v",
             "baseline",
             "-pix_fmt",
             "yuv420p",
+            "-b:v",
+            WEBRTC_VIDEO_BITRATE,
+            "-maxrate",
+            WEBRTC_VIDEO_MAXRATE,
+            "-bufsize",
+            WEBRTC_VIDEO_BUFSIZE,
             "-g",
-            "30",
+            "60",
             "-keyint_min",
-            "30",
+            "60",
             "-sc_threshold",
             "0",
             "-bf",
             "0",
             "-x264-params",
-            "repeat-headers=1:aud=1",
+            "repeat-headers=1:aud=1:sliced-threads=1:slice-max-size=1100",
             "-f",
             "h264",
             "pipe:1",

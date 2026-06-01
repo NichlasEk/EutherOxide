@@ -770,7 +770,15 @@ let bridgeWebRtcAudioActive = false;
 let bridgeWebRtcMode: "idle" | "connecting" | "active" | "blocked" | "failed" = "idle";
 let bridgeWebRtcLastPingAt = 0;
 let bridgeWebRtcLastPongAt = 0;
-let bridgeWebRtcLastVideoStats: { emitted: number; jitter: number; decoded: number; decode: number } | null = null;
+let bridgeWebRtcLastVideoStats: {
+  emitted: number;
+  jitter: number;
+  decoded: number;
+  decode: number;
+  dropped: number;
+  received: number;
+  checkedAt: number;
+} | null = null;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let bridgePlaybackStarting = false;
@@ -5008,22 +5016,29 @@ async function updateBridgeWebRtcStats(peer: RTCPeerConnection): Promise<void> {
       const jitter = entry.jitterBufferDelay ?? 0;
       const decoded = entry.framesDecoded ?? 0;
       const decode = entry.totalDecodeTime ?? 0;
+      const dropped = entry.framesDropped ?? 0;
+      const received = entry.framesReceived ?? decoded;
+      const checkedAt = performance.now();
       const previous = bridgeWebRtcLastVideoStats;
-      bridgeWebRtcLastVideoStats = { emitted, jitter, decoded, decode };
+      bridgeWebRtcLastVideoStats = { emitted, jitter, decoded, decode, dropped, received, checkedAt };
       if (!previous) {
         ui.videoAgeStatus = "measuring";
         return;
       }
       const emittedDelta = emitted - previous.emitted;
       const decodedDelta = decoded - previous.decoded;
+      const droppedDelta = dropped - previous.dropped;
+      const receivedDelta = received - previous.received;
+      const secondsDelta = Math.max(0.001, (checkedAt - previous.checkedAt) / 1000);
       const jitterMs = emittedDelta > 0
         ? ((jitter - previous.jitter) / emittedDelta) * 1000
         : 0;
       const decodeMs = decodedDelta > 0
         ? ((decode - previous.decode) / decodedDelta) * 1000
         : 0;
-      const queue = Math.max(0, (entry.framesReceived ?? decoded) - decoded - (entry.framesDropped ?? 0));
-      ui.videoAgeStatus = `jit ${Math.max(0, jitterMs).toFixed(0)}ms dec ${Math.max(0, decodeMs).toFixed(0)}ms q${queue}`;
+      const fps = receivedDelta / secondsDelta;
+      const queue = Math.max(0, received - decoded - dropped);
+      ui.videoAgeStatus = `jit ${Math.max(0, jitterMs).toFixed(0)}ms dec ${Math.max(0, decodeMs).toFixed(0)}ms q${queue} drop ${Math.max(0, droppedDelta)} fps ${fps.toFixed(0)}`;
     });
     if (!foundVideo) {
       ui.videoAgeStatus = "no video stats";
