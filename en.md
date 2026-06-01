@@ -12,6 +12,8 @@ Date: 2026-06-01
 - `eutherhost` was restarted again at 21:58:50 CEST with the latency-reduction release binary.
 - After testing, audio and video were reported as very smooth but inputs still felt laggy. A follow-up input-path fix is now also uncommitted and deployed: datachannel/HTTP input writes to a lightweight `latest_input` snapshot, and only the bridge runner applies those snapshots immediately before `run_frame()`. This avoids taking the emulator mutex from the input request/datachannel path while the H.264 writer is copying frames.
 - `eutherhost` was restarted again at 22:15:07 CEST with the input-snapshot release binary.
+- Another follow-up is deployed locally: the bridge runner now publishes a dedicated `latest_video` RGB snapshot every emulated frame, and the WebRTC H.264 writer consumes that snapshot instead of locking the emulator directly. The browser perf panel also shows WebRTC inbound video stats as `Video age` (`jit`, decode time, and queue).
+- `eutherhost` was restarted again at 22:29:48 CEST with the video-snapshot/frame-age release binary.
 - Public access was working through `https://play.apothictech.se` / `https://apothictech.se` with Caddy reverse-proxying to `127.0.0.1:32162`.
 - Router/WebRTC UDP forwarding used range `49152-49200/UDP`.
 - On 2026-06-01 at about 21:44 CEST, local Caddy SNI checks worked, but public `https://apothictech.se` / `https://play.apothictech.se` curl checks returned a non-Caddy `400 Page not found` / weak certificate error from the external path. Local `--resolve apothictech.se:443:127.0.0.1` still reached Caddy and EutherHost.
@@ -41,6 +43,7 @@ Date: 2026-06-01
 - For the uncommitted UI diagnostic change: `./node_modules/.bin/tsc --noEmit`, `git diff --check`, and `npm run build`
 - For the uncommitted latency-reduction change: `./node_modules/.bin/tsc --noEmit`, `cargo check`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
 - For the input-snapshot follow-up: `cargo check`, `git diff --check`, and `bash scripts/build-release.sh`
+- For the video-snapshot/frame-age follow-up: `cargo check`, `./node_modules/.bin/tsc --noEmit`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
 
 ## Verify Next
 
@@ -75,6 +78,7 @@ Date: 2026-06-01
 - If inputs still drop, add a visible datachannel heartbeat/lease indicator in the UI and log failed `/input` responses with the server error body.
 - The heartbeat/lease and input-error indicators have now been added locally; use them during the next phone/desktop test.
 - Watch CPU during 60 fps WebRTC video. If CPU or heat climbs too much on the server, make the WebRTC FPS configurable or try 45 fps as a middle ground.
+- In the next test, watch `Video age`: sustained queue above `q0` or high `jit` means the last perceived control lag is video playout buffering, not input transport.
 
 ## Files Touched
 

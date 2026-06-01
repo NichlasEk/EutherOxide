@@ -359,6 +359,7 @@ type UiState = LoadResult & {
   transportMode: string;
   rtcLeaseStatus: string;
   inputStatus: string;
+  videoAgeStatus: string;
   status: string;
   lastError: string;
   stateSlots: StateSlot[];
@@ -721,6 +722,7 @@ const ui: UiState = {
   transportMode: isTauri ? "TAURI INIT" : "WEB INIT",
   rtcLeaseStatus: "idle",
   inputStatus: "idle",
+  videoAgeStatus: "idle",
   status: "IDLE",
   lastError: "",
   statePath: null,
@@ -759,6 +761,7 @@ let bridgeWebRtcPeer: RTCPeerConnection | null = null;
 let bridgeWebRtcChannel: RTCDataChannel | null = null;
 let bridgeWebRtcHeartbeatTimer: number | null = null;
 let bridgeWebRtcInputTimer: number | null = null;
+let bridgeWebRtcStatsTimer: number | null = null;
 let bridgeWebRtcInputSeq = 0;
 let bridgeWebRtcGeneration = 0;
 let bridgeWebRtcActive = false;
@@ -767,6 +770,7 @@ let bridgeWebRtcAudioActive = false;
 let bridgeWebRtcMode: "idle" | "connecting" | "active" | "blocked" | "failed" = "idle";
 let bridgeWebRtcLastPingAt = 0;
 let bridgeWebRtcLastPongAt = 0;
+let bridgeWebRtcLastVideoStats: { emitted: number; jitter: number; decoded: number; decode: number } | null = null;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
@@ -1185,6 +1189,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="metric"><span>Transport</span><strong id="transport-mode">INIT</strong></div>
           <div class="metric"><span>RTC lease</span><strong id="rtc-lease-status">idle</strong></div>
           <div class="metric"><span>Input</span><strong id="input-status">idle</strong></div>
+          <div class="metric"><span>Video age</span><strong id="video-age-status">idle</strong></div>
           <div class="metric"><span>Build</span><strong id="build-id">dev</strong></div>
         </div>
       </div>
@@ -4870,6 +4875,86 @@ function sendBridgeWebRtcInputSnapshot(): boolean {
   }
 }
 
+function tuneBridgeWebRtcReceiver(receiver: RTCRtpReceiver): void {
+  const lowLatencyReceiver = receiver as RTCRtpReceiver & {
+    jitterBufferTarget?: number;
+    playoutDelayHint?: number;
+  };
+  if ("jitterBufferTarget" in lowLatencyReceiver) {
+    lowLatencyReceiver.jitterBufferTarget = 0;
+  }
+  if ("playoutDelayHint" in lowLatencyReceiver) {
+    lowLatencyReceiver.playoutDelayHint = 0;
+  }
+}
+
+function startBridgeWebRtcStats(peer: RTCPeerConnection, generation: number): void {
+  if (bridgeWebRtcStatsTimer !== null) {
+    window.clearInterval(bridgeWebRtcStatsTimer);
+  }
+  bridgeWebRtcLastVideoStats = null;
+  bridgeWebRtcStatsTimer = window.setInterval(() => {
+    if (generation !== bridgeWebRtcGeneration || peer.connectionState === "closed") {
+      return;
+    }
+    void updateBridgeWebRtcStats(peer);
+  }, 500);
+}
+
+async function updateBridgeWebRtcStats(peer: RTCPeerConnection): Promise<void> {
+  try {
+    const stats = await peer.getStats();
+    let foundVideo = false;
+    stats.forEach((report) => {
+      const entry = report as RTCStats & {
+        type: string;
+        kind?: string;
+        mediaType?: string;
+        jitterBufferDelay?: number;
+        jitterBufferEmittedCount?: number;
+        totalDecodeTime?: number;
+        framesDecoded?: number;
+        framesReceived?: number;
+        framesDropped?: number;
+      };
+      if (
+        entry.type !== "inbound-rtp" ||
+        (entry.kind ?? entry.mediaType) !== "video"
+      ) {
+        return;
+      }
+      foundVideo = true;
+      const emitted = entry.jitterBufferEmittedCount ?? 0;
+      const jitter = entry.jitterBufferDelay ?? 0;
+      const decoded = entry.framesDecoded ?? 0;
+      const decode = entry.totalDecodeTime ?? 0;
+      const previous = bridgeWebRtcLastVideoStats;
+      bridgeWebRtcLastVideoStats = { emitted, jitter, decoded, decode };
+      if (!previous) {
+        ui.videoAgeStatus = "measuring";
+        return;
+      }
+      const emittedDelta = emitted - previous.emitted;
+      const decodedDelta = decoded - previous.decoded;
+      const jitterMs = emittedDelta > 0
+        ? ((jitter - previous.jitter) / emittedDelta) * 1000
+        : 0;
+      const decodeMs = decodedDelta > 0
+        ? ((decode - previous.decode) / decodedDelta) * 1000
+        : 0;
+      const queue = Math.max(0, (entry.framesReceived ?? decoded) - decoded - (entry.framesDropped ?? 0));
+      ui.videoAgeStatus = `jit ${Math.max(0, jitterMs).toFixed(0)}ms dec ${Math.max(0, decodeMs).toFixed(0)}ms q${queue}`;
+    });
+    if (!foundVideo) {
+      ui.videoAgeStatus = "no video stats";
+    }
+    renderUi();
+  } catch {
+    ui.videoAgeStatus = "stats blocked";
+    renderUi();
+  }
+}
+
 async function startBridgeWebRtcProbe(): Promise<boolean> {
   if (isTauri) {
     return false;
@@ -4894,8 +4979,11 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
   bridgeWebRtcPeer = peer;
-  peer.addTransceiver("video", { direction: "recvonly" });
-  peer.addTransceiver("audio", { direction: "recvonly" });
+  const videoTransceiver = peer.addTransceiver("video", { direction: "recvonly" });
+  const audioTransceiver = peer.addTransceiver("audio", { direction: "recvonly" });
+  tuneBridgeWebRtcReceiver(videoTransceiver.receiver);
+  tuneBridgeWebRtcReceiver(audioTransceiver.receiver);
+  startBridgeWebRtcStats(peer, generation);
   peer.ontrack = (event) => {
     if (generation !== bridgeWebRtcGeneration) {
       return;
@@ -5027,7 +5115,13 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
         window.clearInterval(bridgeWebRtcInputTimer);
         bridgeWebRtcInputTimer = null;
       }
+      if (bridgeWebRtcStatsTimer !== null) {
+        window.clearInterval(bridgeWebRtcStatsTimer);
+        bridgeWebRtcStatsTimer = null;
+      }
+      bridgeWebRtcLastVideoStats = null;
       ui.rtcLeaseStatus = "closed";
+      ui.videoAgeStatus = "closed";
       pushTrace("WebRTC datachannel closed");
       renderUi();
     }
@@ -5071,7 +5165,9 @@ function stopBridgeWebRtcProbe(): void {
   bridgeWebRtcAudioActive = false;
   bridgeWebRtcLastPingAt = 0;
   bridgeWebRtcLastPongAt = 0;
+  bridgeWebRtcLastVideoStats = null;
   ui.rtcLeaseStatus = "idle";
+  ui.videoAgeStatus = "idle";
   if (bridgeVideo.srcObject) {
     bridgeVideo.srcObject = null;
     screenGlass.classList.remove("has-bridge-video");
@@ -5087,6 +5183,10 @@ function stopBridgeWebRtcProbe(): void {
   if (bridgeWebRtcInputTimer !== null) {
     window.clearInterval(bridgeWebRtcInputTimer);
     bridgeWebRtcInputTimer = null;
+  }
+  if (bridgeWebRtcStatsTimer !== null) {
+    window.clearInterval(bridgeWebRtcStatsTimer);
+    bridgeWebRtcStatsTimer = null;
   }
   bridgeWebRtcInputSeq = 0;
   bridgeWebRtcChannel?.close();
@@ -9091,6 +9191,7 @@ function renderUi(): void {
   document.querySelector("#transport-mode")!.textContent = ui.transportMode;
   document.querySelector("#rtc-lease-status")!.textContent = ui.rtcLeaseStatus;
   document.querySelector("#input-status")!.textContent = ui.inputStatus;
+  document.querySelector("#video-age-status")!.textContent = ui.videoAgeStatus;
   document.querySelector("#build-id")!.textContent = WEB_BUILD_ID;
   perfSummary.textContent = `${ui.frameMs.toFixed(2)} ms | ${ui.audioLeadMs.toFixed(0)} lead`;
   document.querySelector("#runtime-chip")!.textContent =

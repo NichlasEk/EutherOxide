@@ -647,6 +647,7 @@ struct BridgeState {
     driver_client: Arc<Mutex<Option<BridgePlayerLease>>>,
     latest_packet: Arc<(Mutex<Option<BridgePacketSnapshot>>, Condvar)>,
     latest_audio: Arc<(Mutex<Option<BridgeAudioSnapshot>>, Condvar)>,
+    latest_video: Arc<(Mutex<Option<BridgeVideoSnapshot>>, Condvar)>,
     subscriber_count: Arc<Mutex<usize>>,
     runner_active: Arc<Mutex<bool>>,
     shutdown: Arc<AtomicBool>,
@@ -675,6 +676,15 @@ struct BridgePacketSnapshot {
 struct BridgeAudioSnapshot {
     frame: u32,
     pcm: Vec<u8>,
+    stopped: bool,
+}
+
+struct BridgeVideoSnapshot {
+    frame: u32,
+    rgb: Vec<u8>,
+    width: usize,
+    height: usize,
+    published_unix_ms: u64,
     stopped: bool,
 }
 
@@ -835,6 +845,7 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         driver_client: Arc::new(Mutex::new(None)),
         latest_packet: Arc::new((Mutex::new(None), Condvar::new())),
         latest_audio: Arc::new((Mutex::new(None), Condvar::new())),
+        latest_video: Arc::new((Mutex::new(None), Condvar::new())),
         subscriber_count: Arc::new(Mutex::new(0)),
         runner_active: Arc::new(Mutex::new(false)),
         shutdown: Arc::new(AtomicBool::new(false)),
@@ -3285,6 +3296,12 @@ fn clear_bridge_player(state: &BridgeState) -> io::Result<()> {
         .map_err(|err| io::Error::other(err.to_string()))?;
     *audio = None;
     condvar.notify_all();
+    let (video, condvar) = &*state.latest_video;
+    let mut video = video
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *video = None;
+    condvar.notify_all();
     Ok(())
 }
 
@@ -3302,6 +3319,12 @@ fn stop_bridge_state(state: &BridgeState) -> io::Result<()> {
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     *audio = None;
+    condvar.notify_all();
+    let (video, condvar) = &*state.latest_video;
+    let mut video = video
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *video = None;
     condvar.notify_all();
     Ok(())
 }
@@ -3371,6 +3394,66 @@ fn publish_bridge_audio(
     });
     condvar.notify_all();
     Ok(())
+}
+
+fn publish_bridge_video(
+    state: &BridgeState,
+    rgb: Vec<u8>,
+    width: usize,
+    height: usize,
+    frame: u32,
+    stopped: bool,
+) -> io::Result<()> {
+    let (video, condvar) = &*state.latest_video;
+    let mut video = video
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *video = Some(BridgeVideoSnapshot {
+        frame,
+        rgb,
+        width,
+        height,
+        published_unix_ms: unix_ms_now(),
+        stopped,
+    });
+    condvar.notify_all();
+    Ok(())
+}
+
+fn next_bridge_video_snapshot(
+    state: &BridgeState,
+    last_frame: u32,
+    stop: &AtomicBool,
+) -> io::Result<Option<BridgeVideoSnapshot>> {
+    let (video_lock, condvar) = &*state.latest_video;
+    let mut video = video_lock
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    while video
+        .as_ref()
+        .is_none_or(|snapshot| snapshot.frame == last_frame)
+    {
+        if stop.load(Ordering::SeqCst) || state.shutdown.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let wait = condvar
+            .wait_timeout(video, Duration::from_millis(250))
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        video = wait.0;
+        if wait.1.timed_out()
+            && (stop.load(Ordering::SeqCst) || state.shutdown.load(Ordering::SeqCst))
+        {
+            return Ok(None);
+        }
+    }
+    Ok(video.as_ref().map(|snapshot| BridgeVideoSnapshot {
+        frame: snapshot.frame,
+        rgb: snapshot.rgb.clone(),
+        width: snapshot.width,
+        height: snapshot.height,
+        published_unix_ms: snapshot.published_unix_ms,
+        stopped: snapshot.stopped,
+    }))
 }
 
 fn latest_bridge_packet(state: &BridgeState) -> io::Result<Option<Vec<u8>>> {
@@ -3456,7 +3539,7 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
         }
         idle_since = None;
         pace_bridge_frame(state)?;
-        let (packet, audio, frame, stopped) = {
+        let (packet, audio, video, video_width, video_height, frame, stopped) = {
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 break Ok(());
@@ -3470,15 +3553,23 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
             pending_audio.extend_from_slice(&frame_audio);
             let stopped = run.hit_unsupported_opcode;
             let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
-            let should_publish = stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
+            let (video_width, video_height) = {
+                let (width, height) = emulator.frame_size();
+                bridge_video_output_size(width, height)
+            };
+            let mut video = Vec::with_capacity(video_width * video_height * 3);
+            push_frame_rgb24_visible(&mut video, &emulator);
+            let should_publish =
+                stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
             let packet = should_publish
                 .then(|| bridge_frame_audio_samples_bytes(&emulator, &run, 44_100, &pending_audio));
             let mut audio = Vec::with_capacity(frame_audio.len() * 2);
             for sample in frame_audio {
                 audio.extend_from_slice(&sample.to_le_bytes());
             }
-            (packet, audio, frame, stopped)
+            (packet, audio, video, video_width, video_height, frame, stopped)
         };
+        publish_bridge_video(state, video, video_width, video_height, frame, stopped)?;
         publish_bridge_audio(state, audio, frame, stopped)?;
         if let Some(packet) = packet {
             pending_audio.clear();
@@ -4497,24 +4588,24 @@ fn bridge_webrtc_h264_loop(
     let writer_state = state.clone();
     let writer_stop = Arc::clone(&stop);
     let writer = thread::spawn(move || {
-        let frame_time = Duration::from_secs_f64(1.0 / WEBRTC_VIDEO_FPS);
-        let mut rgb = Vec::with_capacity(width * height * 3);
+        let mut last_frame = 0u32;
         while !writer_stop.load(Ordering::SeqCst) {
-            rgb.clear();
+            let snapshot = match next_bridge_video_snapshot(&writer_state, last_frame, &writer_stop)
             {
-                let emulator = match lock_bridge_emulator(&writer_state) {
-                    Ok(emulator) => emulator,
-                    Err(_) => break,
-                };
-                if emulator.bus.rom.is_empty() {
-                    break;
-                }
-                push_frame_rgb24_visible(&mut rgb, &emulator);
-            }
-            if stdin.write_all(&rgb).is_err() {
+                Ok(Some(snapshot)) => snapshot,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+            last_frame = snapshot.frame;
+            if snapshot.width != width || snapshot.height != height {
                 break;
             }
-            thread::sleep(frame_time);
+            if stdin.write_all(&snapshot.rgb).is_err() {
+                break;
+            }
+            if snapshot.stopped {
+                break;
+            }
         }
     });
 
