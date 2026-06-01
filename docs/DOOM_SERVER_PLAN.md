@@ -72,9 +72,11 @@ Add Doom as a sibling mode to the current hosted emulator sessions:
 5. Add automated web tic input driven by the existing keyboard/controller state. Done.
 6. Add protocol-level client commands and server events so HTTP/UI/WebSocket can
    share the same session path. Done.
-7. Add stronger disconnect cleanup and match reset controls.
-8. Connect a minimal Doom-compatible client loop using Freedoom data.
-9. Add replay logging so a desync can be reproduced from recorded tic commands. Done for the
+7. Add a bounded per-session event queue with incremental reads for polling,
+   SSE, or WebSocket transport. Done.
+8. Add stronger disconnect cleanup and match reset controls.
+9. Connect a minimal Doom-compatible client loop using Freedoom data.
+10. Add replay logging so a desync can be reproduced from recorded tic commands. Done for the
    EutherDoom session layer and host UI export.
 
 ## Non-Goals For MVP

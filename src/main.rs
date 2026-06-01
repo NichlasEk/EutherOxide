@@ -1007,6 +1007,14 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let instance_id = host_instance_id(&request.path)?;
             send_json(stream, &host_doom_status(state, &instance_id)?)
         }
+        ("GET", "/api/doom/events") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let after_id = query_string_value(&request.path, "after")?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            send_json(stream, &host_doom_events(state, &instance_id, after_id)?)
+        }
         ("GET", "/api/doom/replay") => {
             require_host_user(state, &request)?;
             let instance_id = host_instance_id(&request.path)?;
@@ -1958,8 +1966,36 @@ fn host_doom_status(state: &HostState, instance_id: &str) -> io::Result<serde_js
         "name": instance.name,
         "currentTic": snapshot.current_tic,
         "replayEvents": snapshot.replay_events,
+        "lastEventId": snapshot.last_event_id,
         "players": players,
         "frames": frames,
+    }))
+}
+
+fn host_doom_events(
+    state: &HostState,
+    instance_id: &str,
+    after_id: u64,
+) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherDoom {
+        return Err(invalid_request("selected instance is not EutherDoom"));
+    }
+    let doom = instance
+        .doom
+        .as_ref()
+        .ok_or_else(|| io::Error::other("doom instance missing state"))?
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let events = doom
+        .queued_events_after(after_id)
+        .iter()
+        .map(doom_queued_event_json)
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "instance": instance.id,
+        "lastEventId": doom.last_event_id(),
+        "events": events,
     }))
 }
 
@@ -2100,6 +2136,48 @@ fn doom_command_json(command: &eutherdoom_server::TicCommand) -> serde_json::Val
         "buttons": command.buttons,
         "weapon": command.weapon,
     })
+}
+
+fn doom_queued_event_json(event: &eutherdoom_server::QueuedDoomEvent) -> serde_json::Value {
+    let mut value = doom_server_event_json(&event.event);
+    value["id"] = serde_json::json!(event.id);
+    value
+}
+
+fn doom_server_event_json(event: &eutherdoom_server::DoomServerEvent) -> serde_json::Value {
+    match event {
+        eutherdoom_server::DoomServerEvent::PlayerJoined { player, name } => serde_json::json!({
+            "type": "playerJoined",
+            "player": player.index() + 1,
+            "user": name,
+        }),
+        eutherdoom_server::DoomServerEvent::PlayerClaimed { player, name } => serde_json::json!({
+            "type": "playerClaimed",
+            "player": player.index() + 1,
+            "user": name,
+        }),
+        eutherdoom_server::DoomServerEvent::PlayerReady { player, ready } => serde_json::json!({
+            "type": "playerReady",
+            "player": player.index() + 1,
+            "ready": ready,
+        }),
+        eutherdoom_server::DoomServerEvent::PlayerHeartbeat { player } => serde_json::json!({
+            "type": "playerHeartbeat",
+            "player": player.index() + 1,
+        }),
+        eutherdoom_server::DoomServerEvent::PlayerLeft { player } => serde_json::json!({
+            "type": "playerLeft",
+            "player": player.index() + 1,
+        }),
+        eutherdoom_server::DoomServerEvent::TicFrame(frame) => serde_json::json!({
+            "type": "ticFrame",
+            "tic": frame.tic,
+            "commands": frame.commands.iter().map(doom_command_json).collect::<Vec<_>>(),
+        }),
+        eutherdoom_server::DoomServerEvent::Reset => serde_json::json!({
+            "type": "reset",
+        }),
+    }
 }
 
 fn host_doom_error(err: eutherdoom_server::MatchError) -> io::Error {

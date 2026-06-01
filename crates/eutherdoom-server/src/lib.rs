@@ -61,11 +61,19 @@ pub enum DoomClientCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DoomServerEvent {
+    PlayerJoined { player: PlayerId, name: String },
+    PlayerClaimed { player: PlayerId, name: String },
     PlayerReady { player: PlayerId, ready: bool },
     PlayerHeartbeat { player: PlayerId },
     PlayerLeft { player: PlayerId },
     TicFrame(TicFrame),
     Reset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedDoomEvent {
+    pub id: u64,
+    pub event: DoomServerEvent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +89,7 @@ pub struct SessionSnapshot {
     pub players: Vec<PlayerSnapshot>,
     pub recent_frames: Vec<TicFrame>,
     pub replay_events: usize,
+    pub last_event_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +132,9 @@ pub enum MatchError {
 pub struct DoomSession {
     doom_match: DoomMatch,
     replay: Vec<ReplayEvent>,
+    events: Vec<QueuedDoomEvent>,
+    next_event_id: u64,
+    event_limit: usize,
 }
 
 impl DoomSession {
@@ -130,13 +142,20 @@ impl DoomSession {
         Self {
             doom_match: DoomMatch::new(command_timeout),
             replay: Vec::new(),
+            events: Vec::new(),
+            next_event_id: 1,
+            event_limit: 256,
         }
     }
 
     pub fn join(&mut self, name: impl Into<String>, now: Instant) -> Result<PlayerId, MatchError> {
         let name = name.into();
         let player = self.doom_match.join(name.clone(), now)?;
-        self.replay.push(ReplayEvent::Join { player, name });
+        self.replay.push(ReplayEvent::Join {
+            player,
+            name: name.clone(),
+        });
+        self.queue_events(&[DoomServerEvent::PlayerJoined { player, name }]);
         Ok(player)
     }
 
@@ -148,13 +167,18 @@ impl DoomSession {
     ) -> Result<(), MatchError> {
         let name = name.into();
         self.doom_match.claim(player, name.clone(), now)?;
-        self.replay.push(ReplayEvent::Claim { player, name });
+        self.replay.push(ReplayEvent::Claim {
+            player,
+            name: name.clone(),
+        });
+        self.queue_events(&[DoomServerEvent::PlayerClaimed { player, name }]);
         Ok(())
     }
 
     pub fn leave(&mut self, player: PlayerId) -> Result<(), MatchError> {
         self.doom_match.leave(player)?;
         self.replay.push(ReplayEvent::Leave { player });
+        self.queue_events(&[DoomServerEvent::PlayerLeft { player }]);
         Ok(())
     }
 
@@ -179,7 +203,7 @@ impl DoomSession {
         command: DoomClientCommand,
         now: Instant,
     ) -> Result<Vec<DoomServerEvent>, MatchError> {
-        match command {
+        let events = match command {
             DoomClientCommand::Ready(ready) => {
                 self.set_ready(player, ready, now)?;
                 Ok(vec![DoomServerEvent::PlayerReady { player, ready }])
@@ -198,13 +222,15 @@ impl DoomSession {
             ),
             DoomClientCommand::Leave => {
                 self.leave(player)?;
-                Ok(vec![DoomServerEvent::PlayerLeft { player }])
+                Ok(Vec::new())
             }
             DoomClientCommand::Reset => {
                 self.reset(now);
-                Ok(vec![DoomServerEvent::Reset])
+                Ok(Vec::new())
             }
-        }
+        }?;
+        self.queue_events(&events);
+        Ok(events)
     }
 
     pub fn submit_command(
@@ -222,12 +248,19 @@ impl DoomSession {
     pub fn tick(&mut self, now: Instant) -> Vec<TicFrame> {
         let frames = self.doom_match.tick(now);
         self.record_frames(&frames);
+        let events = frames
+            .iter()
+            .cloned()
+            .map(DoomServerEvent::TicFrame)
+            .collect::<Vec<_>>();
+        self.queue_events(&events);
         frames
     }
 
     pub fn reset(&mut self, now: Instant) {
         self.doom_match.reset(now);
         self.replay.push(ReplayEvent::Reset);
+        self.queue_events(&[DoomServerEvent::Reset]);
     }
 
     pub fn current_tic(&self) -> u32 {
@@ -244,6 +277,18 @@ impl DoomSession {
 
     pub fn replay_events(&self) -> &[ReplayEvent] {
         &self.replay
+    }
+
+    pub fn queued_events_after(&self, after_id: u64) -> Vec<QueuedDoomEvent> {
+        self.events
+            .iter()
+            .filter(|event| event.id > after_id)
+            .cloned()
+            .collect()
+    }
+
+    pub fn last_event_id(&self) -> u64 {
+        self.next_event_id.saturating_sub(1)
     }
 
     pub fn snapshot(&self, recent_frame_limit: usize) -> SessionSnapshot {
@@ -268,6 +313,7 @@ impl DoomSession {
             players,
             recent_frames,
             replay_events: self.replay.len(),
+            last_event_id: self.last_event_id(),
         }
     }
 
@@ -282,6 +328,20 @@ impl DoomSession {
     fn record_frames(&mut self, frames: &[TicFrame]) {
         self.replay
             .extend(frames.iter().cloned().map(ReplayEvent::Frame));
+    }
+
+    fn queue_events(&mut self, events: &[DoomServerEvent]) {
+        for event in events {
+            self.events.push(QueuedDoomEvent {
+                id: self.next_event_id,
+                event: event.clone(),
+            });
+            self.next_event_id = self.next_event_id.saturating_add(1);
+        }
+        if self.events.len() > self.event_limit {
+            let excess = self.events.len() - self.event_limit;
+            self.events.drain(0..excess);
+        }
     }
 }
 
@@ -672,6 +732,7 @@ mod tests {
         assert_eq!(snapshot.current_tic, 1);
         assert_eq!(snapshot.players.len(), 2);
         assert_eq!(snapshot.recent_frames.len(), 1);
+        assert_eq!(snapshot.last_event_id, 2);
         assert!(session.replay_text().contains("FRAME 0 P1 0 10 0 0 0 0 P2 0 -4 0 0 0 0"));
     }
 
@@ -707,5 +768,10 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], DoomServerEvent::TicFrame(_)));
+        assert_eq!(session.last_event_id(), 5);
+        let queued = session.queued_events_after(3);
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].id, 4);
+        assert!(matches!(queued[1].event, DoomServerEvent::TicFrame(_)));
     }
 }
