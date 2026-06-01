@@ -21,6 +21,8 @@ argon2 = "0.5"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 webrtc = "0.8.0"
 ice = { package = "webrtc-ice", version = "0.9.1" }
+media = { package = "webrtc-media", version = "0.6.1" }
+bytes = "1"
 eutherdogs-core = { path = "crates/eutherdogs-core" }
 z80-emu = { path = "crates/z80-emu", features = ["bincode"] }
 wgpu = { version = "24.0", optional = true }

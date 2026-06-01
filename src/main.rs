@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 const BRIDGE_STREAM_VIDEO_DIVISOR: u64 = 2;
 const WEBRTC_UDP_PORT_MIN: u16 = 49_152;
 const WEBRTC_UDP_PORT_MAX: u16 = 49_200;
+const WEBRTC_VIDEO_FPS: f64 = 30.0;
 
 fn main() {
     if let Err(err) = run() {
@@ -664,6 +665,7 @@ struct BridgePacketSnapshot {
 
 struct BridgeWebRtcPeer {
     _peer: Arc<webrtc::peer_connection::RTCPeerConnection>,
+    stop: Arc<AtomicBool>,
     created: Instant,
 }
 
@@ -3302,7 +3304,7 @@ fn bridge_webrtc_offer(
     let offer: webrtc::peer_connection::sdp::session_description::RTCSessionDescription =
         serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
 
-    let (peer, answer) = state.webrtc_runtime.block_on(async move {
+    let (peer, answer, track, stop) = state.webrtc_runtime.block_on(async move {
         let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
         media_engine
             .register_default_codecs()
@@ -3328,6 +3330,31 @@ fn bridge_webrtc_offer(
                 .await
                 .map_err(|err| io::Error::other(err.to_string()))?,
         );
+        let video_track = Arc::new(
+            webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample::new(
+                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                    mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_owned(),
+                    clock_rate: 90_000,
+                    sdp_fmtp_line:
+                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                            .to_string(),
+                    ..Default::default()
+                },
+                "megadrive-video".to_string(),
+                "eutheroxide".to_string(),
+            ),
+        );
+        let video_sender = peer
+            .add_track(
+                Arc::clone(&video_track)
+                    as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>,
+            )
+            .await
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        tokio::spawn(async move {
+            let mut rtcp_buf = vec![0u8; 1500];
+            while video_sender.read(&mut rtcp_buf).await.is_ok() {}
+        });
 
         peer.on_data_channel(Box::new(
             move |channel: Arc<webrtc::data_channel::RTCDataChannel>| {
@@ -3352,6 +3379,22 @@ fn bridge_webrtc_offer(
                 })
             },
         ));
+        let video_stop = Arc::new(AtomicBool::new(false));
+        let video_stop_for_state = Arc::clone(&video_stop);
+        peer.on_peer_connection_state_change(Box::new(move |state| {
+            let video_stop = Arc::clone(&video_stop_for_state);
+            Box::pin(async move {
+                use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+                if matches!(
+                    state,
+                    RTCPeerConnectionState::Disconnected
+                        | RTCPeerConnectionState::Failed
+                        | RTCPeerConnectionState::Closed
+                ) {
+                    video_stop.store(true, Ordering::SeqCst);
+                }
+            })
+        }));
 
         peer.set_remote_description(offer)
             .await
@@ -3369,19 +3412,216 @@ fn bridge_webrtc_offer(
             .local_description()
             .await
             .ok_or_else(|| io::Error::other("missing WebRTC answer"))?;
-        Ok::<_, io::Error>((peer, answer))
+        Ok::<_, io::Error>((peer, answer, video_track, video_stop))
     })?;
+    spawn_bridge_webrtc_h264(state.clone(), track, Arc::clone(&stop));
 
     let mut peers = state
         .webrtc_peers
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
-    peers.retain(|peer| peer.created.elapsed() < Duration::from_secs(180));
+    peers.retain(|peer| {
+        let keep = peer.created.elapsed() < Duration::from_secs(180);
+        if !keep {
+            peer.stop.store(true, Ordering::SeqCst);
+        }
+        keep
+    });
     peers.push(BridgeWebRtcPeer {
         _peer: peer,
+        stop,
         created: Instant::now(),
     });
     send_json(stream, &answer)
+}
+
+fn spawn_bridge_webrtc_h264(
+    state: BridgeState,
+    track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
+    stop: Arc<AtomicBool>,
+) {
+    let runtime = Arc::clone(&state.webrtc_runtime);
+    thread::spawn(move || {
+        if let Err(err) = bridge_webrtc_h264_loop(state, track, runtime, stop) {
+            eprintln!("webrtc h264 stream ended: {err}");
+        }
+    });
+}
+
+fn bridge_webrtc_h264_loop(
+    state: BridgeState,
+    track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    stop: Arc<AtomicBool>,
+) -> io::Result<()> {
+    let (width, height) = {
+        let emulator = lock_bridge_emulator(&state)?;
+        if emulator.bus.rom.is_empty() {
+            return Ok(());
+        }
+        emulator.frame_size()
+    };
+    add_bridge_subscriber(&state)?;
+    if let Err(err) = ensure_bridge_runner(&state) {
+        remove_bridge_subscriber(&state)?;
+        return Err(err);
+    }
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            &format!("{width}x{height}"),
+            "-r",
+            &format!("{WEBRTC_VIDEO_FPS:.3}"),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-bf",
+            "0",
+            "-x264-params",
+            "repeat-headers=1:aud=1",
+            "-f",
+            "h264",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| io::Error::other(format!("ffmpeg unavailable: {err}")))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg stdin unavailable"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg stdout unavailable"))?;
+    let writer_state = state.clone();
+    let writer_stop = Arc::clone(&stop);
+    let writer = thread::spawn(move || {
+        let frame_time = Duration::from_secs_f64(1.0 / WEBRTC_VIDEO_FPS);
+        let mut rgb = Vec::with_capacity(width * height * 3);
+        while !writer_stop.load(Ordering::SeqCst) {
+            rgb.clear();
+            {
+                let emulator = match lock_bridge_emulator(&writer_state) {
+                    Ok(emulator) => emulator,
+                    Err(_) => break,
+                };
+                if emulator.bus.rom.is_empty() {
+                    break;
+                }
+                push_frame_rgb24(&mut rgb, &emulator);
+            }
+            if stdin.write_all(&rgb).is_err() {
+                break;
+            }
+            thread::sleep(frame_time);
+        }
+    });
+
+    let sample_duration = Duration::from_secs_f64(1.0 / WEBRTC_VIDEO_FPS);
+    let mut read_buf = [0u8; 16 * 1024];
+    let mut h264_buf = Vec::new();
+    let mut access_unit = Vec::new();
+    let result = loop {
+        if stop.load(Ordering::SeqCst) || state.shutdown.load(Ordering::SeqCst) {
+            break Ok(());
+        }
+        let read = match stdout.read(&mut read_buf) {
+            Ok(0) => break Ok(()),
+            Ok(read) => read,
+            Err(err) => break Err(err),
+        };
+        h264_buf.extend_from_slice(&read_buf[..read]);
+        for sample in drain_h264_access_units(&mut h264_buf, &mut access_unit) {
+            let sample = media::Sample {
+                data: bytes::Bytes::from(sample),
+                duration: sample_duration,
+                ..Default::default()
+            };
+            if runtime.block_on(track.write_sample(&sample)).is_err() {
+                stop.store(true, Ordering::SeqCst);
+                break;
+            }
+        }
+    };
+
+    stop.store(true, Ordering::SeqCst);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = writer.join();
+    remove_bridge_subscriber(&state)?;
+    result
+}
+
+fn drain_h264_access_units(buffer: &mut Vec<u8>, current: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut emitted = Vec::new();
+    let starts = h264_start_codes(buffer);
+    if starts.len() < 2 {
+        return emitted;
+    }
+    for pair in starts.windows(2) {
+        let (start, code_len) = pair[0];
+        let (next_start, _) = pair[1];
+        let nalu_start = start + code_len;
+        if nalu_start >= next_start {
+            continue;
+        }
+        let nalu = &buffer[nalu_start..next_start];
+        let nalu_type = nalu[0] & 0x1f;
+        if nalu_type == 9 && !current.is_empty() {
+            emitted.push(std::mem::take(current));
+        }
+        current.extend_from_slice(&[0, 0, 0, 1]);
+        current.extend_from_slice(nalu);
+    }
+    if let Some((last_start, _)) = starts.last().copied() {
+        buffer.drain(..last_start);
+    }
+    emitted
+}
+
+fn h264_start_codes(buffer: &[u8]) -> Vec<(usize, usize)> {
+    let mut starts = Vec::new();
+    let mut index = 0;
+    while index + 3 <= buffer.len() {
+        if index + 4 <= buffer.len() && buffer[index..index + 4] == [0, 0, 0, 1] {
+            starts.push((index, 4));
+            index += 4;
+        } else if buffer[index..index + 3] == [0, 0, 1] {
+            starts.push((index, 3));
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    starts
 }
 
 fn bridge_stream_subscriber(

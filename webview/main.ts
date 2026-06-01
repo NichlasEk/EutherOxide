@@ -724,6 +724,7 @@ let bridgeWebRtcPeer: RTCPeerConnection | null = null;
 let bridgeWebRtcChannel: RTCDataChannel | null = null;
 let bridgeWebRtcGeneration = 0;
 let bridgeWebRtcActive = false;
+let bridgeWebRtcVideoActive = false;
 let bridgeWebRtcMode: "idle" | "connecting" | "active" | "blocked" | "failed" = "idle";
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
@@ -4468,6 +4469,31 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
   bridgeWebRtcPeer = peer;
+  peer.addTransceiver("video", { direction: "recvonly" });
+  peer.ontrack = (event) => {
+    if (generation !== bridgeWebRtcGeneration || event.track.kind !== "video") {
+      return;
+    }
+    const stream = event.streams[0] ?? new MediaStream([event.track]);
+    bridgeWebRtcVideoActive = true;
+    bridgeVideo.srcObject = stream;
+    screenGlass.classList.add("has-bridge-video");
+    bridgeVideo.play().catch(() => {
+      bridgeWebRtcVideoActive = false;
+      screenGlass.classList.remove("has-bridge-video");
+    });
+    pushTrace("WebRTC video active");
+    renderUi();
+    event.track.onended = () => {
+      if (generation === bridgeWebRtcGeneration) {
+        bridgeWebRtcVideoActive = false;
+        bridgeVideo.srcObject = null;
+        screenGlass.classList.remove("has-bridge-video");
+        pushTrace("WebRTC video ended");
+        renderUi();
+      }
+    };
+  };
   const channel = peer.createDataChannel("eutheroxide-control", {
     ordered: false,
     maxRetransmits: 0,
@@ -4533,6 +4559,11 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
 function stopBridgeWebRtcProbe(): void {
   bridgeWebRtcGeneration += 1;
   bridgeWebRtcActive = false;
+  bridgeWebRtcVideoActive = false;
+  if (bridgeVideo.srcObject) {
+    bridgeVideo.srcObject = null;
+    screenGlass.classList.remove("has-bridge-video");
+  }
   bridgeWebRtcMode = "idle";
   bridgeWebRtcChannel?.close();
   bridgeWebRtcChannel = null;
@@ -4541,6 +4572,9 @@ function stopBridgeWebRtcProbe(): void {
 }
 
 function bridgeTransportLabel(label: string): string {
+  if (bridgeWebRtcVideoActive) {
+    return `${label} + WEBRTC VIDEO`;
+  }
   switch (bridgeWebRtcMode) {
     case "active":
       return `${label} + WEBRTC CTRL`;
@@ -4683,6 +4717,10 @@ function stopBridgeVideoStream(): void {
   bridgeVideo.onerror = null;
   bridgeVideoAbort?.abort();
   bridgeVideoAbort = null;
+  if (bridgeWebRtcVideoActive && bridgeVideo.srcObject) {
+    bridgeVideoActive = false;
+    return;
+  }
   if (!bridgeVideoActive && !bridgeVideo.src) {
     return;
   }
