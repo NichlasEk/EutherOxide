@@ -638,6 +638,7 @@ struct BridgeState {
     player_slots: Arc<Mutex<[Option<BridgePlayerLease>; 2]>>,
     driver_client: Arc<Mutex<Option<BridgePlayerLease>>>,
     latest_packet: Arc<(Mutex<Option<BridgePacketSnapshot>>, Condvar)>,
+    latest_audio: Arc<(Mutex<Option<BridgeAudioSnapshot>>, Condvar)>,
     subscriber_count: Arc<Mutex<usize>>,
     runner_active: Arc<Mutex<bool>>,
     shutdown: Arc<AtomicBool>,
@@ -660,6 +661,12 @@ struct BridgePlayerLease {
 struct BridgePacketSnapshot {
     frame: u32,
     bytes: Vec<u8>,
+    stopped: bool,
+}
+
+struct BridgeAudioSnapshot {
+    frame: u32,
+    pcm: Vec<u8>,
     stopped: bool,
 }
 
@@ -794,6 +801,7 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         player_slots: Arc::new(Mutex::new([None, None])),
         driver_client: Arc::new(Mutex::new(None)),
         latest_packet: Arc::new((Mutex::new(None), Condvar::new())),
+        latest_audio: Arc::new((Mutex::new(None), Condvar::new())),
         subscriber_count: Arc::new(Mutex::new(0)),
         runner_active: Arc::new(Mutex::new(false)),
         shutdown: Arc::new(AtomicBool::new(false)),
@@ -2268,7 +2276,7 @@ fn handle_bridge_route_with_user(
             bridge_stream_frame_audio(stream, state, client_id, player_index, audio_only)
         }
         ("GET", "/stream-video.mp4") => bridge_stream_video_mp4(stream, state),
-        ("POST", "/webrtc/offer") => bridge_webrtc_offer(stream, state, request),
+        ("POST", "/webrtc/offer") => bridge_webrtc_offer(stream, state, request, route_user),
         ("GET", "/audio.bin") | ("POST", "/audio.bin") => {
             let client_id = bridge_client_id(&request)?;
             let player_index = bridge_player_index(&request)?;
@@ -2691,6 +2699,12 @@ fn clear_bridge_player(state: &BridgeState) -> io::Result<()> {
         .map_err(|err| io::Error::other(err.to_string()))?;
     *packet = None;
     condvar.notify_all();
+    let (audio, condvar) = &*state.latest_audio;
+    let mut audio = audio
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *audio = None;
+    condvar.notify_all();
     Ok(())
 }
 
@@ -2702,6 +2716,12 @@ fn stop_bridge_state(state: &BridgeState) -> io::Result<()> {
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     *packet = None;
+    condvar.notify_all();
+    let (audio, condvar) = &*state.latest_audio;
+    let mut audio = audio
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *audio = None;
     condvar.notify_all();
     Ok(())
 }
@@ -2748,6 +2768,25 @@ fn publish_bridge_packet(
     *packet = Some(BridgePacketSnapshot {
         frame,
         bytes,
+        stopped,
+    });
+    condvar.notify_all();
+    Ok(())
+}
+
+fn publish_bridge_audio(
+    state: &BridgeState,
+    pcm: Vec<u8>,
+    frame: u32,
+    stopped: bool,
+) -> io::Result<()> {
+    let (audio, condvar) = &*state.latest_audio;
+    let mut audio = audio
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *audio = Some(BridgeAudioSnapshot {
+        frame,
+        pcm,
         stopped,
     });
     condvar.notify_all();
@@ -2837,21 +2876,27 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
         }
         idle_since = None;
         pace_bridge_frame(state)?;
-        let (packet, frame, stopped) = {
+        let (packet, audio, frame, stopped) = {
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 break Ok(());
             }
             let run = emulator.run_frame();
-            pending_audio.extend(emulator.render_audio_frame_i16_stereo(44_100));
+            let frame_audio = emulator.render_audio_frame_i16_stereo(44_100);
+            pending_audio.extend_from_slice(&frame_audio);
             let stopped = run.hit_unsupported_opcode;
             let frame = emulator.frame_count.min(u32::MAX as u64) as u32;
             let should_publish =
                 stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
             let packet = should_publish
                 .then(|| bridge_frame_audio_samples_bytes(&emulator, &run, 44_100, &pending_audio));
-            (packet, frame, stopped)
+            let mut audio = Vec::with_capacity(frame_audio.len() * 2);
+            for sample in frame_audio {
+                audio.extend_from_slice(&sample.to_le_bytes());
+            }
+            (packet, audio, frame, stopped)
         };
+        publish_bridge_audio(state, audio, frame, stopped)?;
         if let Some(packet) = packet {
             pending_audio.clear();
             publish_bridge_packet(state, packet, frame, stopped)?;
@@ -3371,7 +3416,17 @@ fn bridge_webrtc_offer(
     stream: &mut TcpStream,
     state: &BridgeState,
     request: HttpRequest,
+    user: &str,
 ) -> io::Result<()> {
+    let spectator = query_string_value(&request.path, "role")?.as_deref() == Some("spectator");
+    let heartbeat = if spectator {
+        None
+    } else {
+        let client_id = bridge_client_id(&request)?;
+        let player_index = bridge_player_index(&request)?;
+        claim_bridge_player(state, &client_id, user, player_index)?;
+        Some((state.clone(), client_id, player_index))
+    };
     let offer: webrtc::peer_connection::sdp::session_description::RTCSessionDescription =
         serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
 
@@ -3453,14 +3508,21 @@ fn bridge_webrtc_offer(
 
         peer.on_data_channel(Box::new(
             move |channel: Arc<webrtc::data_channel::RTCDataChannel>| {
+                let heartbeat = heartbeat.clone();
                 Box::pin(async move {
                     let reply_channel = Arc::clone(&channel);
                     channel.on_message(Box::new(
                         move |message: webrtc::data_channel::data_channel_message::DataChannelMessage| {
                             let reply_channel = Arc::clone(&reply_channel);
+                            let heartbeat = heartbeat.clone();
                             Box::pin(async move {
                                 if message.is_string {
                                     let text = String::from_utf8_lossy(&message.data);
+                                    if text.trim() == "ping" {
+                                        if let Some((state, client_id, player_index)) = &heartbeat {
+                                            let _ = touch_bridge_player(state, client_id, *player_index);
+                                        }
+                                    }
                                     let response = if text.trim() == "ping" {
                                         "pong"
                                     } else {
@@ -3574,6 +3636,8 @@ fn bridge_webrtc_opus_loop(
             "-hide_banner",
             "-loglevel",
             "error",
+            "-fflags",
+            "nobuffer",
             "-f",
             "s16le",
             "-ar",
@@ -3597,6 +3661,8 @@ fn bridge_webrtc_opus_loop(
             "off",
             "-b:a",
             "96k",
+            "-flush_packets",
+            "1",
             "-f",
             "opus",
             "pipe:1",
@@ -3667,16 +3733,16 @@ fn bridge_webrtc_pcm_writer(
     stdin: &mut impl Write,
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let (packet_lock, condvar) = &*state.latest_packet;
+    let (audio_lock, condvar) = &*state.latest_audio;
     let mut last_frame = 0u32;
     loop {
         if stop.load(Ordering::SeqCst) || state.shutdown.load(Ordering::SeqCst) {
             break Ok(());
         }
-        let mut packet = packet_lock
+        let mut audio = audio_lock
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
-        while packet
+        while audio
             .as_ref()
             .is_none_or(|snapshot| snapshot.frame == last_frame)
         {
@@ -3684,44 +3750,22 @@ fn bridge_webrtc_pcm_writer(
                 return Ok(());
             }
             let wait = condvar
-                .wait_timeout(packet, Duration::from_secs(2))
+                .wait_timeout(audio, Duration::from_secs(2))
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            packet = wait.0;
+            audio = wait.0;
         }
-        let Some(snapshot) = packet.as_ref() else {
+        let Some(snapshot) = audio.as_ref() else {
             continue;
         };
         last_frame = snapshot.frame;
         let stopped = snapshot.stopped;
-        let pcm = bridge_pcm_from_frame_packet(&snapshot.bytes)?.map(|audio| audio.pcm);
-        drop(packet);
-        if let Some(pcm) = pcm {
-            stdin.write_all(&pcm)?;
-        }
+        let pcm = snapshot.pcm.clone();
+        drop(audio);
+        stdin.write_all(&pcm)?;
         if stopped {
             break Ok(());
         }
     }
-}
-
-struct BridgePcmPacket {
-    pcm: Vec<u8>,
-}
-
-fn bridge_pcm_from_frame_packet(packet: &[u8]) -> io::Result<Option<BridgePcmPacket>> {
-    if packet.len() < 52 || &packet[..4] != b"EOX4" {
-        return Ok(None);
-    }
-    let video_len = u32::from_le_bytes(packet[40..44].try_into().unwrap()) as usize;
-    let pcm_len = u32::from_le_bytes(packet[44..48].try_into().unwrap()) as usize;
-    let pcm_offset = 52;
-    let video_offset = pcm_offset + pcm_len;
-    if packet.len() != video_offset + video_len {
-        return Err(invalid_request("bad bridge frame/audio packet"));
-    }
-    Ok(Some(BridgePcmPacket {
-        pcm: packet[pcm_offset..video_offset].to_vec(),
-    }))
 }
 
 fn drain_ogg_opus_packets(

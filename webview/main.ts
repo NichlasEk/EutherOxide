@@ -722,6 +722,7 @@ let bridgeVideoAbort: AbortController | null = null;
 let bridgeVideoLatencyTimer: number | null = null;
 let bridgeWebRtcPeer: RTCPeerConnection | null = null;
 let bridgeWebRtcChannel: RTCDataChannel | null = null;
+let bridgeWebRtcHeartbeatTimer: number | null = null;
 let bridgeWebRtcGeneration = 0;
 let bridgeWebRtcActive = false;
 let bridgeWebRtcVideoActive = false;
@@ -4131,7 +4132,7 @@ function bridgeUrl(path: string): string {
   if (!url.searchParams.has("player")) {
     url.searchParams.set("player", String(playerPort));
   }
-  if (lobbyRole === "spectator" && path.includes("stream-frame-audio")) {
+  if (lobbyRole === "spectator" && (path.includes("stream-frame-audio") || path.includes("/webrtc/offer"))) {
     url.searchParams.set("role", "spectator");
   }
   if (bridgeWebRtcVideoActive && path.includes("stream-frame-audio")) {
@@ -4566,6 +4567,19 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     bridgeWebRtcActive = true;
     bridgeWebRtcMode = "active";
     channel.send("ping");
+    if (bridgeWebRtcHeartbeatTimer !== null) {
+      window.clearInterval(bridgeWebRtcHeartbeatTimer);
+    }
+    bridgeWebRtcHeartbeatTimer = window.setInterval(() => {
+      if (
+        generation !== bridgeWebRtcGeneration ||
+        channel.readyState !== "open" ||
+        lobbyRole === "spectator"
+      ) {
+        return;
+      }
+      channel.send("ping");
+    }, 2000);
     pushTrace("WebRTC datachannel active");
     renderUi();
   };
@@ -4579,6 +4593,10 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     if (generation === bridgeWebRtcGeneration) {
       bridgeWebRtcActive = false;
       bridgeWebRtcMode = "idle";
+      if (bridgeWebRtcHeartbeatTimer !== null) {
+        window.clearInterval(bridgeWebRtcHeartbeatTimer);
+        bridgeWebRtcHeartbeatTimer = null;
+      }
       pushTrace("WebRTC datachannel closed");
       renderUi();
     }
@@ -4628,6 +4646,10 @@ function stopBridgeWebRtcProbe(): void {
     bridgeRtcAudio.srcObject = null;
   }
   bridgeWebRtcMode = "idle";
+  if (bridgeWebRtcHeartbeatTimer !== null) {
+    window.clearInterval(bridgeWebRtcHeartbeatTimer);
+    bridgeWebRtcHeartbeatTimer = null;
+  }
   bridgeWebRtcChannel?.close();
   bridgeWebRtcChannel = null;
   bridgeWebRtcPeer?.close();
