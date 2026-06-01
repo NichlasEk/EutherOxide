@@ -8425,12 +8425,15 @@ screenGlass.classList.toggle("has-shader", Boolean(shaderRenderer));
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
-  void (async () => {
-    await connectBridge();
-    if (autoStartEutherDogs) {
-      await ensureHostedLobbyInstance();
-      await enterDogsMode();
-    } else {
-      await restoreCachedRom();
-    }
-  })();
+void (async () => {
+  if (autoStartEutherDogs) {
+    await refreshAuthStatus();
+    await ensureHostedLobbyInstance();
+  }
+  await connectBridge();
+  if (autoStartEutherDogs && !ui.loaded) {
+    await enterDogsMode();
+  } else if (!autoStartEutherDogs) {
+    await restoreCachedRom();
+  }
+})();
