@@ -724,6 +724,7 @@ let bridgeWebRtcPeer: RTCPeerConnection | null = null;
 let bridgeWebRtcChannel: RTCDataChannel | null = null;
 let bridgeWebRtcGeneration = 0;
 let bridgeWebRtcActive = false;
+let bridgeWebRtcMode: "idle" | "connecting" | "active" | "blocked" | "failed" = "idle";
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
@@ -4444,12 +4445,25 @@ function stopBridgeStream(): void {
 }
 
 async function startBridgeWebRtcProbe(): Promise<boolean> {
-  if (isTauri || !window.RTCPeerConnection) {
+  if (isTauri) {
+    return false;
+  }
+  if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+    bridgeWebRtcMode = "blocked";
+    pushTrace("WebRTC requires HTTPS");
+    renderUi();
+    return false;
+  }
+  if (!window.RTCPeerConnection) {
+    bridgeWebRtcMode = "failed";
+    pushTrace("WebRTC unavailable");
+    renderUi();
     return false;
   }
   const generation = bridgeWebRtcGeneration + 1;
   stopBridgeWebRtcProbe();
   bridgeWebRtcGeneration = generation;
+  bridgeWebRtcMode = "connecting";
   const peer = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
@@ -4465,6 +4479,7 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
       return;
     }
     bridgeWebRtcActive = true;
+    bridgeWebRtcMode = "active";
     channel.send("ping");
     pushTrace("WebRTC datachannel active");
     renderUi();
@@ -4478,6 +4493,7 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
   channel.onclose = () => {
     if (generation === bridgeWebRtcGeneration) {
       bridgeWebRtcActive = false;
+      bridgeWebRtcMode = "idle";
       pushTrace("WebRTC datachannel closed");
       renderUi();
     }
@@ -4506,7 +4522,9 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
   } catch {
     if (generation === bridgeWebRtcGeneration) {
       stopBridgeWebRtcProbe();
+      bridgeWebRtcMode = "failed";
       pushTrace("WebRTC probe failed");
+      renderUi();
     }
     return false;
   }
@@ -4515,6 +4533,7 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
 function stopBridgeWebRtcProbe(): void {
   bridgeWebRtcGeneration += 1;
   bridgeWebRtcActive = false;
+  bridgeWebRtcMode = "idle";
   bridgeWebRtcChannel?.close();
   bridgeWebRtcChannel = null;
   bridgeWebRtcPeer?.close();
@@ -4522,7 +4541,18 @@ function stopBridgeWebRtcProbe(): void {
 }
 
 function bridgeTransportLabel(label: string): string {
-  return bridgeWebRtcActive ? `${label} + WEBRTC CTRL` : label;
+  switch (bridgeWebRtcMode) {
+    case "active":
+      return `${label} + WEBRTC CTRL`;
+    case "connecting":
+      return `${label} + WEBRTC TRY`;
+    case "blocked":
+      return `${label} + WEBRTC NEEDS HTTPS`;
+    case "failed":
+      return `${label} + WEBRTC FAILED`;
+    default:
+      return label;
+  }
 }
 
 function waitForIceGathering(peer: RTCPeerConnection, timeoutMs: number): Promise<void> {
