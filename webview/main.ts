@@ -184,6 +184,21 @@ type DoomFrame = {
   commands: DoomCommand[];
 };
 
+type DoomServerEvent =
+  | { id: number; type: "playerJoined"; player: number; user: string }
+  | { id: number; type: "playerClaimed"; player: number; user: string }
+  | { id: number; type: "playerReady"; player: number; ready: boolean }
+  | { id: number; type: "playerHeartbeat"; player: number }
+  | { id: number; type: "playerLeft"; player: number }
+  | { id: number; type: "ticFrame"; tic: number; commands: DoomCommand[] }
+  | { id: number; type: "reset" };
+
+type DoomEventsResult = {
+  instance: string;
+  lastEventId: number;
+  events: DoomServerEvent[];
+};
+
 type DoomPlayer = {
   player: number;
   user: string;
@@ -195,6 +210,7 @@ type DoomStatus = {
   name: string;
   currentTic: number;
   replayEvents?: number;
+  lastEventId?: number;
   players: DoomPlayer[];
   frames: DoomFrame[];
 };
@@ -801,6 +817,8 @@ let lobbyStatus: LobbyStatus | null = null;
 let doomStatus: DoomStatus | null = null;
 let doomDriveTimer: number | null = null;
 let doomDriveInFlight = false;
+let doomEventPollTimer: number | null = null;
+let doomLastEventId = 0;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
@@ -3988,16 +4006,115 @@ async function refreshDoomStatus(): Promise<void> {
   const instance = activeLobbyInstance();
   if (instance?.kind !== "eutherdoom") {
     doomStatus = null;
+    doomLastEventId = 0;
+    setDoomEventPolling(false);
     renderDoomPanel();
     return;
   }
   try {
     doomStatus = await bridgeJson<DoomStatus>("/api/doom/status", {}, 900);
+    doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
+    setDoomEventPolling(true);
   } catch (err) {
     doomStatus = null;
+    setDoomEventPolling(false);
     doomMeta.textContent = err instanceof Error ? err.message : "Doom status unavailable";
   }
   renderDoomPanel();
+}
+
+function setDoomEventPolling(active: boolean): void {
+  if (!active) {
+    if (doomEventPollTimer !== null) {
+      window.clearInterval(doomEventPollTimer);
+      doomEventPollTimer = null;
+    }
+    return;
+  }
+  if (doomEventPollTimer !== null) {
+    return;
+  }
+  doomEventPollTimer = window.setInterval(() => {
+    void pollDoomEvents();
+  }, 500);
+}
+
+async function pollDoomEvents(): Promise<void> {
+  if (activeLobbyInstance()?.kind !== "eutherdoom") {
+    setDoomEventPolling(false);
+    return;
+  }
+  try {
+    const result = await bridgeJson<DoomEventsResult>(
+      `/api/doom/events?after=${doomLastEventId}`,
+      {},
+      700,
+    );
+    doomLastEventId = result.lastEventId;
+    if (result.events.length > 0) {
+      applyDoomEvents(result.events);
+      renderDoomPanel();
+    }
+  } catch {
+    setDoomEventPolling(false);
+  }
+}
+
+function applyDoomEvents(events: DoomServerEvent[]): void {
+  if (!doomStatus) {
+    return;
+  }
+  for (const event of events) {
+    switch (event.type) {
+      case "playerJoined":
+      case "playerClaimed":
+        upsertDoomPlayer(event.player, event.user, false);
+        break;
+      case "playerReady":
+        setDoomPlayerReady(event.player, event.ready);
+        break;
+      case "playerLeft":
+        doomStatus.players = doomStatus.players.filter((player) => player.player !== event.player);
+        break;
+      case "ticFrame":
+        doomStatus.frames = [...doomStatus.frames, { tic: event.tic, commands: event.commands }].slice(-8);
+        doomStatus.currentTic = Math.max(doomStatus.currentTic, event.tic + 1);
+        doomStatus.replayEvents = (doomStatus.replayEvents ?? 0) + 2;
+        doomTic.value = doomStatus.currentTic.toString();
+        break;
+      case "reset":
+        doomStatus.currentTic = 0;
+        doomStatus.frames = [];
+        doomStatus.players = doomStatus.players.map((player) => ({ ...player, ready: false }));
+        doomTic.value = "0";
+        break;
+      case "playerHeartbeat":
+        break;
+    }
+  }
+}
+
+function upsertDoomPlayer(player: number, user: string, ready: boolean): void {
+  if (!doomStatus) {
+    return;
+  }
+  const existing = doomStatus.players.find((entry) => entry.player === player);
+  if (existing) {
+    existing.user = user;
+    existing.ready = ready;
+  } else {
+    doomStatus.players = [...doomStatus.players, { player, user, ready }].sort((a, b) => a.player - b.player);
+  }
+}
+
+function setDoomPlayerReady(player: number, ready: boolean): void {
+  if (!doomStatus) {
+    return;
+  }
+  const existing = doomStatus.players.find((entry) => entry.player === player);
+  if (existing) {
+    existing.ready = ready;
+  }
 }
 
 async function readyDoomPlayer(): Promise<void> {
@@ -4006,6 +4123,7 @@ async function readyDoomPlayer(): Promise<void> {
     return;
   }
   doomStatus = await bridgeJson<DoomStatus>("/api/doom/ready", { method: "POST" }, 1200);
+  doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
   pushTrace(`Doom P${claimedLobbyPlayer} ready`);
   renderDoomPanel();
 }
@@ -4017,6 +4135,7 @@ async function sendDoomCommand(): Promise<void> {
   }
   const params = doomCommandParams(readManualDoomCommand());
   doomStatus = await bridgeJson<DoomStatus>(`/api/doom/cmd?${params}`, { method: "POST" }, 1200);
+  doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
   doomTic.value = doomStatus.currentTic.toString();
   pushTrace(`Doom tic submitted`);
   renderDoomPanel();
@@ -4059,6 +4178,7 @@ async function driveDoomTick(): Promise<void> {
   try {
     const command = doomCommandFromInput();
     doomStatus = await bridgeJson<DoomStatus>(`/api/doom/cmd?${doomCommandParams(command)}`, { method: "POST" }, 700);
+    doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
     doomTic.value = doomStatus.currentTic.toString();
     renderDoomPanel();
   } catch (err) {
@@ -4122,6 +4242,7 @@ async function resetDoomMatch(): Promise<void> {
     return;
   }
   doomStatus = await bridgeJson<DoomStatus>("/api/doom/reset", { method: "POST" }, 1200);
+  doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
   doomTic.value = "0";
   pushTrace("Doom match reset");
   renderDoomPanel();
@@ -4312,7 +4433,11 @@ function renderDoomPanel(): void {
   const isDoom = instance?.kind === "eutherdoom";
   doomDebugPanel.hidden = !isDoom;
   if (!isDoom) {
+    setDoomEventPolling(false);
     return;
+  }
+  if (doomStatus) {
+    setDoomEventPolling(true);
   }
 
   const players = doomStatus?.players ?? [];
