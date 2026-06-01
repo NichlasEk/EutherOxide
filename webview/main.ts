@@ -357,6 +357,8 @@ type UiState = LoadResult & {
   drawMs: number;
   audioLeadMs: number;
   transportMode: string;
+  rtcLeaseStatus: string;
+  inputStatus: string;
   status: string;
   lastError: string;
   stateSlots: StateSlot[];
@@ -717,6 +719,8 @@ const ui: UiState = {
   drawMs: 0,
   audioLeadMs: 0,
   transportMode: isTauri ? "TAURI INIT" : "WEB INIT",
+  rtcLeaseStatus: "idle",
+  inputStatus: "idle",
   status: "IDLE",
   lastError: "",
   statePath: null,
@@ -754,11 +758,15 @@ let bridgeVideoLatencyTimer: number | null = null;
 let bridgeWebRtcPeer: RTCPeerConnection | null = null;
 let bridgeWebRtcChannel: RTCDataChannel | null = null;
 let bridgeWebRtcHeartbeatTimer: number | null = null;
+let bridgeWebRtcInputTimer: number | null = null;
+let bridgeWebRtcInputSeq = 0;
 let bridgeWebRtcGeneration = 0;
 let bridgeWebRtcActive = false;
 let bridgeWebRtcVideoActive = false;
 let bridgeWebRtcAudioActive = false;
 let bridgeWebRtcMode: "idle" | "connecting" | "active" | "blocked" | "failed" = "idle";
+let bridgeWebRtcLastPingAt = 0;
+let bridgeWebRtcLastPongAt = 0;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
 let nativeBridgeBase: string | null = null;
@@ -1175,6 +1183,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="metric"><span>Draw ms</span><strong id="draw-ms">0.00</strong></div>
           <div class="metric"><span>Audio lead</span><strong id="audio-lead-ms">0</strong></div>
           <div class="metric"><span>Transport</span><strong id="transport-mode">INIT</strong></div>
+          <div class="metric"><span>RTC lease</span><strong id="rtc-lease-status">idle</strong></div>
+          <div class="metric"><span>Input</span><strong id="input-status">idle</strong></div>
           <div class="metric"><span>Build</span><strong id="build-id">dev</strong></div>
         </div>
       </div>
@@ -4827,6 +4837,39 @@ function resumeBridgeRtcAudio(): void {
   });
 }
 
+function sendBridgeWebRtcHeartbeat(channel: RTCDataChannel): void {
+  bridgeWebRtcLastPingAt = performance.now();
+  ui.rtcLeaseStatus = lobbyRole === "spectator" ? "spectator" : `P${playerPort} ping`;
+  channel.send("ping");
+  renderUi();
+}
+
+function sendBridgeWebRtcInputSnapshot(): boolean {
+  const channel = bridgeWebRtcChannel;
+  if (
+    !channel ||
+    channel.readyState !== "open" ||
+    lobbyRole === "spectator" ||
+    !ownsCurrentSlot() ||
+    ui.runtime !== "bridge" ||
+    !ui.loaded
+  ) {
+    return false;
+  }
+  try {
+    bridgeWebRtcInputSeq = (bridgeWebRtcInputSeq + 1) >>> 0;
+    channel.send(JSON.stringify({
+      type: "input",
+      seq: bridgeWebRtcInputSeq,
+      input: { ...inputState, player: playerPort },
+    }));
+    ui.inputStatus = `P${playerPort} dc`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function startBridgeWebRtcProbe(): Promise<boolean> {
   if (isTauri) {
     return false;
@@ -4918,7 +4961,7 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     }
     bridgeWebRtcActive = true;
     bridgeWebRtcMode = "active";
-    channel.send("ping");
+    sendBridgeWebRtcHeartbeat(channel);
     if (bridgeWebRtcHeartbeatTimer !== null) {
       window.clearInterval(bridgeWebRtcHeartbeatTimer);
     }
@@ -4930,8 +4973,19 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
       ) {
         return;
       }
-      channel.send("ping");
+      sendBridgeWebRtcHeartbeat(channel);
     }, 2000);
+    if (bridgeWebRtcInputTimer !== null) {
+      window.clearInterval(bridgeWebRtcInputTimer);
+    }
+    bridgeWebRtcInputTimer = window.setInterval(() => {
+      if (generation !== bridgeWebRtcGeneration || channel.readyState !== "open") {
+        return;
+      }
+      if (ui.playing) {
+        sendBridgeWebRtcInputSnapshot();
+      }
+    }, 50);
     pushTrace("WebRTC datachannel active");
     renderUi();
   };
@@ -4939,7 +4993,27 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     if (generation !== bridgeWebRtcGeneration) {
       return;
     }
-    pushTrace(`WebRTC ${String(event.data)}`);
+    const message = String(event.data);
+    if (message === "pong") {
+      bridgeWebRtcLastPongAt = performance.now();
+      const rtt = bridgeWebRtcLastPingAt > 0
+        ? Math.max(0, bridgeWebRtcLastPongAt - bridgeWebRtcLastPingAt)
+        : 0;
+      ui.rtcLeaseStatus = lobbyRole === "spectator"
+        ? `spectator ${rtt.toFixed(0)}ms`
+        : `P${playerPort} live ${rtt.toFixed(0)}ms`;
+      renderUi();
+      return;
+    }
+    if (message.startsWith("input-error:")) {
+      const error = message.slice("input-error:".length);
+      ui.inputStatus = `P${playerPort} miss`;
+      ui.lastError = error;
+      pushTrace(`WebRTC input missed: ${error}`);
+      renderUi();
+      return;
+    }
+    pushTrace(`WebRTC ${message}`);
   };
   channel.onclose = () => {
     if (generation === bridgeWebRtcGeneration) {
@@ -4949,6 +5023,11 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
         window.clearInterval(bridgeWebRtcHeartbeatTimer);
         bridgeWebRtcHeartbeatTimer = null;
       }
+      if (bridgeWebRtcInputTimer !== null) {
+        window.clearInterval(bridgeWebRtcInputTimer);
+        bridgeWebRtcInputTimer = null;
+      }
+      ui.rtcLeaseStatus = "closed";
       pushTrace("WebRTC datachannel closed");
       renderUi();
     }
@@ -4990,6 +5069,9 @@ function stopBridgeWebRtcProbe(): void {
   bridgeWebRtcActive = false;
   bridgeWebRtcVideoActive = false;
   bridgeWebRtcAudioActive = false;
+  bridgeWebRtcLastPingAt = 0;
+  bridgeWebRtcLastPongAt = 0;
+  ui.rtcLeaseStatus = "idle";
   if (bridgeVideo.srcObject) {
     bridgeVideo.srcObject = null;
     screenGlass.classList.remove("has-bridge-video");
@@ -5002,6 +5084,11 @@ function stopBridgeWebRtcProbe(): void {
     window.clearInterval(bridgeWebRtcHeartbeatTimer);
     bridgeWebRtcHeartbeatTimer = null;
   }
+  if (bridgeWebRtcInputTimer !== null) {
+    window.clearInterval(bridgeWebRtcInputTimer);
+    bridgeWebRtcInputTimer = null;
+  }
+  bridgeWebRtcInputSeq = 0;
   bridgeWebRtcChannel?.close();
   bridgeWebRtcChannel = null;
   bridgeWebRtcPeer?.close();
@@ -8768,13 +8855,24 @@ async function syncInput(): Promise<void> {
     if (lobbyRole === "spectator" || !ownsCurrentSlot()) {
       return;
     }
+    if (sendBridgeWebRtcInputSnapshot()) {
+      renderUi();
+      return;
+    }
     try {
       await bridgeRequest("/input", {
         method: "POST",
         body: JSON.stringify({ ...inputState, player: playerPort }),
       });
-    } catch {
-      pushTrace("Core bridge input missed");
+      ui.inputStatus = `P${playerPort} ok`;
+      ui.lastError = "";
+      renderUi();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      ui.inputStatus = `P${playerPort} miss`;
+      ui.lastError = message;
+      pushTrace(`Core bridge input missed: ${message}`);
+      renderUi();
     }
   }
 }
@@ -8991,6 +9089,8 @@ function renderUi(): void {
   document.querySelector("#draw-ms")!.textContent = ui.drawMs.toFixed(2);
   document.querySelector("#audio-lead-ms")!.textContent = ui.audioLeadMs.toFixed(0);
   document.querySelector("#transport-mode")!.textContent = ui.transportMode;
+  document.querySelector("#rtc-lease-status")!.textContent = ui.rtcLeaseStatus;
+  document.querySelector("#input-status")!.textContent = ui.inputStatus;
   document.querySelector("#build-id")!.textContent = WEB_BUILD_ID;
   perfSummary.textContent = `${ui.frameMs.toFixed(2)} ms | ${ui.audioLeadMs.toFixed(0)} lead`;
   document.querySelector("#runtime-chip")!.textContent =

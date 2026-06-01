@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 const BRIDGE_STREAM_VIDEO_DIVISOR: u64 = 2;
 const WEBRTC_UDP_PORT_MIN: u16 = 49_152;
 const WEBRTC_UDP_PORT_MAX: u16 = 49_200;
-const WEBRTC_VIDEO_FPS: f64 = 30.0;
+const WEBRTC_VIDEO_FPS: f64 = 60.0;
 
 fn main() {
     if let Err(err) = run() {
@@ -596,7 +596,7 @@ struct RomDirEntry {
     is_dir: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeInput {
     player: Option<u8>,
@@ -608,6 +608,13 @@ struct BridgeInput {
     b: bool,
     c: bool,
     start: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+enum BridgeDataChannelMessage {
+    #[serde(rename = "input")]
+    Input { seq: u32, input: BridgeInput },
 }
 
 #[derive(Serialize)]
@@ -635,6 +642,7 @@ struct HttpRequest {
 struct BridgeState {
     emulator: Arc<Mutex<Emulator>>,
     next_frame_due: Arc<Mutex<Instant>>,
+    latest_input: Arc<Mutex<[BridgeInput; 2]>>,
     player_slots: Arc<Mutex<[Option<BridgePlayerLease>; 2]>>,
     driver_client: Arc<Mutex<Option<BridgePlayerLease>>>,
     latest_packet: Arc<(Mutex<Option<BridgePacketSnapshot>>, Condvar)>,
@@ -822,6 +830,7 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
     BridgeState {
         emulator: Arc::new(Mutex::new(emulator)),
         next_frame_due: Arc::new(Mutex::new(Instant::now())),
+        latest_input: Arc::new(Mutex::new(empty_bridge_inputs())),
         player_slots: Arc::new(Mutex::new([None, None])),
         driver_client: Arc::new(Mutex::new(None)),
         latest_packet: Arc::new((Mutex::new(None), Condvar::new())),
@@ -2197,20 +2206,7 @@ fn host_doom_error(err: eutherdoom_server::MatchError) -> io::Error {
 }
 
 fn clear_bridge_input(state: &BridgeState, player_index: usize) -> io::Result<()> {
-    let mut emulator = lock_bridge_emulator(state)?;
-    let input = BridgeInput {
-        player: Some((player_index + 1) as u8),
-        up: false,
-        down: false,
-        left: false,
-        right: false,
-        a: false,
-        b: false,
-        c: false,
-        start: false,
-    };
-    apply_bridge_input(&mut emulator, input);
-    Ok(())
+    store_bridge_input(state, empty_bridge_input(player_index))
 }
 
 fn host_user_list(state: &HostState) -> io::Result<serde_json::Value> {
@@ -2859,10 +2855,10 @@ fn handle_bridge_route_with_user(
             if let Err(err) = touch_bridge_player(state, &client_id, player_index) {
                 return send_error(stream, 409, &err.to_string());
             }
-            let input: BridgeInput = serde_json::from_slice(&request.body)
+            let mut input: BridgeInput = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
-            let mut emulator = lock_bridge_emulator(state)?;
-            apply_bridge_input(&mut emulator, input);
+            input.player = Some((player_index + 1) as u8);
+            store_bridge_input(state, input)?;
             send_empty(stream, 204)
         }
         ("POST", "/eutherdogs/start") => {
@@ -3115,6 +3111,42 @@ fn reset_bridge_pacer(state: &BridgeState) -> io::Result<()> {
     Ok(())
 }
 
+fn empty_bridge_inputs() -> [BridgeInput; 2] {
+    [empty_bridge_input(0), empty_bridge_input(1)]
+}
+
+fn empty_bridge_input(player_index: usize) -> BridgeInput {
+    BridgeInput {
+        player: Some((player_index + 1) as u8),
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        a: false,
+        b: false,
+        c: false,
+        start: false,
+    }
+}
+
+fn store_bridge_input(state: &BridgeState, input: BridgeInput) -> io::Result<()> {
+    let player_index = if input.player == Some(2) { 1 } else { 0 };
+    let mut latest = state
+        .latest_input
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    latest[player_index] = input;
+    Ok(())
+}
+
+fn latest_bridge_inputs(state: &BridgeState) -> io::Result<[BridgeInput; 2]> {
+    state
+        .latest_input
+        .lock()
+        .map(|inputs| *inputs)
+        .map_err(|err| io::Error::other(err.to_string()))
+}
+
 fn bridge_client_id(request: &HttpRequest) -> io::Result<String> {
     query_string_value(&request.path, "client")?
         .filter(|value| !value.trim().is_empty())
@@ -3175,6 +3207,8 @@ fn claim_bridge_player(
                 user: user.to_string(),
                 updated: now,
             });
+            drop(slots);
+            clear_bridge_input(state, player_index)?;
             Ok(())
         }
     }
@@ -3217,6 +3251,8 @@ fn release_bridge_player(
         .is_some_and(|lease| lease.client_id == client_id)
     {
         slots[player_index] = None;
+        drop(slots);
+        clear_bridge_input(state, player_index)?;
     }
     Ok(())
 }
@@ -3232,6 +3268,11 @@ fn clear_bridge_player(state: &BridgeState) -> io::Result<()> {
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     *driver = None;
+    let mut latest_input = state
+        .latest_input
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *latest_input = empty_bridge_inputs();
     let (packet, condvar) = &*state.latest_packet;
     let mut packet = packet
         .lock()
@@ -3419,6 +3460,10 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
             let mut emulator = lock_bridge_emulator(state)?;
             if emulator.bus.rom.is_empty() {
                 break Ok(());
+            }
+            let inputs = latest_bridge_inputs(state)?;
+            for input in inputs {
+                apply_bridge_input(&mut emulator, input);
             }
             let run = emulator.run_frame();
             let frame_audio = emulator.render_audio_frame_i16_stereo(44_100);
@@ -4049,10 +4094,12 @@ fn bridge_webrtc_offer(
                 let heartbeat = heartbeat.clone();
                 Box::pin(async move {
                     let reply_channel = Arc::clone(&channel);
+                    let last_input_seq = Arc::new(AtomicU32::new(0));
                     channel.on_message(Box::new(
                         move |message: webrtc::data_channel::data_channel_message::DataChannelMessage| {
                             let reply_channel = Arc::clone(&reply_channel);
                             let heartbeat = heartbeat.clone();
+                            let last_input_seq = Arc::clone(&last_input_seq);
                             Box::pin(async move {
                                 if message.is_string {
                                     let text = String::from_utf8_lossy(&message.data);
@@ -4060,13 +4107,39 @@ fn bridge_webrtc_offer(
                                         if let Some((state, client_id, player_index)) = &heartbeat {
                                             let _ = touch_bridge_player(state, client_id, *player_index);
                                         }
+                                        let _ = reply_channel.send_text("pong").await;
+                                        return;
                                     }
-                                    let response = if text.trim() == "ping" {
-                                        "pong"
-                                    } else {
-                                        "ack"
-                                    };
-                                    let _ = reply_channel.send_text(response).await;
+                                    match serde_json::from_str::<BridgeDataChannelMessage>(&text) {
+                                        Ok(BridgeDataChannelMessage::Input { seq, mut input }) => {
+                                            if seq > last_input_seq.load(Ordering::SeqCst) {
+                                                last_input_seq.store(seq, Ordering::SeqCst);
+                                                if let Some((state, client_id, player_index)) =
+                                                    &heartbeat
+                                                {
+                                                    input.player =
+                                                        Some((*player_index + 1) as u8);
+                                                    let result =
+                                                        touch_bridge_player(
+                                                            state,
+                                                            client_id,
+                                                            *player_index,
+                                                        )
+                                                        .and_then(|_| {
+                                                            store_bridge_input(state, input)
+                                                        });
+                                                    if let Err(err) = result {
+                                                        let _ = reply_channel
+                                                            .send_text(format!("input-error:{err}"))
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            let _ = reply_channel.send_text("ack").await;
+                                        }
+                                    }
                                 }
                             })
                         },
