@@ -7,6 +7,7 @@ checkout, but those changes do not have to be pushed upstream.
 ## Public Addresses
 
 - Public site: `https://apothictech.se`
+- Internal LAN site without TLS: `http://192.168.32.186:8080`
 - LAN server IP: `192.168.32.186`
 - LAN SSH: `ssh nichlas@192.168.32.186`
 - EutherHost backend: `127.0.0.1:32162` only, fronted by Caddy
@@ -92,6 +93,12 @@ Public path test from the server:
 curl -i --resolve apothictech.se:443:127.0.0.1 https://apothictech.se
 ```
 
+Internal LAN path test:
+
+```sh
+curl -i http://192.168.32.186:8080
+```
+
 ## Caddy
 
 Caddy config:
@@ -105,6 +112,8 @@ Current role:
 - Owns ports `80` and `443`
 - Provides HTTPS certificates
 - Reverse-proxies `apothictech.se` and `www.apothictech.se` to `127.0.0.1:32162`
+- Exposes `http://192.168.32.186:8080` inside LAN for browsers that reject the
+  IP-address HTTPS certificate
 
 Validate and reload:
 
@@ -169,6 +178,57 @@ ssh -p 2222 nichlas@apothictech.se
 ```
 
 Avoid exposing router remote management on WAN ports `80` or `443`.
+
+## Local DNS For LAN
+
+The server runs a small `dnsmasq` service that maps the public hostnames back to
+the LAN server IP:
+
+```text
+apothictech.se      -> 192.168.32.186
+www.apothictech.se  -> 192.168.32.186
+```
+
+Files:
+
+```text
+/etc/apothictech-dns.conf
+/etc/systemd/system/apothictech-dns.service
+```
+
+Commands:
+
+```sh
+systemctl status apothictech-dns.service --no-pager
+sudo systemctl restart apothictech-dns.service
+dig @192.168.32.186 apothictech.se +short
+dig @192.168.32.186 github.com +short
+```
+
+To make LAN clients use it, set router DHCP DNS to:
+
+```text
+192.168.32.186
+```
+
+If the router does not allow custom DHCP DNS, set DNS manually per device:
+
+```text
+DNS server: 192.168.32.186
+Fallback DNS, optional: 192.168.32.1
+```
+
+After changing DNS on a client, reconnect Wi-Fi or renew DHCP. Then test:
+
+```sh
+nslookup apothictech.se 192.168.32.186
+```
+
+Expected result:
+
+```text
+192.168.32.186
+```
 
 ## SSH
 
