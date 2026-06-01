@@ -1210,7 +1210,7 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
     });
     clear_login_failures(state, &remote_addr, username)?;
     audit_host_event(state, "login", Some(username), &remote_addr, true, "ok")?;
-    let cookie = host_session_cookie(state, &token, None);
+    let cookie = host_session_cookie(state, request, &token, None);
     send_response_with_headers(
         stream,
         303,
@@ -1228,7 +1228,7 @@ fn host_logout(stream: &mut TcpStream, state: &HostState, request: &HttpRequest)
             .map_err(|err| io::Error::other(err.to_string()))?;
         sessions.retain(|session| session.token != token);
     }
-    let cookie = host_session_cookie(state, "", Some(0));
+    let cookie = host_session_cookie(state, request, "", Some(0));
     send_response_with_headers(
         stream,
         303,
@@ -1830,15 +1830,39 @@ fn valid_csrf_token(state: &HostState, request: &HttpRequest) -> io::Result<bool
     Ok(provided.as_bytes() == expected.as_bytes())
 }
 
-fn host_session_cookie(state: &HostState, token: &str, max_age: Option<u64>) -> String {
+fn host_session_cookie(
+    state: &HostState,
+    request: &HttpRequest,
+    token: &str,
+    max_age: Option<u64>,
+) -> String {
     let mut cookie = format!("euther_session={token}; HttpOnly; SameSite=Lax; Path=/");
-    if state.config.secure_cookies {
+    if host_request_uses_https(state, request) {
         cookie.push_str("; Secure");
     }
     if let Some(max_age) = max_age {
         cookie.push_str(&format!("; Max-Age={max_age}"));
     }
     cookie
+}
+
+fn host_request_uses_https(state: &HostState, request: &HttpRequest) -> bool {
+    if !state.config.secure_cookies {
+        return false;
+    }
+    if header_value(request, "x-forwarded-proto") == Some("https") {
+        return true;
+    }
+    let Some(host) = header_value(request, "host") else {
+        return false;
+    };
+    state
+        .config
+        .allowed_origins
+        .iter()
+        .filter(|origin| origin.starts_with("https://"))
+        .filter_map(|origin| origin_host(origin))
+        .any(|origin_host| origin_host == host)
 }
 
 fn login_rate_limited(state: &HostState, remote_addr: &str, username: &str) -> io::Result<bool> {
