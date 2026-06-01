@@ -2255,6 +2255,7 @@ fn handle_bridge_route_with_user(
             let client_id = bridge_client_id(&request)?;
             let spectator =
                 query_string_value(&request.path, "role")?.as_deref() == Some("spectator");
+            let audio_only = query_string_value(&request.path, "video")?.as_deref() == Some("0");
             let player_index = if spectator {
                 None
             } else {
@@ -2264,7 +2265,7 @@ fn handle_bridge_route_with_user(
                 }
                 Some(player_index)
             };
-            bridge_stream_frame_audio(stream, state, client_id, player_index)
+            bridge_stream_frame_audio(stream, state, client_id, player_index, audio_only)
         }
         ("GET", "/stream-video.mp4") => bridge_stream_video_mp4(stream, state),
         ("POST", "/webrtc/offer") => bridge_webrtc_offer(stream, state, request),
@@ -3230,6 +3231,7 @@ fn bridge_stream_frame_audio(
     state: &BridgeState,
     client_id: String,
     player_index: Option<usize>,
+    audio_only: bool,
 ) -> io::Result<()> {
     {
         let emulator = lock_bridge_emulator(state)?;
@@ -3248,7 +3250,7 @@ fn bridge_stream_frame_audio(
         remove_bridge_subscriber(state)?;
         return Err(err);
     }
-    let result = bridge_stream_subscriber(stream, state, &client_id, player_index);
+    let result = bridge_stream_subscriber(stream, state, &client_id, player_index, audio_only);
     remove_bridge_subscriber(state)?;
     if let Some(player_index) = player_index {
         release_bridge_player(state, &client_id, player_index)?;
@@ -3697,6 +3699,7 @@ fn bridge_stream_subscriber(
     state: &BridgeState,
     client_id: &str,
     player_index: Option<usize>,
+    audio_only: bool,
 ) -> io::Result<()> {
     let (packet_lock, condvar) = &*state.latest_packet;
     let mut last_frame = 0u32;
@@ -3735,7 +3738,11 @@ fn bridge_stream_subscriber(
         };
         let frame = snapshot.frame;
         let stopped = snapshot.stopped;
-        let bytes = snapshot.bytes.clone();
+        let bytes = if audio_only {
+            bridge_audio_only_frame_packet(&snapshot.bytes)?
+        } else {
+            snapshot.bytes.clone()
+        };
         drop(packet);
         last_frame = frame;
         write_stream_packet(stream, &bytes)?;
@@ -3743,6 +3750,26 @@ fn bridge_stream_subscriber(
             break Ok(());
         }
     }
+}
+
+fn bridge_audio_only_frame_packet(packet: &[u8]) -> io::Result<Vec<u8>> {
+    if packet.len() < 52 || &packet[..4] != b"EOX4" {
+        return Ok(packet.to_vec());
+    }
+    let video_len = u32::from_le_bytes(packet[40..44].try_into().unwrap()) as usize;
+    let pcm_len = u32::from_le_bytes(packet[44..48].try_into().unwrap()) as usize;
+    let pcm_offset = 52;
+    let video_offset = pcm_offset + pcm_len;
+    if packet.len() != video_offset + video_len {
+        return Err(invalid_request("bad bridge frame/audio packet"));
+    }
+    let mut stripped = Vec::with_capacity(52 + pcm_len);
+    stripped.extend_from_slice(&packet[..40]);
+    stripped.extend_from_slice(&0u32.to_le_bytes());
+    stripped.extend_from_slice(&(pcm_len as u32).to_le_bytes());
+    stripped.extend_from_slice(&packet[48..52]);
+    stripped.extend_from_slice(&packet[pcm_offset..video_offset]);
+    Ok(stripped)
 }
 
 fn write_stream_packet(stream: &mut TcpStream, packet: &[u8]) -> io::Result<()> {

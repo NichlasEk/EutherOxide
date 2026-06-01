@@ -4131,6 +4131,9 @@ function bridgeUrl(path: string): string {
   if (lobbyRole === "spectator" && path.includes("stream-frame-audio")) {
     url.searchParams.set("role", "spectator");
   }
+  if (bridgeWebRtcVideoActive && path.includes("stream-frame-audio")) {
+    url.searchParams.set("video", "0");
+  }
   return url.toString();
 }
 
@@ -4256,17 +4259,19 @@ function decodeBridgeFrameAudio(
   const videoEnd = videoOffset + videoLength;
   const expectedVideoLength = isRgb565 ? width * height * 2 : width * height * 4;
   if (
-    videoLength !== expectedVideoLength ||
+    (videoLength !== 0 && videoLength !== expectedVideoLength) ||
     pcmLength !== sampleCount * channels * 2 ||
     bytes.byteLength !== headerLength + videoLength + pcmLength
   ) {
     throw new Error("EutherOxide frame/audio packet size mismatch");
   }
-  const rgba = deferVideo && isAudioFirst
+  const rgba = videoLength === 0
     ? new Uint8ClampedArray(0) as Uint8ClampedArray<ArrayBuffer>
-    : isRgb565
-      ? decodeRgb565Frame(bytes.subarray(videoOffset, videoEnd), width, height)
-      : bytes.subarray(videoOffset, videoEnd);
+    : deferVideo && isAudioFirst
+      ? new Uint8ClampedArray(0) as Uint8ClampedArray<ArrayBuffer>
+      : isRgb565
+        ? decodeRgb565Frame(bytes.subarray(videoOffset, videoEnd), width, height)
+        : bytes.subarray(videoOffset, videoEnd);
   return {
     frame: {
       frame,
@@ -4286,10 +4291,10 @@ function decodeBridgeFrameAudio(
       channels,
     },
     transport: isRgb565 ? "BRIDGE RGB565 PACKET" : "BRIDGE RGBA PACKET",
-    videoFormat: isAudioFirst ? "RGB565_AUDIO_FIRST" : isRgb565 ? "RGB565" : "RGBA",
-    videoBytes: deferVideo && isAudioFirst ? bytes : undefined,
-    videoOffset: deferVideo && isAudioFirst ? videoOffset : undefined,
-    videoLength: deferVideo && isAudioFirst ? videoLength : undefined,
+    videoFormat: videoLength === 0 ? "AUDIO_ONLY" : isAudioFirst ? "RGB565_AUDIO_FIRST" : isRgb565 ? "RGB565" : "RGBA",
+    videoBytes: deferVideo && isAudioFirst && videoLength > 0 ? bytes : undefined,
+    videoOffset: deferVideo && isAudioFirst && videoLength > 0 ? videoOffset : undefined,
+    videoLength: deferVideo && isAudioFirst && videoLength > 0 ? videoLength : undefined,
   };
 }
 
@@ -4474,6 +4479,7 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
     if (generation !== bridgeWebRtcGeneration || event.track.kind !== "video") {
       return;
     }
+    stopBridgeVideoStream();
     const stream = event.streams[0] ?? new MediaStream([event.track]);
     bridgeWebRtcVideoActive = true;
     bridgeVideo.srcObject = stream;
@@ -4483,6 +4489,10 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
       screenGlass.classList.remove("has-bridge-video");
     });
     pushTrace("WebRTC video active");
+    if (ui.playing && ui.runtime === "bridge") {
+      void ensureAudio();
+      void bridgeStreamLoop();
+    }
     renderUi();
     event.track.onended = () => {
       if (generation === bridgeWebRtcGeneration) {
@@ -4824,9 +4834,14 @@ async function bridgeStreamLoop(): Promise<void> {
         if (audioBatch.length > 0) {
           ui.audioLeadMs = await scheduleAudioBatch(audioBatch);
         }
-        finishDeferredVideoFrame(latestFrameAudio);
+        const hasFrameVideo = latestFrameAudio.frame.rgba.length > 0;
+        if (hasFrameVideo) {
+          finishDeferredVideoFrame(latestFrameAudio);
+        }
         const decoded = performance.now();
-        drawNativeFrame(latestFrameAudio.frame);
+        if (hasFrameVideo) {
+          drawNativeFrame(latestFrameAudio.frame);
+        }
         const drawn = performance.now();
         if (latestFrameAudio.videoFormat !== "RGB565_AUDIO_FIRST") {
           ui.audioLeadMs = await scheduleAudio(latestFrameAudio.audio);
@@ -4835,8 +4850,17 @@ async function bridgeStreamLoop(): Promise<void> {
           latestFrameAudio.videoFormat?.startsWith("RGB565") ? "BRIDGE RGB565 STREAM" : "BRIDGE STREAM",
         );
         ui.transportMs = received === batchCount ? decoded - started : decoded - before;
-        ui.drawMs = drawn - decoded;
-        applyBridgeFrame(latestFrameAudio.frame);
+        ui.drawMs = hasFrameVideo ? drawn - decoded : 0;
+        if (hasFrameVideo) {
+          applyBridgeFrame(latestFrameAudio.frame);
+        } else {
+          ui.frame = latestFrameAudio.frame.frame;
+          ui.cpuCycles = latestFrameAudio.frame.cpuCycles;
+          ui.cpuSteps = latestFrameAudio.frame.cpuSteps;
+          ui.frameMs = latestFrameAudio.frame.frameMs;
+          ui.status = latestFrameAudio.frame.stopped ? "STOPPED" : "RUNNING";
+          ui.lastError = "";
+        }
         renderUi();
         if (latestFrameAudio.frame.stopped) {
           ui.playing = false;
