@@ -69,9 +69,10 @@ Add Doom as a sibling mode to the current hosted emulator sessions:
 3. Add EutherDoom as a selectable EutherHost lobby instance type. Done.
 4. Add a debug HTML client that sends fake tic commands and verifies both clients
    receive identical ordered tic frames. Done for the EutherHost UI.
-5. Add stronger disconnect cleanup and match reset controls.
-6. Connect a minimal Doom-compatible client loop using Freedoom data.
-7. Add replay logging so a desync can be reproduced from recorded tic commands. Done for the
+5. Add automated web tic input driven by the existing keyboard/controller state. Done.
+6. Add stronger disconnect cleanup and match reset controls.
+7. Connect a minimal Doom-compatible client loop using Freedoom data.
+8. Add replay logging so a desync can be reproduced from recorded tic commands. Done for the
    EutherDoom session layer and host UI export.
 
 ## Non-Goals For MVP

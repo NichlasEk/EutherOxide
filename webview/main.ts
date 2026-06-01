@@ -778,6 +778,8 @@ let hostPermissions: HostPermissions = {
 };
 let lobbyStatus: LobbyStatus | null = null;
 let doomStatus: DoomStatus | null = null;
+let doomDriveTimer: number | null = null;
+let doomDriveInFlight = false;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
@@ -932,6 +934,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="doom-actions">
           <button id="doom-ready" type="button">Ready</button>
           <button id="doom-send" type="button">Send Tic</button>
+          <button id="doom-drive" type="button">Drive</button>
         </div>
         <div class="doom-command-grid">
           <label>Tic <input id="doom-tic" type="number" value="0" min="0" step="1" /></label>
@@ -1354,6 +1357,7 @@ const doomReplay = document.querySelector<HTMLButtonElement>("#doom-replay")!;
 const doomReset = document.querySelector<HTMLButtonElement>("#doom-reset")!;
 const doomReady = document.querySelector<HTMLButtonElement>("#doom-ready")!;
 const doomSend = document.querySelector<HTMLButtonElement>("#doom-send")!;
+const doomDrive = document.querySelector<HTMLButtonElement>("#doom-drive")!;
 const doomTitle = document.querySelector<HTMLElement>("#doom-title")!;
 const doomMeta = document.querySelector<HTMLElement>("#doom-meta")!;
 const doomTic = document.querySelector<HTMLInputElement>("#doom-tic")!;
@@ -1462,6 +1466,7 @@ lobbyInstances.addEventListener("click", async (event) => {
   activeLobbyInstanceId = button.dataset.instanceId ?? "main";
   lobbyRole = "spectator";
   claimedLobbyPlayer = null;
+  setDoomDriveActive(false);
   stopBridgeStream();
   await releaseLobbySlot(false, previousInstanceId);
   renderLobby();
@@ -1499,6 +1504,7 @@ releaseSlot.addEventListener("click", async () => {
 spectateInstance.addEventListener("click", async () => {
   lobbyRole = "spectator";
   claimedLobbyPlayer = null;
+  setDoomDriveActive(false);
   stopBridgeStream();
   await releaseLobbySlot(false);
   renderLobby();
@@ -1530,6 +1536,10 @@ doomReplay.addEventListener("click", async () => {
 
 doomSend.addEventListener("click", async () => {
   await sendDoomCommand();
+});
+
+doomDrive.addEventListener("click", () => {
+  setDoomDriveActive(doomDriveTimer === null);
 });
 
 doomReset.addEventListener("click", async () => {
@@ -3879,6 +3889,7 @@ async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<vo
   } else {
     lobbyRole = "spectator";
     claimedLobbyPlayer = null;
+    setDoomDriveActive(false);
     stopBridgeStream();
     pushTrace("Joined as spectator");
   }
@@ -3947,6 +3958,7 @@ async function closeLobbyInstance(): Promise<void> {
   activeLobbyInstanceId = fallback?.id ?? "main";
   lobbyRole = "spectator";
   claimedLobbyPlayer = null;
+  setDoomDriveActive(false);
   stopBridgeStream();
   pushTrace(`Closed ${closingId}`);
   renderLobby();
@@ -3986,18 +3998,106 @@ async function sendDoomCommand(): Promise<void> {
     pushTrace("Claim Doom P1 or P2 first");
     return;
   }
-  const params = new URLSearchParams({
-    tic: numberInput(doomTic, 0).toString(),
-    forward: numberInput(doomForward, 0).toString(),
-    strafe: numberInput(doomStrafe, 0).toString(),
-    turn: numberInput(doomTurn, 0).toString(),
-    buttons: numberInput(doomButtons, 0).toString(),
-    weapon: numberInput(doomWeapon, 0).toString(),
-  });
+  const params = doomCommandParams(readManualDoomCommand());
   doomStatus = await bridgeJson<DoomStatus>(`/api/doom/cmd?${params}`, { method: "POST" }, 1200);
   doomTic.value = doomStatus.currentTic.toString();
   pushTrace(`Doom tic submitted`);
   renderDoomPanel();
+}
+
+function setDoomDriveActive(active: boolean): void {
+  if (!active) {
+    if (doomDriveTimer !== null) {
+      window.clearInterval(doomDriveTimer);
+      doomDriveTimer = null;
+    }
+    doomDriveInFlight = false;
+    renderDoomPanel();
+    return;
+  }
+  if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
+    pushTrace("Claim Doom P1 or P2 first");
+    renderDoomPanel();
+    return;
+  }
+  if (doomDriveTimer !== null) {
+    return;
+  }
+  doomDriveTimer = window.setInterval(() => {
+    void driveDoomTick();
+  }, 65);
+  void driveDoomTick();
+  renderDoomPanel();
+}
+
+async function driveDoomTick(): Promise<void> {
+  if (doomDriveInFlight) {
+    return;
+  }
+  if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
+    setDoomDriveActive(false);
+    return;
+  }
+  doomDriveInFlight = true;
+  try {
+    const command = doomCommandFromInput();
+    doomStatus = await bridgeJson<DoomStatus>(`/api/doom/cmd?${doomCommandParams(command)}`, { method: "POST" }, 700);
+    doomTic.value = doomStatus.currentTic.toString();
+    renderDoomPanel();
+  } catch (err) {
+    try {
+      await refreshDoomStatus();
+      doomTic.value = String(doomStatus?.currentTic ?? numberInput(doomTic, 0));
+    } catch {
+      setDoomDriveActive(false);
+      pushTrace(err instanceof Error ? err.message : "Doom drive stopped");
+    }
+  } finally {
+    doomDriveInFlight = false;
+  }
+}
+
+function readManualDoomCommand(): DoomCommand {
+  return {
+    tic: numberInput(doomTic, 0),
+    forward: numberInput(doomForward, 0),
+    strafe: numberInput(doomStrafe, 0),
+    turn: numberInput(doomTurn, 0),
+    buttons: numberInput(doomButtons, 0),
+    weapon: numberInput(doomWeapon, 0),
+  };
+}
+
+function doomCommandFromInput(): DoomCommand {
+  const strafeMode = inputState.c;
+  const leftRight = Number(inputState.right) - Number(inputState.left);
+  const buttons =
+    Number(inputState.a) |
+    (Number(inputState.b) << 1) |
+    (Number(inputState.start) << 2);
+  return {
+    tic: doomStatus?.currentTic ?? numberInput(doomTic, 0),
+    forward: clampDoomNumber(Number(inputState.up) * 50 - Number(inputState.down) * 50, -127, 127),
+    strafe: strafeMode ? clampDoomNumber(leftRight * 45, -127, 127) : 0,
+    turn: strafeMode ? 0 : clampDoomNumber(leftRight * 768, -32768, 32767),
+    buttons,
+    weapon: clampDoomNumber(numberInput(doomWeapon, 0), 0, 255),
+  };
+}
+
+function doomCommandParams(command: DoomCommand): URLSearchParams {
+  return new URLSearchParams({
+    tic: command.tic.toString(),
+    forward: command.forward.toString(),
+    strafe: command.strafe.toString(),
+    turn: command.turn.toString(),
+    buttons: command.buttons.toString(),
+    weapon: command.weapon.toString(),
+  });
+}
+
+function clampDoomNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
 async function resetDoomMatch(): Promise<void> {
@@ -4210,6 +4310,9 @@ function renderDoomPanel(): void {
   doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${playerSummary} | replay ${doomStatus?.replayEvents ?? 0}`;
   doomReady.disabled = claimedLobbyPlayer === null;
   doomSend.disabled = claimedLobbyPlayer === null;
+  doomDrive.disabled = claimedLobbyPlayer === null;
+  doomDrive.classList.toggle("is-selected", doomDriveTimer !== null);
+  doomDrive.textContent = doomDriveTimer === null ? "Drive" : "Driving";
   doomReplay.disabled = !doomStatus || doomStatus.replayEvents === 0;
   doomReset.disabled = !canHostMutate();
 
@@ -8649,6 +8752,9 @@ async function syncInput(): Promise<void> {
       ui.transportMode = "DOGS INPUT HOLD";
       ui.lastError = err instanceof Error ? err.message : String(err);
     });
+    return;
+  }
+  if (activeLobbyInstance()?.kind === "eutherdoom") {
     return;
   }
   if (isTauri && ui.runtime === "tauri" && ui.loaded) {
