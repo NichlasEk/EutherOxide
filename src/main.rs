@@ -22,6 +22,8 @@ use gilrs::{Axis, Button, Gilrs};
 use serde::{Deserialize, Serialize};
 
 const BRIDGE_STREAM_VIDEO_DIVISOR: u64 = 2;
+const WEBRTC_UDP_PORT_MIN: u16 = 49_152;
+const WEBRTC_UDP_PORT_MAX: u16 = 49_200;
 
 fn main() {
     if let Err(err) = run() {
@@ -3305,8 +3307,14 @@ fn bridge_webrtc_offer(
         media_engine
             .register_default_codecs()
             .map_err(|err| io::Error::other(err.to_string()))?;
+        let udp = ice::udp_network::EphemeralUDP::new(WEBRTC_UDP_PORT_MIN, WEBRTC_UDP_PORT_MAX)
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let mut settings = webrtc::api::setting_engine::SettingEngine::default();
+        settings.set_udp_network(ice::udp_network::UDPNetwork::Ephemeral(udp));
+        settings.set_network_types(vec![ice::network_type::NetworkType::Udp4]);
         let api = webrtc::api::APIBuilder::new()
             .with_media_engine(media_engine)
+            .with_setting_engine(settings)
             .build();
         let config = webrtc::peer_connection::configuration::RTCConfiguration {
             ice_servers: vec![webrtc::ice_transport::ice_server::RTCIceServer {
