@@ -4742,6 +4742,7 @@ async function bridgeStreamLoop(): Promise<void> {
   const started = performance.now();
   let received = 0;
   let pending = new Uint8Array(0) as Uint8Array<ArrayBufferLike>;
+  let rebondStream = false;
   try {
     const response = await bridgeStreamRequest(bridgeStreamAbort.signal);
     const reader = response.body?.getReader();
@@ -4820,15 +4821,21 @@ async function bridgeStreamLoop(): Promise<void> {
         pushTrace("Bridge player slot occupied");
         renderUi();
       } else {
-        pushTrace("Bridge stream fell back");
-        nextFrameDue = performance.now();
-        void animationLoop();
+        rebondStream = true;
+        pushTrace("Bridge stream rebonding");
       }
     }
   } finally {
     if (generation === bridgeStreamGeneration) {
       bridgeStreamActive = false;
       bridgeStreamAbort = null;
+      if (rebondStream && ui.playing && ui.runtime === "bridge" && !bridgeRestarting) {
+        window.setTimeout(() => {
+          if (generation === bridgeStreamGeneration && ui.playing && ui.runtime === "bridge") {
+            void bridgeStreamLoop();
+          }
+        }, 180);
+      }
     }
   }
 }
