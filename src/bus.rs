@@ -702,10 +702,10 @@ impl M68kBus {
                 .write(value, Some((address & 0x1f) as u8), Some(self.frame_cycle));
         } else if self.work_ram_address(address) {
             self.work_ram[(address & Self::WORK_RAM_MASK) as usize] = value;
-        } else if (!self.cartridge_rom_address(address) || self.rom.is_empty())
-            && let Some(slot) = self.low_memory.get_mut(address as usize)
-        {
-            *slot = value;
+        } else if !self.cartridge_rom_address(address) || self.rom.is_empty() {
+            if let Some(slot) = self.low_memory.get_mut(address as usize) {
+                *slot = value;
+            }
         }
     }
 

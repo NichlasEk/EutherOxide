@@ -1,0 +1,14 @@
+[package]
+name = "z80-emu"
+version = "0.7.1"
+edition = "2021"
+license = "MIT"
+
+[features]
+default = []
+bincode = ["dep:bincode"]
+
+[dependencies]
+bincode = { version = "2.0.1", optional = true }
+jgenesis-common = { path = "../jgenesis-common" }
+log = "0.4"

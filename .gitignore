@@ -9,6 +9,9 @@
 /deploy/Caddyfile
 /deploy/eutherhost.service
 /deploy/*.local
+.env
+.env.*
+*.local.env
 **/*.rs.bk
 *.argon
 *.srm

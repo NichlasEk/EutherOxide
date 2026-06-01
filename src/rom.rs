@@ -95,7 +95,7 @@ fn strip_copier_header(data: &[u8]) -> Option<&[u8]> {
 }
 
 fn try_deinterleave_smd(data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() <= 512 || !(data.len() - 512).is_multiple_of(0x4000) {
+    if data.len() <= 512 || (data.len() - 512) % 0x4000 != 0 {
         return None;
     }
 

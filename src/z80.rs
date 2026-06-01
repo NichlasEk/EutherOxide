@@ -1579,7 +1579,7 @@ impl Z80 {
     }
     fn szp(&self, value: u8) -> u8 {
         self.sz_flags(value)
-            | if value.count_ones().is_multiple_of(2) {
+            | if value.count_ones() % 2 == 0 {
                 Self::FLAG_P
             } else {
                 0

@@ -480,14 +480,18 @@ const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
 const pageParams = new URLSearchParams(window.location.search);
 const explicitBridgeBase = pageParams.get("bridge");
+const localWebHost =
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1" ||
+  window.location.hostname === "[::1]";
 const hostedServerMode =
-  !import.meta.env.DEV && !isTauri && !explicitBridgeBase && window.location.port !== "" && window.location.port !== "5173";
+  !import.meta.env.DEV && !isTauri && !explicitBridgeBase && !localWebHost && window.location.port !== "5173";
 const forceMegaDriveStartup = pageParams.get("megadrive") === "1" || pageParams.get("eutherdogs") === "0";
 const autoStartEutherDogs =
   pageParams.get("eutherdogs") === "1" || (hostedServerMode && !forceMegaDriveStartup);
 const bridgeBase =
   explicitBridgeBase ??
-  (window.location.port && window.location.port !== "5173"
+  (hostedServerMode || (window.location.port && window.location.port !== "5173")
     ? window.location.origin
     : "http://127.0.0.1:32161");
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
@@ -3737,6 +3741,23 @@ async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<vo
     pushTrace("Joined as spectator");
   }
   renderLobby();
+}
+
+async function ensureHostedLobbyInstance(): Promise<void> {
+  if (!hostedServerMode || !hostUsername) {
+    return;
+  }
+  await refreshLobby();
+  const active = activeLobbyInstance();
+  if (active) {
+    if (!active.players.some((slot) => slot.user === hostUsername)) {
+      await joinLobbyInstance();
+    }
+    return;
+  }
+  if (hostPermissions.canPlay) {
+    await startLobbyInstance();
+  }
 }
 
 async function releaseLobbySlot(announce = true, instanceId = activeLobbyInstanceId): Promise<void> {
@@ -8404,11 +8425,12 @@ screenGlass.classList.toggle("has-shader", Boolean(shaderRenderer));
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
-void (async () => {
-  await connectBridge();
-  if (autoStartEutherDogs) {
-    await enterDogsMode();
-  } else {
-    await restoreCachedRom();
-  }
-})();
+  void (async () => {
+    await connectBridge();
+    if (autoStartEutherDogs) {
+      await ensureHostedLobbyInstance();
+      await enterDogsMode();
+    } else {
+      await restoreCachedRom();
+    }
+  })();
