@@ -773,6 +773,7 @@ let bridgeWebRtcLastPongAt = 0;
 let bridgeWebRtcLastVideoStats: { emitted: number; jitter: number; decoded: number; decode: number } | null = null;
 let bridgeRestarting = false;
 let bridgeReconnectToken = 0;
+let bridgePlaybackStarting = false;
 let nativeBridgeBase: string | null = null;
 const bridgeClientId = readBridgeClientId();
 let playerPort: PlayerPort = readStoredPlayerPort();
@@ -1813,10 +1814,7 @@ playToggle.addEventListener("click", async () => {
   }
   if (ui.runtime === "bridge" && ui.loaded) {
     if (ui.playing) {
-      if (!startBridgeVideoStream()) {
-        void ensureAudio();
-        void bridgeStreamLoop();
-      }
+      await startBridgePlayback();
     } else {
       stopBridgeStream();
     }
@@ -3563,7 +3561,6 @@ async function connectBridge(announce = true): Promise<boolean> {
       return true;
     }
     await refreshStateSlots();
-    void startBridgeWebRtcProbe();
     if (lobbyRole === "spectator") {
       if (announce) {
         pushTrace("Headless core bridge online");
@@ -3744,10 +3741,7 @@ function restoreBridgePlaybackAfterRestart(wasPlaying: boolean): void {
   ui.status = "RUNNING";
   playToggle.textContent = "Pause";
   resetScheduledAudio();
-  if (!startBridgeVideoStream()) {
-    void ensureAudio();
-    void bridgeStreamLoop();
-  }
+  void startBridgePlayback();
   renderUi();
 }
 
@@ -4839,6 +4833,92 @@ function resumeBridgeRtcAudio(): void {
   }
   bridgeRtcAudio.play().catch(() => {
     pushTrace("WebRTC audio waiting");
+  });
+}
+
+async function startBridgePlayback(): Promise<void> {
+  if (bridgePlaybackStarting) {
+    return;
+  }
+  bridgePlaybackStarting = true;
+  ui.status = "SYNCING";
+  ui.transportMode = "BRIDGE ARMING";
+  renderUi();
+  try {
+    await ensureBridgePlayerSlot();
+    stopBridgeStream();
+    ui.playing = true;
+    playToggle.textContent = "Pause";
+    resetScheduledAudio();
+    const probeStarted = await startBridgeWebRtcProbe();
+    if (probeStarted && await waitForBridgeWebRtcMedia(2400)) {
+      resumeBridgeRtcAudio();
+      ui.status = "RUNNING";
+      ui.transportMode = bridgeTransportLabel("BRIDGE WEBRTC");
+      pushTrace("Bridge WebRTC startup synced");
+      renderUi();
+      return;
+    }
+    pushTrace("WebRTC startup fallback");
+    if (!startBridgeVideoStream()) {
+      void ensureAudio();
+      void bridgeStreamLoop();
+    }
+  } catch (error) {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    ui.status = "START FAIL";
+    ui.lastError = error instanceof Error ? error.message : String(error);
+    pushTrace(`Bridge startup failed: ${ui.lastError}`);
+  } finally {
+    bridgePlaybackStarting = false;
+    renderUi();
+  }
+}
+
+async function ensureBridgePlayerSlot(): Promise<void> {
+  if (!hostedServerMode || lobbyRole === "spectator") {
+    return;
+  }
+  await refreshAuthStatus();
+  await refreshLobby();
+  if (ownsCurrentSlot()) {
+    return;
+  }
+  if (claimedLobbyPlayer !== null) {
+    setPlayerPort(claimedLobbyPlayer);
+    if (ownsCurrentSlot()) {
+      return;
+    }
+  }
+  if (hostPermissions.canPlay) {
+    try {
+      await joinLobbyInstance(playerPort);
+    } catch {
+      await joinLobbyInstance("auto");
+    }
+    return;
+  }
+  throw new Error("player slot required");
+}
+
+function waitForBridgeWebRtcMedia(timeoutMs: number): Promise<boolean> {
+  if (bridgeWebRtcMediaActive()) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const started = performance.now();
+    const timer = window.setInterval(() => {
+      if (bridgeWebRtcMediaActive()) {
+        window.clearInterval(timer);
+        resolve(true);
+        return;
+      }
+      if (performance.now() - started >= timeoutMs || bridgeWebRtcMode === "failed") {
+        window.clearInterval(timer);
+        resolve(false);
+      }
+    }, 50);
   });
 }
 
@@ -8499,11 +8579,9 @@ function setPlayerPort(port: PlayerPort): void {
     }
   }
   resetScheduledAudio();
-  if (ui.runtime === "bridge" && ui.playing) {
+  if (ui.runtime === "bridge" && ui.playing && !bridgePlaybackStarting) {
     stopBridgeStream();
-    if (!startBridgeVideoStream()) {
-      void bridgeStreamLoop();
-    }
+    void startBridgePlayback();
   }
   renderPlayerPort();
 }
