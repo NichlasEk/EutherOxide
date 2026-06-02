@@ -624,8 +624,7 @@ const localWebHost = isLocalWebHost(currentHostname);
 const hostedServerMode =
   !import.meta.env.DEV && !isTauri && !explicitBridgeBase && !localWebHost && window.location.port !== "5173";
 const forceMegaDriveStartup = pageParams.get("megadrive") === "1" || pageParams.get("eutherdogs") === "0";
-const autoStartEutherDogs =
-  pageParams.get("eutherdogs") === "1" || (hostedServerMode && !forceMegaDriveStartup);
+const autoStartEutherDogs = pageParams.get("eutherdogs") === "1";
 const bridgeBase =
   explicitBridgeBase ??
   (hostedServerMode || (window.location.port && window.location.port !== "5173")
@@ -1264,7 +1263,28 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
 
       <nav class="app-nav" aria-label="primary">
-        <button data-app-route="play" type="button">Play Home</button>
+        <div class="app-nav-group">
+          <span>Home</span>
+          <div class="app-nav-grid">
+            <button data-app-route="play" type="button">Reaction Lobby</button>
+          </div>
+        </div>
+        <div class="app-nav-group">
+          <span>Play Vessels</span>
+          <div class="app-nav-grid">
+            <button data-play-mode="megadrive" type="button">MegaDrive</button>
+            <button data-play-mode="eutherdogs" type="button">EutherDogs</button>
+            <button data-play-mode="eutherdoom" type="button">EutherDoom</button>
+          </div>
+        </div>
+        <div class="app-nav-group">
+          <span>Social Tools</span>
+          <div class="app-nav-grid">
+            <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
+            <button data-workspace-window="shopping" type="button">Shopping</button>
+            <button data-workspace-window="interaction" type="button">Social Desk</button>
+          </div>
+        </div>
       </nav>
 
       ${playHomeMarkup()}
@@ -1454,6 +1474,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </header>
 
+      ${reactionLobbyHomeMarkup()}
+
       <div class="screen-vessel">
         <div class="screen-glass" id="screen-glass">
           <canvas id="video" width="320" height="224"></canvas>
@@ -1640,7 +1662,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </button>
     <div id="user-menu-dropdown" class="user-menu-dropdown" role="menu" aria-label="user menu">
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
-      <button data-user-menu-action="interaction-lobby" type="button" role="menuitem">Interaction Lobby</button>
+      <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
       <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
       <button data-user-menu-action="shared-spaces" type="button" role="menuitem">Shared Spaces</button>
@@ -1760,6 +1782,9 @@ const appNavButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[
 const playHomePanel = document.querySelector<HTMLElement>("#play-home-panel")!;
 const playModeStatus = document.querySelector<HTMLElement>("#play-mode-status")!;
 const playModeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-play-mode]"));
+const reactionLobbyHome = document.querySelector<HTMLElement>("#reaction-lobby-home")!;
+const reactionLobbySummary = document.querySelector<HTMLDivElement>("#reaction-lobby-summary")!;
+const reactionLobbyVessels = document.querySelector<HTMLDivElement>("#reaction-lobby-vessels")!;
 const lobbySection = document.querySelector<HTMLDivElement>("#lobby-section")!;
 const dogsModeSection = document.querySelector<HTMLDivElement>("#dogs-mode-section")!;
 const shoppingListPanel = document.querySelector<HTMLDivElement>("#interaction-shopping-panel")!;
@@ -1960,6 +1985,11 @@ reactionCorePage.addEventListener("click", (event) => {
   if (workspaceButton && handleWorkspaceWindowButton(workspaceButton)) {
     return;
   }
+  const reactionLobbyButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-reaction-home-action]");
+  if (reactionLobbyButton) {
+    void handleReactionLobbyHomeAction(reactionLobbyButton);
+    return;
+  }
   const modeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-play-mode]");
   const mode = modeButton?.dataset.playMode;
   if (isPlayMode(mode)) {
@@ -2131,12 +2161,7 @@ releaseSlot.addEventListener("click", async () => {
 });
 
 spectateInstance.addEventListener("click", async () => {
-  lobbyRole = "spectator";
-  claimedLobbyPlayer = null;
-  setDoomDriveActive(false);
-  stopBridgeStream();
-  await releaseLobbySlot(false);
-  renderLobby();
+  await spectateActiveLobbyInstance();
 });
 
 kickP1.addEventListener("click", async () => {
@@ -3526,26 +3551,101 @@ function playHomeMarkup(): string {
     <section class="rail-section play-home-panel" id="play-home-panel">
       <div class="section-head">
         <div>
-          <p class="section-label">Play</p>
-          <strong>Choose chamber</strong>
+          <p class="section-label">Reaction Lobby</p>
+          <strong>Dock</strong>
         </div>
         <span id="play-mode-status">Ready</span>
       </div>
-      <div class="mode-card-grid">
-        ${playModeCards
-          .map(
-            (card) => `
-              <button class="mode-card mode-card-${card.mode}" data-play-mode="${card.mode}" type="button">
-                <span>${escapeHtml(card.kicker)}</span>
-                <strong>${escapeHtml(card.label)}</strong>
-                <small>${escapeHtml(card.detail)}</small>
-                <em>${escapeHtml(card.action)}</em>
-              </button>
-            `,
-          )
-          .join("")}
+      <div class="lobby-dock-actions">
+        <button data-reaction-home-action="refresh" type="button">Scan rooms</button>
+        <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
+        <button data-reaction-home-action="chat-focus" type="button">Reaction Chat</button>
       </div>
     </section>
+  `;
+}
+
+function reactionLobbyHomeMarkup(): string {
+  return `
+    <section class="reaction-lobby-home" id="reaction-lobby-home" hidden>
+      <div class="reaction-lobby-hero">
+        <div>
+          <p class="eyebrow">Reaction Lobby</p>
+          <h2>Control Room</h2>
+        </div>
+        <div class="reaction-lobby-summary" id="reaction-lobby-summary">Scanning</div>
+      </div>
+      <section class="reaction-lobby-panel reaction-lobby-play-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Play Vessels</p>
+            <strong>Choose chamber</strong>
+          </div>
+          <span>${playModeCards.length} modes</span>
+        </div>
+        <div class="reaction-mode-grid" aria-label="choose play mode">
+          ${playModeCards.map((card) => reactionModeCard(card)).join("")}
+        </div>
+        <div class="reaction-lobby-start-grid">
+          <button data-reaction-home-action="start-megadrive" type="button">Start MegaDrive vessel</button>
+          <button data-reaction-home-action="start-eutherdoom" type="button">Start EutherDoom vessel</button>
+        </div>
+      </section>
+      <section class="reaction-lobby-panel reaction-lobby-social-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Social Tools</p>
+            <strong>Chat, video, lists</strong>
+          </div>
+          <span>${visibleInteractionFriends().filter((friend) => friend.status === "Online").length} online</span>
+        </div>
+        <div class="reaction-social-grid">
+          ${reactionSocialToolCard("Video Chat", videoChatStatusMessage, "Camera, watch, mute", "video-chat")}
+          ${reactionSocialToolCard("Reaction Chat", "Live room chat", "Room feed", "chat-focus")}
+          ${reactionSocialToolCard("Shopping List", "Shared markdown", "Synced Markdown", undefined, "shopping")}
+          ${reactionSocialToolCard("Friends", "Online users", "Host users", undefined, "friends")}
+          ${reactionSocialToolCard("Shared Spaces", `${interactionSpaces.length} spaces`, "Docs and rooms", undefined, "spaces")}
+          ${reactionSocialToolCard("Social Desk", `${visibleInteractionFriends().filter((friend) => friend.status === "Online").length} online`, "Invites and modules", undefined, "interaction")}
+        </div>
+      </section>
+      <section class="reaction-lobby-vessels-panel">
+        <div class="section-head">
+          <p class="section-label">Active Reaction Vessels</p>
+          <button data-reaction-home-action="refresh" class="mini-action" type="button">Scan</button>
+        </div>
+        <div class="reaction-lobby-vessels" id="reaction-lobby-vessels"></div>
+      </section>
+    </section>
+  `;
+}
+
+function reactionSocialToolCard(
+  label: string,
+  kicker: string,
+  detail: string,
+  action?: string,
+  workspaceWindow?: WorkspaceWindow,
+): string {
+  const actionAttr = action ? ` data-reaction-home-action="${escapeHtml(action)}"` : "";
+  const windowAttr = workspaceWindow ? ` data-workspace-window="${workspaceWindow}"` : "";
+  const statusKey = action ?? workspaceWindow ?? label;
+  return `
+    <button class="reaction-tool-card"${actionAttr}${windowAttr} type="button">
+      <span data-reaction-tool-status="${escapeHtml(statusKey)}">${escapeHtml(kicker)}</span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </button>
+  `;
+}
+
+function reactionModeCard(card: (typeof playModeCards)[number]): string {
+  return `
+    <button class="reaction-mode-card reaction-mode-${card.mode}" data-play-mode="${card.mode}" type="button">
+      <span>${escapeHtml(card.kicker)}</span>
+      <strong>${escapeHtml(card.label)}</strong>
+      <small>${escapeHtml(card.detail)}</small>
+      <em>${escapeHtml(card.action)}</em>
+    </button>
   `;
 }
 
@@ -3562,7 +3662,7 @@ function interactionLobbyPageMarkup(): string {
         </div>
       </div>
       <div class="interaction-hero-actions">
-        <button data-app-route="play" type="button">Play Home</button>
+        <button data-app-route="play" type="button">Reaction Lobby</button>
         <button class="primary-action" data-workspace-window="shopping" type="button">Open shopping list</button>
       </div>
     </section>
@@ -4823,6 +4923,15 @@ async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<vo
   }
 }
 
+async function spectateActiveLobbyInstance(): Promise<void> {
+  lobbyRole = "spectator";
+  claimedLobbyPlayer = null;
+  setDoomDriveActive(false);
+  stopBridgeStream();
+  await releaseLobbySlot(false);
+  renderLobby();
+}
+
 async function ensureHostedLobbyInstance(): Promise<void> {
   if (!hostedServerMode || !hostUsername) {
     return;
@@ -5356,6 +5465,7 @@ function applyAppRoute(): void {
   document.body.classList.toggle("play-mode-eutherdoom", !showingLobby && appRoute === "eutherdoom");
 
   playHomePanel.hidden = showingLobby || appRoute !== "playHome";
+  reactionLobbyHome.hidden = showingLobby || appRoute !== "playHome";
   lobbySection.hidden = showingLobby || (appRoute !== "megadrive" && appRoute !== "eutherdoom");
   dogsModeSection.hidden = showingLobby || appRoute !== "eutherdogs";
   megaDrivePanel.hidden = showingLobby || appRoute !== "megadrive";
@@ -5367,6 +5477,7 @@ function applyAppRoute(): void {
   renderAppShellRoute();
   renderUserMenu();
   renderLobby();
+  renderReactionLobbyHome();
   renderShoppingListItems();
   if (showingLobby) {
     void loadShoppingList();
@@ -5429,10 +5540,10 @@ function isWorkspaceWindow(value: unknown): value is WorkspaceWindow {
 
 function renderAppShellRoute(): void {
   const playMode = currentPlayModeRoute();
-  playModeStatus.textContent = playMode ? playModeLabel(playMode) : "Choose mode";
+  playModeStatus.textContent = playMode ? playModeLabel(playMode) : "Lobby";
   appNavButtons.forEach((button) => {
     const route = appRouteFromToken(button.dataset.appRoute);
-    const selected = route === "playHome" ? appRoute !== "interactionLobby" : appRoute === route;
+    const selected = route === appRoute;
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-current", selected ? "page" : "false");
   });
@@ -5442,6 +5553,94 @@ function renderAppShellRoute(): void {
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-pressed", selected ? "true" : "false");
   });
+}
+
+async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise<void> {
+  const action = button.dataset.reactionHomeAction ?? "";
+  const instanceId = button.dataset.reactionHomeInstance;
+  switch (action) {
+    case "refresh":
+      await refreshLobby();
+      return;
+    case "start-megadrive":
+      await startLobbyInstance("megadrive");
+      return;
+    case "start-eutherdoom":
+      await startLobbyInstance("eutherdoom");
+      return;
+    case "open-eutherdogs":
+      await activatePlayMode("eutherdogs");
+      return;
+    case "video-chat":
+      openVideoChatPanel();
+      return;
+    case "chat-focus":
+      focusReactionChat();
+      return;
+    case "open":
+    case "join":
+    case "spectate":
+    case "claim-p1":
+    case "claim-p2":
+      if (!instanceId) {
+        return;
+      }
+      await openReactionLobbyInstance(instanceId, action);
+      return;
+    default:
+      return;
+  }
+}
+
+function openVideoChatPanel(): void {
+  if (appRoute === "interactionLobby") {
+    navigateApp("playHome");
+  }
+  videoChatPanel.classList.remove("is-collapsed");
+  videoChatToggle.focus({ preventScroll: true });
+  videoChatPanel.scrollIntoView({ block: "center", behavior: "smooth" });
+  renderVideoChat();
+}
+
+function focusReactionChat(): void {
+  if (appRoute === "interactionLobby") {
+    navigateApp("playHome");
+  }
+  chatInput.focus({ preventScroll: true });
+  chatInput.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+async function openReactionLobbyInstance(
+  instanceId: string,
+  action: "open" | "join" | "spectate" | "claim-p1" | "claim-p2",
+): Promise<void> {
+  const instance = lobbyStatus?.instances.find((candidate) => candidate.id === instanceId);
+  if (!instance) {
+    await refreshLobby();
+    return;
+  }
+  const kind = lobbyInstanceKind(instance);
+  navigateApp(kind);
+  if (dogsMode) {
+    leaveDogsMode();
+  }
+  await selectLobbyInstance(instanceId);
+  switch (action) {
+    case "join":
+      await joinLobbyInstance();
+      return;
+    case "spectate":
+      await spectateActiveLobbyInstance();
+      return;
+    case "claim-p1":
+      await joinLobbyInstance(1);
+      return;
+    case "claim-p2":
+      await joinLobbyInstance(2);
+      return;
+    case "open":
+      return;
+  }
 }
 
 function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
@@ -5727,8 +5926,13 @@ function displayUserName(username: string): string {
 async function handleUserMenuAction(action: string): Promise<void> {
   setUserMenuOpen(false);
   switch (action) {
+    case "reaction-lobby":
+      closeWorkspaceWindow();
+      navigateApp("playHome");
+      return;
     case "interaction-lobby":
-      openWorkspaceWindow("interaction");
+      closeWorkspaceWindow();
+      navigateApp("playHome");
       return;
     case "shopping-list":
       openWorkspaceWindow("shopping");
@@ -6739,6 +6943,7 @@ function renderVideoChat(): void {
   const canRtc = videoChatCanUseRtc();
   const canSend = videoChatCanSendLocalMedia();
   videoChatStatus.textContent = videoChatStatusMessage;
+  renderReactionLobbyToolStatus();
   videoChatWatch.disabled = isTauri || !hostUsername || !canRtc;
   videoChatCamera.disabled = isTauri || !hostUsername || !canRtc || !canSend;
   videoChatMute.disabled = !videoChatLocalStream?.getAudioTracks().length;
@@ -6838,6 +7043,7 @@ function renderLobby(): void {
     closeInstance.disabled = true;
     spectateInstance.classList.remove("is-selected");
     renderDoomPanel();
+    renderReactionLobbyHome();
     return;
   }
   renderLobbyInstances();
@@ -6868,6 +7074,91 @@ function renderLobby(): void {
     renderDogsMenu();
   }
   renderDoomPanel();
+  renderReactionLobbyHome();
+}
+
+function renderReactionLobbyHome(): void {
+  const instances = lobbyStatus?.instances ?? [];
+  const activeCount = instances.length;
+  const playerCount = instances.reduce(
+    (total, instance) => total + instance.players.filter((player) => player.occupied).length,
+    0,
+  );
+  const spectatorCount = instances.reduce((total, instance) => total + instance.spectators, 0);
+  reactionLobbySummary.textContent =
+    activeCount === 0
+      ? "No vessels"
+      : `${activeCount} vessel${activeCount === 1 ? "" : "s"} | ${playerCount} players | ${spectatorCount} spectators`;
+  reactionLobbyVessels.innerHTML = instances.length
+    ? instances.map((instance) => reactionLobbyVesselCard(instance)).join("")
+    : `
+      <div class="reaction-lobby-empty">
+        <strong>No active vessels</strong>
+        <span>Start a MegaDrive chamber, start EutherDoom, or open EutherDogs.</span>
+      </div>
+    `;
+  renderReactionLobbyToolStatus();
+}
+
+function renderReactionLobbyToolStatus(): void {
+  const videoStatus = reactionLobbyHome.querySelector<HTMLElement>('[data-reaction-tool-status="video-chat"]');
+  if (videoStatus) {
+    videoStatus.textContent = videoChatStatusMessage;
+  }
+  const socialDeskStatus = reactionLobbyHome.querySelector<HTMLElement>('[data-reaction-tool-status="interaction"]');
+  if (socialDeskStatus) {
+    socialDeskStatus.textContent = `${visibleInteractionFriends().filter((friend) => friend.status === "Online").length} online`;
+  }
+}
+
+function reactionLobbyVesselCard(instance: LobbyInstance): string {
+  const kind = lobbyInstanceKind(instance);
+  const modeLabel = instance.modeLabel ?? (kind === "eutherdoom" ? "EutherDoom" : "MegaDrive");
+  const playerCount = instance.players.filter((player) => player.occupied).length;
+  const title =
+    instance.loaded
+      ? instance.title
+      : kind === "eutherdoom"
+        ? "Lockstep relay ready"
+        : "No ROM loaded";
+  const p1 = instance.players.find((player) => player.player === 1);
+  const p2 = instance.players.find((player) => player.player === 2);
+  return `
+    <article class="reaction-vessel-card ${instance.id === activeLobbyInstanceId ? "is-selected" : ""}">
+      <div class="reaction-vessel-main">
+        <span>${escapeHtml(modeLabel)}</span>
+        <strong>${escapeHtml(instance.name)}</strong>
+        <small>${escapeHtml(title)}</small>
+      </div>
+      <div class="reaction-vessel-meta">
+        <span>${playerCount}P</span>
+        <span>${instance.spectators}S</span>
+        <span>${escapeHtml(instance.host ? `Host ${instance.host}` : "Open host")}</span>
+      </div>
+      <div class="reaction-vessel-players">
+        ${reactionLobbyPlayerPill(p1, 1)}
+        ${reactionLobbyPlayerPill(p2, 2)}
+      </div>
+      <div class="reaction-vessel-actions">
+        <button data-reaction-home-action="open" data-reaction-home-instance="${escapeHtml(instance.id)}" type="button">Open</button>
+        <button data-reaction-home-action="join" data-reaction-home-instance="${escapeHtml(instance.id)}" type="button">Join</button>
+        <button data-reaction-home-action="spectate" data-reaction-home-instance="${escapeHtml(instance.id)}" type="button">Spectate</button>
+        <button data-reaction-home-action="claim-p1" data-reaction-home-instance="${escapeHtml(instance.id)}" type="button" ${p1?.occupied ? "disabled" : ""}>P1</button>
+        <button data-reaction-home-action="claim-p2" data-reaction-home-instance="${escapeHtml(instance.id)}" type="button" ${p2?.occupied ? "disabled" : ""}>P2</button>
+      </div>
+    </article>
+  `;
+}
+
+function reactionLobbyPlayerPill(player: LobbyPlayer | undefined, port: PlayerPort): string {
+  const occupied = Boolean(player?.occupied);
+  const label = occupied ? player?.user ?? "busy" : "open";
+  return `
+    <span class="${occupied ? "is-occupied" : ""}">
+      <strong>P${port}</strong>
+      <em>${escapeHtml(label)}</em>
+    </span>
+  `;
 }
 
 function activeLobbyInstance(): LobbyInstance | undefined {
@@ -11940,7 +12231,7 @@ function renderStateSlots(): void {
 }
 
 function renderUi(): void {
-  document.querySelector("#game-title")!.textContent = ui.title;
+  document.querySelector("#game-title")!.textContent = appRoute === "playHome" ? "Reaction Lobby" : ui.title;
   document.querySelector("#status-text")!.textContent = ui.status;
   document.querySelector("#frame-count")!.textContent = String(ui.frame);
   document.querySelector("#timing-mode")!.textContent = ui.timing;

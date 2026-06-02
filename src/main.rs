@@ -1501,7 +1501,7 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
         303,
         "text/plain; charset=utf-8",
         b"",
-        &[("Location", "/?eutherdogs=1"), ("Set-Cookie", &cookie)],
+        &[("Location", "/#/play"), ("Set-Cookie", &cookie)],
     )
 }
 
