@@ -87,6 +87,8 @@ type NativeFrameResult = {
   frame: number;
   width: number;
   height: number;
+  rgba: number[] | Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>;
+  frameRate: number;
   cpuCycles: number;
   cpuSteps: number;
   frameMs: number;
@@ -530,10 +532,8 @@ const isTauri = Boolean(window.__TAURI_INTERNALS__);
 document.documentElement.classList.toggle("is-tauri-shell", isTauri);
 const pageParams = new URLSearchParams(window.location.search);
 const explicitBridgeBase = pageParams.get("bridge");
-const localWebHost =
-  window.location.hostname === "localhost" ||
-  window.location.hostname === "127.0.0.1" ||
-  window.location.hostname === "[::1]";
+const currentHostname = window.location.hostname.toLowerCase();
+const localWebHost = isLocalWebHost(currentHostname);
 const hostedServerMode =
   !import.meta.env.DEV && !isTauri && !explicitBridgeBase && !localWebHost && window.location.port !== "5173";
 const forceMegaDriveStartup = pageParams.get("megadrive") === "1" || pageParams.get("eutherdogs") === "0";
@@ -567,6 +567,32 @@ const dogsStaffOptions: DogsStaffOption[] = [
     note: "Can say 'policy' without blinking.",
   },
 ];
+
+function normalizedHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+}
+
+function isLocalWebHost(hostname: string): boolean {
+  const host = normalizedHostname(hostname);
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function isPrivateLanHostname(hostname: string): boolean {
+  const octets = normalizedHostname(hostname).split(".");
+  if (octets.length !== 4) {
+    return false;
+  }
+  const parts = octets.map((part) => Number(part));
+  if (parts.some((part, index) => !Number.isInteger(part) || part < 0 || part > 255 || octets[index] !== String(part))) {
+    return false;
+  }
+  return (
+    parts[0] === 10 ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168) ||
+    (parts[0] === 169 && parts[1] === 254)
+  );
+}
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
@@ -5233,11 +5259,15 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
   if (isTauri) {
     return false;
   }
-  if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+  const lanHttpWebRtcTrial = !window.isSecureContext && isPrivateLanHostname(currentHostname);
+  if (!window.isSecureContext && !localWebHost && !lanHttpWebRtcTrial) {
     bridgeWebRtcMode = "blocked";
     pushTrace("WebRTC requires HTTPS");
     renderUi();
     return false;
+  }
+  if (lanHttpWebRtcTrial) {
+    pushTrace("WebRTC LAN HTTP trial");
   }
   if (!window.RTCPeerConnection) {
     bridgeWebRtcMode = "failed";
@@ -5826,8 +5856,10 @@ function applyBridgeFrame(frame: FrameResult): void {
 }
 
 function applyNativeFrameStatus(frame: NativeFrameResult, transportMs: number): void {
+  const drawStarted = performance.now();
+  drawNativeFrame(frame);
   ui.transportMs = transportMs;
-  ui.drawMs = 0;
+  ui.drawMs = performance.now() - drawStarted;
   ui.audioLeadMs = frame.audioLeadMs;
   ui.transportMode = frame.audioActive ? "TAURI RUST LOOP" : "TAURI RUST VIDEO";
   ui.frame = frame.frame;
@@ -5860,7 +5892,8 @@ async function nativeStatusLoop(): Promise<void> {
         applyNativeFrameStatus(frame, done - started);
         renderUi();
       }
-      await sleep(80);
+      const frameMs = frame ? 1000 / Math.max(1, frame.frameRate) : 16;
+      await sleep(Math.max(8, Math.min(33, frameMs)));
     }
   } finally {
     nativeStatusPolling = false;

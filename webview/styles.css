@@ -2367,10 +2367,6 @@ h2 {
   opacity: 0;
 }
 
-.is-tauri-shell #video {
-  opacity: 0;
-}
-
 .is-tauri-shell #shader-video {
   opacity: 0;
 }
