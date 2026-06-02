@@ -1,16 +1,318 @@
 # EutherOxide Server Runbook
 
-This machine is currently set up as a local special server build. The repo has
-local changes that make it build without a sibling `/home/nichlas/jgenesis`
-checkout, but those changes do not have to be pushed upstream.
+This machine is currently set up as the home EutherHost server. The notes below
+capture the deployed shape so the same setup can be recreated on a new machine.
+
+Current OS snapshot:
+
+```text
+Debian GNU/Linux 13 (trixie)
+```
 
 ## Public Addresses
 
 - Public site: `https://apothictech.se`
+- Public play alias: `https://play.apothictech.se`
 - Internal LAN site without TLS: `http://192.168.32.186:8080`
 - LAN server IP: `192.168.32.186`
 - LAN SSH: `ssh nichlas@192.168.32.186`
 - EutherHost backend: `127.0.0.1:32162` only, fronted by Caddy
+
+Current LAN HTTP behavior:
+
+- `http://192.168.32.186:8080` is intentionally served without TLS for the home
+  network.
+- The web client allows a WebRTC/H.264 trial on private LAN IP hosts, so this
+  URL can still use the fast WebRTC path in Firefox even though it is not HTTPS.
+- Public/domain access should still use HTTPS through Caddy.
+
+## Fresh Server Deploy
+
+These steps recreate the current server shape on a new Debian-like machine.
+Adjust the username, repo path, LAN IP, router gateway, and domain if they
+change.
+
+### 1. Base Packages
+
+Install the runtime/build tools:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential pkg-config curl git gh nodejs npm ffmpeg \
+  caddy dnsmasq openssh-server
+```
+
+Install Rust with rustup or the distro package. The current machine builds the
+root crate with Rust `1.85.0`; newer stable Rust is fine for the root server.
+
+### 2. Checkout And Build
+
+```sh
+cd /home/nichlas
+git clone https://github.com/NichlasEk/EutherOxide.git
+cd /home/nichlas/EutherOxide
+npm ci
+bash scripts/build-release.sh
+```
+
+`scripts/build-release.sh` writes `webview/build-info.ts`, builds `dist/`, and
+builds `target/release/euther-oxide`.
+
+Create the ROM directory:
+
+```sh
+mkdir -p /home/nichlas/roms
+```
+
+### 3. EutherHost Config
+
+Create `/home/nichlas/EutherOxide/.euther-host/config.toml`:
+
+```toml
+bind = "127.0.0.1:32162"
+rom_dir = "/home/nichlas/roms"
+session_timeout_minutes = 720
+login_rate_limit_window_secs = 900
+login_rate_limit_max_attempts = 8
+secure_cookies = true
+allowed_origins = "https://apothictech.se,https://play.apothictech.se,http://192.168.32.186:8080"
+library_read_only = true
+```
+
+Create users with:
+
+```sh
+bash scripts/host-init-user.sh
+```
+
+That writes `/home/nichlas/EutherOxide/.euther-host/users.toml`.
+
+### 4. EutherHost Systemd Unit
+
+Create `/etc/systemd/system/eutherhost.service`:
+
+```ini
+[Unit]
+Description=EutherHost
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nichlas/EutherOxide
+ExecStart=/home/nichlas/EutherOxide/scripts/host-server.sh
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/nichlas/EutherOxide/.euther-host /home/nichlas/EutherOxide/.euther-bridge /home/nichlas/EutherOxide/target /home/nichlas/roms
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable it:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now eutherhost.service
+```
+
+### 5. Caddy Reverse Proxy
+
+Create `/etc/caddy/Caddyfile`:
+
+```caddy
+http://:80 {
+	redir https://apothictech.se{uri} permanent
+}
+
+play.apothictech.se, apothictech.se, www.apothictech.se {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+	}
+
+	reverse_proxy 127.0.0.1:32162
+}
+
+play.apothictech.se:8443, apothictech.se:8443, www.apothictech.se:8443 {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+	}
+
+	reverse_proxy 127.0.0.1:32162
+}
+
+http://192.168.32.186:8080 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+	}
+
+	reverse_proxy 127.0.0.1:32162
+}
+```
+
+Validate and reload:
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+### 6. Local DNS Override
+
+This is optional while LAN HTTP WebRTC works, but it is still the clean way to
+make `https://apothictech.se` resolve to the LAN server from inside the house.
+
+Create `/etc/apothictech-dns.conf`:
+
+```text
+port=53
+listen-address=127.0.0.1,192.168.32.186
+bind-interfaces
+no-resolv
+server=192.168.32.1
+domain-needed
+bogus-priv
+address=/apothictech.se/192.168.32.186
+address=/www.apothictech.se/192.168.32.186
+```
+
+`address=/apothictech.se/192.168.32.186` also covers subdomains such as
+`play.apothictech.se`.
+
+Create `/etc/systemd/system/apothictech-dns.service`:
+
+```ini
+[Unit]
+Description=Local DNS override for apothictech.se
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --no-daemon --conf-file=/etc/apothictech-dns.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable it:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now apothictech-dns.service
+```
+
+### 7. Loopia Dynamic DNS
+
+Create `/usr/local/sbin/loopia-ddns` from the script currently used on this
+server. It reads secrets from `/etc/loopia-ddns.env`.
+
+The environment file should contain at least:
+
+```text
+LOOPIA_DDNS_USER=...
+LOOPIA_DDNS_PASSWORD=...
+LOOPIA_DDNS_HOSTNAMES=apothictech.se,www.apothictech.se,play.apothictech.se
+```
+
+Keep `/etc/loopia-ddns.env` readable only by root.
+
+Create `/etc/systemd/system/loopia-ddns.service`:
+
+```ini
+[Unit]
+Description=Update Loopia dynamic DNS records
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/loopia-ddns.env
+ExecStart=/usr/local/sbin/loopia-ddns
+```
+
+Create `/etc/systemd/system/loopia-ddns.timer`:
+
+```ini
+[Unit]
+Description=Run Loopia dynamic DNS updater periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it:
+
+```sh
+sudo chmod 700 /usr/local/sbin/loopia-ddns
+sudo chmod 600 /etc/loopia-ddns.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now loopia-ddns.timer
+```
+
+### 8. Router
+
+Forward WAN traffic to the server:
+
+```text
+TCP 80  -> 192.168.32.186:80
+TCP 443 -> 192.168.32.186:443
+```
+
+For local split DNS, set router DHCP DNS to:
+
+```text
+192.168.32.186
+```
+
+Do not set `8.8.8.8` as secondary if you need split DNS to be reliable; many
+clients use secondary DNS in parallel.
+
+### 9. Validation
+
+```sh
+systemctl status eutherhost.service --no-pager
+systemctl status caddy --no-pager
+systemctl status apothictech-dns.service --no-pager
+systemctl status loopia-ddns.timer --no-pager
+curl -i http://127.0.0.1:32162
+curl -i http://192.168.32.186:8080
+curl -i --resolve apothictech.se:443:127.0.0.1 https://apothictech.se
+dig @192.168.32.186 apothictech.se +short
+dig @192.168.32.186 play.apothictech.se +short
+```
+
+Expected app behavior on LAN:
+
+- `http://192.168.32.186:8080` should show build info in the perf panel.
+- In Firefox on a LAN client, the trace should include `WebRTC LAN HTTP trial`.
+- Fast playback should report `BRIDGE WEBRTC + WEBRTC A/V` when WebRTC succeeds.
 
 ## Services
 
@@ -19,6 +321,7 @@ Check the main services:
 ```sh
 systemctl status eutherhost.service --no-pager
 systemctl status caddy --no-pager
+systemctl status apothictech-dns.service --no-pager
 systemctl status loopia-ddns.timer --no-pager
 systemctl status ssh --no-pager
 ```
@@ -26,7 +329,7 @@ systemctl status ssh --no-pager
 Boot-enabled services:
 
 ```sh
-systemctl is-enabled eutherhost.service caddy loopia-ddns.timer ssh nginx
+systemctl is-enabled eutherhost.service caddy apothictech-dns.service loopia-ddns.timer ssh nginx
 ```
 
 Expected state:
@@ -34,6 +337,7 @@ Expected state:
 ```text
 eutherhost.service  enabled
 caddy               enabled
+apothictech-dns     enabled
 loopia-ddns.timer   enabled
 ssh                 enabled
 nginx               disabled
@@ -51,6 +355,7 @@ Logs:
 ```sh
 journalctl -u eutherhost.service -n 100 --no-pager
 journalctl -u caddy -n 100 --no-pager
+journalctl -u apothictech-dns.service -n 100 --no-pager
 journalctl -u loopia-ddns.service -n 100 --no-pager
 ```
 
@@ -69,7 +374,7 @@ Runtime:
 WorkingDirectory=/home/nichlas/EutherOxide
 ExecStart=/home/nichlas/EutherOxide/scripts/host-server.sh
 Backend bind=127.0.0.1:32162
-Public origin=https://apothictech.se
+Allowed origins=https://apothictech.se,https://play.apothictech.se,http://192.168.32.186:8080
 ROM dir=/home/nichlas/roms
 ```
 
@@ -111,9 +416,11 @@ Current role:
 
 - Owns ports `80` and `443`
 - Provides HTTPS certificates
-- Reverse-proxies `apothictech.se` and `www.apothictech.se` to `127.0.0.1:32162`
-- Exposes `http://192.168.32.186:8080` inside LAN for browsers that reject the
-  IP-address HTTPS certificate
+- Reverse-proxies `apothictech.se`, `play.apothictech.se`, and
+  `www.apothictech.se` to `127.0.0.1:32162`
+- Also serves those HTTPS names on `:8443` as a fallback test port
+- Exposes `http://192.168.32.186:8080` inside LAN; the web client allows a
+  private-LAN WebRTC/H.264 trial on that HTTP origin
 
 Validate and reload:
 
@@ -138,6 +445,7 @@ The timer updates:
 ```text
 apothictech.se
 www.apothictech.se
+play.apothictech.se
 ```
 
 Run manually:
@@ -152,6 +460,7 @@ Check DNS:
 ```sh
 getent ahostsv4 apothictech.se
 getent ahostsv4 www.apothictech.se
+getent ahostsv4 play.apothictech.se
 ```
 
 ## Router
@@ -187,6 +496,7 @@ the LAN server IP:
 ```text
 apothictech.se      -> 192.168.32.186
 www.apothictech.se  -> 192.168.32.186
+play.apothictech.se -> 192.168.32.186
 ```
 
 Files:
@@ -202,6 +512,7 @@ Commands:
 systemctl status apothictech-dns.service --no-pager
 sudo systemctl restart apothictech-dns.service
 dig @192.168.32.186 apothictech.se +short
+dig @192.168.32.186 play.apothictech.se +short
 dig @192.168.32.186 github.com +short
 ```
 
@@ -372,15 +683,19 @@ Contents read/write access.
 
 ```text
 22     SSH
+53     Local DNS override, dnsmasq on 127.0.0.1 and 192.168.32.186
 80     HTTP, Caddy
 443    HTTPS, Caddy
+8080   LAN HTTP EutherHost through Caddy
+8443   HTTPS fallback/test port through Caddy
 32162  EutherHost backend, localhost only
 2019   Caddy admin, localhost only
+49152-49200 UDP WebRTC media candidate range
 ```
 
-## Current Local Code Changes
+## Source Layout Notes
 
-The local build no longer depends on `/home/nichlas/jgenesis`.
+The build does not depend on a sibling `/home/nichlas/jgenesis` checkout.
 
 Vendored crates:
 
@@ -388,13 +703,3 @@ Vendored crates:
 crates/z80-emu
 crates/jgenesis-common
 ```
-
-Rust 1.85 compatibility edits were also made in:
-
-```text
-src/bus.rs
-src/rom.rs
-src/z80.rs
-```
-
-These can stay local if the upstream repo should remain unchanged.

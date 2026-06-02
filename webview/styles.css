@@ -2023,16 +2023,22 @@ h2 {
   font-size: 0.84rem;
 }
 
-#volume-slider {
+#volume-slider,
+#mic-volume-slider {
   width: 100%;
   height: 28px;
   margin: 0;
   accent-color: #a5de72;
 }
 
-#volume-slider:focus-visible {
+#volume-slider:focus-visible,
+#mic-volume-slider:focus-visible {
   outline: 2px solid rgba(230, 247, 147, 0.58);
   outline-offset: 3px;
+}
+
+#mic-volume-slider {
+  accent-color: #25d8ff;
 }
 
 .state-grid {
@@ -2401,6 +2407,7 @@ h2 {
 }
 
 .perf-drawer,
+.video-chat-panel,
 .chat-panel {
   display: grid;
   gap: 8px;
@@ -2592,6 +2599,142 @@ h2 {
   gap: 10px;
   min-height: 0;
   overflow: hidden;
+}
+
+.video-chat-panel {
+  padding: 10px;
+  border: 1px solid rgba(46, 199, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(4, 12, 16, 0.58);
+}
+
+.video-chat-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-color: rgba(46, 199, 255, 0.24);
+  background:
+    linear-gradient(90deg, rgba(46, 199, 255, 0.12), rgba(98, 218, 168, 0.1)),
+    rgba(3, 12, 16, 0.84);
+}
+
+.video-chat-toggle span,
+.video-chat-toggle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-chat-toggle span {
+  color: #9fbe91;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.video-chat-toggle strong {
+  justify-self: end;
+  color: #dff7ff;
+  font-size: 0.78rem;
+}
+
+.video-chat-body {
+  display: grid;
+  gap: 8px;
+}
+
+.video-chat-panel.is-collapsed .video-chat-body {
+  display: none;
+}
+
+.video-chat-stage {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 8px;
+  min-height: 148px;
+  align-content: stretch;
+}
+
+.video-chat-stage > span {
+  display: grid;
+  place-items: center;
+  min-height: 118px;
+  color: #aac99c;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.video-chat-tile {
+  position: relative;
+  min-height: 118px;
+  border: 1px solid rgba(46, 199, 255, 0.18);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(0, 13, 20, 0.92), rgba(8, 25, 16, 0.88)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 12px);
+  overflow: hidden;
+}
+
+.video-chat-tile video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 118px;
+  object-fit: cover;
+  background: #000;
+}
+
+.video-chat-tile.is-waiting {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+}
+
+.video-chat-tile.is-waiting strong {
+  color: #dff7ff;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.video-chat-badge {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid rgba(207, 240, 178, 0.14);
+  border-radius: 6px;
+  background: rgba(3, 8, 10, 0.78);
+  color: #eef8dd;
+  font-size: 0.68rem;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.video-chat-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.video-chat-actions button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 6px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .chat-panel {
@@ -3374,6 +3517,10 @@ h2 {
   .reaction-strip,
   .metric-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .video-chat-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .eutherdogs-console {

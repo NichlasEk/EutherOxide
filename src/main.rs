@@ -30,6 +30,9 @@ const WEBRTC_VIDEO_BITRATE: &str = "1200k";
 const WEBRTC_VIDEO_MAXRATE: &str = "1400k";
 const WEBRTC_VIDEO_BUFSIZE: &str = "350k";
 const HOST_PLAYER_LEASE_TIMEOUT: Duration = Duration::from_secs(8);
+const HOST_VIDEO_CHAT_PARTICIPANT_TIMEOUT_MS: u64 = 12_000;
+const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
+const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
 const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
 const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
 
@@ -728,6 +731,7 @@ struct HostState {
     login_attempts: Arc<Mutex<Vec<LoginAttempt>>>,
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
     next_chat_id: Arc<Mutex<u64>>,
+    video_chat_rooms: Arc<Mutex<Vec<HostVideoChatRoom>>>,
 }
 
 #[derive(Clone)]
@@ -829,6 +833,44 @@ struct HostChatMessage {
     created_unix_ms: u64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostVideoChatParticipant {
+    client_id: String,
+    user: String,
+    can_send: bool,
+    updated_unix_ms: u64,
+}
+
+#[derive(Clone)]
+struct HostVideoChatRoom {
+    instance_id: String,
+    participants: Vec<HostVideoChatParticipant>,
+    signals: Vec<HostVideoChatSignal>,
+    next_signal_id: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostVideoChatSignal {
+    id: u64,
+    from: String,
+    to: String,
+    #[serde(rename = "type")]
+    signal_type: String,
+    sdp: String,
+    created_unix_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostVideoChatSignalRequest {
+    to: String,
+    #[serde(rename = "type")]
+    signal_type: String,
+    sdp: String,
+}
+
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     let state = new_bridge_state(emulator);
@@ -915,6 +957,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         login_attempts: Arc::new(Mutex::new(Vec::new())),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
+        video_chat_rooms: Arc::new(Mutex::new(Vec::new())),
     };
     println!(
         "EutherHost reaction chamber listening on http://{}",
@@ -1110,6 +1153,47 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let message = form_value(&form, "message").unwrap_or_default();
             post_host_chat_message(state, &user, &message)?;
             send_json(stream, &host_chat_list(state)?)
+        }
+        ("GET", "/api/video-chat") => {
+            let user = require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = host_video_chat_client_id(&request)?;
+            let after_id = query_string_value(&request.path, "after")?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            send_json(
+                stream,
+                &host_video_chat_status(state, &instance_id, &client_id, &user, after_id)?,
+            )
+        }
+        ("POST", "/api/video-chat/join") => {
+            let user = require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = host_video_chat_client_id(&request)?;
+            let can_send = query_string_value(&request.path, "canSend")?
+                .or_else(|| query_string_value(&request.path, "can_send").ok().flatten())
+                .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"));
+            join_host_video_chat(state, &instance_id, &client_id, &user, can_send)?;
+            send_json(
+                stream,
+                &host_video_chat_status(state, &instance_id, &client_id, &user, 0)?,
+            )
+        }
+        ("POST", "/api/video-chat/leave") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = host_video_chat_client_id(&request)?;
+            leave_host_video_chat(state, &instance_id, &client_id)?;
+            send_json(stream, &serde_json::json!({ "ok": true }))
+        }
+        ("POST", "/api/video-chat/signal") => {
+            let user = require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = host_video_chat_client_id(&request)?;
+            let signal: HostVideoChatSignalRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            post_host_video_chat_signal(state, &instance_id, &client_id, &user, signal)?;
+            send_json(stream, &serde_json::json!({ "ok": true }))
         }
         ("GET", "/api/admin/users") => {
             if let Err(err) = require_host_admin(state, &request) {
@@ -1582,6 +1666,13 @@ fn close_host_instance(state: &HostState, instance_id: &str) -> io::Result<()> {
         };
         instances.remove(index).bridge
     };
+    {
+        let mut rooms = state
+            .video_chat_rooms
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        rooms.retain(|room| room.instance_id != instance_id);
+    }
     stop_bridge_state(&bridge)
 }
 
@@ -1781,6 +1872,238 @@ fn post_host_chat_message(state: &HostState, user: &str, message: &str) -> io::R
         messages.drain(0..excess);
     }
     Ok(())
+}
+
+fn host_video_chat_client_id(request: &HttpRequest) -> io::Result<String> {
+    query_string_value(&request.path, "client")?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_request("missing video chat client id"))
+}
+
+fn host_video_chat_status(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    user: &str,
+    after_id: u64,
+) -> io::Result<serde_json::Value> {
+    validate_host_video_chat_client_id(client_id)?;
+    host_instance_snapshot(state, instance_id)?;
+    let now = unix_ms_now();
+    let mut rooms = state
+        .video_chat_rooms
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    prune_host_video_chat_rooms(&mut rooms, now);
+    let Some(room) = rooms
+        .iter_mut()
+        .find(|room| room.instance_id == instance_id)
+    else {
+        return Ok(serde_json::json!({
+            "self": client_id,
+            "participants": [],
+            "signals": [],
+        }));
+    };
+    if let Some(participant) = room
+        .participants
+        .iter_mut()
+        .find(|participant| participant.client_id == client_id)
+    {
+        participant.user = user.to_string();
+        participant.updated_unix_ms = now;
+    }
+    room.signals
+        .retain(|signal| !(signal.to == client_id && signal.id <= after_id));
+    let signals = room
+        .signals
+        .iter()
+        .filter(|signal| signal.to == client_id && signal.id > after_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "self": client_id,
+        "participants": &room.participants,
+        "signals": signals,
+    }))
+}
+
+fn join_host_video_chat(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    user: &str,
+    can_send: bool,
+) -> io::Result<()> {
+    validate_host_video_chat_client_id(client_id)?;
+    host_instance_snapshot(state, instance_id)?;
+    let now = unix_ms_now();
+    let mut rooms = state
+        .video_chat_rooms
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    prune_host_video_chat_rooms(&mut rooms, now);
+    let index = if let Some(index) = rooms
+        .iter()
+        .position(|room| room.instance_id == instance_id)
+    {
+        index
+    } else {
+        rooms.push(HostVideoChatRoom {
+            instance_id: instance_id.to_string(),
+            participants: Vec::new(),
+            signals: Vec::new(),
+            next_signal_id: 1,
+        });
+        rooms.len() - 1
+    };
+    let room = &mut rooms[index];
+    room.signals
+        .retain(|signal| signal.from != client_id && signal.to != client_id);
+    if let Some(participant) = room
+        .participants
+        .iter_mut()
+        .find(|participant| participant.client_id == client_id)
+    {
+        participant.user = user.to_string();
+        participant.can_send = can_send;
+        participant.updated_unix_ms = now;
+    } else {
+        room.participants.push(HostVideoChatParticipant {
+            client_id: client_id.to_string(),
+            user: user.to_string(),
+            can_send,
+            updated_unix_ms: now,
+        });
+    }
+    Ok(())
+}
+
+fn leave_host_video_chat(state: &HostState, instance_id: &str, client_id: &str) -> io::Result<()> {
+    let mut rooms = state
+        .video_chat_rooms
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(room) = rooms
+        .iter_mut()
+        .find(|room| room.instance_id == instance_id)
+    {
+        room.participants
+            .retain(|participant| participant.client_id != client_id);
+        room.signals
+            .retain(|signal| signal.from != client_id && signal.to != client_id);
+    }
+    rooms.retain(|room| !room.participants.is_empty());
+    Ok(())
+}
+
+fn post_host_video_chat_signal(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    user: &str,
+    signal: HostVideoChatSignalRequest,
+) -> io::Result<()> {
+    validate_host_video_chat_client_id(client_id)?;
+    validate_host_video_chat_client_id(&signal.to)?;
+    if !matches!(signal.signal_type.as_str(), "offer" | "answer") {
+        return Err(invalid_request(
+            "video chat signal type must be offer or answer",
+        ));
+    }
+    if signal.sdp.len() > 65_536 {
+        return Err(invalid_request("video chat signal is too large"));
+    }
+    let now = unix_ms_now();
+    let mut rooms = state
+        .video_chat_rooms
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    prune_host_video_chat_rooms(&mut rooms, now);
+    let Some(room) = rooms
+        .iter_mut()
+        .find(|room| room.instance_id == instance_id)
+    else {
+        return Err(invalid_request("video chat room not joined"));
+    };
+    let Some(participant) = room
+        .participants
+        .iter_mut()
+        .find(|participant| participant.client_id == client_id)
+    else {
+        return Err(invalid_request("video chat room not joined"));
+    };
+    participant.user = user.to_string();
+    participant.updated_unix_ms = now;
+    if !room
+        .participants
+        .iter()
+        .any(|participant| participant.client_id == signal.to)
+    {
+        return Err(invalid_request("video chat peer not joined"));
+    }
+    room.signals.retain(|existing| {
+        !(existing.from == client_id
+            && existing.to == signal.to
+            && existing.signal_type == signal.signal_type)
+    });
+    let entry = HostVideoChatSignal {
+        id: room.next_signal_id,
+        from: client_id.to_string(),
+        to: signal.to,
+        signal_type: signal.signal_type,
+        sdp: signal.sdp,
+        created_unix_ms: now,
+    };
+    room.next_signal_id += 1;
+    room.signals.push(entry);
+    trim_host_video_chat_signals(room);
+    Ok(())
+}
+
+fn validate_host_video_chat_client_id(client_id: &str) -> io::Result<()> {
+    if client_id.is_empty() || client_id.len() > 128 {
+        return Err(invalid_request("invalid video chat client id"));
+    }
+    if !client_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(invalid_request("invalid video chat client id"));
+    }
+    Ok(())
+}
+
+fn prune_host_video_chat_rooms(rooms: &mut Vec<HostVideoChatRoom>, now: u64) {
+    for room in rooms.iter_mut() {
+        room.participants.retain(|participant| {
+            now.saturating_sub(participant.updated_unix_ms)
+                <= HOST_VIDEO_CHAT_PARTICIPANT_TIMEOUT_MS
+        });
+        let active_clients = room
+            .participants
+            .iter()
+            .map(|participant| participant.client_id.clone())
+            .collect::<Vec<_>>();
+        room.signals.retain(|signal| {
+            now.saturating_sub(signal.created_unix_ms) <= HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS
+                && active_clients
+                    .iter()
+                    .any(|client_id| client_id == &signal.from)
+                && active_clients
+                    .iter()
+                    .any(|client_id| client_id == &signal.to)
+        });
+        trim_host_video_chat_signals(room);
+    }
+    rooms.retain(|room| !room.participants.is_empty());
+}
+
+fn trim_host_video_chat_signals(room: &mut HostVideoChatRoom) {
+    if room.signals.len() > HOST_VIDEO_CHAT_MAX_SIGNALS {
+        let excess = room.signals.len() - HOST_VIDEO_CHAT_MAX_SIGNALS;
+        room.signals.drain(0..excess);
+    }
 }
 
 fn join_lobby_instance(
@@ -3591,15 +3914,22 @@ fn bridge_runner_loop(state: &BridgeState) -> io::Result<()> {
             };
             let mut video = Vec::with_capacity(video_width * video_height * 3);
             push_frame_rgb24_visible(&mut video, &emulator);
-            let should_publish =
-                stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
+            let should_publish = stopped || emulator.frame_count % BRIDGE_STREAM_VIDEO_DIVISOR == 0;
             let packet = should_publish
                 .then(|| bridge_frame_audio_samples_bytes(&emulator, &run, 44_100, &pending_audio));
             let mut audio = Vec::with_capacity(frame_audio.len() * 2);
             for sample in frame_audio {
                 audio.extend_from_slice(&sample.to_le_bytes());
             }
-            (packet, audio, video, video_width, video_height, frame, stopped)
+            (
+                packet,
+                audio,
+                video,
+                video_width,
+                video_height,
+                frame,
+                stopped,
+            )
         };
         publish_bridge_video(state, video, video_width, video_height, frame, stopped)?;
         publish_bridge_audio(state, audio, frame, stopped)?;
@@ -4322,7 +4652,12 @@ fn bridge_webrtc_offer(
             .ok_or_else(|| io::Error::other("missing WebRTC answer"))?;
         Ok::<_, io::Error>((peer, answer, video_track, audio_track, video_stop))
     })?;
-    spawn_bridge_webrtc_h264(state.clone(), video_track, Arc::clone(&stop), video_target_fps);
+    spawn_bridge_webrtc_h264(
+        state.clone(),
+        video_track,
+        Arc::clone(&stop),
+        video_target_fps,
+    );
     spawn_bridge_webrtc_opus(state.clone(), audio_track, Arc::clone(&stop));
 
     let mut peers = state

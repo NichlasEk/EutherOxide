@@ -254,6 +254,30 @@ type ChatResult = {
   messages: ChatMessage[];
 };
 
+type VideoChatParticipant = {
+  clientId: string;
+  user: string;
+  canSend: boolean;
+  updatedUnixMs: number;
+};
+
+type VideoChatSignalType = "offer" | "answer";
+
+type VideoChatSignal = {
+  id: number;
+  from: string;
+  to: string;
+  type: VideoChatSignalType;
+  sdp: string;
+  createdUnixMs: number;
+};
+
+type VideoChatResult = {
+  self: string;
+  participants: VideoChatParticipant[];
+  signals: VideoChatSignal[];
+};
+
 type PadBinding = {
   kind: "button" | "axis";
   code: string;
@@ -596,6 +620,7 @@ function isPrivateLanHostname(hostname: string): boolean {
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
+const micVolumeStorageKey = "eutheroxide-mic-volume";
 const bindingsStorageKey = "eutheroxide-input-bindings";
 const dogsBindingsStorageKey = "eutheroxide-eutherdogs-input-bindings";
 const shaderStorageKey = "eutheroxide-video-shader";
@@ -608,6 +633,7 @@ const playerPortStorageKey = "eutheroxide-player-port";
 const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
 const dogsHighScoreLimit = 10;
 let audioVolume = readStoredVolume();
+let micVolume = readStoredMicVolume();
 const localAudioTargetLeadSeconds = 0.055;
 const localAudioMinimumLeadSeconds = 0.018;
 const localAudioMaximumLeadSeconds = 0.16;
@@ -849,6 +875,22 @@ let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
+let videoChatJoined = false;
+let videoChatSending = false;
+let videoChatMuted = false;
+let videoChatParticipants: VideoChatParticipant[] = [];
+let videoChatPollTimer: number | null = null;
+let videoChatLastSignalId = 0;
+let videoChatStatusMessage = "idle";
+let videoChatRawLocalStream: MediaStream | null = null;
+let videoChatLocalStream: MediaStream | null = null;
+let videoChatMicContext: AudioContext | null = null;
+let videoChatMicGain: GainNode | null = null;
+const videoChatPeers = new Map<string, RTCPeerConnection>();
+const videoChatRemoteStreams = new Map<string, MediaStream>();
+const videoChatPeerModes = new Map<string, string>();
+const videoChatMakingOffer = new Set<string>();
+let videoChatRenderKey = "";
 let desiredBuildProfile: "debug" | "release" = "debug";
 let audioContext: AudioContext | null = null;
 let audioGain: GainNode | null = null;
@@ -1074,10 +1116,15 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
       <div class="rail-section volume-section">
         <div class="volume-head">
-          <p class="section-label">Volume</p>
+          <p class="section-label">Sound</p>
           <strong id="volume-value">80%</strong>
         </div>
         <input id="volume-slider" type="range" min="0" max="100" value="80" aria-label="volume" />
+        <div class="volume-head">
+          <p class="section-label">Mic</p>
+          <strong id="mic-volume-value">100%</strong>
+        </div>
+        <input id="mic-volume-slider" type="range" min="0" max="160" value="100" aria-label="mic volume" />
       </div>
 
       <div class="rail-section">
@@ -1247,6 +1294,23 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="metric"><span>Build</span><strong id="build-id">dev</strong></div>
         </div>
       </div>
+      <div class="video-chat-panel is-collapsed" id="video-chat-panel">
+        <button id="video-chat-toggle" class="video-chat-toggle" type="button">
+          <span>Video Chat</span>
+          <strong id="video-chat-status">idle</strong>
+        </button>
+        <div class="video-chat-body" id="video-chat-body">
+          <div id="video-chat-stage" class="video-chat-stage">
+            <span>Video chat idle</span>
+          </div>
+          <div class="video-chat-actions">
+            <button id="video-chat-watch" type="button">Watch</button>
+            <button id="video-chat-camera" type="button">Camera</button>
+            <button id="video-chat-mute" type="button">Mute</button>
+            <button id="video-chat-leave" type="button">Leave</button>
+          </div>
+        </div>
+      </div>
       <div class="chat-panel">
         <div class="section-head">
           <p class="section-label">Reaction Chat</p>
@@ -1369,6 +1433,8 @@ dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 
 const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
 const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
+const micVolumeSlider = document.querySelector<HTMLInputElement>("#mic-volume-slider")!;
+const micVolumeValue = document.querySelector<HTMLElement>("#mic-volume-value")!;
 const romDirSet = document.querySelector<HTMLButtonElement>("#rom-dir-set")!;
 const romDirPathLabel = document.querySelector<HTMLDivElement>("#rom-dir-path")!;
 const romDirManual = document.querySelector<HTMLDivElement>("#rom-dir-manual")!;
@@ -1384,6 +1450,14 @@ const shaderControls = document.querySelector<HTMLDivElement>("#shader-controls"
 const perfDrawer = document.querySelector<HTMLDivElement>("#perf-drawer")!;
 const perfToggle = document.querySelector<HTMLButtonElement>("#perf-toggle")!;
 const perfSummary = document.querySelector<HTMLElement>("#perf-summary")!;
+const videoChatPanel = document.querySelector<HTMLDivElement>("#video-chat-panel")!;
+const videoChatToggle = document.querySelector<HTMLButtonElement>("#video-chat-toggle")!;
+const videoChatStatus = document.querySelector<HTMLElement>("#video-chat-status")!;
+const videoChatStage = document.querySelector<HTMLDivElement>("#video-chat-stage")!;
+const videoChatWatch = document.querySelector<HTMLButtonElement>("#video-chat-watch")!;
+const videoChatCamera = document.querySelector<HTMLButtonElement>("#video-chat-camera")!;
+const videoChatMute = document.querySelector<HTMLButtonElement>("#video-chat-mute")!;
+const videoChatLeave = document.querySelector<HTMLButtonElement>("#video-chat-leave")!;
 const chatRefresh = document.querySelector<HTMLButtonElement>("#chat-refresh")!;
 const chatList = document.querySelector<HTMLDivElement>("#chat-list")!;
 const chatForm = document.querySelector<HTMLFormElement>("#chat-form")!;
@@ -1487,6 +1561,7 @@ const playerPortButtons = Array.from(
 );
 
 volumeSlider.value = Math.round(audioVolume * 100).toString();
+micVolumeSlider.value = Math.round(micVolume * 100).toString();
 applyEutherDogsCssAssets();
 initializeShaderControls();
 void loadShaderConfigFile();
@@ -1494,12 +1569,18 @@ void loadRomDirSetting();
 void refreshLobby();
 void refreshHostUsers();
 updateVolumeUi();
+updateMicVolumeUi();
 applyAudioVolume();
 applyMobileMode();
 renderDogsAssetMode();
 renderPlayerPort();
+renderVideoChat();
 volumeSlider.addEventListener("input", () => {
   setAudioVolume(Number(volumeSlider.value) / 100);
+});
+
+micVolumeSlider.addEventListener("input", () => {
+  setMicVolume(Number(micVolumeSlider.value) / 100);
 });
 
 mobileToggle.addEventListener("click", () => {
@@ -1533,6 +1614,7 @@ lobbyInstances.addEventListener("click", async (event) => {
     return;
   }
   const previousInstanceId = activeLobbyInstanceId;
+  await leaveVideoChat(true, previousInstanceId);
   activeLobbyInstanceId = button.dataset.instanceId ?? "main";
   lobbyRole = "spectator";
   claimedLobbyPlayer = null;
@@ -1724,6 +1806,26 @@ inviteSend.addEventListener("click", async () => {
 
 perfToggle.addEventListener("click", () => {
   perfDrawer.classList.toggle("is-open");
+});
+
+videoChatToggle.addEventListener("click", () => {
+  videoChatPanel.classList.toggle("is-collapsed");
+});
+
+videoChatWatch.addEventListener("click", async () => {
+  await joinVideoChat(false);
+});
+
+videoChatCamera.addEventListener("click", async () => {
+  await joinVideoChat(true);
+});
+
+videoChatMute.addEventListener("click", () => {
+  toggleVideoChatMute();
+});
+
+videoChatLeave.addEventListener("click", async () => {
+  await leaveVideoChat();
 });
 
 chatRefresh.addEventListener("click", () => {
@@ -3905,6 +4007,9 @@ async function refreshAuthStatus(): Promise<void> {
           canManageLibrary: false,
         };
     updateChatPolling(status.authenticated);
+    if (!status.authenticated) {
+      void leaveVideoChat(false);
+    }
   } catch {
     hostUsername = null;
     hostIsAdmin = false;
@@ -3916,11 +4021,14 @@ async function refreshAuthStatus(): Promise<void> {
       canManageLibrary: false,
     };
     updateChatPolling(false);
+    void leaveVideoChat(false);
   }
   renderAdminAccess();
+  renderVideoChat();
 }
 
 async function startLobbyInstance(kind: "megadrive" | "eutherdoom" = "megadrive"): Promise<void> {
+  await leaveVideoChat(true, activeLobbyInstanceId);
   const result = await bridgeJson<LobbyStartResult>(
     `/api/lobby/start?kind=${encodeURIComponent(kind)}`,
     { method: "POST" },
@@ -4016,6 +4124,7 @@ async function kickLobbyPlayer(player: PlayerPort): Promise<void> {
 
 async function closeLobbyInstance(): Promise<void> {
   const closingId = activeLobbyInstanceId;
+  await leaveVideoChat(true, closingId);
   lobbyStatus = await bridgeJson<LobbyStatus>(
     `/api/lobby/close?instance=${encodeURIComponent(closingId)}`,
     { method: "POST" },
@@ -4420,6 +4529,503 @@ async function sendChatMessage(): Promise<void> {
   chatMessages = result.messages;
   chatInput.value = "";
   renderChat();
+}
+
+function videoChatCanUseRtc(): boolean {
+  return (
+    Boolean(window.RTCPeerConnection) &&
+    (window.isSecureContext || localWebHost || isPrivateLanHostname(currentHostname))
+  );
+}
+
+function videoChatCanSendLocalMedia(): boolean {
+  return Boolean(navigator.mediaDevices?.getUserMedia) && window.isSecureContext;
+}
+
+async function joinVideoChat(wantCamera: boolean): Promise<void> {
+  if (isTauri) {
+    videoChatStatusMessage = "web only";
+    renderVideoChat();
+    return;
+  }
+  if (!videoChatCanUseRtc()) {
+    videoChatStatusMessage = "rtc blocked";
+    renderVideoChat();
+    return;
+  }
+  if (!hostUsername) {
+    await refreshAuthStatus();
+  }
+  if (!hostUsername) {
+    videoChatStatusMessage = "login required";
+    renderVideoChat();
+    return;
+  }
+  try {
+    if (wantCamera) {
+      if (!videoChatCanSendLocalMedia()) {
+        videoChatStatusMessage = "camera needs HTTPS";
+        renderVideoChat();
+        return;
+      }
+      await startVideoChatLocalStream();
+    } else {
+      stopVideoChatLocalStream();
+    }
+    if (videoChatJoined) {
+      await leaveVideoChat(true, activeLobbyInstanceId, false);
+    }
+    videoChatJoined = true;
+    videoChatSending = Boolean(videoChatLocalStream);
+    videoChatLastSignalId = 0;
+    videoChatStatusMessage = videoChatSending ? "camera joining" : "watch joining";
+    renderVideoChat();
+    const result = await bridgeJson<VideoChatResult>(
+      `/api/video-chat/join?canSend=${videoChatSending ? "1" : "0"}`,
+      { method: "POST" },
+      1500,
+    );
+    await applyVideoChatStatus(result);
+    setVideoChatPolling(true);
+  } catch (err) {
+    videoChatStatusMessage = err instanceof Error ? err.message : "join failed";
+    videoChatJoined = false;
+    setVideoChatPolling(false);
+    closeVideoChatPeers();
+    renderVideoChat();
+  }
+}
+
+async function startVideoChatLocalStream(): Promise<void> {
+  if (videoChatLocalStream?.getTracks().some((track) => track.readyState === "live")) {
+    return;
+  }
+  stopVideoChatLocalStream();
+  videoChatRawLocalStream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      width: { ideal: 640 },
+      height: { ideal: 360 },
+      frameRate: { ideal: 24, max: 30 },
+    },
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+  videoChatLocalStream = createVideoChatSendStream(videoChatRawLocalStream);
+  videoChatMuted = false;
+  applyVideoChatMute();
+  videoChatStatusMessage = "camera ready";
+  renderVideoChat();
+}
+
+function createVideoChatSendStream(rawStream: MediaStream): MediaStream {
+  const sendStream = new MediaStream();
+  for (const track of rawStream.getVideoTracks()) {
+    sendStream.addTrack(track);
+  }
+  const audioTracks = rawStream.getAudioTracks();
+  if (audioTracks.length === 0) {
+    return sendStream;
+  }
+  const AudioCtor = window.AudioContext ?? window.webkitAudioContext;
+  if (!AudioCtor) {
+    for (const track of audioTracks) {
+      sendStream.addTrack(track);
+    }
+    return sendStream;
+  }
+  videoChatMicContext = new AudioCtor();
+  videoChatMicGain = videoChatMicContext.createGain();
+  const source = videoChatMicContext.createMediaStreamSource(new MediaStream(audioTracks));
+  const destination = videoChatMicContext.createMediaStreamDestination();
+  source.connect(videoChatMicGain);
+  videoChatMicGain.connect(destination);
+  applyVideoChatMicVolume();
+  if (videoChatMicContext.state === "suspended") {
+    void videoChatMicContext.resume();
+  }
+  for (const track of destination.stream.getAudioTracks()) {
+    sendStream.addTrack(track);
+  }
+  return sendStream;
+}
+
+function stopVideoChatLocalStream(): void {
+  if (!videoChatLocalStream && !videoChatRawLocalStream) {
+    videoChatSending = false;
+    return;
+  }
+  for (const track of videoChatLocalStream?.getTracks() ?? []) {
+    track.stop();
+  }
+  for (const track of videoChatRawLocalStream?.getTracks() ?? []) {
+    track.stop();
+  }
+  if (videoChatMicContext) {
+    void videoChatMicContext.close();
+  }
+  videoChatRawLocalStream = null;
+  videoChatLocalStream = null;
+  videoChatMicContext = null;
+  videoChatMicGain = null;
+  videoChatSending = false;
+  videoChatMuted = false;
+}
+
+function setVideoChatPolling(active: boolean): void {
+  if (!active || isTauri || !videoChatJoined) {
+    if (videoChatPollTimer !== null) {
+      window.clearInterval(videoChatPollTimer);
+      videoChatPollTimer = null;
+    }
+    return;
+  }
+  if (videoChatPollTimer !== null) {
+    return;
+  }
+  void pollVideoChat();
+  videoChatPollTimer = window.setInterval(() => void pollVideoChat(), 1100);
+}
+
+async function pollVideoChat(): Promise<void> {
+  if (!videoChatJoined) {
+    setVideoChatPolling(false);
+    return;
+  }
+  try {
+    const result = await bridgeJson<VideoChatResult>(
+      `/api/video-chat?after=${videoChatLastSignalId}`,
+      {},
+      1200,
+    );
+    await applyVideoChatStatus(result);
+  } catch (err) {
+    videoChatStatusMessage = err instanceof Error ? err.message : "video chat offline";
+    renderVideoChat();
+  }
+}
+
+async function applyVideoChatStatus(result: VideoChatResult): Promise<void> {
+  const remoteParticipants = result.participants
+    .filter((participant) => participant.clientId !== bridgeClientId)
+    .sort((left, right) => left.clientId.localeCompare(right.clientId));
+  videoChatParticipants = remoteParticipants;
+  const remoteIds = new Set(remoteParticipants.map((participant) => participant.clientId));
+  for (const peerId of Array.from(videoChatPeers.keys())) {
+    if (!remoteIds.has(peerId)) {
+      closeVideoChatPeer(peerId);
+    }
+  }
+  for (const participant of remoteParticipants) {
+    const mode = videoChatPeerMode(participant);
+    if (videoChatPeerModes.get(participant.clientId) !== mode) {
+      closeVideoChatPeer(participant.clientId);
+    }
+    ensureVideoChatPeer(participant);
+  }
+  for (const signal of [...result.signals].sort((left, right) => left.id - right.id)) {
+    videoChatLastSignalId = Math.max(videoChatLastSignalId, signal.id);
+    if (signal.to === bridgeClientId) {
+      await handleVideoChatSignal(signal);
+    }
+  }
+  const peerCount = remoteParticipants.length;
+  videoChatStatusMessage = videoChatJoined
+    ? peerCount === 0
+      ? videoChatSending ? "camera live" : "watching"
+      : `${peerCount} peer${peerCount === 1 ? "" : "s"}`
+    : "idle";
+  renderVideoChat();
+}
+
+function ensureVideoChatPeer(participant: VideoChatParticipant): RTCPeerConnection {
+  const existing = videoChatPeers.get(participant.clientId);
+  if (existing && existing.connectionState !== "closed") {
+    return existing;
+  }
+  const peer = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  });
+  videoChatPeers.set(participant.clientId, peer);
+  videoChatPeerModes.set(participant.clientId, videoChatPeerMode(participant));
+  const localTracks =
+    videoChatLocalStream
+      ?.getTracks()
+      .filter((track) => track.readyState === "live") ?? [];
+  let hasVideo = false;
+  let hasAudio = false;
+  for (const track of localTracks) {
+    if (!videoChatLocalStream) {
+      continue;
+    }
+    hasVideo ||= track.kind === "video";
+    hasAudio ||= track.kind === "audio";
+    peer.addTrack(track, videoChatLocalStream);
+  }
+  if (!hasVideo) {
+    peer.addTransceiver("video", { direction: "recvonly" });
+  }
+  if (!hasAudio) {
+    peer.addTransceiver("audio", { direction: "recvonly" });
+  }
+  peer.ontrack = (event) => {
+    const stream = videoChatRemoteStreams.get(participant.clientId) ?? new MediaStream();
+    if (!stream.getTracks().some((track) => track.id === event.track.id)) {
+      stream.addTrack(event.track);
+    }
+    videoChatRemoteStreams.set(participant.clientId, stream);
+    event.track.onended = () => {
+      stream.removeTrack(event.track);
+      if (stream.getTracks().length === 0) {
+        videoChatRemoteStreams.delete(participant.clientId);
+      }
+      renderVideoChat();
+    };
+    renderVideoChat();
+  };
+  peer.onconnectionstatechange = () => {
+    if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
+      videoChatStatusMessage = "peer reconnecting";
+      closeVideoChatPeer(participant.clientId);
+      renderVideoChat();
+    }
+  };
+  if (bridgeClientId < participant.clientId) {
+    void makeVideoChatOffer(participant.clientId, peer);
+  }
+  return peer;
+}
+
+async function makeVideoChatOffer(peerId: string, peer: RTCPeerConnection): Promise<void> {
+  if (videoChatMakingOffer.has(peerId) || !videoChatJoined || peer.signalingState !== "stable") {
+    return;
+  }
+  videoChatMakingOffer.add(peerId);
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer, 2200);
+    if (peer.localDescription?.type === "offer") {
+      await sendVideoChatSignal(peerId, "offer", peer.localDescription.sdp ?? "");
+    }
+  } catch (err) {
+    videoChatStatusMessage = err instanceof Error ? err.message : "offer failed";
+    closeVideoChatPeer(peerId);
+    renderVideoChat();
+  } finally {
+    videoChatMakingOffer.delete(peerId);
+  }
+}
+
+async function handleVideoChatSignal(signal: VideoChatSignal): Promise<void> {
+  const participant =
+    videoChatParticipants.find((entry) => entry.clientId === signal.from) ?? {
+      clientId: signal.from,
+      user: "Peer",
+      canSend: true,
+      updatedUnixMs: signal.createdUnixMs,
+    };
+  const peer = ensureVideoChatPeer(participant);
+  try {
+    if (signal.type === "offer") {
+      if (peer.signalingState !== "stable") {
+        await peer
+          .setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit)
+          .catch(() => undefined);
+      }
+      await peer.setRemoteDescription({ type: "offer", sdp: signal.sdp });
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      await waitForIceGathering(peer, 2200);
+      if (peer.localDescription?.type === "answer") {
+        await sendVideoChatSignal(signal.from, "answer", peer.localDescription.sdp ?? "");
+      }
+      return;
+    }
+    if (signal.type === "answer" && peer.signalingState === "have-local-offer") {
+      await peer.setRemoteDescription({ type: "answer", sdp: signal.sdp });
+    }
+  } catch (err) {
+    videoChatStatusMessage = err instanceof Error ? err.message : "signal failed";
+    closeVideoChatPeer(signal.from);
+    renderVideoChat();
+  }
+}
+
+async function sendVideoChatSignal(
+  peerId: string,
+  type: VideoChatSignalType,
+  sdp: string,
+): Promise<void> {
+  if (!videoChatJoined || !sdp) {
+    return;
+  }
+  await bridgeJson(
+    "/api/video-chat/signal",
+    {
+      method: "POST",
+      body: JSON.stringify({ to: peerId, type, sdp }),
+    },
+    1500,
+  );
+}
+
+function videoChatPeerMode(participant: VideoChatParticipant): string {
+  const localTracks = videoChatLocalStream
+    ?.getTracks()
+    .filter((track) => track.readyState === "live")
+    .map((track) => `${track.kind}:${track.id}`)
+    .sort()
+    .join(",") ?? "recvonly";
+  return `${participant.canSend ? "peer-send" : "peer-watch"}|${localTracks}`;
+}
+
+function closeVideoChatPeer(peerId: string): void {
+  const peer = videoChatPeers.get(peerId);
+  if (peer) {
+    peer.ontrack = null;
+    peer.onconnectionstatechange = null;
+    peer.close();
+  }
+  videoChatPeers.delete(peerId);
+  videoChatRemoteStreams.delete(peerId);
+  videoChatPeerModes.delete(peerId);
+  videoChatMakingOffer.delete(peerId);
+}
+
+function closeVideoChatPeers(): void {
+  for (const peerId of Array.from(videoChatPeers.keys())) {
+    closeVideoChatPeer(peerId);
+  }
+}
+
+function toggleVideoChatMute(): void {
+  if (!videoChatLocalStream?.getAudioTracks().length) {
+    return;
+  }
+  videoChatMuted = !videoChatMuted;
+  applyVideoChatMute();
+  renderVideoChat();
+}
+
+function applyVideoChatMute(): void {
+  for (const track of videoChatLocalStream?.getAudioTracks() ?? []) {
+    track.enabled = !videoChatMuted;
+  }
+}
+
+async function leaveVideoChat(
+  announce = true,
+  instanceId = activeLobbyInstanceId,
+  stopLocal = true,
+): Promise<void> {
+  const shouldAnnounce = announce && videoChatJoined && hostUsername && !isTauri;
+  setVideoChatPolling(false);
+  videoChatJoined = false;
+  videoChatParticipants = [];
+  videoChatLastSignalId = 0;
+  videoChatStatusMessage = "idle";
+  closeVideoChatPeers();
+  if (stopLocal) {
+    stopVideoChatLocalStream();
+  }
+  renderVideoChat();
+  if (!shouldAnnounce) {
+    return;
+  }
+  try {
+    await bridgeJson(
+      `/api/video-chat/leave?instance=${encodeURIComponent(instanceId)}`,
+      { method: "POST" },
+      900,
+    );
+  } catch {
+    // Server-side participant leases expire quickly; unloads and network drops are harmless.
+  }
+}
+
+function renderVideoChat(): void {
+  const canRtc = videoChatCanUseRtc();
+  const canSend = videoChatCanSendLocalMedia();
+  videoChatStatus.textContent = videoChatStatusMessage;
+  videoChatWatch.disabled = isTauri || !hostUsername || !canRtc;
+  videoChatCamera.disabled = isTauri || !hostUsername || !canRtc || !canSend;
+  videoChatMute.disabled = !videoChatLocalStream?.getAudioTracks().length;
+  videoChatLeave.disabled = !videoChatJoined && !videoChatLocalStream;
+  videoChatWatch.textContent = videoChatJoined && !videoChatSending ? "Watching" : "Watch";
+  videoChatCamera.textContent = videoChatSending ? "Camera On" : "Camera";
+  videoChatMute.textContent = videoChatMuted ? "Unmute" : "Mute";
+  videoChatCamera.title = canSend ? "" : "Camera and microphone need HTTPS or localhost";
+  videoChatWatch.title = canRtc ? "" : "WebRTC is unavailable in this browser context";
+  const key = [
+    videoChatJoined ? "joined" : "idle",
+    videoChatSending ? "sending" : "watching",
+    videoChatMuted ? "muted" : "open",
+    videoChatLocalStream?.id ?? "no-local",
+    ...videoChatParticipants.map((participant) => {
+      const stream = videoChatRemoteStreams.get(participant.clientId);
+      return [
+        participant.clientId,
+        participant.user,
+        participant.canSend,
+        stream?.id ?? "no-stream",
+        stream?.getTracks().length ?? 0,
+      ].join(":");
+    }),
+  ].join("|");
+  if (key !== videoChatRenderKey) {
+    videoChatRenderKey = key;
+    videoChatStage.innerHTML = videoChatStageMarkup();
+  }
+  syncVideoChatMediaElements();
+}
+
+function videoChatStageMarkup(): string {
+  const tiles: string[] = [];
+  if (videoChatLocalStream) {
+    tiles.push(`
+      <div class="video-chat-tile">
+        <video data-video-chat-local autoplay playsinline muted></video>
+        <span class="video-chat-badge">${videoChatMuted ? "You muted" : "You"}</span>
+      </div>
+    `);
+  }
+  for (const participant of videoChatParticipants) {
+    const hasStream = videoChatRemoteStreams.has(participant.clientId);
+    tiles.push(`
+      <div class="video-chat-tile ${hasStream ? "" : "is-waiting"}">
+        ${
+          hasStream
+            ? `<video data-video-chat-peer="${escapeHtml(participant.clientId)}" autoplay playsinline></video>`
+            : `<strong>${participant.canSend ? "Waiting for media" : "Watch mode"}</strong>`
+        }
+        <span class="video-chat-badge">${escapeHtml(participant.user)}${participant.canSend ? "" : " watching"}</span>
+      </div>
+    `);
+  }
+  if (!tiles.length) {
+    return `<span>${videoChatJoined ? "Waiting for peer" : "Video chat idle"}</span>`;
+  }
+  return tiles.join("");
+}
+
+function syncVideoChatMediaElements(): void {
+  const localVideo = videoChatStage.querySelector<HTMLVideoElement>("[data-video-chat-local]");
+  if (localVideo && videoChatLocalStream && localVideo.srcObject !== videoChatLocalStream) {
+    localVideo.srcObject = videoChatLocalStream;
+    localVideo.play().catch(() => undefined);
+  }
+  for (const video of videoChatStage.querySelectorAll<HTMLVideoElement>("[data-video-chat-peer]")) {
+    const peerId = video.dataset.videoChatPeer ?? "";
+    const stream = videoChatRemoteStreams.get(peerId);
+    video.volume = audioVolume;
+    if (stream && video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => undefined);
+    }
+  }
 }
 
 function renderLobby(): void {
@@ -5984,6 +6590,11 @@ async function queueNativeAudio(): Promise<void> {
 function readStoredVolume(): number {
   const stored = Number(localStorage.getItem(volumeStorageKey));
   return Number.isFinite(stored) ? clampVolume(stored) : 0.8;
+}
+
+function readStoredMicVolume(): number {
+  const stored = Number(localStorage.getItem(micVolumeStorageKey));
+  return Number.isFinite(stored) ? clampMicVolume(stored) : 1;
 }
 
 function parseEutherDogsManifest(toml: string, modules: Record<string, string>): Map<string, string> {
@@ -8163,6 +8774,13 @@ function clampVolume(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function clampMicVolume(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.min(1.6, Math.max(0, value));
+}
+
 function readStoredMobileMode(): boolean {
   const stored = localStorage.getItem(mobileModeStorageKey);
   if (stored === "1") {
@@ -8836,17 +9454,35 @@ function setAudioVolume(value: number): void {
   applyAudioVolume();
 }
 
+function setMicVolume(value: number): void {
+  micVolume = clampMicVolume(value);
+  localStorage.setItem(micVolumeStorageKey, micVolume.toString());
+  updateMicVolumeUi();
+  applyVideoChatMicVolume();
+}
+
 function updateVolumeUi(): void {
   volumeValue.textContent = `${Math.round(audioVolume * 100)}%`;
 }
 
+function updateMicVolumeUi(): void {
+  micVolumeValue.textContent = `${Math.round(micVolume * 100)}%`;
+}
+
 function applyAudioVolume(): void {
   bridgeRtcAudio.volume = audioVolume;
+  syncVideoChatMediaElements();
   if (audioGain && audioContext) {
     audioGain.gain.setTargetAtTime(audioVolume, audioContext.currentTime, 0.01);
   }
   if (isTauri) {
     void invoke("set_audio_volume", { volume: audioVolume });
+  }
+}
+
+function applyVideoChatMicVolume(): void {
+  if (videoChatMicGain && videoChatMicContext) {
+    videoChatMicGain.gain.setTargetAtTime(micVolume, videoChatMicContext.currentTime, 0.01);
   }
 }
 
