@@ -163,7 +163,6 @@ impl Emulator {
         let mut steps = 0u64;
         let mut next_line = 1u64;
         let mut vblank_requested = false;
-        let mut frame_rendered = false;
         let mut hit_unsupported_opcode = false;
         let z80_ratio = Self::Z80_CLOCK / Self::M68K_CLOCK;
         let z80_frame_start = self.z80.total_cycles;
@@ -208,13 +207,12 @@ impl Emulator {
             {
                 self.bus.vdp.tick_line_interrupt(next_line - 1);
                 if !vblank_requested && next_line >= Self::VBLANK_LINE {
-                    self.bus.vdp.render_frame();
-                    frame_rendered = true;
                     self.bus.vdp.frame_cycle = crate::vdp::Vdp::VBLANK_START_CYCLE;
                     self.bus.vdp.request_vblank();
                     self.interrupt_z80_for_vblank();
                     vblank_requested = true;
                 }
+                self.bus.vdp.capture_line(next_line);
                 next_line += 1;
             }
         }
@@ -229,9 +227,7 @@ impl Emulator {
         self.bus.ym2612.sync_to_cycle(cycles_per_frame);
         self.interrupt_z80_for_ym_timer();
 
-        if !frame_rendered {
-            self.bus.vdp.render_frame();
-        }
+        self.bus.vdp.render_frame();
         if !vblank_requested {
             self.bus.vdp.frame_cycle = crate::vdp::Vdp::VBLANK_START_CYCLE;
             self.bus.vdp.request_vblank();

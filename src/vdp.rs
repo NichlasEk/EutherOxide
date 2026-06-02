@@ -26,6 +26,13 @@ struct PlaneParams {
 }
 
 #[derive(Clone, Debug)]
+struct VdpLineSnapshot {
+    registers: [u8; Vdp::NUM_REGISTERS],
+    vsram: [u16; Vdp::VSRAM_SIZE],
+    sprite_table: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Vdp {
     pub registers: [u8; Self::NUM_REGISTERS],
     pub vram: Vec<u8>,
@@ -52,6 +59,7 @@ pub struct Vdp {
     interlace_field: u8,
     dma_pending: Option<VdpDmaMode>,
     dma_fill_pending: bool,
+    line_snapshots: Vec<Option<VdpLineSnapshot>>,
     pub vram_writes: u64,
     pub vram_nonzero_writes: u64,
     pub vram_pattern_writes: u64,
@@ -134,6 +142,8 @@ impl Vdp {
     pub const VRAM_SIZE: usize = 0x1_0000;
     pub const CRAM_SIZE: usize = 0x40;
     pub const VSRAM_SIZE: usize = 0x40;
+    const VSRAM_VALID_WORDS: usize = 40;
+    const VSRAM_COLUMN_PAIRS: usize = Self::VSRAM_VALID_WORDS / 2;
     pub const NUM_REGISTERS: usize = 0x20;
     pub const LINE_CYCLES: u64 = 228;
     pub const VISIBLE_LINES: u64 = 224;
@@ -168,6 +178,7 @@ impl Vdp {
             interlace_field: 0,
             dma_pending: None,
             dma_fill_pending: false,
+            line_snapshots: Vec::new(),
             vram_writes: 0,
             vram_nonzero_writes: 0,
             vram_pattern_writes: 0,
@@ -217,6 +228,7 @@ impl Vdp {
         self.interlace_field = 0;
         self.dma_pending = None;
         self.dma_fill_pending = false;
+        self.line_snapshots.clear();
         self.vram_writes = 0;
         self.vram_nonzero_writes = 0;
         self.vram_pattern_writes = 0;
@@ -342,7 +354,30 @@ impl Vdp {
         self.frame_cycle = 0;
         self.h_interrupt_counter = self.registers[10] as i16;
         self.h_interrupt_pending = false;
+        self.line_snapshots = vec![None; Self::VISIBLE_LINES as usize];
+        self.capture_line(0);
         self.update_irq_level();
+    }
+
+    pub fn capture_line(&mut self, line: u64) {
+        if line >= Self::VISIBLE_LINES {
+            return;
+        }
+        let sprite_table = self
+            .interlace_mode_2()
+            .then(|| self.capture_sprite_table(&self.registers));
+        self.line_snapshots[line as usize] = Some(VdpLineSnapshot {
+            registers: self.registers,
+            vsram: self.vsram,
+            sprite_table,
+        });
+    }
+
+    fn capture_current_line_snapshot(&mut self) {
+        if self.line_snapshots.is_empty() {
+            return;
+        }
+        self.capture_line(u64::from(self.v_counter()));
     }
 
     pub fn tick_line_interrupt(&mut self, line: u64) {
@@ -367,7 +402,7 @@ impl Vdp {
         let word = match self.memory_target() {
             MemoryTarget::Cram => self.cram[((self.address >> 1) as usize) & (Self::CRAM_SIZE - 1)],
             MemoryTarget::Vsram => {
-                self.vsram[((self.address >> 1) as usize) & (Self::VSRAM_SIZE - 1)]
+                self.vsram[((self.address >> 1) as usize) % Self::VSRAM_VALID_WORDS]
             }
             _ => self.read_vram_word(self.address),
         };
@@ -433,13 +468,12 @@ impl Vdp {
         } else {
             self.control_latch = value;
             self.address = (self.address & 0x1c000) | (value as u32 & 0x3fff);
-            self.mode_write = (value & 0x4000) != 0;
-            self.location_bits = (self.location_bits & 0x06) | (((value >> 15) as u8) & 0x01);
 
             if (value & 0xc000) == 0x8000 {
                 let register = ((value >> 8) & 0x1f) as usize;
                 let data = (value & 0xff) as u8;
-                if self.registers[register] != data {
+                let previous = self.registers[register];
+                if previous != data {
                     self.video_dirty = true;
                 }
                 self.registers[register] = data;
@@ -447,8 +481,13 @@ impl Vdp {
                 if register == 0 || register == 1 {
                     self.update_irq_level();
                 }
+                if previous != data {
+                    self.capture_current_line_snapshot();
+                }
                 self.control_pending = false;
             } else {
+                self.mode_write = (value & 0x4000) != 0;
+                self.location_bits = (self.location_bits & 0x06) | (((value >> 15) as u8) & 0x01);
                 self.control_pending = true;
             }
         }
@@ -570,7 +609,11 @@ impl Vdp {
     }
 
     pub fn render_frame(&mut self) {
-        self.interlace_field ^= 1;
+        if self.interlace_mode_2() {
+            self.interlace_field ^= 1;
+        } else {
+            self.interlace_field = 0;
+        }
         self.update_screen_size();
         let framebuffer_len = self.framebuffer.len();
         self.ensure_framebuffer_size();
@@ -627,10 +670,8 @@ impl Vdp {
                 }
             }
             MemoryTarget::Vsram => {
-                let index = ((self.address >> 1) as usize) & (Self::VSRAM_SIZE - 1);
-                self.vsram[index] = value & 0x07ff;
-                self.video_dirty = true;
-                self.vsram_writes += 1;
+                let index = (self.address >> 1) as usize;
+                self.write_vsram_word(index, value);
             }
             MemoryTarget::Vram | MemoryTarget::Invalid => self.write_vram_word(self.address, value),
         }
@@ -680,15 +721,16 @@ impl Vdp {
                 }
             }
             MemoryTarget::Vsram => {
-                let index = (address >> 1) & (Self::VSRAM_SIZE - 1);
-                let old = self.vsram[index];
-                self.vsram[index] = if (address & 1) == 0 {
-                    (u16::from(value) << 8) | (old & 0x00ff)
-                } else {
-                    (old & 0xff00) | u16::from(value)
-                } & 0x07ff;
-                self.video_dirty = true;
-                self.vsram_writes += 1;
+                let index = address >> 1;
+                if index < Self::VSRAM_VALID_WORDS {
+                    let old = self.vsram[index];
+                    let next = if (address & 1) == 0 {
+                        (u16::from(value) << 8) | (old & 0x00ff)
+                    } else {
+                        (old & 0xff00) | u16::from(value)
+                    };
+                    self.write_vsram_word(index, next);
+                }
             }
             MemoryTarget::Vram | MemoryTarget::Invalid => {
                 self.vram[address] = value;
@@ -705,6 +747,16 @@ impl Vdp {
                 }
             }
         }
+    }
+
+    fn write_vsram_word(&mut self, index: usize, value: u16) {
+        if index >= Self::VSRAM_VALID_WORDS {
+            return;
+        }
+        self.vsram[index] = value & 0x07ff;
+        self.video_dirty = true;
+        self.vsram_writes += 1;
+        self.capture_current_line_snapshot();
     }
 
     fn increment_address(&mut self) {
@@ -736,7 +788,7 @@ impl Vdp {
     }
 
     fn update_screen_size(&mut self) {
-        self.screen_width = if (self.registers[12] & 0x01) != 0 {
+        self.screen_width = if (self.registers[12] & 0x81) != 0 {
             Self::H40_WIDTH
         } else {
             Self::DEFAULT_WIDTH
@@ -805,6 +857,11 @@ impl Vdp {
     }
 
     fn draw_scroll_planes(&self, pixels: &mut [usize]) {
+        if self.interlace_mode_2() {
+            self.draw_scroll_planes_interlace_mode_2(pixels);
+            return;
+        }
+
         let width = self.screen_width;
         let height = self.screen_height;
         let (plane_width_cells, plane_height_cells) = self.plane_dimensions();
@@ -857,7 +914,32 @@ impl Vdp {
         }
     }
 
+    fn draw_scroll_planes_interlace_mode_2(&self, pixels: &mut [usize]) {
+        let width = self.screen_width;
+        let height = self.screen_height;
+        for y in 0..height {
+            let scanline = y >> 1;
+            let snapshot = self.line_snapshot(scanline);
+            for x in 0..width {
+                let index = y * width + x;
+                let b = self.plane_pixel_interlace_mode_2(false, x, y, snapshot);
+                let a = if self.window_active(x, y) {
+                    self.window_pixel(x, y)
+                } else {
+                    self.plane_pixel_interlace_mode_2(true, x, y, snapshot)
+                };
+                pixels[index] =
+                    Self::resolve_scroll_pixel(a.unwrap_or(0), b.unwrap_or(0)).unwrap_or(0);
+            }
+        }
+    }
+
     fn draw_sprites(&self, pixels: &mut [usize]) {
+        if self.interlace_mode_2() {
+            self.draw_sprites_interlace_mode_2(pixels);
+            return;
+        }
+
         let sprite_base = self.sprite_table_base();
         let mut sprite_index = 0usize;
         let max_sprites = if self.screen_width == Self::H40_WIDTH {
@@ -896,14 +978,16 @@ impl Vdp {
             let width_cells = (((size_link >> 10) & 0x03) + 1) as usize;
             let height_cells = (((size_link >> 8) & 0x03) + 1) as usize;
             let x = x_raw as i32 - 128;
-            let y = y_raw as i32 - 128;
+            let sprite_y_base = if self.interlace_mode_2() { 0x100 } else { 0x80 };
+            let y = y_raw as i32 - sprite_y_base;
             let h_flip = (attr & 0x0800) != 0;
             let v_flip = (attr & 0x1000) != 0;
             let palette = ((attr >> 9) as usize) & 0x30;
             let pattern = attr as usize & 0x07ff;
             let priority = (attr & 0x8000) != 0;
+            let sprite_height = height_cells * self.tile_cell_height();
 
-            if y > -(height_cells as i32 * 8) && y < self.screen_height as i32 {
+            if y > -(sprite_height as i32) && y < self.screen_height as i32 {
                 self.draw_sprite_tiles(
                     pixels,
                     &mut occupied,
@@ -930,6 +1014,147 @@ impl Vdp {
                 break;
             }
             sprite_index = link;
+        }
+    }
+
+    fn draw_sprites_interlace_mode_2(&self, pixels: &mut [usize]) {
+        let max_sprites = if self.screen_width == Self::H40_WIDTH {
+            80
+        } else {
+            64
+        };
+        for scanline in 0..Self::VISIBLE_LINES as usize {
+            let snapshot = self.line_snapshot(scanline);
+            for field in 0..2 {
+                let output_y = (scanline << 1) | field;
+                if output_y >= self.screen_height {
+                    continue;
+                }
+                let mut occupied = vec![false; self.screen_width];
+                self.draw_sprite_line_interlace_mode_2(
+                    pixels,
+                    snapshot.and_then(|snapshot| snapshot.sprite_table.as_deref()),
+                    output_y,
+                    max_sprites,
+                    &mut occupied,
+                );
+            }
+        }
+    }
+
+    fn draw_sprite_line_interlace_mode_2(
+        &self,
+        pixels: &mut [usize],
+        sprite_table: Option<&[u8]>,
+        output_y: usize,
+        max_sprites: usize,
+        occupied: &mut [bool],
+    ) {
+        let sprite_table_base = self.sprite_table_base();
+        let mut sprite_index = 0usize;
+        for _ in 0..max_sprites {
+            let entry = sprite_index * 8;
+            let y_raw = self.sprite_table_word(sprite_table, sprite_table_base, entry) & 0x03ff;
+            let size_link = self.sprite_table_word(sprite_table, sprite_table_base, entry + 2);
+            let attr = self.sprite_table_word(sprite_table, sprite_table_base, entry + 4);
+            let x_raw = self.sprite_table_word(sprite_table, sprite_table_base, entry + 6) & 0x01ff;
+            let link = (size_link & 0x7f) as usize;
+            let width_cells = (((size_link >> 10) & 0x03) + 1) as usize;
+            let height_cells = (((size_link >> 8) & 0x03) + 1) as usize;
+            let screen_x = x_raw as i32 - 0x80;
+            let screen_y = y_raw as i32 - 0x100;
+            let sprite_height = height_cells * 16;
+
+            if output_y as i32 >= screen_y && (output_y as i32) < screen_y + sprite_height as i32 {
+                self.draw_sprite_line_pixels_interlace_mode_2(
+                    pixels,
+                    output_y,
+                    screen_x,
+                    (output_y as i32 - screen_y) as usize,
+                    width_cells,
+                    height_cells,
+                    attr as usize,
+                    occupied,
+                );
+            }
+
+            if link == 0 || link == sprite_index {
+                break;
+            }
+            sprite_index = link;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_sprite_line_pixels_interlace_mode_2(
+        &self,
+        pixels: &mut [usize],
+        output_y: usize,
+        screen_x: i32,
+        sprite_y: usize,
+        width_cells: usize,
+        height_cells: usize,
+        attr: usize,
+        occupied: &mut [bool],
+    ) {
+        let pattern = attr & 0x07ff;
+        let h_flip = (attr & 0x0800) != 0;
+        let v_flip = (attr & 0x1000) != 0;
+        let palette = (attr >> 9) & 0x30;
+        let priority = (attr & 0x8000) != 0;
+        let tile_y = if v_flip {
+            height_cells - 1 - (sprite_y >> 4)
+        } else {
+            sprite_y >> 4
+        };
+        let row = if v_flip {
+            15 - (sprite_y & 0x0f)
+        } else {
+            sprite_y & 0x0f
+        };
+        let sprite_width = width_cells * 8;
+        for sx in 0..sprite_width {
+            let x = screen_x + sx as i32;
+            if !(0..self.screen_width as i32).contains(&x) {
+                continue;
+            }
+            let x = x as usize;
+            if occupied[x] {
+                continue;
+            }
+
+            let mut tile_x = sx >> 3;
+            let mut col = sx & 7;
+            if h_flip {
+                tile_x = width_cells - 1 - tile_x;
+                col = 7 - col;
+            }
+            let tile = (pattern + tile_x * height_cells + tile_y) & 0x07ff;
+            let color = self.pattern_color(tile, row, col);
+            if color == 0 {
+                continue;
+            }
+            let index = output_y * self.screen_width + x;
+            let current = pixels[index];
+            if priority || (current & 0x100) == 0 {
+                pixels[index] = (if priority { 0x100 } else { 0 }) | palette | color;
+            }
+            occupied[x] = true;
+        }
+    }
+
+    fn sprite_table_word(
+        &self,
+        sprite_table: Option<&[u8]>,
+        sprite_table_base: usize,
+        offset: usize,
+    ) -> u16 {
+        if let Some(sprite_table) = sprite_table {
+            let high = sprite_table.get(offset).copied().unwrap_or(0) as u16;
+            let low = sprite_table.get(offset + 1).copied().unwrap_or(0) as u16;
+            (high << 8) | low
+        } else {
+            self.read_vram_word((sprite_table_base + offset) as u32)
         }
     }
 
@@ -1018,6 +1243,107 @@ impl Vdp {
         }
     }
 
+    fn plane_pixel_interlace_mode_2(
+        &self,
+        plane_a: bool,
+        screen_x: usize,
+        output_y: usize,
+        snapshot: Option<&VdpLineSnapshot>,
+    ) -> Option<usize> {
+        let registers = snapshot.map_or(&self.registers, |snapshot| &snapshot.registers);
+        let (plane_width_cells, plane_height_cells) = Self::plane_dimensions_from(registers);
+        let map_height_mask = plane_height_cells * 16 - 1;
+        let name_base = if plane_a {
+            Self::plane_a_base_from(registers)
+        } else {
+            Self::plane_b_base_from(registers)
+        };
+        let hscroll = self.h_scroll_value_from(registers, plane_a, output_y >> 1) & 0x03ff;
+        let scroll_offset = 16isize - (hscroll as isize & 0x0f);
+        let screen_pair = (screen_x as isize + scroll_offset) >> 4;
+        let vscroll_column = screen_pair - 1;
+        let map_column = vscroll_column.max(0);
+        let pair_offset = -((hscroll >> 4) as isize);
+        let plane_width_mask = plane_width_cells - 1;
+        let output_x = (screen_pair << 4) - scroll_offset;
+        let local_x = screen_x as isize - output_x;
+        let tile_x = (((pair_offset + map_column) << 1) as usize) & plane_width_mask;
+        let cell = ((local_x >> 3) as usize) & 1;
+        let scanline = output_y >> 1;
+        let field = output_y & 1;
+        let view_y = self.interlace_mode_2_view_y(
+            plane_a,
+            scanline,
+            field,
+            vscroll_column,
+            map_height_mask,
+            snapshot,
+        );
+        let row_word = (view_y >> 4) * plane_width_cells;
+        let entry_address = (name_base
+            + ((2 * (row_word + ((tile_x + cell) & plane_width_mask))) & 0x1fff))
+            & 0xffff;
+        let entry = self.read_vram_word(entry_address as u32);
+        let mut row = view_y & 0x0f;
+        let mut col = (local_x as usize) & 7;
+        if (entry & 0x1000) != 0 {
+            row = 15 - row;
+        }
+        if (entry & 0x0800) != 0 {
+            col = 7 - col;
+        }
+        let pattern = entry as usize & 0x07ff;
+        let color = self.pattern_color(pattern, row, col);
+        if color == 0 {
+            None
+        } else {
+            let palette = ((entry >> 9) as usize) & 0x30;
+            let priority = if (entry & 0x8000) != 0 { 0x100 } else { 0 };
+            Some(priority | palette | color)
+        }
+    }
+
+    fn interlace_mode_2_view_y(
+        &self,
+        plane_a: bool,
+        scanline: usize,
+        field: usize,
+        column: isize,
+        map_height_mask: usize,
+        snapshot: Option<&VdpLineSnapshot>,
+    ) -> usize {
+        let line_y = ((scanline << 1) | field) & 0x07ff;
+        let registers = snapshot.map_or(&self.registers, |snapshot| &snapshot.registers);
+        let vsram = snapshot.map_or(&self.vsram, |snapshot| &snapshot.vsram);
+        let vscroll = if (registers[11] & 0x04) == 0 {
+            vsram[if plane_a { 0 } else { 1 }] as usize
+        } else if column < 0 {
+            Self::interlace_mode_2_negative_column_vscroll(registers, vsram)
+        } else {
+            let index = Self::vscroll_pair_index_for_width(
+                column as usize,
+                Self::active_width_from(registers),
+            );
+            let vsram_index = index * 2 + usize::from(!plane_a);
+            vsram[vsram_index] as usize
+        };
+        (line_y + (vscroll & 0x07ff)) & map_height_mask
+    }
+
+    fn interlace_mode_2_negative_column_vscroll(
+        registers: &[u8; Self::NUM_REGISTERS],
+        vsram: &[u16; Self::VSRAM_SIZE],
+    ) -> usize {
+        if Self::active_width_from(registers) != Self::H40_WIDTH {
+            return 0;
+        }
+        let word_26 = vsram[0x26];
+        let word_27 = vsram[0x27];
+        let high = ((word_26 >> 8) & 0xff) & ((word_27 >> 8) & 0xff);
+        let low = (word_26 & 0xff) & (word_27 & 0xff);
+        ((high << 8) | low) as usize & 0x07ff
+    }
+
     fn resolve_scroll_pixel(scroll_a: usize, scroll_b: usize) -> Option<usize> {
         let a_visible = Self::raw_pixel_visible(scroll_a);
         let b_visible = Self::raw_pixel_visible(scroll_b);
@@ -1058,7 +1384,8 @@ impl Vdp {
         let cell_height = self.tile_cell_height();
         let row_mask = cell_height - 1;
         let cell_y = source_y / cell_height;
-        let entry_address = (plane.name_base + 2 * (cell_y * plane.width_cells + cell_x)) & 0xffff;
+        let entry_address =
+            (plane.name_base + ((2 * (cell_y * plane.width_cells + cell_x)) & 0x1fff)) & 0xffff;
         let entry = self.read_vram_word(entry_address as u32);
         let mut row = source_y & row_mask;
         let mut col = source_x & 7;
@@ -1084,8 +1411,9 @@ impl Vdp {
         let cell_height = self.tile_cell_height();
         let row_mask = cell_height - 1;
         let cell_y = screen_y / cell_height;
-        let entry_address =
-            (self.window_base() + 2 * (cell_y * self.window_width_cells() + cell_x)) & 0xffff;
+        let entry_address = (self.window_base()
+            + ((2 * (cell_y * self.window_width_cells() + cell_x)) & 0x1fff))
+            & 0xffff;
         let entry = self.read_vram_word(entry_address as u32);
         let mut row = screen_y & row_mask;
         let mut col = screen_x & 7;
@@ -1132,31 +1460,57 @@ impl Vdp {
     }
 
     fn h_scroll_value(&self, plane_a: bool, screen_y: usize) -> usize {
-        let line = if self.interlace_mode_2() {
-            screen_y >> 1
-        } else {
-            screen_y
-        } & 0xff;
-        let offset = match self.registers[11] & 0x03 {
+        self.h_scroll_value_from(&self.registers, plane_a, screen_y)
+    }
+
+    fn h_scroll_value_from(
+        &self,
+        registers: &[u8; Self::NUM_REGISTERS],
+        plane_a: bool,
+        screen_y: usize,
+    ) -> usize {
+        let line = screen_y & 0xff;
+        let offset = match registers[11] & 0x03 {
             0 => 0,
             1 => 4 * (line & 0x07),
             2 => 32 * (line / 8),
             _ => 4 * line,
         };
         let plane_offset = if plane_a { 0 } else { 2 };
-        self.read_vram_word((self.hscroll_base() + offset + plane_offset) as u32) as usize & 0x03ff
+        let hscroll_base = ((registers[13] as usize & 0x3f) << 10) & 0xffff;
+        self.read_vram_word((hscroll_base + offset + plane_offset) as u32) as usize & 0x03ff
     }
 
     fn v_scroll_value_for_column(&self, plane_a: bool, column: usize) -> usize {
         if (self.registers[11] & 0x04) == 0 {
-            return self.vsram[if plane_a { 0 } else { 1 }] as usize & 0x03ff;
+            return self.vsram[if plane_a { 0 } else { 1 }] as usize & self.vscroll_mask();
         }
-        let index = column * 2 + usize::from(!plane_a);
-        self.vsram[index & (Self::VSRAM_SIZE - 1)] as usize & 0x03ff
+        let index = Self::vscroll_pair_index_for_width(column, self.screen_width) * 2
+            + usize::from(!plane_a);
+        self.vsram[index] as usize & self.vscroll_mask()
+    }
+
+    fn vscroll_pair_index_for_width(column: usize, width: usize) -> usize {
+        if width == Self::H40_WIDTH {
+            column % Self::VSRAM_COLUMN_PAIRS
+        } else {
+            column & 0x0f
+        }
+    }
+
+    fn vscroll_mask(&self) -> usize {
+        match (self.registers[12] >> 1) & 0x03 {
+            1 | 3 => 0x07ff,
+            _ => 0x03ff,
+        }
     }
 
     fn plane_dimensions(&self) -> (usize, usize) {
-        match self.registers[16] & 0x33 {
+        Self::plane_dimensions_from(&self.registers)
+    }
+
+    fn plane_dimensions_from(registers: &[u8; Self::NUM_REGISTERS]) -> (usize, usize) {
+        match registers[16] & 0x33 {
             0x00 => (32, 32),
             0x01 => (64, 32),
             0x02 => (64, 1),
@@ -1164,8 +1518,8 @@ impl Vdp {
             0x10 => (32, 64),
             0x11 => (64, 64),
             0x12 => (64, 1),
-            0x13 => (128, 64),
-            0x20 => (32, 32),
+            0x13 => (128, 32),
+            0x20 => (32, 64),
             0x21 => (64, 64),
             0x22 => (64, 1),
             0x23 => (128, 64),
@@ -1178,7 +1532,11 @@ impl Vdp {
     }
 
     fn plane_a_base(&self) -> usize {
-        ((self.registers[2] as usize & 0x38) << 10) & 0xffff
+        Self::plane_a_base_from(&self.registers)
+    }
+
+    fn plane_a_base_from(registers: &[u8; Self::NUM_REGISTERS]) -> usize {
+        ((registers[2] as usize & 0x38) << 10) & 0xffff
     }
 
     fn window_base(&self) -> usize {
@@ -1199,11 +1557,11 @@ impl Vdp {
     }
 
     fn plane_b_base(&self) -> usize {
-        ((self.registers[4] as usize & 0x07) << 13) & 0xffff
+        Self::plane_b_base_from(&self.registers)
     }
 
-    fn hscroll_base(&self) -> usize {
-        ((self.registers[13] as usize & 0x3f) << 10) & 0xffff
+    fn plane_b_base_from(registers: &[u8; Self::NUM_REGISTERS]) -> usize {
+        ((registers[4] as usize & 0x07) << 13) & 0xffff
     }
 
     fn sprite_table_base(&self) -> usize {
@@ -1212,6 +1570,37 @@ impl Vdp {
         } else {
             ((self.registers[5] as usize & 0x7f) << 9) & 0xffff
         }
+    }
+
+    fn sprite_table_base_from(registers: &[u8; Self::NUM_REGISTERS]) -> usize {
+        let base = ((registers[5] as usize & 0x7f) << 9) & 0xffff;
+        if Self::active_width_from(registers) == Self::H40_WIDTH {
+            base & 0xfc00
+        } else {
+            base
+        }
+    }
+
+    fn capture_sprite_table(&self, registers: &[u8; Self::NUM_REGISTERS]) -> Vec<u8> {
+        let base = Self::sprite_table_base_from(registers);
+        let mut table = vec![0; 80 * 8];
+        for (index, byte) in table.iter_mut().enumerate() {
+            *byte = self.vram[(base + index) & 0xffff];
+        }
+        table
+    }
+
+    fn line_snapshot(&self, line: usize) -> Option<&VdpLineSnapshot> {
+        self.line_snapshots
+            .get(line)
+            .and_then(Option::as_ref)
+            .or_else(|| {
+                self.line_snapshots
+                    .iter()
+                    .take(line.saturating_add(1))
+                    .rev()
+                    .find_map(Option::as_ref)
+            })
     }
 
     fn pattern_color(&self, pattern: usize, row: usize, col: usize) -> usize {
@@ -1245,6 +1634,14 @@ impl Vdp {
         if self.interlace_mode_2() { 64 } else { 32 }
     }
 
+    fn active_width_from(registers: &[u8; Self::NUM_REGISTERS]) -> usize {
+        if (registers[12] & 0x81) != 0 {
+            Self::H40_WIDTH
+        } else {
+            Self::DEFAULT_WIDTH
+        }
+    }
+
     fn increment_dma_source_address(&mut self) {
         let source = self.dma_source_address();
         let source = (source & !0x1ffff) | ((source + 2) & 0x1ffff);
@@ -1258,5 +1655,140 @@ impl Vdp {
             (u16::from(self.registers[19]) | (u16::from(self.registers[20]) << 8)).wrapping_sub(1);
         self.registers[19] = length as u8;
         self.registers[20] = (length >> 8) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Vdp;
+
+    fn enable_interlace_mode_2(vdp: &mut Vdp) {
+        vdp.registers[1] = 0x40;
+        vdp.registers[12] = 0x06;
+        vdp.update_screen_size();
+        vdp.video_dirty = true;
+    }
+
+    fn write_mode_2_pattern_pixel(
+        vdp: &mut Vdp,
+        pattern: usize,
+        row: usize,
+        col: usize,
+        color: u8,
+    ) {
+        let address = pattern * 64 + row * 4 + col / 2;
+        let shift = if (col & 1) == 0 { 4 } else { 0 };
+        vdp.vram[address & 0xffff] |= (color & 0x0f) << shift;
+    }
+
+    fn set_vram_write_address(vdp: &mut Vdp, address: u32) {
+        vdp.write_control(0x4000 | (address as u16 & 0x3fff));
+        vdp.write_control(((address >> 14) & 0x0003) as u16);
+    }
+
+    fn set_cram_write_address(vdp: &mut Vdp, address: u32) {
+        vdp.write_control(0xc000 | (address as u16 & 0x3fff));
+        vdp.write_control(((address >> 14) & 0x0003) as u16);
+    }
+
+    #[test]
+    fn interlace_mode_2_sprites_use_0x100_y_origin() {
+        let mut vdp = Vdp::new();
+        enable_interlace_mode_2(&mut vdp);
+        vdp.registers[5] = 0x70;
+        vdp.cram[1] = 0x0eee;
+        write_mode_2_pattern_pixel(&mut vdp, 1, 0, 0, 1);
+
+        let sprite_base = vdp.sprite_table_base();
+        vdp.write_vram_word(sprite_base as u32, 0x0100);
+        vdp.write_vram_word((sprite_base + 2) as u32, 0x0000);
+        vdp.write_vram_word((sprite_base + 4) as u32, 0x0001);
+        vdp.write_vram_word((sprite_base + 6) as u32, 0x0080);
+
+        vdp.render_frame();
+
+        assert_eq!(vdp.screen_height, 448);
+        assert_eq!(vdp.framebuffer[0], vdp.palette_color(1));
+    }
+
+    #[test]
+    fn interlace_mode_2_renders_pattern_written_through_control_port() {
+        let mut vdp = Vdp::new();
+        vdp.write_control(0x8174);
+        vdp.write_control(0x8c87);
+        vdp.write_control(0x8f02);
+        vdp.write_control(0x8230);
+
+        set_vram_write_address(&mut vdp, 0xc000);
+        vdp.write_data(0x0001);
+
+        set_vram_write_address(&mut vdp, 1 << 6);
+        for _ in 0..32 {
+            vdp.write_data(0x1111);
+        }
+
+        set_cram_write_address(&mut vdp, 0x02);
+        vdp.write_data(0x0eee);
+
+        vdp.render_frame();
+
+        assert_eq!(vdp.screen_width, 320);
+        assert_eq!(vdp.screen_height, 448);
+        assert_eq!(vdp.framebuffer[0], vdp.palette_color(1));
+    }
+
+    #[test]
+    fn interlace_mode_2_uses_reference_hscroll_pair_mapping() {
+        let mut vdp = Vdp::new();
+        enable_interlace_mode_2(&mut vdp);
+        vdp.registers[2] = 0x30;
+        vdp.registers[13] = 0x0f;
+        vdp.cram[2] = 0x00e0;
+        vdp.cram[3] = 0x0e00;
+
+        let plane_a = vdp.plane_a_base();
+        vdp.write_vram_word(plane_a as u32, 10);
+        vdp.write_vram_word((plane_a + 2) as u32, 11);
+        vdp.write_vram_word((plane_a + 31 * 2) as u32, 12);
+        let hscroll_base = ((vdp.registers[13] as usize & 0x3f) << 10) & 0xffff;
+        vdp.write_vram_word(hscroll_base as u32, 1);
+        write_mode_2_pattern_pixel(&mut vdp, 11, 0, 7, 2);
+        write_mode_2_pattern_pixel(&mut vdp, 12, 0, 7, 3);
+
+        vdp.render_frame();
+
+        assert_eq!(vdp.framebuffer[0], vdp.palette_color(2));
+    }
+
+    #[test]
+    fn h40_per_cell_vscroll_wraps_after_twenty_pairs() {
+        let mut vdp = Vdp::new();
+        vdp.registers[11] = 0x04;
+        vdp.registers[12] = 0x81;
+        vdp.update_screen_size();
+        vdp.vsram[0] = 0x0012;
+        vdp.vsram[38] = 0x0034;
+
+        assert_eq!(vdp.v_scroll_value_for_column(true, 0), 0x0012);
+        assert_eq!(vdp.v_scroll_value_for_column(true, 19), 0x0034);
+        assert_eq!(vdp.v_scroll_value_for_column(true, 20), 0x0012);
+    }
+
+    #[test]
+    fn vsram_writes_ignore_words_outside_valid_md_range() {
+        let mut vdp = Vdp::new();
+        vdp.write_vsram_word(39, 0x0555);
+        vdp.write_vsram_word(40, 0x0666);
+
+        assert_eq!(vdp.vsram[39], 0x0555);
+        assert_eq!(vdp.vsram[40], 0);
+    }
+
+    #[test]
+    fn plane_size_0x13_matches_reference_table() {
+        let mut vdp = Vdp::new();
+        vdp.registers[16] = 0x13;
+
+        assert_eq!(vdp.plane_dimensions(), (128, 32));
     }
 }

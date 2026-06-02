@@ -4345,6 +4345,22 @@ fn next_bridge_video_snapshot(
     }))
 }
 
+fn next_bridge_video_start_frame(state: &BridgeState) -> io::Result<u32> {
+    let emulator_frame = {
+        let emulator = lock_bridge_emulator(state)?;
+        emulator.frame_count.min(u32::MAX as u64) as u32
+    };
+    let (video_lock, _) = &*state.latest_video;
+    let latest_frame = video_lock
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .as_ref()
+        .map(|snapshot| snapshot.frame);
+    Ok(latest_frame
+        .filter(|frame| *frame >= emulator_frame)
+        .unwrap_or(emulator_frame))
+}
+
 fn latest_bridge_packet(state: &BridgeState) -> io::Result<Option<Vec<u8>>> {
     let (packet, _) = &*state.latest_packet;
     packet
@@ -5482,19 +5498,26 @@ fn bridge_webrtc_h264_loop(
     stop: Arc<AtomicBool>,
     target_fps: Arc<AtomicU32>,
 ) -> io::Result<()> {
-    let (width, height) = {
+    {
         let emulator = lock_bridge_emulator(&state)?;
         if emulator.bus.rom.is_empty() {
             return Ok(());
         }
-        let (width, height) = emulator.frame_size();
-        bridge_video_output_size(width, height)
-    };
+    }
     add_bridge_subscriber(&state)?;
     if let Err(err) = ensure_bridge_runner(&state) {
         remove_bridge_subscriber(&state)?;
         return Err(err);
     }
+    let first_frame = next_bridge_video_start_frame(&state)?;
+    let first_snapshot = match next_bridge_video_snapshot(&state, first_frame, &stop)? {
+        Some(snapshot) => snapshot,
+        None => {
+            remove_bridge_subscriber(&state)?;
+            return Ok(());
+        }
+    };
+    let (width, height) = (first_snapshot.width, first_snapshot.height);
 
     let mut child = Command::new("ffmpeg")
         .args([
@@ -5562,15 +5585,19 @@ fn bridge_webrtc_h264_loop(
     let pending_durations = Arc::new(Mutex::new(VecDeque::new()));
     let writer_durations = Arc::clone(&pending_durations);
     let writer = thread::spawn(move || {
+        let mut pending_snapshot = Some(first_snapshot);
         let mut last_frame = 0u32;
         let mut last_encoded_frame = 0u32;
         let mut frame_budget = WEBRTC_VIDEO_FPS as u32;
         while !writer_stop.load(Ordering::SeqCst) {
-            let snapshot = match next_bridge_video_snapshot(&writer_state, last_frame, &writer_stop)
-            {
-                Ok(Some(snapshot)) => snapshot,
-                Ok(None) => break,
-                Err(_) => break,
+            let snapshot = if let Some(snapshot) = pending_snapshot.take() {
+                snapshot
+            } else {
+                match next_bridge_video_snapshot(&writer_state, last_frame, &writer_stop) {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
             };
             last_frame = snapshot.frame;
             if snapshot.width != width || snapshot.height != height {
@@ -5943,10 +5970,20 @@ fn push_frame_rgb565(bytes: &mut Vec<u8>, emulator: &Emulator) {
 fn push_frame_rgb24_visible(bytes: &mut Vec<u8>, emulator: &Emulator) {
     let (width, height) = emulator.frame_size();
     let (_, output_height) = bridge_video_output_size(width, height);
-    for &pixel in emulator.framebuffer().iter().take(width * output_height) {
-        bytes.push(((pixel >> 16) & 0xff) as u8);
-        bytes.push(((pixel >> 8) & 0xff) as u8);
-        bytes.push((pixel & 0xff) as u8);
+    let framebuffer = emulator.framebuffer();
+    let field = (emulator.frame_count as usize) & 1;
+    for y in 0..output_height {
+        let source_y = if height > output_height {
+            (y * 2 + field).min(height - 1)
+        } else {
+            y
+        };
+        let row_start = source_y * width;
+        for &pixel in framebuffer[row_start..row_start + width].iter() {
+            bytes.push(((pixel >> 16) & 0xff) as u8);
+            bytes.push(((pixel >> 8) & 0xff) as u8);
+            bytes.push((pixel & 0xff) as u8);
+        }
     }
 }
 

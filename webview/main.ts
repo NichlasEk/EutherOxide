@@ -1766,6 +1766,9 @@ const bridgeVideo = document.querySelector<HTMLVideoElement>("#bridge-video")!;
 const bridgeRtcAudio = document.querySelector<HTMLAudioElement>("#bridge-audio")!;
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
+bridgeVideo.addEventListener("loadedmetadata", syncBridgeVideoGeometry);
+bridgeVideo.addEventListener("resize", syncBridgeVideoGeometry);
+bridgeVideo.addEventListener("playing", syncBridgeVideoGeometry);
 
 const reactionCorePage = document.querySelector<HTMLElement>("#reaction-core-page")!;
 const interactionLobbyPage = document.querySelector<HTMLElement>("#interaction-lobby-page")!;
@@ -8013,6 +8016,7 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       bridgeWebRtcVideoActive = true;
       bridgeVideo.srcObject = stream;
+      syncBridgeVideoGeometry();
       screenGlass.classList.add("has-bridge-video");
       bridgeVideo.play().catch(() => {
         bridgeWebRtcVideoActive = false;
@@ -8280,6 +8284,7 @@ function startBridgeVideoStream(): boolean {
     if (!bridgeVideoActive || generation !== bridgeStreamGeneration) {
       return;
     }
+    syncBridgeVideoGeometry();
     screenGlass.classList.add("has-bridge-video");
     ui.transportMode = bridgeTransportLabel("BRIDGE H264 MSE");
     pushTrace("H.264 video stream active");
@@ -11762,6 +11767,12 @@ function drawNativeFrame(frame: FrameResult): void {
   );
   videoContext.putImageData(image, 0, 0);
   renderShaderFrame();
+}
+
+function syncBridgeVideoGeometry(): void {
+  if (bridgeVideo.videoWidth > 0 && bridgeVideo.videoHeight > 0) {
+    syncScreenGeometry(bridgeVideo.videoWidth, bridgeVideo.videoHeight);
+  }
 }
 
 function syncScreenGeometry(width: number, height: number): void {
