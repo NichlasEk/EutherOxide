@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -871,6 +871,12 @@ struct HostVideoChatSignalRequest {
     sdp: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostShoppingListUpdate {
+    markdown: String,
+}
+
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     let state = new_bridge_state(emulator);
@@ -1153,6 +1159,21 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let message = form_value(&form, "message").unwrap_or_default();
             post_host_chat_message(state, &user, &message)?;
             send_json(stream, &host_chat_list(state)?)
+        }
+        ("GET", "/api/interaction/users") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_interaction_user_list(state, &user)?)
+        }
+        ("GET", "/api/interaction/shopping-list") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_shopping_list(&user)?)
+        }
+        ("POST", "/api/interaction/shopping-list") => {
+            let user = require_host_user(state, &request)?;
+            let update: HostShoppingListUpdate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            save_host_shopping_list(&user, &update.markdown)?;
+            send_json(stream, &host_shopping_list(&user)?)
         }
         ("GET", "/api/video-chat") => {
             let user = require_host_user(state, &request)?;
@@ -1872,6 +1893,141 @@ fn post_host_chat_message(state: &HostState, user: &str, message: &str) -> io::R
         messages.drain(0..excess);
     }
     Ok(())
+}
+
+fn host_interaction_user_list(
+    state: &HostState,
+    current_user: &str,
+) -> io::Result<serde_json::Value> {
+    let online_users = active_host_session_users(state)?;
+    let activity_labels = host_user_activity_labels(state)?;
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let payload = users
+        .iter()
+        .filter(|user| !user.banned)
+        .map(|user| {
+            let online = online_users.contains(&user.name);
+            let location = if online {
+                activity_labels
+                    .get(&user.name)
+                    .cloned()
+                    .unwrap_or_else(|| "Online on host".to_string())
+            } else {
+                "Offline".to_string()
+            };
+            serde_json::json!({
+                "name": user.name,
+                "online": online,
+                "status": if online { "Online" } else { "Offline" },
+                "location": location,
+                "isCurrentUser": user.name == current_user,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "currentUser": current_user,
+        "users": payload,
+    }))
+}
+
+fn active_host_session_users(state: &HostState) -> io::Result<HashSet<String>> {
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let now = unix_ms_now();
+    let timeout_ms = state
+        .config
+        .session_timeout_minutes
+        .saturating_mul(60 * 1000);
+    sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < timeout_ms);
+    Ok(sessions
+        .iter()
+        .map(|session| session.user.clone())
+        .collect())
+}
+
+fn host_user_activity_labels(state: &HostState) -> io::Result<HashMap<String, String>> {
+    let instances = state
+        .instances
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let now = Instant::now();
+    let mut labels = HashMap::new();
+    for instance in instances.iter() {
+        let label = format!("In {}", instance.name);
+        if let Some(owner) = &instance.host_owner {
+            labels.entry(owner.clone()).or_insert_with(|| label.clone());
+        }
+        let slots = instance
+            .bridge
+            .player_slots
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        for lease in slots.iter().flatten() {
+            if now.duration_since(lease.updated) <= HOST_PLAYER_LEASE_TIMEOUT {
+                labels.insert(lease.user.clone(), label.clone());
+            }
+        }
+    }
+    Ok(labels)
+}
+
+fn host_shopping_list(user: &str) -> io::Result<serde_json::Value> {
+    let shared_id = host_user_shopping_list_id(user)?;
+    let path = host_shared_shopping_list_path(&shared_id)?;
+    let markdown = match fs::read_to_string(&path) {
+        Ok(markdown) => markdown,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => default_shopping_list_markdown(),
+        Err(err) => return Err(err),
+    };
+    let updated_unix_ms = fs::metadata(&path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64);
+    Ok(serde_json::json!({
+        "name": "shopping-list.md",
+        "sharedId": shared_id,
+        "markdown": markdown,
+        "updatedUnixMs": updated_unix_ms,
+    }))
+}
+
+fn save_host_shopping_list(user: &str, markdown: &str) -> io::Result<()> {
+    if markdown.len() > 64 * 1024 {
+        return Err(invalid_request("shopping list is too large"));
+    }
+    let shared_id = host_user_shopping_list_id(user)?;
+    let path = host_shared_shopping_list_path(&shared_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, normalize_markdown_document(markdown))
+}
+
+fn default_shopping_list_markdown() -> String {
+    [
+        "# Hemmet Shopping List",
+        "",
+        "- [ ] Coffee",
+        "- [ ] Milk",
+        "- [ ] Batteries",
+        "- [ ] Dog snacks",
+        "",
+    ]
+    .join("\n")
+}
+
+fn normalize_markdown_document(markdown: &str) -> String {
+    let mut normalized = markdown.replace("\r\n", "\n").replace('\r', "\n");
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
 }
 
 fn host_video_chat_client_id(request: &HttpRequest) -> io::Result<String> {
@@ -5879,6 +6035,71 @@ fn host_chat_path() -> PathBuf {
 
 fn host_audit_path() -> PathBuf {
     host_dir().join("audit.log")
+}
+
+fn ensure_host_user_data_dir(user: &str) -> io::Result<PathBuf> {
+    let dir = host_user_data_dir(user);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn host_user_data_dir(user: &str) -> PathBuf {
+    host_dir()
+        .join("user-data")
+        .join(host_user_storage_name(user))
+}
+
+fn host_user_shopping_list_id(user: &str) -> io::Result<String> {
+    let link_path = host_user_shopping_list_link_path(user);
+    if let Ok(shared_id) = fs::read_to_string(&link_path) {
+        return validate_host_shared_doc_id(shared_id.trim());
+    }
+    let dir = ensure_host_user_data_dir(user)?.join("shopping-lists");
+    fs::create_dir_all(&dir)?;
+    let shared_id = "hemmet".to_string();
+    fs::write(dir.join("hemmet.link"), &shared_id)?;
+    Ok(shared_id)
+}
+
+fn host_user_shopping_list_link_path(user: &str) -> PathBuf {
+    host_user_data_dir(user)
+        .join("shopping-lists")
+        .join("hemmet.link")
+}
+
+fn host_shared_shopping_list_path(shared_id: &str) -> io::Result<PathBuf> {
+    Ok(host_dir()
+        .join("shared-shopping-lists")
+        .join(format!("{}.md", validate_host_shared_doc_id(shared_id)?)))
+}
+
+fn validate_host_shared_doc_id(shared_id: &str) -> io::Result<String> {
+    if shared_id.is_empty() || shared_id.len() > 80 {
+        return Err(invalid_request("invalid shared document id"));
+    }
+    if !shared_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return Err(invalid_request("invalid shared document id"));
+    }
+    Ok(shared_id.to_string())
+}
+
+fn host_user_storage_name(user: &str) -> String {
+    let mut output = String::new();
+    for byte in user.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+            output.push(byte as char);
+        } else {
+            output.push_str(&format!("%{byte:02x}"));
+        }
+    }
+    if output.is_empty() {
+        "user".to_string()
+    } else {
+        output
+    }
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {

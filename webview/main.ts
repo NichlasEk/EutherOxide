@@ -278,6 +278,49 @@ type VideoChatResult = {
   signals: VideoChatSignal[];
 };
 
+type AppRoute = "core" | "interactionLobby";
+
+type InteractionFriend = {
+  name: string;
+  status: "Online" | "Offline";
+  location: string;
+  online?: boolean;
+  isCurrentUser?: boolean;
+};
+
+type InteractionUsersResult = {
+  currentUser: string;
+  users: InteractionFriend[];
+};
+
+type InteractionSpace = {
+  name: string;
+  detail: string;
+};
+
+type InteractionInvite = {
+  text: string;
+  kind: string;
+};
+
+type FutureModule = {
+  name: string;
+  detail: string;
+};
+
+type ShoppingListResult = {
+  name: string;
+  sharedId: string;
+  markdown: string;
+  updatedUnixMs?: number | null;
+};
+
+type ShoppingListItem = {
+  lineIndex: number;
+  checked: boolean;
+  text: string;
+};
+
 type PadBinding = {
   kind: "button" | "axis";
   code: string;
@@ -859,6 +902,8 @@ let claimedLobbyPlayer: PlayerPort | null = null;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
+let appRoute: AppRoute = "core";
+let userMenuOpen = false;
 let hostPermissions: HostPermissions = {
   canPlay: false,
   canLaunchRoms: false,
@@ -875,6 +920,16 @@ let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
+let shoppingListName = "shopping-list.md";
+let shoppingListSharedId = "hemmet";
+let shoppingListMarkdown = defaultShoppingListMarkdown();
+let shoppingListLoaded = false;
+let shoppingListSaving = false;
+let shoppingListStatus = "Not loaded";
+let shoppingListSaveTimer: number | null = null;
+let interactionUsers: InteractionFriend[] = [];
+let interactionUsersLoaded = false;
+let interactionUsersStatus = "Mock users";
 let videoChatJoined = false;
 let videoChatSending = false;
 let videoChatMuted = false;
@@ -973,8 +1028,29 @@ let lastGamepadSnapshot: GamepadSnapshot = {
   gamepads: [],
 };
 
+const fallbackInteractionFriends: InteractionFriend[] = [
+  { name: "Joanna", status: "Online", location: "In Main Reaction Vessel" },
+  { name: "Alexander", status: "Offline", location: "Last seen in Hemmet" },
+  { name: "Sigrid", status: "Online", location: "Available for chat" },
+];
+const interactionSpaces: InteractionSpace[] = [
+  { name: "Hemmet", detail: "Shared list, notes, house rhythm" },
+  { name: "EutherDogs Dev", detail: "Build notes and playtest rooms" },
+  { name: "Apothic TECH", detail: "Ops, ideas, documents" },
+];
+const interactionInvites: InteractionInvite[] = [
+  { text: "Joanna invited you to Hemmet", kind: "Space invite" },
+  { text: "Alexander sent a friend request", kind: "Friend request" },
+];
+const interactionFutureModules: FutureModule[] = [
+  { name: "Shared Lists", detail: "Linked Markdown lists with shared membership" },
+  { name: "Shared Notes", detail: "Small living documents for friends and projects" },
+  { name: "Markdown Vaults", detail: "Obsidian-like spaces, synced through the host" },
+  { name: "Video Rooms", detail: "Persistent room presets for chat and co-play" },
+];
+
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-  <main class="oxide-shell">
+  <main id="reaction-core-page" class="oxide-shell">
     <section class="control-rail">
       <div class="brand-block">
         <div class="brand-mark">
@@ -1334,6 +1410,23 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </aside>
   </main>
+  <main id="interaction-lobby-page" class="interaction-lobby-page" hidden>
+    ${interactionLobbyPageMarkup()}
+  </main>
+  <div class="user-menu" id="user-menu">
+    <button id="user-menu-toggle" class="user-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+      <span class="user-presence-dot"></span>
+      <strong id="user-menu-name">Nichlas</strong>
+    </button>
+    <div id="user-menu-dropdown" class="user-menu-dropdown" role="menu" aria-label="user menu">
+      <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
+      <button data-user-menu-action="interaction-lobby" type="button" role="menuitem">Interaction Lobby</button>
+      <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
+      <button data-user-menu-action="shared-spaces" type="button" role="menuitem">Shared Spaces</button>
+      <button data-user-menu-action="settings" type="button" role="menuitem">Settings</button>
+      <button data-user-menu-action="logout" type="button" role="menuitem">Log out</button>
+    </div>
+  </div>
   <div class="mobile-pad" id="mobile-pad" aria-label="mobile controller">
     <div class="mobile-pad-cluster mobile-dpad">
       <button data-pad="up" class="pad-key pad-up" type="button">U</button>
@@ -1431,6 +1524,25 @@ const bridgeRtcAudio = document.querySelector<HTMLAudioElement>("#bridge-audio")
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 
+const reactionCorePage = document.querySelector<HTMLElement>("#reaction-core-page")!;
+const interactionLobbyPage = document.querySelector<HTMLElement>("#interaction-lobby-page")!;
+const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
+const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
+const userMenuName = document.querySelector<HTMLElement>("#user-menu-name")!;
+const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-dropdown")!;
+const shoppingListPanel = document.querySelector<HTMLDivElement>("#interaction-shopping-panel")!;
+const interactionCurrentUserName = document.querySelector<HTMLElement>("#interaction-current-user-name")!;
+const interactionCurrentUserStatus = document.querySelector<HTMLElement>("#interaction-current-user-status")!;
+const friendPreviewCount = document.querySelector<HTMLElement>("#friend-preview-count")!;
+const friendPreviewRows = document.querySelector<HTMLDivElement>("#friend-preview-rows")!;
+const shoppingListTitle = document.querySelector<HTMLElement>("#shopping-list-title")!;
+const shoppingListStatusLabel = document.querySelector<HTMLElement>("#shopping-list-status")!;
+const shoppingListSharedIdLabel = document.querySelector<HTMLElement>("#shopping-list-shared-id")!;
+const shoppingListItems = document.querySelector<HTMLDivElement>("#shopping-list-items")!;
+const shoppingListAddForm = document.querySelector<HTMLFormElement>("#shopping-list-add-form")!;
+const shoppingListAddInput = document.querySelector<HTMLInputElement>("#shopping-list-add-input")!;
+const shoppingListMarkdownInput = document.querySelector<HTMLTextAreaElement>("#shopping-list-markdown")!;
+const shoppingListSave = document.querySelector<HTMLButtonElement>("#shopping-list-save")!;
 const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
 const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
 const micVolumeSlider = document.querySelector<HTMLInputElement>("#mic-volume-slider")!;
@@ -1575,12 +1687,80 @@ applyMobileMode();
 renderDogsAssetMode();
 renderPlayerPort();
 renderVideoChat();
+renderUserMenu();
+renderInteractionUsers();
+applyAppRoute();
 volumeSlider.addEventListener("input", () => {
   setAudioVolume(Number(volumeSlider.value) / 100);
 });
 
 micVolumeSlider.addEventListener("input", () => {
   setMicVolume(Number(micVolumeSlider.value) / 100);
+});
+
+userMenuToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setUserMenuOpen(!userMenuOpen);
+});
+
+userMenuDropdown.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-user-menu-action]");
+  if (!button) {
+    return;
+  }
+  void handleUserMenuAction(button.dataset.userMenuAction ?? "");
+});
+
+interactionLobbyPage.addEventListener("click", (event) => {
+  const routeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-app-route]");
+  if (routeButton?.dataset.appRoute === "core") {
+    navigateApp("core");
+    return;
+  }
+  const focusButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-interaction-focus]");
+  if (focusButton?.dataset.interactionFocus === "shopping") {
+    shoppingListPanel.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+});
+
+shoppingListItems.addEventListener("change", (event) => {
+  const checkbox = (event.target as HTMLElement).closest<HTMLInputElement>("[data-shopping-line]");
+  if (!checkbox) {
+    return;
+  }
+  setShoppingListItemChecked(Number(checkbox.dataset.shoppingLine), checkbox.checked);
+});
+
+shoppingListAddForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  addShoppingListItem(shoppingListAddInput.value);
+});
+
+shoppingListMarkdownInput.addEventListener("input", () => {
+  shoppingListMarkdown = shoppingListMarkdownInput.value;
+  shoppingListStatus = "Edited";
+  renderShoppingListItems();
+  scheduleShoppingListSave();
+});
+
+shoppingListSave.addEventListener("click", () => {
+  void saveShoppingList();
+});
+
+window.addEventListener("hashchange", () => {
+  applyAppRoute();
+});
+
+document.addEventListener("click", (event) => {
+  if (userMenuOpen && !userMenu.contains(event.target as Node)) {
+    setUserMenuOpen(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && userMenuOpen) {
+    setUserMenuOpen(false);
+  }
 });
 
 mobileToggle.addEventListener("click", () => {
@@ -3044,6 +3224,179 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function interactionLobbyPageMarkup(): string {
+  return `
+    <section class="interaction-hero">
+      <div class="interaction-identity">
+        <p class="eyebrow">Interaction Lobby</p>
+        <h2>Friends, spaces, lists, notes</h2>
+        <div class="interaction-current-user">
+          <span class="user-presence-dot"></span>
+          <strong id="interaction-current-user-name">Current user: Nichlas</strong>
+          <em id="interaction-current-user-status">Online</em>
+        </div>
+      </div>
+      <div class="interaction-hero-actions">
+        <button data-app-route="core" type="button">Reaction Core</button>
+        <button class="primary-action" data-interaction-focus="shopping" type="button">Open shopping list</button>
+      </div>
+    </section>
+    <section class="interaction-grid">
+      <div class="interaction-panel interaction-quick-actions">
+        <div class="section-head">
+          <p class="section-label">Quick Actions</p>
+          <span>Ready for wiring</span>
+        </div>
+        <div class="quick-action-grid">
+          ${quickActionCard("Add friend", "Send a request into the friend mesh")}
+          ${quickActionCard("Create shared space", "Start a room for people and files")}
+          ${quickActionCard("Create shopping list", "Make a shared Markdown checklist")}
+          ${quickActionCard("Start chat", "Open a direct line")}
+        </div>
+      </div>
+      <div class="interaction-panel interaction-shopping-panel" id="interaction-shopping-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Shared Shopping List</p>
+            <strong id="shopping-list-title">shopping-list.md</strong>
+          </div>
+          <span id="shopping-list-status">Not loaded</span>
+        </div>
+        <div class="shopping-link-meta">
+          <span>Linked document</span>
+          <strong id="shopping-list-shared-id">hemmet</strong>
+        </div>
+        <div id="shopping-list-items" class="shopping-list-items"></div>
+        <form id="shopping-list-add-form" class="shopping-list-add-form">
+          <input id="shopping-list-add-input" type="text" placeholder="Add item" aria-label="shopping list item" autocomplete="off" />
+          <button type="submit">Add</button>
+        </form>
+        <details class="shopping-markdown-editor">
+          <summary>Markdown source</summary>
+          <textarea id="shopping-list-markdown" spellcheck="false" aria-label="shopping list markdown"></textarea>
+        </details>
+        <button id="shopping-list-save" class="primary-action" type="button">Save .md</button>
+      </div>
+      ${friendPreviewList()}
+      ${sharedSpacePreviewList()}
+      ${invitePreviewList()}
+      <div class="interaction-panel interaction-future-panel">
+        <div class="section-head">
+          <p class="section-label">Future Modules</p>
+          <span>Foundation slots</span>
+        </div>
+        <div class="future-module-grid">
+          ${interactionFutureModules.map((module) => futureModuleCard(module)).join("")}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function quickActionCard(title: string, detail: string): string {
+  return `
+    <button class="quick-action-card" type="button">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(detail)}</span>
+    </button>
+  `;
+}
+
+function friendPreviewList(): string {
+  const friends = visibleInteractionFriends();
+  return `
+    <div class="interaction-panel friend-preview-list" id="friend-preview-list">
+      <div class="section-head">
+        <p class="section-label">Friends</p>
+        <span id="friend-preview-count">${friends.filter((friend) => friend.status === "Online").length} online</span>
+      </div>
+      <div id="friend-preview-rows" class="interaction-list-rows">
+        ${friendRowsMarkup(friends)}
+      </div>
+    </div>
+  `;
+}
+
+function visibleInteractionFriends(): InteractionFriend[] {
+  const source = interactionUsers.length > 0 ? interactionUsers : fallbackInteractionFriends;
+  const currentUser = hostUsername?.toLowerCase();
+  const filtered = currentUser
+    ? source.filter((friend) => friend.name.toLowerCase() !== currentUser)
+    : source;
+  return filtered.length > 0 ? filtered : source;
+}
+
+function friendRowsMarkup(friends: InteractionFriend[]): string {
+  if (friends.length === 0) {
+    return `<span class="interaction-empty">No users loaded</span>`;
+  }
+  return friends
+    .map(
+      (friend) => `
+        <div class="interaction-row">
+          <span class="presence ${friend.status === "Online" ? "is-online" : ""}"></span>
+          <div>
+            <strong>${escapeHtml(friend.name)}</strong>
+            <small>${escapeHtml(friend.location)}</small>
+          </div>
+          <em>${friend.status}</em>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function sharedSpacePreviewList(): string {
+  return `
+    <div class="interaction-panel shared-space-preview-list">
+      <div class="section-head">
+        <p class="section-label">Shared Spaces</p>
+        <span>${interactionSpaces.length} spaces</span>
+      </div>
+      ${interactionSpaces
+        .map(
+          (space) => `
+            <button class="interaction-space-row" type="button">
+              <strong>${escapeHtml(space.name)}</strong>
+              <span>${escapeHtml(space.detail)}</span>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function invitePreviewList(): string {
+  return `
+    <div class="interaction-panel invite-preview-list">
+      <div class="section-head">
+        <p class="section-label">Invites</p>
+        <span>${interactionInvites.length} pending</span>
+      </div>
+      ${interactionInvites
+        .map(
+          (invite) => `
+            <div class="invite-row">
+              <strong>${escapeHtml(invite.kind)}</strong>
+              <span>${escapeHtml(invite.text)}</span>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function futureModuleCard(module: FutureModule): string {
+  return `
+    <div class="future-module-card">
+      <strong>${escapeHtml(module.name)}</strong>
+      <span>${escapeHtml(module.detail)}</span>
+    </div>
+  `;
+}
+
 function initializeShaderControls(): void {
   shaderSelect.innerHTML = shaderConfig.available
     .map((name) => `<option value="${name}">${shaderDisplayName(name)}</option>`)
@@ -3993,6 +4346,7 @@ async function refreshAuthStatus(): Promise<void> {
   if (isTauri) {
     return;
   }
+  const previousUser = hostUsername;
   try {
     const status = await bridgeJson<AuthStatus>("/api/auth/status", {}, 700);
     hostUsername = status.authenticated ? status.user ?? null : null;
@@ -4024,6 +4378,16 @@ async function refreshAuthStatus(): Promise<void> {
     void leaveVideoChat(false);
   }
   renderAdminAccess();
+  if (previousUser !== hostUsername) {
+    shoppingListLoaded = false;
+    interactionUsersLoaded = false;
+    interactionUsers = [];
+  }
+  renderUserMenu();
+  renderInteractionUsers();
+  if (appRoute === "interactionLobby") {
+    void loadInteractionUsers();
+  }
   renderVideoChat();
 }
 
@@ -4529,6 +4893,268 @@ async function sendChatMessage(): Promise<void> {
   chatMessages = result.messages;
   chatInput.value = "";
   renderChat();
+}
+
+function readAppRoute(): AppRoute {
+  const route = window.location.hash.replace(/^#\/?/, "");
+  return route === "interaction-lobby" ? "interactionLobby" : "core";
+}
+
+function navigateApp(route: AppRoute): void {
+  if (route === "interactionLobby") {
+    window.location.hash = "/interaction-lobby";
+    applyAppRoute();
+    return;
+  }
+  window.history.pushState({}, "", `${window.location.pathname}${window.location.search}`);
+  applyAppRoute();
+}
+
+function applyAppRoute(): void {
+  appRoute = readAppRoute();
+  const showingLobby = appRoute === "interactionLobby";
+  reactionCorePage.hidden = showingLobby;
+  interactionLobbyPage.hidden = !showingLobby;
+  document.body.classList.toggle("interaction-lobby-mode", showingLobby);
+  setUserMenuOpen(false);
+  renderUserMenu();
+  renderShoppingListItems();
+  if (showingLobby) {
+    void loadShoppingList();
+    void loadInteractionUsers();
+  }
+}
+
+function setUserMenuOpen(open: boolean): void {
+  userMenuOpen = open;
+  userMenu.classList.toggle("is-open", open);
+  userMenuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function renderUserMenu(): void {
+  userMenuName.textContent = displayUserName(hostUsername ?? "Nichlas");
+  userMenuToggle.classList.toggle("is-selected", appRoute === "interactionLobby");
+}
+
+async function loadInteractionUsers(): Promise<void> {
+  if (interactionUsersLoaded) {
+    return;
+  }
+  if (!hostUsername) {
+    interactionUsersStatus = "Login to sync";
+    renderInteractionUsers();
+    return;
+  }
+  interactionUsersStatus = "Loading";
+  renderInteractionUsers();
+  try {
+    const result = await bridgeJson<InteractionUsersResult>("/api/interaction/users", {}, 900);
+    interactionUsers = result.users.map((user) => ({
+      ...user,
+      status: user.online ?? user.status === "Online" ? "Online" : "Offline",
+    }));
+    interactionUsersLoaded = true;
+    interactionUsersStatus = "Host users";
+  } catch {
+    interactionUsersLoaded = false;
+    interactionUsersStatus = "Mock users";
+  }
+  renderInteractionUsers();
+}
+
+function renderInteractionUsers(): void {
+  const currentName = displayUserName(hostUsername ?? "Nichlas");
+  interactionCurrentUserName.textContent = `Current user: ${currentName}`;
+  interactionCurrentUserStatus.textContent = hostUsername ? "Online" : "Offline";
+  const friends = visibleInteractionFriends();
+  const onlineCount = friends.filter((friend) => friend.status === "Online").length;
+  friendPreviewCount.textContent = `${onlineCount} online / ${interactionUsersStatus}`;
+  friendPreviewRows.innerHTML = friendRowsMarkup(friends);
+}
+
+function displayUserName(username: string): string {
+  if (!username) {
+    return "Nichlas";
+  }
+  return username.charAt(0).toUpperCase() + username.slice(1);
+}
+
+async function handleUserMenuAction(action: string): Promise<void> {
+  setUserMenuOpen(false);
+  switch (action) {
+    case "interaction-lobby":
+    case "friends":
+    case "shared-spaces":
+    case "profile":
+    case "settings":
+      navigateApp("interactionLobby");
+      if (action === "shared-spaces") {
+        interactionLobbyPage.querySelector(".shared-space-preview-list")?.scrollIntoView({ block: "start" });
+      }
+      if (action === "friends") {
+        interactionLobbyPage.querySelector(".friend-preview-list")?.scrollIntoView({ block: "start" });
+      }
+      return;
+    case "logout":
+      await logoutHostUser();
+      return;
+    default:
+      return;
+  }
+}
+
+async function logoutHostUser(): Promise<void> {
+  try {
+    await leaveVideoChat(false);
+    await bridgeRequest("/api/logout", { method: "POST" }, 1200);
+  } catch {
+    // The server redirects to /login; a navigation below is enough if fetch hides it.
+  }
+  window.location.href = "/login";
+}
+
+function defaultShoppingListMarkdown(): string {
+  return [
+    "# Hemmet Shopping List",
+    "",
+    "- [ ] Coffee",
+    "- [ ] Milk",
+    "- [ ] Batteries",
+    "- [ ] Dog snacks",
+    "",
+  ].join("\n");
+}
+
+async function loadShoppingList(): Promise<void> {
+  if (shoppingListLoaded || shoppingListSaving) {
+    return;
+  }
+  if (!hostUsername) {
+    shoppingListStatus = "Login to sync";
+    renderShoppingListItems();
+    return;
+  }
+  shoppingListStatus = "Loading";
+  renderShoppingListItems();
+  try {
+    const result = await bridgeJson<ShoppingListResult>("/api/interaction/shopping-list", {}, 1000);
+    applyShoppingListResult(result, "Synced");
+  } catch (err) {
+    shoppingListLoaded = false;
+    shoppingListStatus = err instanceof Error ? "Sync failed" : "Offline";
+    renderShoppingListItems();
+  }
+}
+
+function applyShoppingListResult(result: ShoppingListResult, status: string): void {
+  shoppingListName = result.name;
+  shoppingListSharedId = result.sharedId;
+  shoppingListMarkdown = result.markdown;
+  shoppingListLoaded = true;
+  shoppingListStatus = status;
+  renderShoppingListItems();
+}
+
+function parseShoppingListItems(markdown: string): ShoppingListItem[] {
+  return markdown
+    .split("\n")
+    .map((line, lineIndex) => {
+      const match = line.match(/^\s*-\s+\[( |x|X)\]\s+(.+?)\s*$/);
+      return match
+        ? {
+            lineIndex,
+            checked: match[1].toLowerCase() === "x",
+            text: match[2],
+          }
+        : null;
+    })
+    .filter((item): item is ShoppingListItem => item !== null);
+}
+
+function renderShoppingListItems(): void {
+  shoppingListTitle.textContent = shoppingListName;
+  shoppingListStatusLabel.textContent = shoppingListSaving ? "Saving" : shoppingListStatus;
+  shoppingListSharedIdLabel.textContent = shoppingListSharedId;
+  shoppingListSave.disabled = shoppingListSaving || !hostUsername;
+  if (document.activeElement !== shoppingListMarkdownInput) {
+    shoppingListMarkdownInput.value = shoppingListMarkdown;
+  }
+  const items = parseShoppingListItems(shoppingListMarkdown);
+  shoppingListItems.innerHTML = items.length
+    ? items
+        .map(
+          (item) => `
+            <label class="shopping-list-item ${item.checked ? "is-checked" : ""}">
+              <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} />
+              <span>${escapeHtml(item.text)}</span>
+            </label>
+          `,
+        )
+        .join("")
+    : `<span>No checklist items yet</span>`;
+}
+
+function setShoppingListItemChecked(lineIndex: number, checked: boolean): void {
+  const lines = shoppingListMarkdown.split("\n");
+  const line = lines[lineIndex];
+  if (line === undefined) {
+    return;
+  }
+  lines[lineIndex] = line.replace(/\[( |x|X)\]/, checked ? "[x]" : "[ ]");
+  shoppingListMarkdown = lines.join("\n");
+  shoppingListStatus = "Edited";
+  renderShoppingListItems();
+  scheduleShoppingListSave();
+}
+
+function addShoppingListItem(value: string): void {
+  const item = value.trim();
+  if (!item) {
+    return;
+  }
+  const base = shoppingListMarkdown.trimEnd();
+  shoppingListMarkdown = `${base}${base ? "\n" : ""}- [ ] ${item}\n`;
+  shoppingListAddInput.value = "";
+  shoppingListStatus = "Edited";
+  renderShoppingListItems();
+  scheduleShoppingListSave();
+}
+
+function scheduleShoppingListSave(): void {
+  if (shoppingListSaveTimer !== null) {
+    window.clearTimeout(shoppingListSaveTimer);
+  }
+  shoppingListSaveTimer = window.setTimeout(() => {
+    shoppingListSaveTimer = null;
+    void saveShoppingList();
+  }, 650);
+}
+
+async function saveShoppingList(): Promise<void> {
+  if (!hostUsername) {
+    shoppingListStatus = "Login to save";
+    renderShoppingListItems();
+    return;
+  }
+  shoppingListSaving = true;
+  renderShoppingListItems();
+  try {
+    const result = await bridgeJson<ShoppingListResult>(
+      "/api/interaction/shopping-list",
+      {
+        method: "POST",
+        body: JSON.stringify({ markdown: shoppingListMarkdown }),
+      },
+      1400,
+    );
+    applyShoppingListResult(result, "Saved");
+  } catch (err) {
+    shoppingListStatus = err instanceof Error ? "Save failed" : "Offline";
+    renderShoppingListItems();
+  } finally {
+    shoppingListSaving = false;
+    renderShoppingListItems();
+  }
 }
 
 function videoChatCanUseRtc(): boolean {
