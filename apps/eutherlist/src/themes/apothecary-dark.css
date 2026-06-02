@@ -1,0 +1,15 @@
+body[data-theme="apothecary-dark"] {
+  --bg: #111812;
+  --surface: #172019;
+  --surface-soft: #202a22;
+  --text: #f4f0e7;
+  --text-muted: #b5aa99;
+  --accent: #b39b5e;
+  --accent-soft: #302a1b;
+  --danger: #d77261;
+  --border: #3a352a;
+  --button-bg: #e0c982;
+  --button-text: #16150f;
+  --radius: 16px;
+  --shadow: 0 14px 36px rgba(0, 0, 0, 0.34);
+}

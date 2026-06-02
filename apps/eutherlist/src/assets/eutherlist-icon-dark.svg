@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="EutherList dark">
+  <defs>
+    <linearGradient id="night" x1="54" y1="48" x2="452" y2="460" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1d281f"/>
+      <stop offset="1" stop-color="#0c120e"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="130" y1="122" x2="392" y2="408" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e3ce87"/>
+      <stop offset="1" stop-color="#927a3e"/>
+    </linearGradient>
+  </defs>
+  <rect x="36" y="36" width="440" height="440" rx="96" fill="url(#night)"/>
+  <rect x="36" y="36" width="440" height="440" rx="96" fill="none" stroke="#3a352a" stroke-width="18"/>
+  <path d="M158 332c16 42 56 70 102 70s86-28 102-70H158Z" fill="#171f19" stroke="#f4f0e7" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M195 332h150" stroke="#e0c982" stroke-width="18" stroke-linecap="round"/>
+  <path d="M318 158l-54 96" stroke="#f4f0e7" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="319" cy="156" r="31" fill="url(#gold)"/>
+  <circle cx="264" cy="254" r="28" fill="#101610" stroke="#e0c982" stroke-width="16"/>
+  <circle cx="156" cy="184" r="30" fill="#101610" stroke="#e0c982" stroke-width="16"/>
+  <circle cx="396" cy="210" r="26" fill="#101610" stroke="#e0c982" stroke-width="16"/>
+  <path d="M184 196l58 38M289 244l69-28" stroke="#e0c982" stroke-width="14" stroke-linecap="round"/>
+  <path d="M220 145c0-24 20-44 44-44s44 20 44 44" fill="none" stroke="#f4f0e7" stroke-width="18" stroke-linecap="round"/>
+  <rect x="210" y="140" width="104" height="82" rx="24" fill="#f4f0e7"/>
+  <circle cx="262" cy="176" r="10" fill="#101610"/>
+  <path d="M262 184v22" stroke="#101610" stroke-width="10" stroke-linecap="round"/>
+</svg>

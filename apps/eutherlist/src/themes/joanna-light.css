@@ -1,0 +1,15 @@
+body[data-theme="joanna-light"] {
+  --bg: #f8f6f0;
+  --surface: #fffdf8;
+  --surface-soft: #f0ece3;
+  --text: #22231f;
+  --text-muted: #6d6a61;
+  --accent: #3f7f55;
+  --accent-soft: #e4f0e4;
+  --danger: #a33b36;
+  --border: #ded8ca;
+  --button-bg: #26362c;
+  --button-text: #fffdf8;
+  --radius: 16px;
+  --shadow: 0 8px 22px rgba(66, 54, 31, 0.08);
+}

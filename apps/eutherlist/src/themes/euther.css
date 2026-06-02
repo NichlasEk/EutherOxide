@@ -1,0 +1,15 @@
+body[data-theme="euther"] {
+  --bg: #101714;
+  --surface: #17221d;
+  --surface-soft: #203028;
+  --text: #eef7e8;
+  --text-muted: #aab8a8;
+  --accent: #7fbd77;
+  --accent-soft: #223b28;
+  --danger: #f08c79;
+  --border: #314339;
+  --button-bg: #d9f7bd;
+  --button-text: #142016;
+  --radius: 16px;
+  --shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+}
