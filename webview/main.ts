@@ -312,6 +312,7 @@ type ShoppingListResult = {
   name: string;
   sharedId: string;
   markdown: string;
+  members?: string[];
   updatedUnixMs?: number | null;
 };
 
@@ -319,6 +320,12 @@ type ShoppingListItem = {
   lineIndex: number;
   checked: boolean;
   text: string;
+  category: string;
+};
+
+type ShoppingListCategoryGroup = {
+  name: string;
+  items: ShoppingListItem[];
 };
 
 type PadBinding = {
@@ -927,6 +934,9 @@ let shoppingListLoaded = false;
 let shoppingListSaving = false;
 let shoppingListStatus = "Not loaded";
 let shoppingListSaveTimer: number | null = null;
+let shoppingListMembers: string[] = [];
+let shoppingListSharing = false;
+let shoppingListShareStatus = "Not shared";
 let interactionUsers: InteractionFriend[] = [];
 let interactionUsersLoaded = false;
 let interactionUsersStatus = "Mock users";
@@ -1047,6 +1057,149 @@ const interactionFutureModules: FutureModule[] = [
   { name: "Shared Notes", detail: "Small living documents for friends and projects" },
   { name: "Markdown Vaults", detail: "Obsidian-like spaces, synced through the host" },
   { name: "Video Rooms", detail: "Persistent room presets for chat and co-play" },
+];
+const shoppingCategoryOrder = [
+  "Frukt & grönt",
+  "Torrvaror",
+  "Dryck",
+  "Hem & städ",
+  "Apotek",
+  "Djur",
+  "Kyl",
+  "Frys",
+  "Övrigt",
+];
+const shoppingCategoryAliases = new Map<string, string>([
+  ["bakery", "Torrvaror"],
+  ["chilled", "Kyl"],
+  ["dairy", "Kyl"],
+  ["drinks", "Dryck"],
+  ["dry goods", "Torrvaror"],
+  ["frozen", "Frys"],
+  ["fruit and vegetables", "Frukt & grönt"],
+  ["household", "Hem & städ"],
+  ["meat and fish", "Kyl"],
+  ["other", "Övrigt"],
+  ["pantry", "Torrvaror"],
+  ["pets", "Djur"],
+  ["pharmacy", "Apotek"],
+  ["produce", "Frukt & grönt"],
+  ["vegetables", "Frukt & grönt"],
+]);
+const shoppingCategoryKeywords: Array<{ category: string; words: string[] }> = [
+  {
+    category: "Frukt & grönt",
+    words: [
+      "apple",
+      "avocado",
+      "banana",
+      "broccoli",
+      "carrot",
+      "citron",
+      "cucumber",
+      "fruit",
+      "garlic",
+      "grape",
+      "gurka",
+      "lemon",
+      "lettuce",
+      "lime",
+      "lok",
+      "morot",
+      "onion",
+      "orange",
+      "potato",
+      "potatis",
+      "sallad",
+      "salad",
+      "tomat",
+      "tomato",
+      "vegetable",
+    ],
+  },
+  {
+    category: "Kyl",
+    words: [
+      "agg",
+      "bacon",
+      "beef",
+      "butter",
+      "cheese",
+      "chicken",
+      "cold cuts",
+      "cream",
+      "dairy",
+      "egg",
+      "fish",
+      "fisk",
+      "gradde",
+      "ham",
+      "kott",
+      "kyckling",
+      "lamb",
+      "lax",
+      "meat",
+      "milk",
+      "mjolk",
+      "ost",
+      "pork",
+      "salmon",
+      "skinka",
+      "smor",
+      "tofu",
+      "yoghurt",
+      "yogurt",
+    ],
+  },
+  {
+    category: "Frys",
+    words: ["frozen", "glass", "ice cream", "pizza"],
+  },
+  {
+    category: "Torrvaror",
+    words: [
+      "bagel",
+      "bakery",
+      "beans",
+      "bread",
+      "brod",
+      "bun",
+      "canned",
+      "cereal",
+      "coffee",
+      "flour",
+      "kaffe",
+      "oil",
+      "olja",
+      "pasta",
+      "pepper",
+      "rice",
+      "ris",
+      "roll",
+      "salt",
+      "sauce",
+      "socker",
+      "sugar",
+      "tea",
+      "tortilla",
+    ],
+  },
+  {
+    category: "Dryck",
+    words: ["beer", "cola", "drink", "juice", "ol", "saft", "soda", "vatten", "vin", "water", "wine"],
+  },
+  {
+    category: "Hem & städ",
+    words: ["batteries", "battery", "detergent", "disk", "lamp", "paper", "soap", "sop", "trash", "tvat", "toilet"],
+  },
+  {
+    category: "Apotek",
+    words: ["alvedon", "aspirin", "ipren", "medicin", "medicine", "pharmacy", "plaster", "vitamin"],
+  },
+  {
+    category: "Djur",
+    words: ["cat", "dog", "hund", "hundmat", "katt", "pet"],
+  },
 ];
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
@@ -1538,10 +1691,16 @@ const friendPreviewRows = document.querySelector<HTMLDivElement>("#friend-previe
 const shoppingListTitle = document.querySelector<HTMLElement>("#shopping-list-title")!;
 const shoppingListStatusLabel = document.querySelector<HTMLElement>("#shopping-list-status")!;
 const shoppingListSharedIdLabel = document.querySelector<HTMLElement>("#shopping-list-shared-id")!;
+const shoppingShareStatus = document.querySelector<HTMLElement>("#shopping-share-status")!;
+const shoppingListMembersEl = document.querySelector<HTMLDivElement>("#shopping-list-members")!;
+const shoppingShareForm = document.querySelector<HTMLFormElement>("#shopping-share-form")!;
+const shoppingShareUser = document.querySelector<HTMLSelectElement>("#shopping-share-user")!;
 const shoppingListItems = document.querySelector<HTMLDivElement>("#shopping-list-items")!;
 const shoppingListAddForm = document.querySelector<HTMLFormElement>("#shopping-list-add-form")!;
 const shoppingListAddInput = document.querySelector<HTMLInputElement>("#shopping-list-add-input")!;
+const shoppingListCategory = document.querySelector<HTMLSelectElement>("#shopping-list-category")!;
 const shoppingListMarkdownInput = document.querySelector<HTMLTextAreaElement>("#shopping-list-markdown")!;
+const shoppingListSort = document.querySelector<HTMLButtonElement>("#shopping-list-sort")!;
 const shoppingListSave = document.querySelector<HTMLButtonElement>("#shopping-list-save")!;
 const volumeSlider = document.querySelector<HTMLInputElement>("#volume-slider")!;
 const volumeValue = document.querySelector<HTMLElement>("#volume-value")!;
@@ -1736,11 +1895,28 @@ shoppingListAddForm.addEventListener("submit", (event) => {
   addShoppingListItem(shoppingListAddInput.value);
 });
 
+shoppingShareForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void shareShoppingList();
+});
+
+shoppingListMembersEl.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-shopping-unshare]");
+  if (!button?.dataset.shoppingUnshare) {
+    return;
+  }
+  void unshareShoppingList(button.dataset.shoppingUnshare);
+});
+
 shoppingListMarkdownInput.addEventListener("input", () => {
   shoppingListMarkdown = shoppingListMarkdownInput.value;
   shoppingListStatus = "Edited";
   renderShoppingListItems();
   scheduleShoppingListSave();
+});
+
+shoppingListSort.addEventListener("click", () => {
+  smartSortShoppingList();
 });
 
 shoppingListSave.addEventListener("click", () => {
@@ -3266,16 +3442,34 @@ function interactionLobbyPageMarkup(): string {
           <span>Linked document</span>
           <strong id="shopping-list-shared-id">hemmet</strong>
         </div>
+        <div class="shopping-share-panel">
+          <div class="shopping-share-head">
+            <span>Shared with</span>
+            <strong id="shopping-share-status">Not shared</strong>
+          </div>
+          <div id="shopping-list-members" class="shopping-list-members"></div>
+          <form id="shopping-share-form" class="shopping-share-form">
+            <select id="shopping-share-user" aria-label="share shopping list with user"></select>
+            <button type="submit">Share</button>
+          </form>
+        </div>
         <div id="shopping-list-items" class="shopping-list-items"></div>
         <form id="shopping-list-add-form" class="shopping-list-add-form">
           <input id="shopping-list-add-input" type="text" placeholder="Add item" aria-label="shopping list item" autocomplete="off" />
+          <select id="shopping-list-category" aria-label="shopping list category">
+            <option value="auto">Auto category</option>
+            ${shoppingCategoryOrder.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}
+          </select>
           <button type="submit">Add</button>
         </form>
         <details class="shopping-markdown-editor">
           <summary>Markdown source</summary>
           <textarea id="shopping-list-markdown" spellcheck="false" aria-label="shopping list markdown"></textarea>
         </details>
-        <button id="shopping-list-save" class="primary-action" type="button">Save .md</button>
+        <div class="shopping-list-actions">
+          <button id="shopping-list-sort" type="button">Smart sort</button>
+          <button id="shopping-list-save" class="primary-action" type="button">Save .md</button>
+        </div>
       </div>
       ${friendPreviewList()}
       ${sharedSpacePreviewList()}
@@ -4970,6 +5164,7 @@ function renderInteractionUsers(): void {
   const onlineCount = friends.filter((friend) => friend.status === "Online").length;
   friendPreviewCount.textContent = `${onlineCount} online / ${interactionUsersStatus}`;
   friendPreviewRows.innerHTML = friendRowsMarkup(friends);
+  renderShoppingShareControls();
 }
 
 function displayUserName(username: string): string {
@@ -5017,9 +5212,16 @@ function defaultShoppingListMarkdown(): string {
   return [
     "# Hemmet Shopping List",
     "",
-    "- [ ] Coffee",
+    "## Kyl",
     "- [ ] Milk",
+    "",
+    "## Torrvaror",
+    "- [ ] Coffee",
+    "",
+    "## Hem & städ",
     "- [ ] Batteries",
+    "",
+    "## Djur",
     "- [ ] Dog snacks",
     "",
   ].join("\n");
@@ -5050,48 +5252,174 @@ function applyShoppingListResult(result: ShoppingListResult, status: string): vo
   shoppingListName = result.name;
   shoppingListSharedId = result.sharedId;
   shoppingListMarkdown = result.markdown;
+  shoppingListMembers = result.members ?? (hostUsername ? [hostUsername] : []);
   shoppingListLoaded = true;
   shoppingListStatus = status;
   renderShoppingListItems();
 }
 
-function parseShoppingListItems(markdown: string): ShoppingListItem[] {
-  return markdown
-    .split("\n")
-    .map((line, lineIndex) => {
+function parseShoppingListCategories(markdown: string): ShoppingListCategoryGroup[] {
+  const groups = new Map<string, ShoppingListItem[]>();
+  let currentCategory: string | null = null;
+  markdown.split("\n").forEach((line, lineIndex) => {
+    const headingMatch = line.match(/^#{2,3}\s+(.+?)\s*$/);
+    if (headingMatch) {
+      currentCategory = normalizeShoppingCategoryName(headingMatch[1]);
+      return;
+    }
       const match = line.match(/^\s*-\s+\[( |x|X)\]\s+(.+?)\s*$/);
-      return match
-        ? {
-            lineIndex,
-            checked: match[1].toLowerCase() === "x",
-            text: match[2],
-          }
-        : null;
-    })
-    .filter((item): item is ShoppingListItem => item !== null);
+    if (!match) {
+      return;
+    }
+    const text = match[2];
+    const category = currentCategory ?? inferShoppingCategory(text);
+    const items = groups.get(category) ?? [];
+    items.push({
+      lineIndex,
+      checked: match[1].toLowerCase() === "x",
+      text,
+      category,
+    });
+    groups.set(category, items);
+  });
+  return sortShoppingCategoryGroups(
+    Array.from(groups.entries()).map(([name, items]) => ({
+      name,
+      items,
+    })),
+  );
 }
 
 function renderShoppingListItems(): void {
   shoppingListTitle.textContent = shoppingListName;
   shoppingListStatusLabel.textContent = shoppingListSaving ? "Saving" : shoppingListStatus;
   shoppingListSharedIdLabel.textContent = shoppingListSharedId;
+  shoppingListSort.disabled = shoppingListSaving || !hostUsername;
   shoppingListSave.disabled = shoppingListSaving || !hostUsername;
+  renderShoppingShareControls();
   if (document.activeElement !== shoppingListMarkdownInput) {
     shoppingListMarkdownInput.value = shoppingListMarkdown;
   }
-  const items = parseShoppingListItems(shoppingListMarkdown);
-  shoppingListItems.innerHTML = items.length
-    ? items
-        .map(
-          (item) => `
-            <label class="shopping-list-item ${item.checked ? "is-checked" : ""}">
-              <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} />
-              <span>${escapeHtml(item.text)}</span>
-            </label>
-          `,
-        )
+  const groups = parseShoppingListCategories(shoppingListMarkdown);
+  shoppingListItems.innerHTML = groups.length
+    ? groups
+        .map((group) => {
+          const openItems = group.items.filter((item) => !item.checked).length;
+          return `
+            <section class="shopping-list-category">
+              <div class="shopping-list-category-head">
+                <strong>${escapeHtml(group.name)}</strong>
+                <span>${openItems}/${group.items.length}</span>
+              </div>
+              ${group.items
+                .map(
+                  (item) => `
+                    <label class="shopping-list-item ${item.checked ? "is-checked" : ""}">
+                      <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} />
+                      <span>${escapeHtml(item.text)}</span>
+                    </label>
+                  `,
+                )
+                .join("")}
+            </section>
+          `;
+        })
         .join("")
     : `<span>No checklist items yet</span>`;
+}
+
+function renderShoppingShareControls(): void {
+  const members = normalizedShoppingListMembers();
+  shoppingShareStatus.textContent = shoppingListSharing
+    ? shoppingListShareStatus
+    : `${members.length} ${members.length === 1 ? "member" : "members"}`;
+  shoppingListMembersEl.innerHTML = members.length
+    ? members
+        .map((member) => {
+          const current = hostUsername && member === hostUsername;
+          return `
+            <span class="shopping-member-chip ${current ? "is-current" : ""}">
+              <strong>${escapeHtml(displayUserName(member))}</strong>
+              ${current ? `<em>You</em>` : `<button data-shopping-unshare="${escapeHtml(member)}" type="button">Remove</button>`}
+            </span>
+          `;
+        })
+        .join("")
+    : `<span class="interaction-empty">Only you</span>`;
+  const memberNames = new Set(members);
+  const candidates = interactionUsers.filter((user) => user.name !== hostUsername && !memberNames.has(user.name));
+  shoppingShareUser.innerHTML = candidates.length
+    ? candidates.map((user) => `<option value="${escapeHtml(user.name)}">${escapeHtml(displayUserName(user.name))}</option>`).join("")
+    : `<option value="">No users available</option>`;
+  const disabled = shoppingListSharing || !hostUsername || candidates.length === 0;
+  shoppingShareUser.disabled = disabled;
+  shoppingShareForm.querySelector<HTMLButtonElement>("button")!.disabled = disabled;
+}
+
+function normalizedShoppingListMembers(): string[] {
+  const members = [...shoppingListMembers];
+  if (hostUsername && !members.includes(hostUsername)) {
+    members.unshift(hostUsername);
+  }
+  const seen = new Set<string>();
+  return members.filter((member) => {
+    if (!member || seen.has(member)) {
+      return false;
+    }
+    seen.add(member);
+    return true;
+  });
+}
+
+async function shareShoppingList(): Promise<void> {
+  const targetUser = shoppingShareUser.value;
+  if (!targetUser || !hostUsername) {
+    return;
+  }
+  shoppingListSharing = true;
+  shoppingListShareStatus = `Sharing with ${displayUserName(targetUser)}`;
+  renderShoppingShareControls();
+  try {
+    const result = await bridgeJson<ShoppingListResult>(
+      "/api/interaction/shopping-list/share",
+      {
+        method: "POST",
+        body: JSON.stringify({ user: targetUser }),
+      },
+      1200,
+    );
+    applyShoppingListResult(result, `Shared with ${displayUserName(targetUser)}`);
+  } catch (err) {
+    shoppingListShareStatus = err instanceof Error ? "Share failed" : "Offline";
+  } finally {
+    shoppingListSharing = false;
+    renderShoppingShareControls();
+  }
+}
+
+async function unshareShoppingList(targetUser: string): Promise<void> {
+  if (!targetUser || targetUser === hostUsername || !hostUsername) {
+    return;
+  }
+  shoppingListSharing = true;
+  shoppingListShareStatus = `Removing ${displayUserName(targetUser)}`;
+  renderShoppingShareControls();
+  try {
+    const result = await bridgeJson<ShoppingListResult>(
+      "/api/interaction/shopping-list/unshare",
+      {
+        method: "POST",
+        body: JSON.stringify({ user: targetUser }),
+      },
+      1200,
+    );
+    applyShoppingListResult(result, `Removed ${displayUserName(targetUser)}`);
+  } catch (err) {
+    shoppingListShareStatus = err instanceof Error ? "Remove failed" : "Offline";
+  } finally {
+    shoppingListSharing = false;
+    renderShoppingShareControls();
+  }
 }
 
 function setShoppingListItemChecked(lineIndex: number, checked: boolean): void {
@@ -5112,12 +5440,131 @@ function addShoppingListItem(value: string): void {
   if (!item) {
     return;
   }
-  const base = shoppingListMarkdown.trimEnd();
-  shoppingListMarkdown = `${base}${base ? "\n" : ""}- [ ] ${item}\n`;
+  const category =
+    shoppingListCategory.value === "auto"
+      ? inferShoppingCategory(item)
+      : normalizeShoppingCategoryName(shoppingListCategory.value);
+  shoppingListMarkdown = smartSortShoppingMarkdown(appendShoppingListItem(shoppingListMarkdown, item, category));
   shoppingListAddInput.value = "";
-  shoppingListStatus = "Edited";
+  shoppingListStatus = `Added to ${category}`;
   renderShoppingListItems();
   scheduleShoppingListSave();
+}
+
+function smartSortShoppingList(): void {
+  shoppingListMarkdown = smartSortShoppingMarkdown(shoppingListMarkdown);
+  shoppingListStatus = "Smart sorted";
+  renderShoppingListItems();
+  scheduleShoppingListSave();
+}
+
+function appendShoppingListItem(markdown: string, item: string, category: string): string {
+  const base = markdown.trimEnd();
+  return `${base}${base ? "\n\n" : ""}## ${category}\n- [ ] ${item}\n`;
+}
+
+function smartSortShoppingMarkdown(markdown: string): string {
+  const title = shoppingMarkdownTitle(markdown);
+  const groups = parseShoppingListCategories(markdown);
+  const lines = [title, ""];
+  for (const group of groups) {
+    lines.push(`## ${group.name}`);
+    for (const item of group.items) {
+      lines.push(`- [${item.checked ? "x" : " "}] ${item.text}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function shoppingMarkdownTitle(markdown: string): string {
+  const title = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^#\s+[^#]/.test(line));
+  return title ?? "# Hemmet Shopping List";
+}
+
+function sortShoppingCategoryGroups(groups: ShoppingListCategoryGroup[]): ShoppingListCategoryGroup[] {
+  return groups
+    .filter((group) => group.items.length > 0)
+    .map((group) => ({
+      ...group,
+      items: [...group.items].sort(compareShoppingItems),
+    }))
+    .sort(compareShoppingCategories);
+}
+
+function compareShoppingItems(left: ShoppingListItem, right: ShoppingListItem): number {
+  if (left.checked !== right.checked) {
+    return left.checked ? 1 : -1;
+  }
+  return left.text.localeCompare(right.text, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function compareShoppingCategories(left: ShoppingListCategoryGroup, right: ShoppingListCategoryGroup): number {
+  const leftRank = shoppingCategoryRank(left.name);
+  const rightRank = shoppingCategoryRank(right.name);
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+  return left.name.localeCompare(right.name, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function shoppingCategoryRank(category: string): number {
+  const index = shoppingCategoryOrder.findIndex((known) => shoppingLookupKey(known) === shoppingLookupKey(category));
+  return index >= 0 ? index : shoppingCategoryOrder.length;
+}
+
+function normalizeShoppingCategoryName(category: string): string {
+  const cleaned = category.trim().replace(/\s+/g, " ");
+  const key = shoppingLookupKey(cleaned);
+  const alias = shoppingCategoryAliases.get(key);
+  if (alias) {
+    return alias;
+  }
+  const known = shoppingCategoryOrder.find((candidate) => shoppingLookupKey(candidate) === key);
+  return known ?? titleCaseWords(cleaned || "Other");
+}
+
+function inferShoppingCategory(text: string): string {
+  const lookup = shoppingLookupKey(text);
+  const tokens = new Set(lookup.split(" ").filter(Boolean));
+  for (const rule of shoppingCategoryKeywords) {
+    if (
+      rule.words.some((word) => {
+        const normalizedWord = shoppingLookupKey(word);
+        return normalizedWord.includes(" ") ? lookup.includes(normalizedWord) : tokens.has(normalizedWord);
+      })
+    ) {
+      return rule.category;
+    }
+  }
+  return "Övrigt";
+}
+
+function shoppingLookupKey(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function titleCaseWords(value: string): string {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 }
 
 function scheduleShoppingListSave(): void {

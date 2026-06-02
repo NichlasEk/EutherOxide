@@ -877,6 +877,12 @@ struct HostShoppingListUpdate {
     markdown: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostShoppingListShareUpdate {
+    user: String,
+}
+
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     let state = new_bridge_state(emulator);
@@ -1166,14 +1172,28 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("GET", "/api/interaction/shopping-list") => {
             let user = require_host_user(state, &request)?;
-            send_json(stream, &host_shopping_list(&user)?)
+            send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list") => {
             let user = require_host_user(state, &request)?;
             let update: HostShoppingListUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             save_host_shopping_list(&user, &update.markdown)?;
-            send_json(stream, &host_shopping_list(&user)?)
+            send_json(stream, &host_shopping_list(state, &user)?)
+        }
+        ("POST", "/api/interaction/shopping-list/share") => {
+            let user = require_host_user(state, &request)?;
+            let update: HostShoppingListShareUpdate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            share_host_shopping_list(state, &user, &update.user)?;
+            send_json(stream, &host_shopping_list(state, &user)?)
+        }
+        ("POST", "/api/interaction/shopping-list/unshare") => {
+            let user = require_host_user(state, &request)?;
+            let update: HostShoppingListShareUpdate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            unshare_host_shopping_list(state, &user, &update.user)?;
+            send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("GET", "/api/video-chat") => {
             let user = require_host_user(state, &request)?;
@@ -1976,7 +1996,7 @@ fn host_user_activity_labels(state: &HostState) -> io::Result<HashMap<String, St
     Ok(labels)
 }
 
-fn host_shopping_list(user: &str) -> io::Result<serde_json::Value> {
+fn host_shopping_list(state: &HostState, user: &str) -> io::Result<serde_json::Value> {
     let shared_id = host_user_shopping_list_id(user)?;
     let path = host_shared_shopping_list_path(&shared_id)?;
     let markdown = match fs::read_to_string(&path) {
@@ -1993,6 +2013,7 @@ fn host_shopping_list(user: &str) -> io::Result<serde_json::Value> {
         "name": "shopping-list.md",
         "sharedId": shared_id,
         "markdown": markdown,
+        "members": host_shopping_list_members(state, &shared_id)?,
         "updatedUnixMs": updated_unix_ms,
     }))
 }
@@ -2009,14 +2030,85 @@ fn save_host_shopping_list(user: &str, markdown: &str) -> io::Result<()> {
     fs::write(path, normalize_markdown_document(markdown))
 }
 
+fn share_host_shopping_list(state: &HostState, user: &str, target_user: &str) -> io::Result<()> {
+    let target_user = require_existing_host_user(state, target_user)?;
+    let shared_id = host_user_shopping_list_id(user)?;
+    let dir = ensure_host_user_data_dir(&target_user)?.join("shopping-lists");
+    fs::create_dir_all(&dir)?;
+    fs::write(host_user_shopping_list_link_path(&target_user), shared_id)
+}
+
+fn unshare_host_shopping_list(state: &HostState, user: &str, target_user: &str) -> io::Result<()> {
+    let target_user = require_existing_host_user(state, target_user)?;
+    if target_user == user {
+        return Err(invalid_request(
+            "cannot remove yourself from the active shopping list",
+        ));
+    }
+    let shared_id = host_user_shopping_list_id(user)?;
+    let link_path = host_user_shopping_list_link_path(&target_user);
+    let Ok(target_shared_id) = fs::read_to_string(&link_path) else {
+        return Ok(());
+    };
+    if validate_host_shared_doc_id(target_shared_id.trim())
+        .ok()
+        .as_deref()
+        == Some(shared_id.as_str())
+    {
+        fs::remove_file(link_path)?;
+    }
+    Ok(())
+}
+
+fn host_shopping_list_members(state: &HostState, shared_id: &str) -> io::Result<Vec<String>> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut members = Vec::new();
+    for user in users.iter().filter(|user| !user.banned) {
+        let Ok(user_shared_id) = fs::read_to_string(host_user_shopping_list_link_path(&user.name))
+        else {
+            continue;
+        };
+        let Ok(user_shared_id) = validate_host_shared_doc_id(user_shared_id.trim()) else {
+            continue;
+        };
+        if user_shared_id == shared_id {
+            members.push(user.name.clone());
+        }
+    }
+    Ok(members)
+}
+
+fn require_existing_host_user(state: &HostState, username: &str) -> io::Result<String> {
+    let username = username.trim();
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    users
+        .iter()
+        .find(|user| user.name == username && !user.banned)
+        .map(|user| user.name.clone())
+        .ok_or_else(|| invalid_request("user not found"))
+}
+
 fn default_shopping_list_markdown() -> String {
     [
         "# Hemmet Shopping List",
         "",
+        "## Torrvaror",
         "- [ ] Coffee",
-        "- [ ] Milk",
+        "",
+        "## Hem & städ",
         "- [ ] Batteries",
+        "",
+        "## Djur",
         "- [ ] Dog snacks",
+        "",
+        "## Kyl",
+        "- [ ] Milk",
         "",
     ]
     .join("\n")
@@ -6056,7 +6148,7 @@ fn host_user_shopping_list_id(user: &str) -> io::Result<String> {
     }
     let dir = ensure_host_user_data_dir(user)?.join("shopping-lists");
     fs::create_dir_all(&dir)?;
-    let shared_id = "hemmet".to_string();
+    let shared_id = private_host_shopping_list_id(user);
     fs::write(dir.join("hemmet.link"), &shared_id)?;
     Ok(shared_id)
 }
@@ -6071,6 +6163,26 @@ fn host_shared_shopping_list_path(shared_id: &str) -> io::Result<PathBuf> {
     Ok(host_dir()
         .join("shared-shopping-lists")
         .join(format!("{}.md", validate_host_shared_doc_id(shared_id)?)))
+}
+
+fn private_host_shopping_list_id(user: &str) -> String {
+    format!("shopping-{}", host_shared_doc_user_slug(user))
+}
+
+fn host_shared_doc_user_slug(user: &str) -> String {
+    let mut output = String::new();
+    for byte in user.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            output.push((byte as char).to_ascii_lowercase());
+        } else {
+            output.push_str(&format!("_{byte:02x}"));
+        }
+    }
+    if output.is_empty() {
+        "user".to_string()
+    } else {
+        output
+    }
 }
 
 fn validate_host_shared_doc_id(shared_id: &str) -> io::Result<String> {
