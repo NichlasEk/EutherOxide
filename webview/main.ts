@@ -5019,6 +5019,7 @@ function resumeBridgeRtcAudio(): void {
   if (!bridgeRtcAudio.srcObject) {
     return;
   }
+  applyAudioVolume();
   bridgeRtcAudio.play().catch(() => {
     pushTrace("WebRTC audio waiting");
   });
@@ -8840,6 +8841,7 @@ function updateVolumeUi(): void {
 }
 
 function applyAudioVolume(): void {
+  bridgeRtcAudio.volume = audioVolume;
   if (audioGain && audioContext) {
     audioGain.gain.setTargetAtTime(audioVolume, audioContext.currentTime, 0.01);
   }
