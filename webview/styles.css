@@ -3196,9 +3196,21 @@ h2 {
   font-weight: 900;
 }
 
+.shopping-member-chip select {
+  min-height: 26px;
+  max-width: 112px;
+  padding: 0 6px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.82);
+  color: #dff7ff;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
 .shopping-share-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 82px;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 0.45fr) 82px;
   gap: 8px;
 }
 

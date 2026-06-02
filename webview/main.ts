@@ -308,11 +308,22 @@ type FutureModule = {
   detail: string;
 };
 
+type ShoppingListRole = "owner" | "edit" | "view";
+
+type ShoppingListMember = {
+  name: string;
+  role: ShoppingListRole;
+  isCurrentUser?: boolean;
+};
+
 type ShoppingListResult = {
   name: string;
   sharedId: string;
   markdown: string;
-  members?: string[];
+  members?: Array<string | ShoppingListMember>;
+  role?: ShoppingListRole;
+  canEdit?: boolean;
+  canManage?: boolean;
   updatedUnixMs?: number | null;
 };
 
@@ -934,7 +945,10 @@ let shoppingListLoaded = false;
 let shoppingListSaving = false;
 let shoppingListStatus = "Not loaded";
 let shoppingListSaveTimer: number | null = null;
-let shoppingListMembers: string[] = [];
+let shoppingListMembers: ShoppingListMember[] = [];
+let shoppingListRole: ShoppingListRole = "owner";
+let shoppingListCanEdit = true;
+let shoppingListCanManage = true;
 let shoppingListSharing = false;
 let shoppingListShareStatus = "Not shared";
 let interactionUsers: InteractionFriend[] = [];
@@ -1695,6 +1709,7 @@ const shoppingShareStatus = document.querySelector<HTMLElement>("#shopping-share
 const shoppingListMembersEl = document.querySelector<HTMLDivElement>("#shopping-list-members")!;
 const shoppingShareForm = document.querySelector<HTMLFormElement>("#shopping-share-form")!;
 const shoppingShareUser = document.querySelector<HTMLSelectElement>("#shopping-share-user")!;
+const shoppingShareRole = document.querySelector<HTMLSelectElement>("#shopping-share-role")!;
 const shoppingListItems = document.querySelector<HTMLDivElement>("#shopping-list-items")!;
 const shoppingListAddForm = document.querySelector<HTMLFormElement>("#shopping-list-add-form")!;
 const shoppingListAddInput = document.querySelector<HTMLInputElement>("#shopping-list-add-input")!;
@@ -1908,7 +1923,19 @@ shoppingListMembersEl.addEventListener("click", (event) => {
   void unshareShoppingList(button.dataset.shoppingUnshare);
 });
 
+shoppingListMembersEl.addEventListener("change", (event) => {
+  const select = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-shopping-role-user]");
+  if (!select?.dataset.shoppingRoleUser) {
+    return;
+  }
+  void updateShoppingListMemberRole(select.dataset.shoppingRoleUser, select.value);
+});
+
 shoppingListMarkdownInput.addEventListener("input", () => {
+  if (!shoppingListCanEdit) {
+    shoppingListMarkdownInput.value = shoppingListMarkdown;
+    return;
+  }
   shoppingListMarkdown = shoppingListMarkdownInput.value;
   shoppingListStatus = "Edited";
   renderShoppingListItems();
@@ -3450,6 +3477,10 @@ function interactionLobbyPageMarkup(): string {
           <div id="shopping-list-members" class="shopping-list-members"></div>
           <form id="shopping-share-form" class="shopping-share-form">
             <select id="shopping-share-user" aria-label="share shopping list with user"></select>
+            <select id="shopping-share-role" aria-label="shopping list share role">
+              <option value="edit">Can edit</option>
+              <option value="view">View only</option>
+            </select>
             <button type="submit">Share</button>
           </form>
         </div>
@@ -5252,7 +5283,10 @@ function applyShoppingListResult(result: ShoppingListResult, status: string): vo
   shoppingListName = result.name;
   shoppingListSharedId = result.sharedId;
   shoppingListMarkdown = result.markdown;
-  shoppingListMembers = result.members ?? (hostUsername ? [hostUsername] : []);
+  shoppingListMembers = normalizeShoppingListMemberResults(result.members);
+  shoppingListRole = normalizeShoppingListRole(result.role ?? currentShoppingListMember()?.role ?? "owner");
+  shoppingListCanEdit = result.canEdit ?? (shoppingListRole === "owner" || shoppingListRole === "edit");
+  shoppingListCanManage = result.canManage ?? shoppingListRole === "owner";
   shoppingListLoaded = true;
   shoppingListStatus = status;
   renderShoppingListItems();
@@ -5292,10 +5326,16 @@ function parseShoppingListCategories(markdown: string): ShoppingListCategoryGrou
 
 function renderShoppingListItems(): void {
   shoppingListTitle.textContent = shoppingListName;
-  shoppingListStatusLabel.textContent = shoppingListSaving ? "Saving" : shoppingListStatus;
+  shoppingListStatusLabel.textContent = shoppingListSaving
+    ? "Saving"
+    : `${shoppingListStatus} / ${shoppingRoleLabel(shoppingListRole)}`;
   shoppingListSharedIdLabel.textContent = shoppingListSharedId;
-  shoppingListSort.disabled = shoppingListSaving || !hostUsername;
-  shoppingListSave.disabled = shoppingListSaving || !hostUsername;
+  const editDisabled = shoppingListSaving || !hostUsername || !shoppingListCanEdit;
+  shoppingListSort.disabled = editDisabled;
+  shoppingListSave.disabled = editDisabled;
+  shoppingListAddInput.disabled = editDisabled;
+  shoppingListCategory.disabled = editDisabled;
+  shoppingListMarkdownInput.disabled = editDisabled;
   renderShoppingShareControls();
   if (document.activeElement !== shoppingListMarkdownInput) {
     shoppingListMarkdownInput.value = shoppingListMarkdown;
@@ -5315,7 +5355,7 @@ function renderShoppingListItems(): void {
                 .map(
                   (item) => `
                     <label class="shopping-list-item ${item.checked ? "is-checked" : ""}">
-                      <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} />
+                      <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} ${shoppingListCanEdit ? "" : "disabled"} />
                       <span>${escapeHtml(item.text)}</span>
                     </label>
                   `,
@@ -5332,43 +5372,111 @@ function renderShoppingShareControls(): void {
   const members = normalizedShoppingListMembers();
   shoppingShareStatus.textContent = shoppingListSharing
     ? shoppingListShareStatus
-    : `${members.length} ${members.length === 1 ? "member" : "members"}`;
+    : `${members.length} ${members.length === 1 ? "member" : "members"} / ${shoppingRoleLabel(shoppingListRole)}`;
   shoppingListMembersEl.innerHTML = members.length
     ? members
         .map((member) => {
-          const current = hostUsername && member === hostUsername;
+          const current = hostUsername && member.name === hostUsername;
+          const roleControl = shoppingListCanManage && !current
+            ? shoppingMemberRoleSelect(member)
+            : `<em>${escapeHtml(current ? `You / ${shoppingRoleLabel(member.role)}` : shoppingRoleLabel(member.role))}</em>`;
+          const removeControl = shoppingListCanManage && !current && member.role !== "owner"
+            ? `<button data-shopping-unshare="${escapeHtml(member.name)}" type="button">Remove</button>`
+            : "";
           return `
             <span class="shopping-member-chip ${current ? "is-current" : ""}">
-              <strong>${escapeHtml(displayUserName(member))}</strong>
-              ${current ? `<em>You</em>` : `<button data-shopping-unshare="${escapeHtml(member)}" type="button">Remove</button>`}
+              <strong>${escapeHtml(displayUserName(member.name))}</strong>
+              ${roleControl}
+              ${removeControl}
             </span>
           `;
         })
         .join("")
     : `<span class="interaction-empty">Only you</span>`;
-  const memberNames = new Set(members);
+  const memberNames = new Set(members.map((member) => member.name));
   const candidates = interactionUsers.filter((user) => user.name !== hostUsername && !memberNames.has(user.name));
   shoppingShareUser.innerHTML = candidates.length
     ? candidates.map((user) => `<option value="${escapeHtml(user.name)}">${escapeHtml(displayUserName(user.name))}</option>`).join("")
     : `<option value="">No users available</option>`;
-  const disabled = shoppingListSharing || !hostUsername || candidates.length === 0;
+  const disabled = shoppingListSharing || !hostUsername || !shoppingListCanManage || candidates.length === 0;
   shoppingShareUser.disabled = disabled;
+  shoppingShareRole.disabled = disabled;
   shoppingShareForm.querySelector<HTMLButtonElement>("button")!.disabled = disabled;
 }
 
-function normalizedShoppingListMembers(): string[] {
+function normalizedShoppingListMembers(): ShoppingListMember[] {
   const members = [...shoppingListMembers];
-  if (hostUsername && !members.includes(hostUsername)) {
-    members.unshift(hostUsername);
+  if (hostUsername && !members.some((member) => member.name === hostUsername)) {
+    members.unshift({
+      name: hostUsername,
+      role: shoppingListRole,
+      isCurrentUser: true,
+    });
   }
   const seen = new Set<string>();
   return members.filter((member) => {
-    if (!member || seen.has(member)) {
+    if (!member.name || seen.has(member.name)) {
       return false;
     }
-    seen.add(member);
+    seen.add(member.name);
     return true;
   });
+}
+
+function shoppingMemberRoleSelect(member: ShoppingListMember): string {
+  const options: ShoppingListRole[] = ["view", "edit", "owner"];
+  return `
+    <select data-shopping-role-user="${escapeHtml(member.name)}" aria-label="${escapeHtml(`role for ${member.name}`)}">
+      ${options
+        .map(
+          (role) => `<option value="${role}" ${member.role === role ? "selected" : ""}>${escapeHtml(shoppingRoleLabel(role))}</option>`,
+        )
+        .join("")}
+    </select>
+  `;
+}
+
+function normalizeShoppingListMemberResults(members: Array<string | ShoppingListMember> | undefined): ShoppingListMember[] {
+  const fallback = hostUsername
+    ? [
+        {
+          name: hostUsername,
+          role: shoppingListRole,
+          isCurrentUser: true,
+        },
+      ]
+    : [];
+  return (members ?? fallback).map((member) =>
+    typeof member === "string"
+      ? {
+          name: member,
+          role: member === hostUsername ? "owner" : "edit",
+          isCurrentUser: member === hostUsername,
+        }
+      : {
+          ...member,
+          role: normalizeShoppingListRole(member.role),
+        },
+  );
+}
+
+function currentShoppingListMember(): ShoppingListMember | null {
+  return shoppingListMembers.find((member) => member.name === hostUsername) ?? null;
+}
+
+function normalizeShoppingListRole(role: string): ShoppingListRole {
+  return role === "owner" || role === "edit" || role === "view" ? role : "view";
+}
+
+function shoppingRoleLabel(role: ShoppingListRole): string {
+  switch (role) {
+    case "owner":
+      return "Owner";
+    case "edit":
+      return "Can edit";
+    case "view":
+      return "View only";
+  }
 }
 
 async function shareShoppingList(): Promise<void> {
@@ -5384,7 +5492,7 @@ async function shareShoppingList(): Promise<void> {
       "/api/interaction/shopping-list/share",
       {
         method: "POST",
-        body: JSON.stringify({ user: targetUser }),
+        body: JSON.stringify({ user: targetUser, role: shoppingShareRole.value }),
       },
       1200,
     );
@@ -5422,7 +5530,38 @@ async function unshareShoppingList(targetUser: string): Promise<void> {
   }
 }
 
+async function updateShoppingListMemberRole(targetUser: string, role: string): Promise<void> {
+  if (!targetUser || !hostUsername || !shoppingListCanManage) {
+    return;
+  }
+  const normalizedRole = normalizeShoppingListRole(role);
+  shoppingListSharing = true;
+  shoppingListShareStatus = `Setting ${displayUserName(targetUser)} to ${shoppingRoleLabel(normalizedRole)}`;
+  renderShoppingShareControls();
+  try {
+    const result = await bridgeJson<ShoppingListResult>(
+      "/api/interaction/shopping-list/role",
+      {
+        method: "POST",
+        body: JSON.stringify({ user: targetUser, role: normalizedRole }),
+      },
+      1200,
+    );
+    applyShoppingListResult(result, `${displayUserName(targetUser)}: ${shoppingRoleLabel(normalizedRole)}`);
+  } catch (err) {
+    shoppingListShareStatus = err instanceof Error ? "Role failed" : "Offline";
+  } finally {
+    shoppingListSharing = false;
+    renderShoppingShareControls();
+  }
+}
+
 function setShoppingListItemChecked(lineIndex: number, checked: boolean): void {
+  if (!shoppingListCanEdit) {
+    shoppingListStatus = "View only";
+    renderShoppingListItems();
+    return;
+  }
   const lines = shoppingListMarkdown.split("\n");
   const line = lines[lineIndex];
   if (line === undefined) {
@@ -5436,6 +5575,11 @@ function setShoppingListItemChecked(lineIndex: number, checked: boolean): void {
 }
 
 function addShoppingListItem(value: string): void {
+  if (!shoppingListCanEdit) {
+    shoppingListStatus = "View only";
+    renderShoppingListItems();
+    return;
+  }
   const item = value.trim();
   if (!item) {
     return;
@@ -5452,6 +5596,11 @@ function addShoppingListItem(value: string): void {
 }
 
 function smartSortShoppingList(): void {
+  if (!shoppingListCanEdit) {
+    shoppingListStatus = "View only";
+    renderShoppingListItems();
+    return;
+  }
   shoppingListMarkdown = smartSortShoppingMarkdown(shoppingListMarkdown);
   shoppingListStatus = "Smart sorted";
   renderShoppingListItems();
@@ -5578,6 +5727,11 @@ function scheduleShoppingListSave(): void {
 }
 
 async function saveShoppingList(): Promise<void> {
+  if (!shoppingListCanEdit) {
+    shoppingListStatus = "View only";
+    renderShoppingListItems();
+    return;
+  }
   if (!hostUsername) {
     shoppingListStatus = "Login to save";
     renderShoppingListItems();

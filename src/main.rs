@@ -881,6 +881,28 @@ struct HostShoppingListUpdate {
 #[serde(rename_all = "camelCase")]
 struct HostShoppingListShareUpdate {
     user: String,
+    role: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostShoppingListRoleUpdate {
+    user: String,
+    role: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostShoppingListMemberEntry {
+    user: String,
+    role: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostShoppingListManifest {
+    owner: String,
+    members: Vec<HostShoppingListMemberEntry>,
 }
 
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
@@ -1178,14 +1200,14 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let user = require_host_user(state, &request)?;
             let update: HostShoppingListUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
-            save_host_shopping_list(&user, &update.markdown)?;
+            save_host_shopping_list(state, &user, &update.markdown)?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list/share") => {
             let user = require_host_user(state, &request)?;
             let update: HostShoppingListShareUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
-            share_host_shopping_list(state, &user, &update.user)?;
+            share_host_shopping_list(state, &user, &update.user, update.role.as_deref())?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list/unshare") => {
@@ -1193,6 +1215,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let update: HostShoppingListShareUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             unshare_host_shopping_list(state, &user, &update.user)?;
+            send_json(stream, &host_shopping_list(state, &user)?)
+        }
+        ("POST", "/api/interaction/shopping-list/role") => {
+            let user = require_host_user(state, &request)?;
+            let update: HostShoppingListRoleUpdate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            set_host_shopping_list_role(state, &user, &update.user, &update.role)?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("GET", "/api/video-chat") => {
@@ -1998,6 +2027,7 @@ fn host_user_activity_labels(state: &HostState) -> io::Result<HashMap<String, St
 
 fn host_shopping_list(state: &HostState, user: &str) -> io::Result<serde_json::Value> {
     let shared_id = host_user_shopping_list_id(user)?;
+    let role = host_shopping_list_role(state, user, &shared_id)?;
     let path = host_shared_shopping_list_path(&shared_id)?;
     let markdown = match fs::read_to_string(&path) {
         Ok(markdown) => markdown,
@@ -2013,16 +2043,23 @@ fn host_shopping_list(state: &HostState, user: &str) -> io::Result<serde_json::V
         "name": "shopping-list.md",
         "sharedId": shared_id,
         "markdown": markdown,
-        "members": host_shopping_list_members(state, &shared_id)?,
+        "members": host_shopping_list_members(state, &shared_id, user)?,
+        "role": role,
+        "canEdit": host_shopping_list_can_edit(&role),
+        "canManage": host_shopping_list_can_manage(&role),
         "updatedUnixMs": updated_unix_ms,
     }))
 }
 
-fn save_host_shopping_list(user: &str, markdown: &str) -> io::Result<()> {
+fn save_host_shopping_list(state: &HostState, user: &str, markdown: &str) -> io::Result<()> {
     if markdown.len() > 64 * 1024 {
         return Err(invalid_request("shopping list is too large"));
     }
     let shared_id = host_user_shopping_list_id(user)?;
+    let role = host_shopping_list_role(state, user, &shared_id)?;
+    if !host_shopping_list_can_edit(&role) {
+        return Err(invalid_request("shopping list is view only"));
+    }
     let path = host_shared_shopping_list_path(&shared_id)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2030,9 +2067,22 @@ fn save_host_shopping_list(user: &str, markdown: &str) -> io::Result<()> {
     fs::write(path, normalize_markdown_document(markdown))
 }
 
-fn share_host_shopping_list(state: &HostState, user: &str, target_user: &str) -> io::Result<()> {
+fn share_host_shopping_list(
+    state: &HostState,
+    user: &str,
+    target_user: &str,
+    role: Option<&str>,
+) -> io::Result<()> {
     let target_user = require_existing_host_user(state, target_user)?;
+    if target_user == user {
+        return Err(invalid_request("cannot share a list with yourself"));
+    }
     let shared_id = host_user_shopping_list_id(user)?;
+    require_host_shopping_list_owner(state, user, &shared_id)?;
+    let role = normalize_host_shopping_list_role(role.unwrap_or("edit"), false)?;
+    let mut manifest = load_host_shopping_list_manifest(state, &shared_id, user)?;
+    upsert_host_shopping_list_member(&mut manifest, &target_user, &role);
+    save_host_shopping_list_manifest(&shared_id, &manifest)?;
     let dir = ensure_host_user_data_dir(&target_user)?.join("shopping-lists");
     fs::create_dir_all(&dir)?;
     fs::write(host_user_shopping_list_link_path(&target_user), shared_id)
@@ -2046,6 +2096,13 @@ fn unshare_host_shopping_list(state: &HostState, user: &str, target_user: &str) 
         ));
     }
     let shared_id = host_user_shopping_list_id(user)?;
+    require_host_shopping_list_owner(state, user, &shared_id)?;
+    let mut manifest = load_host_shopping_list_manifest(state, &shared_id, user)?;
+    if manifest.owner == target_user {
+        return Err(invalid_request("cannot remove the owner"));
+    }
+    manifest.members.retain(|member| member.user != target_user);
+    save_host_shopping_list_manifest(&shared_id, &manifest)?;
     let link_path = host_user_shopping_list_link_path(&target_user);
     let Ok(target_shared_id) = fs::read_to_string(&link_path) else {
         return Ok(());
@@ -2060,7 +2117,208 @@ fn unshare_host_shopping_list(state: &HostState, user: &str, target_user: &str) 
     Ok(())
 }
 
-fn host_shopping_list_members(state: &HostState, shared_id: &str) -> io::Result<Vec<String>> {
+fn set_host_shopping_list_role(
+    state: &HostState,
+    user: &str,
+    target_user: &str,
+    role: &str,
+) -> io::Result<()> {
+    let target_user = require_existing_host_user(state, target_user)?;
+    let shared_id = host_user_shopping_list_id(user)?;
+    require_host_shopping_list_owner(state, user, &shared_id)?;
+    let role = normalize_host_shopping_list_role(role, true)?;
+    let mut manifest = load_host_shopping_list_manifest(state, &shared_id, user)?;
+    if role == "owner" {
+        manifest.owner = target_user.clone();
+        upsert_host_shopping_list_member(&mut manifest, user, "edit");
+        upsert_host_shopping_list_member(&mut manifest, &target_user, "owner");
+        let dir = ensure_host_user_data_dir(&target_user)?.join("shopping-lists");
+        fs::create_dir_all(&dir)?;
+        fs::write(host_user_shopping_list_link_path(&target_user), &shared_id)?;
+        save_host_shopping_list_manifest(&shared_id, &manifest)?;
+        return Ok(());
+    }
+    if target_user == manifest.owner {
+        return Err(invalid_request(
+            "assign a new owner before changing this owner",
+        ));
+    }
+    upsert_host_shopping_list_member(&mut manifest, &target_user, &role);
+    save_host_shopping_list_manifest(&shared_id, &manifest)
+}
+
+fn host_shopping_list_members(
+    state: &HostState,
+    shared_id: &str,
+    current_user: &str,
+) -> io::Result<Vec<serde_json::Value>> {
+    let manifest = load_host_shopping_list_manifest(state, shared_id, current_user)?;
+    Ok(manifest
+        .members
+        .iter()
+        .map(|member| {
+            serde_json::json!({
+                "name": member.user,
+                "role": member.role,
+                "isCurrentUser": member.user == current_user,
+            })
+        })
+        .collect())
+}
+
+fn host_shopping_list_role(state: &HostState, user: &str, shared_id: &str) -> io::Result<String> {
+    let manifest = load_host_shopping_list_manifest(state, shared_id, user)?;
+    manifest
+        .members
+        .iter()
+        .find(|member| member.user == user)
+        .map(|member| member.role.clone())
+        .ok_or_else(|| invalid_request("shopping list access denied"))
+}
+
+fn require_host_shopping_list_owner(
+    state: &HostState,
+    user: &str,
+    shared_id: &str,
+) -> io::Result<()> {
+    let role = host_shopping_list_role(state, user, shared_id)?;
+    if host_shopping_list_can_manage(&role) {
+        Ok(())
+    } else {
+        Err(invalid_request(
+            "only the owner can manage this shopping list",
+        ))
+    }
+}
+
+fn host_shopping_list_can_edit(role: &str) -> bool {
+    matches!(role, "owner" | "edit")
+}
+
+fn host_shopping_list_can_manage(role: &str) -> bool {
+    role == "owner"
+}
+
+fn load_host_shopping_list_manifest(
+    state: &HostState,
+    shared_id: &str,
+    owner_hint: &str,
+) -> io::Result<HostShoppingListManifest> {
+    let path = host_shared_shopping_list_manifest_path(shared_id)?;
+    let mut manifest = match fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str::<HostShoppingListManifest>(&contents)
+            .map_err(|err| invalid_request(err.to_string()))?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            default_host_shopping_list_manifest(state, shared_id, owner_hint)?
+        }
+        Err(err) => return Err(err),
+    };
+    let mut changed = normalize_host_shopping_list_manifest(state, shared_id, &mut manifest)?;
+    if manifest.owner.trim().is_empty() {
+        manifest.owner = owner_hint.to_string();
+        changed = true;
+    }
+    if !manifest
+        .members
+        .iter()
+        .any(|member| member.user == manifest.owner)
+    {
+        let owner = manifest.owner.clone();
+        upsert_host_shopping_list_member(&mut manifest, &owner, "owner");
+        changed = true;
+    }
+    if changed {
+        save_host_shopping_list_manifest(shared_id, &manifest)?;
+    }
+    Ok(manifest)
+}
+
+fn default_host_shopping_list_manifest(
+    state: &HostState,
+    shared_id: &str,
+    owner_hint: &str,
+) -> io::Result<HostShoppingListManifest> {
+    let linked_users = host_linked_shopping_list_users(state, shared_id)?;
+    let owner = linked_users
+        .first()
+        .cloned()
+        .unwrap_or_else(|| owner_hint.to_string());
+    let mut members = Vec::new();
+    for linked_user in linked_users {
+        members.push(HostShoppingListMemberEntry {
+            role: if linked_user == owner {
+                "owner"
+            } else {
+                "edit"
+            }
+            .to_string(),
+            user: linked_user,
+        });
+    }
+    if !members.iter().any(|member| member.user == owner) {
+        members.insert(
+            0,
+            HostShoppingListMemberEntry {
+                user: owner.clone(),
+                role: "owner".to_string(),
+            },
+        );
+    }
+    Ok(HostShoppingListManifest { owner, members })
+}
+
+fn normalize_host_shopping_list_manifest(
+    state: &HostState,
+    shared_id: &str,
+    manifest: &mut HostShoppingListManifest,
+) -> io::Result<bool> {
+    let linked_users = host_linked_shopping_list_users(state, shared_id)?;
+    let mut changed = false;
+    manifest.members.retain(|member| {
+        let keep = validate_host_shared_doc_id(&member.role).is_ok()
+            && matches!(member.role.as_str(), "owner" | "edit" | "view");
+        changed |= !keep;
+        keep
+    });
+    for linked_user in linked_users {
+        if !manifest
+            .members
+            .iter()
+            .any(|member| member.user == linked_user)
+        {
+            manifest.members.push(HostShoppingListMemberEntry {
+                user: linked_user,
+                role: "edit".to_string(),
+            });
+            changed = true;
+        }
+    }
+    for member in &mut manifest.members {
+        if member.user == manifest.owner && member.role != "owner" {
+            member.role = "owner".to_string();
+            changed = true;
+        } else if member.user != manifest.owner && member.role == "owner" {
+            member.role = "edit".to_string();
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+fn save_host_shopping_list_manifest(
+    shared_id: &str,
+    manifest: &HostShoppingListManifest,
+) -> io::Result<()> {
+    let path = host_shared_shopping_list_manifest_path(shared_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(manifest).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn host_linked_shopping_list_users(state: &HostState, shared_id: &str) -> io::Result<Vec<String>> {
     let users = state
         .users
         .lock()
@@ -2079,6 +2337,34 @@ fn host_shopping_list_members(state: &HostState, shared_id: &str) -> io::Result<
         }
     }
     Ok(members)
+}
+
+fn upsert_host_shopping_list_member(
+    manifest: &mut HostShoppingListManifest,
+    user: &str,
+    role: &str,
+) {
+    if let Some(member) = manifest
+        .members
+        .iter_mut()
+        .find(|member| member.user == user)
+    {
+        member.role = role.to_string();
+    } else {
+        manifest.members.push(HostShoppingListMemberEntry {
+            user: user.to_string(),
+            role: role.to_string(),
+        });
+    }
+}
+
+fn normalize_host_shopping_list_role(role: &str, allow_owner: bool) -> io::Result<String> {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "view" => Ok("view".to_string()),
+        "edit" => Ok("edit".to_string()),
+        "owner" if allow_owner => Ok("owner".to_string()),
+        _ => Err(invalid_request("invalid shopping list role")),
+    }
 }
 
 fn require_existing_host_user(state: &HostState, username: &str) -> io::Result<String> {
@@ -6163,6 +6449,13 @@ fn host_shared_shopping_list_path(shared_id: &str) -> io::Result<PathBuf> {
     Ok(host_dir()
         .join("shared-shopping-lists")
         .join(format!("{}.md", validate_host_shared_doc_id(shared_id)?)))
+}
+
+fn host_shared_shopping_list_manifest_path(shared_id: &str) -> io::Result<PathBuf> {
+    Ok(host_dir().join("shared-shopping-lists").join(format!(
+        "{}.members.json",
+        validate_host_shared_doc_id(shared_id)?
+    )))
 }
 
 fn private_host_shopping_list_id(user: &str) -> String {
