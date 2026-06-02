@@ -278,7 +278,9 @@ type VideoChatResult = {
   signals: VideoChatSignal[];
 };
 
-type AppRoute = "core" | "interactionLobby";
+type PlayMode = "megadrive" | "eutherdogs" | "eutherdoom";
+type AppRoute = "playHome" | PlayMode | "interactionLobby";
+type WorkspaceWindow = "interaction" | "shopping" | "friends" | "spaces" | "profile" | "settings";
 
 type InteractionFriend = {
   name: string;
@@ -920,7 +922,8 @@ let claimedLobbyPlayer: PlayerPort | null = null;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
-let appRoute: AppRoute = "core";
+let appRoute: AppRoute = "playHome";
+let activeWorkspaceWindow: WorkspaceWindow | null = null;
 let userMenuOpen = false;
 let hostPermissions: HostPermissions = {
   canPlay: false,
@@ -1071,6 +1074,35 @@ const interactionFutureModules: FutureModule[] = [
   { name: "Shared Notes", detail: "Small living documents for friends and projects" },
   { name: "Markdown Vaults", detail: "Obsidian-like spaces, synced through the host" },
   { name: "Video Rooms", detail: "Persistent room presets for chat and co-play" },
+];
+const playModeCards: Array<{
+  mode: PlayMode;
+  label: string;
+  kicker: string;
+  detail: string;
+  action: string;
+}> = [
+  {
+    mode: "megadrive",
+    label: "MegaDrive",
+    kicker: "Fast H.264 chamber",
+    detail: "ROMs, saves, host rooms, spectate and player slots.",
+    action: "Open MegaDrive",
+  },
+  {
+    mode: "eutherdogs",
+    label: "EutherDogs",
+    kicker: "Night shift arcade",
+    detail: "Staff, RX Store, briefing, scores and local play.",
+    action: "Open EutherDogs",
+  },
+  {
+    mode: "eutherdoom",
+    label: "EutherDoom",
+    kicker: "Lockstep relay",
+    detail: "Start or join Doom rooms with ready state and replay tools.",
+    action: "Open EutherDoom",
+  },
 ];
 const shoppingCategoryOrder = [
   "Frukt & grönt",
@@ -1231,7 +1263,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </div>
 
-      <div class="rail-section lobby-section">
+      <nav class="app-nav" aria-label="primary">
+        <button data-app-route="play" type="button">Play Home</button>
+      </nav>
+
+      ${playHomeMarkup()}
+
+      <div class="rail-section lobby-section" id="lobby-section">
         <div class="section-head">
           <p class="section-label">Lobby</p>
           <div class="section-actions">
@@ -1246,8 +1284,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
         <div class="lobby-instances" id="lobby-instances"></div>
         <div class="lobby-actions">
-          <button id="instance-start" type="button">Start New</button>
-          <button id="doom-instance-start" type="button">Start Doom</button>
+          <button id="instance-start" type="button">Start MegaDrive</button>
+          <button id="doom-instance-start" type="button">Start EutherDoom</button>
           <button id="instance-join" type="button">Join</button>
           <button id="claim-p1" type="button">Claim P1</button>
           <button id="claim-p2" type="button">Claim P2</button>
@@ -1259,7 +1297,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </div>
 
-      <div class="rail-section dogs-mode-section">
+      <div class="rail-section dogs-mode-section" id="dogs-mode-section">
         <p class="section-label">EutherDogs</p>
         <button id="eutherdogs-toggle" class="primary-action" type="button">EutherDogs</button>
         <div class="dogs-asset-switch" aria-label="EutherDogs asset resolution">
@@ -1580,6 +1618,21 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main id="interaction-lobby-page" class="interaction-lobby-page" hidden>
     ${interactionLobbyPageMarkup()}
   </main>
+  <div id="workspace-window-layer" class="workspace-window-layer" hidden>
+    <section class="workspace-window" role="dialog" aria-modal="false" aria-labelledby="workspace-window-title">
+      <header class="workspace-window-head">
+        <div>
+          <p class="eyebrow" id="workspace-window-eyebrow">Workspace</p>
+          <h2 id="workspace-window-title">Window</h2>
+        </div>
+        <button id="workspace-window-close" class="mini-action" type="button">Close</button>
+      </header>
+      <div class="workspace-window-body">
+        <div id="workspace-window-dynamic" class="workspace-window-dynamic"></div>
+        ${shoppingListPanelMarkup()}
+      </div>
+    </section>
+  </div>
   <div class="user-menu" id="user-menu">
     <button id="user-menu-toggle" class="user-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false">
       <span class="user-presence-dot"></span>
@@ -1588,6 +1641,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <div id="user-menu-dropdown" class="user-menu-dropdown" role="menu" aria-label="user menu">
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
       <button data-user-menu-action="interaction-lobby" type="button" role="menuitem">Interaction Lobby</button>
+      <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
       <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
       <button data-user-menu-action="shared-spaces" type="button" role="menuitem">Shared Spaces</button>
       <button data-user-menu-action="settings" type="button" role="menuitem">Settings</button>
@@ -1697,6 +1751,17 @@ const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
 const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
 const userMenuName = document.querySelector<HTMLElement>("#user-menu-name")!;
 const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-dropdown")!;
+const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
+const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
+const workspaceWindowEyebrow = document.querySelector<HTMLElement>("#workspace-window-eyebrow")!;
+const workspaceWindowClose = document.querySelector<HTMLButtonElement>("#workspace-window-close")!;
+const workspaceWindowDynamic = document.querySelector<HTMLDivElement>("#workspace-window-dynamic")!;
+const appNavButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-app-route]"));
+const playHomePanel = document.querySelector<HTMLElement>("#play-home-panel")!;
+const playModeStatus = document.querySelector<HTMLElement>("#play-mode-status")!;
+const playModeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-play-mode]"));
+const lobbySection = document.querySelector<HTMLDivElement>("#lobby-section")!;
+const dogsModeSection = document.querySelector<HTMLDivElement>("#dogs-mode-section")!;
 const shoppingListPanel = document.querySelector<HTMLDivElement>("#interaction-shopping-panel")!;
 const interactionCurrentUserName = document.querySelector<HTMLElement>("#interaction-current-user-name")!;
 const interactionCurrentUserStatus = document.querySelector<HTMLElement>("#interaction-current-user-status")!;
@@ -1706,6 +1771,7 @@ const shoppingListTitle = document.querySelector<HTMLElement>("#shopping-list-ti
 const shoppingListStatusLabel = document.querySelector<HTMLElement>("#shopping-list-status")!;
 const shoppingListSharedIdLabel = document.querySelector<HTMLElement>("#shopping-list-shared-id")!;
 const shoppingShareStatus = document.querySelector<HTMLElement>("#shopping-share-status")!;
+const shoppingShareCompact = document.querySelector<HTMLDivElement>("#shopping-share-compact")!;
 const shoppingListMembersEl = document.querySelector<HTMLDivElement>("#shopping-list-members")!;
 const shoppingShareForm = document.querySelector<HTMLFormElement>("#shopping-share-form")!;
 const shoppingShareUser = document.querySelector<HTMLSelectElement>("#shopping-share-user")!;
@@ -1885,15 +1951,44 @@ userMenuDropdown.addEventListener("click", (event) => {
   void handleUserMenuAction(button.dataset.userMenuAction ?? "");
 });
 
-interactionLobbyPage.addEventListener("click", (event) => {
+reactionCorePage.addEventListener("click", (event) => {
   const routeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-app-route]");
-  if (routeButton?.dataset.appRoute === "core") {
-    navigateApp("core");
+  if (routeButton && handleAppRouteButton(routeButton)) {
     return;
   }
-  const focusButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-interaction-focus]");
-  if (focusButton?.dataset.interactionFocus === "shopping") {
-    shoppingListPanel.scrollIntoView({ block: "start", behavior: "smooth" });
+  const workspaceButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-workspace-window]");
+  if (workspaceButton && handleWorkspaceWindowButton(workspaceButton)) {
+    return;
+  }
+  const modeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-play-mode]");
+  const mode = modeButton?.dataset.playMode;
+  if (isPlayMode(mode)) {
+    void activatePlayMode(mode);
+  }
+});
+
+interactionLobbyPage.addEventListener("click", (event) => {
+  const routeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-app-route]");
+  if (routeButton && handleAppRouteButton(routeButton)) {
+    return;
+  }
+  const workspaceButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-workspace-window]");
+  if (workspaceButton && handleWorkspaceWindowButton(workspaceButton)) {
+    return;
+  }
+});
+
+workspaceWindowClose.addEventListener("click", () => {
+  closeWorkspaceWindow();
+});
+
+workspaceWindowLayer.addEventListener("click", (event) => {
+  const workspaceButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-workspace-window]");
+  if (workspaceButton && handleWorkspaceWindowButton(workspaceButton)) {
+    return;
+  }
+  if (event.target === workspaceWindowLayer) {
+    closeWorkspaceWindow();
   }
 });
 
@@ -1903,6 +1998,14 @@ shoppingListItems.addEventListener("change", (event) => {
     return;
   }
   setShoppingListItemChecked(Number(checkbox.dataset.shoppingLine), checkbox.checked);
+});
+
+shoppingListItems.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-shopping-remove]");
+  if (!button) {
+    return;
+  }
+  removeShoppingListItem(Number(button.dataset.shoppingRemove));
 });
 
 shoppingListAddForm.addEventListener("submit", (event) => {
@@ -1961,6 +2064,10 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && activeWorkspaceWindow) {
+    closeWorkspaceWindow();
+    return;
+  }
   if (event.key === "Escape" && userMenuOpen) {
     setUserMenuOpen(false);
   }
@@ -1996,20 +2103,7 @@ lobbyInstances.addEventListener("click", async (event) => {
   if (!button) {
     return;
   }
-  const previousInstanceId = activeLobbyInstanceId;
-  await leaveVideoChat(true, previousInstanceId);
-  activeLobbyInstanceId = button.dataset.instanceId ?? "main";
-  lobbyRole = "spectator";
-  claimedLobbyPlayer = null;
-  setDoomDriveActive(false);
-  stopBridgeStream();
-  await releaseLobbySlot(false, previousInstanceId);
-  renderLobby();
-  if (activeLobbyInstance()?.kind === "eutherdoom") {
-    await refreshDoomStatus();
-  } else {
-    await connectBridge(false);
-  }
+  await selectLobbyInstance(button.dataset.instanceId ?? "main");
 });
 
 instanceStart.addEventListener("click", async () => {
@@ -3427,6 +3521,34 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function playHomeMarkup(): string {
+  return `
+    <section class="rail-section play-home-panel" id="play-home-panel">
+      <div class="section-head">
+        <div>
+          <p class="section-label">Play</p>
+          <strong>Choose chamber</strong>
+        </div>
+        <span id="play-mode-status">Ready</span>
+      </div>
+      <div class="mode-card-grid">
+        ${playModeCards
+          .map(
+            (card) => `
+              <button class="mode-card mode-card-${card.mode}" data-play-mode="${card.mode}" type="button">
+                <span>${escapeHtml(card.kicker)}</span>
+                <strong>${escapeHtml(card.label)}</strong>
+                <small>${escapeHtml(card.detail)}</small>
+                <em>${escapeHtml(card.action)}</em>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function interactionLobbyPageMarkup(): string {
   return `
     <section class="interaction-hero">
@@ -3440,8 +3562,8 @@ function interactionLobbyPageMarkup(): string {
         </div>
       </div>
       <div class="interaction-hero-actions">
-        <button data-app-route="core" type="button">Reaction Core</button>
-        <button class="primary-action" data-interaction-focus="shopping" type="button">Open shopping list</button>
+        <button data-app-route="play" type="button">Play Home</button>
+        <button class="primary-action" data-workspace-window="shopping" type="button">Open shopping list</button>
       </div>
     </section>
     <section class="interaction-grid">
@@ -3451,55 +3573,10 @@ function interactionLobbyPageMarkup(): string {
           <span>Ready for wiring</span>
         </div>
         <div class="quick-action-grid">
-          ${quickActionCard("Add friend", "Send a request into the friend mesh")}
-          ${quickActionCard("Create shared space", "Start a room for people and files")}
-          ${quickActionCard("Create shopping list", "Make a shared Markdown checklist")}
-          ${quickActionCard("Start chat", "Open a direct line")}
-        </div>
-      </div>
-      <div class="interaction-panel interaction-shopping-panel" id="interaction-shopping-panel">
-        <div class="section-head">
-          <div>
-            <p class="section-label">Shared Shopping List</p>
-            <strong id="shopping-list-title">shopping-list.md</strong>
-          </div>
-          <span id="shopping-list-status">Not loaded</span>
-        </div>
-        <div class="shopping-link-meta">
-          <span>Linked document</span>
-          <strong id="shopping-list-shared-id">hemmet</strong>
-        </div>
-        <div class="shopping-share-panel">
-          <div class="shopping-share-head">
-            <span>Shared with</span>
-            <strong id="shopping-share-status">Not shared</strong>
-          </div>
-          <div id="shopping-list-members" class="shopping-list-members"></div>
-          <form id="shopping-share-form" class="shopping-share-form">
-            <select id="shopping-share-user" aria-label="share shopping list with user"></select>
-            <select id="shopping-share-role" aria-label="shopping list share role">
-              <option value="edit">Can edit</option>
-              <option value="view">View only</option>
-            </select>
-            <button type="submit">Share</button>
-          </form>
-        </div>
-        <div id="shopping-list-items" class="shopping-list-items"></div>
-        <form id="shopping-list-add-form" class="shopping-list-add-form">
-          <input id="shopping-list-add-input" type="text" placeholder="Add item" aria-label="shopping list item" autocomplete="off" />
-          <select id="shopping-list-category" aria-label="shopping list category">
-            <option value="auto">Auto category</option>
-            ${shoppingCategoryOrder.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}
-          </select>
-          <button type="submit">Add</button>
-        </form>
-        <details class="shopping-markdown-editor">
-          <summary>Markdown source</summary>
-          <textarea id="shopping-list-markdown" spellcheck="false" aria-label="shopping list markdown"></textarea>
-        </details>
-        <div class="shopping-list-actions">
-          <button id="shopping-list-sort" type="button">Smart sort</button>
-          <button id="shopping-list-save" class="primary-action" type="button">Save .md</button>
+          ${quickActionCard("Add friend", "Send a request into the friend mesh", "friends")}
+          ${quickActionCard("Create shared space", "Start a room for people and files", "spaces")}
+          ${quickActionCard("Create shopping list", "Make a shared Markdown checklist", "shopping")}
+          ${quickActionCard("Start chat", "Open a direct line", "interaction")}
         </div>
       </div>
       ${friendPreviewList()}
@@ -3518,9 +3595,64 @@ function interactionLobbyPageMarkup(): string {
   `;
 }
 
-function quickActionCard(title: string, detail: string): string {
+function shoppingListPanelMarkup(): string {
   return `
-    <button class="quick-action-card" type="button">
+    <div class="interaction-panel interaction-shopping-panel" id="interaction-shopping-panel" hidden>
+      <div class="section-head">
+        <div>
+          <p class="section-label">Shared Shopping List</p>
+          <strong id="shopping-list-title">shopping-list.md</strong>
+        </div>
+        <span id="shopping-list-status">Not loaded</span>
+      </div>
+      <div class="shopping-link-meta">
+        <span>Linked document</span>
+        <strong id="shopping-list-shared-id">hemmet</strong>
+      </div>
+      <div class="shopping-share-panel">
+        <div class="shopping-share-head">
+          <span>Shared with</span>
+          <strong id="shopping-share-status">Not shared</strong>
+        </div>
+        <div id="shopping-share-compact" class="shopping-share-compact">Only you</div>
+        <details class="shopping-share-details">
+          <summary>Manage sharing</summary>
+          <div id="shopping-list-members" class="shopping-list-members"></div>
+          <form id="shopping-share-form" class="shopping-share-form">
+            <select id="shopping-share-user" aria-label="share shopping list with user"></select>
+            <select id="shopping-share-role" aria-label="shopping list share role">
+              <option value="edit">Can edit</option>
+              <option value="view">View only</option>
+            </select>
+            <button type="submit">Share</button>
+          </form>
+        </details>
+      </div>
+      <div id="shopping-list-items" class="shopping-list-items"></div>
+      <form id="shopping-list-add-form" class="shopping-list-add-form">
+        <input id="shopping-list-add-input" type="text" placeholder="Add item" aria-label="shopping list item" autocomplete="off" />
+        <select id="shopping-list-category" aria-label="shopping list category">
+          <option value="auto">Auto category</option>
+          ${shoppingCategoryOrder.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}
+        </select>
+        <button type="submit">Add</button>
+      </form>
+      <details class="shopping-markdown-editor">
+        <summary>Markdown source</summary>
+        <textarea id="shopping-list-markdown" spellcheck="false" aria-label="shopping list markdown"></textarea>
+      </details>
+      <div class="shopping-list-actions">
+        <button id="shopping-list-sort" type="button">Smart sort</button>
+        <button id="shopping-list-save" class="primary-action" type="button">Save .md</button>
+      </div>
+    </div>
+  `;
+}
+
+function quickActionCard(title: string, detail: string, workspaceWindow?: WorkspaceWindow): string {
+  const windowAttr = workspaceWindow ? ` data-workspace-window="${workspaceWindow}"` : "";
+  return `
+    <button class="quick-action-card"${windowAttr} type="button">
       <strong>${escapeHtml(title)}</strong>
       <span>${escapeHtml(detail)}</span>
     </button>
@@ -4616,7 +4748,35 @@ async function refreshAuthStatus(): Promise<void> {
   renderVideoChat();
 }
 
+async function selectLobbyInstance(instanceId: string): Promise<void> {
+  if (instanceId === activeLobbyInstanceId) {
+    renderLobby();
+    if (activeLobbyInstance()?.kind === "eutherdoom") {
+      await refreshDoomStatus();
+    } else {
+      await connectBridge(false);
+    }
+    return;
+  }
+
+  const previousInstanceId = activeLobbyInstanceId;
+  await leaveVideoChat(true, previousInstanceId);
+  activeLobbyInstanceId = instanceId;
+  lobbyRole = "spectator";
+  claimedLobbyPlayer = null;
+  setDoomDriveActive(false);
+  stopBridgeStream();
+  await releaseLobbySlot(false, previousInstanceId);
+  renderLobby();
+  if (activeLobbyInstance()?.kind === "eutherdoom") {
+    await refreshDoomStatus();
+  } else {
+    await connectBridge(false);
+  }
+}
+
 async function startLobbyInstance(kind: "megadrive" | "eutherdoom" = "megadrive"): Promise<void> {
+  navigateApp(kind);
   await leaveVideoChat(true, activeLobbyInstanceId);
   const result = await bridgeJson<LobbyStartResult>(
     `/api/lobby/start?kind=${encodeURIComponent(kind)}`,
@@ -5121,33 +5281,389 @@ async function sendChatMessage(): Promise<void> {
 }
 
 function readAppRoute(): AppRoute {
-  const route = window.location.hash.replace(/^#\/?/, "");
-  return route === "interaction-lobby" ? "interactionLobby" : "core";
+  const route = window.location.hash.replace(/^#\/?/, "").toLowerCase();
+  if (route === "") {
+    return defaultAppRoute();
+  }
+  return appRouteFromToken(route) ?? defaultAppRoute();
+}
+
+function defaultAppRoute(): AppRoute {
+  if (forceMegaDriveStartup) {
+    return "megadrive";
+  }
+  if (autoStartEutherDogs) {
+    return "eutherdogs";
+  }
+  return "playHome";
+}
+
+function appRouteFromToken(token: string | undefined): AppRoute | null {
+  switch (token) {
+    case "core":
+    case "play":
+    case "play-home":
+      return "playHome";
+    case "interaction-lobby":
+    case "social":
+      return "interactionLobby";
+    case "megadrive":
+    case "play/megadrive":
+      return "megadrive";
+    case "eutherdogs":
+    case "play/eutherdogs":
+      return "eutherdogs";
+    case "eutherdoom":
+    case "utherdoom":
+    case "play/eutherdoom":
+    case "play/utherdoom":
+      return "eutherdoom";
+    default:
+      return null;
+  }
+}
+
+function appRouteHash(route: AppRoute): string {
+  switch (route) {
+    case "interactionLobby":
+      return "/interaction-lobby";
+    case "playHome":
+      return "/play";
+    default:
+      return `/play/${route}`;
+  }
 }
 
 function navigateApp(route: AppRoute): void {
-  if (route === "interactionLobby") {
-    window.location.hash = "/interaction-lobby";
+  const hash = appRouteHash(route);
+  if (window.location.hash === `#${hash}`) {
     applyAppRoute();
     return;
   }
-  window.history.pushState({}, "", `${window.location.pathname}${window.location.search}`);
-  applyAppRoute();
+  window.location.hash = hash;
 }
 
 function applyAppRoute(): void {
   appRoute = readAppRoute();
   const showingLobby = appRoute === "interactionLobby";
+  const playMode = currentPlayModeRoute();
   reactionCorePage.hidden = showingLobby;
   interactionLobbyPage.hidden = !showingLobby;
   document.body.classList.toggle("interaction-lobby-mode", showingLobby);
+  document.body.classList.toggle("play-home-mode", !showingLobby && appRoute === "playHome");
+  document.body.classList.toggle("play-mode-megadrive", !showingLobby && appRoute === "megadrive");
+  document.body.classList.toggle("play-mode-eutherdogs", !showingLobby && appRoute === "eutherdogs");
+  document.body.classList.toggle("play-mode-eutherdoom", !showingLobby && appRoute === "eutherdoom");
+
+  playHomePanel.hidden = showingLobby || appRoute !== "playHome";
+  lobbySection.hidden = showingLobby || (appRoute !== "megadrive" && appRoute !== "eutherdoom");
+  dogsModeSection.hidden = showingLobby || appRoute !== "eutherdogs";
+  megaDrivePanel.hidden = showingLobby || appRoute !== "megadrive";
+  if (appRoute === "megadrive") {
+    megaDrivePanel.open = true;
+  }
+
   setUserMenuOpen(false);
+  renderAppShellRoute();
   renderUserMenu();
+  renderLobby();
   renderShoppingListItems();
   if (showingLobby) {
     void loadShoppingList();
     void loadInteractionUsers();
   }
+  if (playMode === "eutherdoom" && activeLobbyInstance()?.kind === "eutherdoom") {
+    void refreshDoomStatus();
+  }
+}
+
+function currentPlayModeRoute(): PlayMode | null {
+  return isPlayMode(appRoute) ? appRoute : null;
+}
+
+function isPlayMode(value: unknown): value is PlayMode {
+  return value === "megadrive" || value === "eutherdogs" || value === "eutherdoom";
+}
+
+function playModeLabel(mode: PlayMode | null): string {
+  switch (mode) {
+    case "megadrive":
+      return "MegaDrive";
+    case "eutherdogs":
+      return "EutherDogs";
+    case "eutherdoom":
+      return "EutherDoom";
+    default:
+      return "Mode Launcher";
+  }
+}
+
+function handleAppRouteButton(button: HTMLButtonElement): boolean {
+  const route = appRouteFromToken(button.dataset.appRoute);
+  if (!route) {
+    return false;
+  }
+  navigateApp(route);
+  return true;
+}
+
+function handleWorkspaceWindowButton(button: HTMLButtonElement): boolean {
+  const target = button.dataset.workspaceWindow;
+  if (!isWorkspaceWindow(target)) {
+    return false;
+  }
+  openWorkspaceWindow(target);
+  return true;
+}
+
+function isWorkspaceWindow(value: unknown): value is WorkspaceWindow {
+  return (
+    value === "interaction" ||
+    value === "shopping" ||
+    value === "friends" ||
+    value === "spaces" ||
+    value === "profile" ||
+    value === "settings"
+  );
+}
+
+function renderAppShellRoute(): void {
+  const playMode = currentPlayModeRoute();
+  playModeStatus.textContent = playMode ? playModeLabel(playMode) : "Choose mode";
+  appNavButtons.forEach((button) => {
+    const route = appRouteFromToken(button.dataset.appRoute);
+    const selected = route === "playHome" ? appRoute !== "interactionLobby" : appRoute === route;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-current", selected ? "page" : "false");
+  });
+  playModeButtons.forEach((button) => {
+    const mode = button.dataset.playMode;
+    const selected = mode === playMode;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  });
+}
+
+function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
+  switch (windowName) {
+    case "interaction":
+      return "Interaction Lobby";
+    case "shopping":
+      return "Shopping List";
+    case "friends":
+      return "Friends";
+    case "spaces":
+      return "Shared Spaces";
+    case "profile":
+      return "Profile";
+    case "settings":
+      return "Settings";
+  }
+}
+
+function openWorkspaceWindow(windowName: WorkspaceWindow): void {
+  activeWorkspaceWindow = windowName;
+  workspaceWindowLayer.hidden = false;
+  document.body.classList.add("workspace-window-open");
+  renderWorkspaceWindow();
+  renderUserMenu();
+  if (windowName === "shopping") {
+    void loadShoppingList();
+    void loadInteractionUsers();
+  } else if (windowName === "interaction" || windowName === "friends" || windowName === "spaces") {
+    void loadInteractionUsers();
+  }
+}
+
+function closeWorkspaceWindow(): void {
+  activeWorkspaceWindow = null;
+  workspaceWindowLayer.hidden = true;
+  document.body.classList.remove("workspace-window-open");
+  shoppingListPanel.hidden = true;
+  workspaceWindowDynamic.hidden = false;
+  renderUserMenu();
+}
+
+function renderWorkspaceWindow(): void {
+  const windowName = activeWorkspaceWindow;
+  if (!windowName) {
+    return;
+  }
+  const showingShopping = windowName === "shopping";
+  workspaceWindowEyebrow.textContent = "Workspace window";
+  workspaceWindowTitle.textContent = workspaceWindowTitleFor(windowName);
+  shoppingListPanel.hidden = !showingShopping;
+  workspaceWindowDynamic.hidden = showingShopping;
+  workspaceWindowLayer.classList.toggle("is-shopping", showingShopping);
+  workspaceWindowLayer.classList.toggle("is-social", !showingShopping);
+  if (showingShopping) {
+    renderShoppingListItems();
+    return;
+  }
+  workspaceWindowDynamic.innerHTML = workspaceWindowContentMarkup(windowName);
+}
+
+function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
+  switch (windowName) {
+    case "interaction":
+      return interactionDeskWindowMarkup();
+    case "friends":
+      return friendsWindowMarkup();
+    case "spaces":
+      return sharedSpacesWindowMarkup();
+    case "profile":
+      return profileWindowMarkup();
+    case "settings":
+      return settingsWindowMarkup();
+    case "shopping":
+      return "";
+  }
+}
+
+function interactionDeskWindowMarkup(): string {
+  const friends = visibleInteractionFriends();
+  const onlineCount = friends.filter((friend) => friend.status === "Online").length;
+  return `
+    <div class="workspace-window-grid">
+      <button class="workspace-tool-card" data-workspace-window="shopping" type="button">
+        <span>Shared markdown</span>
+        <strong>Shopping List</strong>
+        <small>Open the synced house list in its own editing window.</small>
+      </button>
+      <button class="workspace-tool-card" data-workspace-window="friends" type="button">
+        <span>${onlineCount} online</span>
+        <strong>Friends</strong>
+        <small>See real host users and who is available.</small>
+      </button>
+      <button class="workspace-tool-card" data-workspace-window="spaces" type="button">
+        <span>${interactionSpaces.length} spaces</span>
+        <strong>Shared Spaces</strong>
+        <small>Homes, projects, notes and future vaults.</small>
+      </button>
+    </div>
+    <div class="workspace-window-section">
+      <div class="section-head">
+        <p class="section-label">Invites</p>
+        <span>${interactionInvites.length} pending</span>
+      </div>
+      <div class="workspace-list">
+        ${interactionInvites.map((invite) => `<div class="invite-row"><strong>${escapeHtml(invite.kind)}</strong><span>${escapeHtml(invite.text)}</span></div>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function friendsWindowMarkup(): string {
+  const friends = visibleInteractionFriends();
+  return `
+    <div class="workspace-window-section">
+      <div class="section-head">
+        <p class="section-label">Friends</p>
+        <span>${friends.filter((friend) => friend.status === "Online").length} online</span>
+      </div>
+      <div class="interaction-list-rows">
+        ${friendRowsMarkup(friends)}
+      </div>
+    </div>
+  `;
+}
+
+function sharedSpacesWindowMarkup(): string {
+  return `
+    <div class="workspace-window-section">
+      <div class="section-head">
+        <p class="section-label">Shared Spaces</p>
+        <span>${interactionSpaces.length} spaces</span>
+      </div>
+      <div class="workspace-list">
+        ${interactionSpaces
+          .map(
+            (space) => `
+              <button class="interaction-space-row" type="button">
+                <strong>${escapeHtml(space.name)}</strong>
+                <span>${escapeHtml(space.detail)}</span>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function profileWindowMarkup(): string {
+  const currentName = displayUserName(hostUsername ?? "Nichlas");
+  return `
+    <div class="workspace-window-section">
+      <div class="section-head">
+        <p class="section-label">Current User</p>
+        <span>${hostUsername ? "Online" : "Offline"}</span>
+      </div>
+      <div class="profile-window-card">
+        <span class="user-presence-dot"></span>
+        <strong>${escapeHtml(currentName)}</strong>
+        <small>${hostUsername ? "Authenticated on this EutherHost" : "Login required for shared tools"}</small>
+      </div>
+    </div>
+  `;
+}
+
+function settingsWindowMarkup(): string {
+  return `
+    <div class="workspace-window-section">
+      <div class="section-head">
+        <p class="section-label">Settings</p>
+        <span>Split from Play</span>
+      </div>
+      <div class="workspace-window-grid">
+        <button class="workspace-tool-card" type="button" disabled>
+          <span>Audio</span>
+          <strong>Sound & Mic</strong>
+          <small>Volume controls stay beside play for now.</small>
+        </button>
+        <button class="workspace-tool-card" type="button" disabled>
+          <span>Controls</span>
+          <strong>Input Matrix</strong>
+          <small>Use the Controls button in the active play view.</small>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+async function activatePlayMode(mode: PlayMode): Promise<void> {
+  navigateApp(mode);
+  if (mode === "eutherdogs") {
+    if (!dogsMode) {
+      await enterDogsMode();
+    }
+    return;
+  }
+
+  if (dogsMode) {
+    leaveDogsMode();
+  }
+
+  if (mode === "megadrive") {
+    megaDrivePanel.open = true;
+    await selectFirstLobbyInstanceForKind("megadrive");
+    return;
+  }
+
+  await selectFirstLobbyInstanceForKind("eutherdoom");
+}
+
+async function selectFirstLobbyInstanceForKind(kind: NonNullable<LobbyInstance["kind"]>): Promise<void> {
+  const instance = lobbyStatus?.instances.find((candidate) => lobbyInstanceKind(candidate) === kind);
+  if (!instance) {
+    renderLobby();
+    return;
+  }
+  await selectLobbyInstance(instance.id);
+}
+
+function lobbyInstanceKind(instance: LobbyInstance): NonNullable<LobbyInstance["kind"]> {
+  return instance.kind ?? "megadrive";
 }
 
 function setUserMenuOpen(open: boolean): void {
@@ -5158,7 +5674,7 @@ function setUserMenuOpen(open: boolean): void {
 
 function renderUserMenu(): void {
   userMenuName.textContent = displayUserName(hostUsername ?? "Nichlas");
-  userMenuToggle.classList.toggle("is-selected", appRoute === "interactionLobby");
+  userMenuToggle.classList.toggle("is-selected", activeWorkspaceWindow !== null || appRoute === "interactionLobby");
 }
 
 async function loadInteractionUsers(): Promise<void> {
@@ -5196,6 +5712,9 @@ function renderInteractionUsers(): void {
   friendPreviewCount.textContent = `${onlineCount} online / ${interactionUsersStatus}`;
   friendPreviewRows.innerHTML = friendRowsMarkup(friends);
   renderShoppingShareControls();
+  if (activeWorkspaceWindow) {
+    renderWorkspaceWindow();
+  }
 }
 
 function displayUserName(username: string): string {
@@ -5209,17 +5728,22 @@ async function handleUserMenuAction(action: string): Promise<void> {
   setUserMenuOpen(false);
   switch (action) {
     case "interaction-lobby":
+      openWorkspaceWindow("interaction");
+      return;
+    case "shopping-list":
+      openWorkspaceWindow("shopping");
+      return;
     case "friends":
+      openWorkspaceWindow("friends");
+      return;
     case "shared-spaces":
+      openWorkspaceWindow("spaces");
+      return;
     case "profile":
+      openWorkspaceWindow("profile");
+      return;
     case "settings":
-      navigateApp("interactionLobby");
-      if (action === "shared-spaces") {
-        interactionLobbyPage.querySelector(".shared-space-preview-list")?.scrollIntoView({ block: "start" });
-      }
-      if (action === "friends") {
-        interactionLobbyPage.querySelector(".friend-preview-list")?.scrollIntoView({ block: "start" });
-      }
+      openWorkspaceWindow("settings");
       return;
     case "logout":
       await logoutHostUser();
@@ -5354,10 +5878,13 @@ function renderShoppingListItems(): void {
               ${group.items
                 .map(
                   (item) => `
-                    <label class="shopping-list-item ${item.checked ? "is-checked" : ""}">
-                      <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} ${shoppingListCanEdit ? "" : "disabled"} />
-                      <span>${escapeHtml(item.text)}</span>
-                    </label>
+                    <div class="shopping-list-item ${item.checked ? "is-checked" : ""}">
+                      <label class="shopping-list-item-check">
+                        <input data-shopping-line="${item.lineIndex}" type="checkbox" ${item.checked ? "checked" : ""} ${shoppingListCanEdit ? "" : "disabled"} />
+                        <span>${escapeHtml(item.text)}</span>
+                      </label>
+                      <button data-shopping-remove="${item.lineIndex}" type="button" ${shoppingListCanEdit ? "" : "disabled"}>Remove</button>
+                    </div>
                   `,
                 )
                 .join("")}
@@ -5373,6 +5900,7 @@ function renderShoppingShareControls(): void {
   shoppingShareStatus.textContent = shoppingListSharing
     ? shoppingListShareStatus
     : `${members.length} ${members.length === 1 ? "member" : "members"} / ${shoppingRoleLabel(shoppingListRole)}`;
+  shoppingShareCompact.innerHTML = shoppingShareCompactMarkup(members);
   shoppingListMembersEl.innerHTML = members.length
     ? members
         .map((member) => {
@@ -5402,6 +5930,21 @@ function renderShoppingShareControls(): void {
   shoppingShareUser.disabled = disabled;
   shoppingShareRole.disabled = disabled;
   shoppingShareForm.querySelector<HTMLButtonElement>("button")!.disabled = disabled;
+}
+
+function shoppingShareCompactMarkup(members: ShoppingListMember[]): string {
+  if (members.length === 0) {
+    return `<span>Only you</span>`;
+  }
+  const visible = members.slice(0, 3);
+  const overflow = members.length - visible.length;
+  const labels = visible
+    .map((member) => {
+      const current = member.name === hostUsername;
+      return `<strong>${escapeHtml(current ? "You" : displayUserName(member.name))}</strong>`;
+    })
+    .join("");
+  return `${labels}${overflow > 0 ? `<em>+${overflow}</em>` : ""}`;
 }
 
 function normalizedShoppingListMembers(): ShoppingListMember[] {
@@ -5570,6 +6113,25 @@ function setShoppingListItemChecked(lineIndex: number, checked: boolean): void {
   lines[lineIndex] = line.replace(/\[( |x|X)\]/, checked ? "[x]" : "[ ]");
   shoppingListMarkdown = lines.join("\n");
   shoppingListStatus = "Edited";
+  renderShoppingListItems();
+  scheduleShoppingListSave();
+}
+
+function removeShoppingListItem(lineIndex: number): void {
+  if (!shoppingListCanEdit) {
+    shoppingListStatus = "View only";
+    renderShoppingListItems();
+    return;
+  }
+  const lines = shoppingListMarkdown.split("\n");
+  const line = lines[lineIndex];
+  if (!line || !/^\s*-\s+\[( |x|X)\]\s+/.test(line)) {
+    return;
+  }
+  const removedItem = line.replace(/^\s*-\s+\[( |x|X)\]\s+/, "").trim();
+  lines.splice(lineIndex, 1);
+  shoppingListMarkdown = smartSortShoppingMarkdown(lines.join("\n"));
+  shoppingListStatus = removedItem ? `Removed ${removedItem}` : "Removed item";
   renderShoppingListItems();
   scheduleShoppingListSave();
 }
@@ -6256,12 +6818,26 @@ function syncVideoChatMediaElements(): void {
 }
 
 function renderLobby(): void {
-  const instance = activeLobbyInstance();
+  const routeKind = currentLobbyRouteKind();
+  const activeInstance = activeLobbyInstance();
+  const instance =
+    routeKind && activeInstance && lobbyInstanceKind(activeInstance) !== routeKind ? undefined : activeInstance;
   if (!instance) {
-    lobbyTitle.textContent = "No Reaction Vessel";
-    lobbyMeta.textContent = "No instance scan";
+    const modeLabel = routeKind === "eutherdoom" ? "EutherDoom" : "MegaDrive";
+    lobbyTitle.textContent = `No ${modeLabel} vessel`;
+    lobbyMeta.textContent =
+      routeKind === "eutherdoom" ? "Start EutherDoom to create a lockstep relay" : "Start MegaDrive to create a host room";
     lobbyHost.textContent = "Host: open";
-    lobbyInstances.innerHTML = "";
+    renderLobbyInstances();
+    instanceJoin.disabled = true;
+    releaseSlot.disabled = true;
+    claimP1.disabled = true;
+    claimP2.disabled = true;
+    kickP1.disabled = true;
+    kickP2.disabled = true;
+    closeInstance.disabled = true;
+    spectateInstance.classList.remove("is-selected");
+    renderDoomPanel();
     return;
   }
   renderLobbyInstances();
@@ -6301,9 +6877,23 @@ function activeLobbyInstance(): LobbyInstance | undefined {
   );
 }
 
+function currentLobbyRouteKind(): NonNullable<LobbyInstance["kind"]> | null {
+  if (appRoute === "megadrive") {
+    return "megadrive";
+  }
+  if (appRoute === "eutherdoom") {
+    return "eutherdoom";
+  }
+  return null;
+}
+
 function renderLobbyInstances(): void {
-  const instances = lobbyStatus?.instances ?? [];
-  lobbyInstances.innerHTML = instances
+  const routeKind = currentLobbyRouteKind();
+  const instances = (lobbyStatus?.instances ?? []).filter(
+    (instance) => !routeKind || lobbyInstanceKind(instance) === routeKind,
+  );
+  lobbyInstances.innerHTML = instances.length
+    ? instances
     .map(
       (instance) => `
         <button class="${instance.id === activeLobbyInstanceId ? "is-selected" : ""}" data-instance-id="${escapeHtml(instance.id)}" type="button">
@@ -6312,12 +6902,13 @@ function renderLobbyInstances(): void {
         </button>
       `,
     )
-    .join("");
+    .join("")
+    : `<div class="lobby-empty"><strong>No ${routeKind === "eutherdoom" ? "EutherDoom" : "MegaDrive"} rooms</strong><span>Start one from this mode.</span></div>`;
 }
 
 function renderDoomPanel(): void {
   const instance = activeLobbyInstance();
-  const isDoom = instance?.kind === "eutherdoom";
+  const isDoom = appRoute === "eutherdoom" && instance?.kind === "eutherdoom";
   doomDebugPanel.hidden = !isDoom;
   if (!isDoom) {
     setDoomEventPolling(false);
