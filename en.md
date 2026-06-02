@@ -1,21 +1,23 @@
 # EutherOxide Handoff
 
-Date: 2026-06-01
+Date: 2026-06-02
 
 ## Current State
 
 - `main` includes the first WebRTC A/V integration in commit `a239c50 Stream Mega Drive audio over WebRTC`.
 - The follow-up change landed as commit `c14d11c Stabilize WebRTC bridge audio and inputs`: it smooths the WebRTC path by separating audio pacing from video packet publishing and keeping player input leases alive over the WebRTC datachannel.
 - The follow-up release build completed successfully and `eutherhost` was restarted at 20:55 CEST with the new release binary. As of 21:27 CEST, `eutherhost.service` was active and running `target/release/euther-oxide --host-server`.
-- A local UI diagnostic change is currently uncommitted: the perf panel now shows WebRTC lease heartbeat RTT and latest input status, and failed `/input` responses are logged with the server error body.
-- A local latency reduction is also uncommitted and deployed in the running release binary: WebRTC H.264 video is now paced at 60 fps instead of 30 fps, and Mega Drive player input uses the WebRTC datachannel with HTTP `/input` as fallback.
+- A UI diagnostic change is deployed and committed: the perf panel now shows WebRTC lease heartbeat RTT and latest input status, and failed `/input` responses are logged with the server error body.
+- A latency reduction is deployed and committed: WebRTC H.264 video is now paced at 60 fps instead of 30 fps, and Mega Drive player input uses the WebRTC datachannel with HTTP `/input` as fallback.
 - `eutherhost` was restarted again at 21:58:50 CEST with the latency-reduction release binary.
-- After testing, audio and video were reported as very smooth but inputs still felt laggy. A follow-up input-path fix is now also uncommitted and deployed: datachannel/HTTP input writes to a lightweight `latest_input` snapshot, and only the bridge runner applies those snapshots immediately before `run_frame()`. This avoids taking the emulator mutex from the input request/datachannel path while the H.264 writer is copying frames.
+- After testing, audio and video were reported as very smooth but inputs still felt laggy. A follow-up input-path fix is deployed and committed: datachannel/HTTP input writes to a lightweight `latest_input` snapshot, and only the bridge runner applies those snapshots immediately before `run_frame()`. This avoids taking the emulator mutex from the input request/datachannel path while the H.264 writer is copying frames.
 - `eutherhost` was restarted again at 22:15:07 CEST with the input-snapshot release binary.
 - Another follow-up is deployed locally: the bridge runner now publishes a dedicated `latest_video` RGB snapshot every emulated frame, and the WebRTC H.264 writer consumes that snapshot instead of locking the emulator directly. The browser perf panel also shows WebRTC inbound video stats as `Video age` (`jit`, decode time, and queue).
 - `eutherhost` was restarted again at 22:29:48 CEST with the video-snapshot/frame-age release binary.
 - After testing, input felt fast and audio remained smooth, but video still had occasional drops/hitches. A H.264 stability follow-up is deployed: the encoder now uses capped bitrate/maxrate/bufsize, `superfast` x264, 1-second keyframes, and smaller slices to reduce RTP/UDP burstiness. The `Video age` UI now also shows dropped-frame delta and received FPS.
 - `eutherhost` was restarted again at 23:30:13 CEST with the H.264 stability release binary.
+- After mobile testing, the stream was much better but still had occasional small freezes. An adaptive WebRTC video follow-up is deployed: the browser sends video stats over the datachannel, and the server temporarily lowers per-peer video FPS from 60 toward 50/45/40 when it sees drops, queue, high jitter, slow decode, or low received FPS. It raises again after several stable intervals.
+- `eutherhost` was restarted again on 2026-06-02 at 08:04:34 CEST with the adaptive video release binary.
 - Public access was working through `https://play.apothictech.se` / `https://apothictech.se` with Caddy reverse-proxying to `127.0.0.1:32162`.
 - Router/WebRTC UDP forwarding used range `49152-49200/UDP`.
 - On 2026-06-01 at about 21:44 CEST, local Caddy SNI checks worked, but public `https://apothictech.se` / `https://play.apothictech.se` curl checks returned a non-Caddy `400 Page not found` / weak certificate error from the external path. Local `--resolve apothictech.se:443:127.0.0.1` still reached Caddy and EutherHost.
@@ -47,6 +49,7 @@ Date: 2026-06-01
 - For the input-snapshot follow-up: `cargo check`, `git diff --check`, and `bash scripts/build-release.sh`
 - For the video-snapshot/frame-age follow-up: `cargo check`, `./node_modules/.bin/tsc --noEmit`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
 - For the H.264 stability follow-up: `cargo check`, `./node_modules/.bin/tsc --noEmit`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
+- For the adaptive video follow-up: `cargo check`, `./node_modules/.bin/tsc --noEmit`, `git diff --check`, `npm run build`, and `bash scripts/build-release.sh`
 
 ## Verify Next
 
@@ -83,6 +86,7 @@ Date: 2026-06-01
 - Watch CPU during 60 fps WebRTC video. If CPU or heat climbs too much on the server, make the WebRTC FPS configurable or try 45 fps as a middle ground.
 - In the next test, watch `Video age`: sustained queue above `q0` or high `jit` means the last perceived control lag is video playout buffering, not input transport.
 - For the video drop test, watch `Video age`: if `drop` increments while `fps` stays high, lower bitrate/slice size next; if `fps` falls well below 60, try 50/45 fps adaptive cap.
+- With adaptive pacing, watch trace for `WebRTC video cap 50 fps` / `45 fps` / `40 fps`; those messages mean the client feedback loop detected stress and lowered video load.
 
 ## Files Touched
 

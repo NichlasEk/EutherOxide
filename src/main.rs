@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -29,6 +30,8 @@ const WEBRTC_VIDEO_BITRATE: &str = "1200k";
 const WEBRTC_VIDEO_MAXRATE: &str = "1400k";
 const WEBRTC_VIDEO_BUFSIZE: &str = "350k";
 const HOST_PLAYER_LEASE_TIMEOUT: Duration = Duration::from_secs(8);
+const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
+const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
 
 fn main() {
     if let Err(err) = run() {
@@ -619,6 +622,18 @@ struct BridgeInput {
 enum BridgeDataChannelMessage {
     #[serde(rename = "input")]
     Input { seq: u32, input: BridgeInput },
+    #[serde(rename = "videoStats")]
+    VideoStats { stats: BridgeVideoStats },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeVideoStats {
+    dropped_delta: u32,
+    fps: f64,
+    jitter_ms: f64,
+    queue: u32,
+    decode_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -4120,6 +4135,10 @@ fn bridge_webrtc_offer(
     };
     let offer: webrtc::peer_connection::sdp::session_description::RTCSessionDescription =
         serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
+    let video_target_fps = Arc::new(AtomicU32::new(WEBRTC_VIDEO_FPS as u32));
+    let video_stable_ticks = Arc::new(AtomicU32::new(0));
+    let video_target_for_channel = Arc::clone(&video_target_fps);
+    let video_stable_for_channel = Arc::clone(&video_stable_ticks);
 
     let (peer, answer, video_track, audio_track, stop) =
         state.webrtc_runtime.block_on(async move {
@@ -4200,6 +4219,8 @@ fn bridge_webrtc_offer(
         peer.on_data_channel(Box::new(
             move |channel: Arc<webrtc::data_channel::RTCDataChannel>| {
                 let heartbeat = heartbeat.clone();
+                let video_target_fps = Arc::clone(&video_target_for_channel);
+                let video_stable_ticks = Arc::clone(&video_stable_for_channel);
                 Box::pin(async move {
                     let reply_channel = Arc::clone(&channel);
                     let last_input_seq = Arc::new(AtomicU32::new(0));
@@ -4208,6 +4229,8 @@ fn bridge_webrtc_offer(
                             let reply_channel = Arc::clone(&reply_channel);
                             let heartbeat = heartbeat.clone();
                             let last_input_seq = Arc::clone(&last_input_seq);
+                            let video_target_fps = Arc::clone(&video_target_fps);
+                            let video_stable_ticks = Arc::clone(&video_stable_ticks);
                             Box::pin(async move {
                                 if message.is_string {
                                     let text = String::from_utf8_lossy(&message.data);
@@ -4242,6 +4265,15 @@ fn bridge_webrtc_offer(
                                                             .await;
                                                     }
                                                 }
+                                            }
+                                        }
+                                        Ok(BridgeDataChannelMessage::VideoStats { stats }) => {
+                                            if let Some(next_fps) =
+                                                adapt_webrtc_video_fps(&video_target_fps, &video_stable_ticks, stats)
+                                            {
+                                                let _ = reply_channel
+                                                    .send_text(format!("video-fps:{next_fps}"))
+                                                    .await;
                                             }
                                         }
                                         Err(_) => {
@@ -4290,7 +4322,7 @@ fn bridge_webrtc_offer(
             .ok_or_else(|| io::Error::other("missing WebRTC answer"))?;
         Ok::<_, io::Error>((peer, answer, video_track, audio_track, video_stop))
     })?;
-    spawn_bridge_webrtc_h264(state.clone(), video_track, Arc::clone(&stop));
+    spawn_bridge_webrtc_h264(state.clone(), video_track, Arc::clone(&stop), video_target_fps);
     spawn_bridge_webrtc_opus(state.clone(), audio_track, Arc::clone(&stop));
 
     let mut peers = state
@@ -4316,13 +4348,59 @@ fn spawn_bridge_webrtc_h264(
     state: BridgeState,
     track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
     stop: Arc<AtomicBool>,
+    target_fps: Arc<AtomicU32>,
 ) {
     let runtime = Arc::clone(&state.webrtc_runtime);
     thread::spawn(move || {
-        if let Err(err) = bridge_webrtc_h264_loop(state, track, runtime, stop) {
+        if let Err(err) = bridge_webrtc_h264_loop(state, track, runtime, stop, target_fps) {
             eprintln!("webrtc h264 stream ended: {err}");
         }
     });
+}
+
+fn adapt_webrtc_video_fps(
+    target_fps: &AtomicU32,
+    stable_ticks: &AtomicU32,
+    stats: BridgeVideoStats,
+) -> Option<u32> {
+    let current = target_fps.load(Ordering::SeqCst);
+    let stressed = stats.dropped_delta > 0
+        || stats.queue > 0
+        || stats.jitter_ms > 42.0
+        || stats.decode_ms > 12.0
+        || stats.fps < current.saturating_sub(8) as f64;
+    if stressed {
+        stable_ticks.store(0, Ordering::SeqCst);
+        let next = match current {
+            56..=u32::MAX => 50,
+            46..=55 => 45,
+            41..=45 => 40,
+            _ => WEBRTC_VIDEO_MIN_FPS,
+        };
+        if next != current {
+            target_fps.store(next, Ordering::SeqCst);
+            return Some(next);
+        }
+        return None;
+    }
+
+    let stable = stable_ticks.fetch_add(1, Ordering::SeqCst) + 1;
+    if stable < WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE {
+        return None;
+    }
+    stable_ticks.store(0, Ordering::SeqCst);
+    let next = match current {
+        0..=40 => 45,
+        41..=45 => 50,
+        46..=50 => WEBRTC_VIDEO_FPS as u32,
+        _ => current,
+    };
+    if next != current {
+        target_fps.store(next, Ordering::SeqCst);
+        Some(next)
+    } else {
+        None
+    }
 }
 
 fn spawn_bridge_webrtc_opus(
@@ -4533,6 +4611,7 @@ fn bridge_webrtc_h264_loop(
     track: Arc<webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample>,
     runtime: Arc<tokio::runtime::Runtime>,
     stop: Arc<AtomicBool>,
+    target_fps: Arc<AtomicU32>,
 ) -> io::Result<()> {
     let (width, height) = {
         let emulator = lock_bridge_emulator(&state)?;
@@ -4610,8 +4689,13 @@ fn bridge_webrtc_h264_loop(
         .ok_or_else(|| io::Error::other("ffmpeg stdout unavailable"))?;
     let writer_state = state.clone();
     let writer_stop = Arc::clone(&stop);
+    let writer_target_fps = Arc::clone(&target_fps);
+    let pending_durations = Arc::new(Mutex::new(VecDeque::new()));
+    let writer_durations = Arc::clone(&pending_durations);
     let writer = thread::spawn(move || {
         let mut last_frame = 0u32;
+        let mut last_encoded_frame = 0u32;
+        let mut frame_budget = WEBRTC_VIDEO_FPS as u32;
         while !writer_stop.load(Ordering::SeqCst) {
             let snapshot = match next_bridge_video_snapshot(&writer_state, last_frame, &writer_stop)
             {
@@ -4622,6 +4706,28 @@ fn bridge_webrtc_h264_loop(
             last_frame = snapshot.frame;
             if snapshot.width != width || snapshot.height != height {
                 break;
+            }
+            let target_fps = writer_target_fps
+                .load(Ordering::SeqCst)
+                .clamp(WEBRTC_VIDEO_MIN_FPS, WEBRTC_VIDEO_FPS as u32);
+            frame_budget = frame_budget.saturating_add(target_fps);
+            if frame_budget < WEBRTC_VIDEO_FPS as u32 {
+                if snapshot.stopped {
+                    break;
+                }
+                continue;
+            }
+            frame_budget -= WEBRTC_VIDEO_FPS as u32;
+            let frame_delta = if last_encoded_frame == 0 {
+                1
+            } else {
+                snapshot.frame.saturating_sub(last_encoded_frame).max(1)
+            };
+            last_encoded_frame = snapshot.frame;
+            if let Ok(mut durations) = writer_durations.lock() {
+                durations.push_back(Duration::from_secs_f64(
+                    frame_delta as f64 / WEBRTC_VIDEO_FPS,
+                ));
             }
             if stdin.write_all(&snapshot.rgb).is_err() {
                 break;
@@ -4647,9 +4753,14 @@ fn bridge_webrtc_h264_loop(
         };
         h264_buf.extend_from_slice(&read_buf[..read]);
         for sample in drain_h264_access_units(&mut h264_buf, &mut access_unit) {
+            let duration = pending_durations
+                .lock()
+                .ok()
+                .and_then(|mut durations| durations.pop_front())
+                .unwrap_or(sample_duration);
             let sample = media::Sample {
                 data: bytes::Bytes::from(sample),
-                duration: sample_duration,
+                duration,
                 ..Default::default()
             };
             if runtime.block_on(track.write_sample(&sample)).is_err() {

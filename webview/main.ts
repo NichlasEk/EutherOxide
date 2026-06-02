@@ -5143,6 +5143,24 @@ function startBridgeWebRtcStats(peer: RTCPeerConnection, generation: number): vo
   }, 500);
 }
 
+function sendBridgeWebRtcVideoStats(stats: {
+  droppedDelta: number;
+  fps: number;
+  jitterMs: number;
+  queue: number;
+  decodeMs: number;
+}): void {
+  const channel = bridgeWebRtcChannel;
+  if (!channel || channel.readyState !== "open") {
+    return;
+  }
+  try {
+    channel.send(JSON.stringify({ type: "videoStats", stats }));
+  } catch {
+    // Stats feedback is opportunistic; media can continue without it.
+  }
+}
+
 async function updateBridgeWebRtcStats(peer: RTCPeerConnection): Promise<void> {
   try {
     const stats = await peer.getStats();
@@ -5192,6 +5210,13 @@ async function updateBridgeWebRtcStats(peer: RTCPeerConnection): Promise<void> {
         : 0;
       const fps = receivedDelta / secondsDelta;
       const queue = Math.max(0, received - decoded - dropped);
+      sendBridgeWebRtcVideoStats({
+        droppedDelta: Math.max(0, droppedDelta),
+        fps,
+        jitterMs: Math.max(0, jitterMs),
+        queue,
+        decodeMs: Math.max(0, decodeMs),
+      });
       ui.videoAgeStatus = `jit ${Math.max(0, jitterMs).toFixed(0)}ms dec ${Math.max(0, decodeMs).toFixed(0)}ms q${queue} drop ${Math.max(0, droppedDelta)} fps ${fps.toFixed(0)}`;
     });
     if (!foundVideo) {
@@ -5348,6 +5373,10 @@ async function startBridgeWebRtcProbe(): Promise<boolean> {
       ui.lastError = error;
       pushTrace(`WebRTC input missed: ${error}`);
       renderUi();
+      return;
+    }
+    if (message.startsWith("video-fps:")) {
+      pushTrace(`WebRTC video cap ${message.slice("video-fps:".length)} fps`);
       return;
     }
     pushTrace(`WebRTC ${message}`);
