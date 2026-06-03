@@ -1031,6 +1031,15 @@ let eutheriumStatus = "Not loaded";
 let eutheriumMe: EutheriumMeResult | null = null;
 let eutheriumAdmin: EutheriumAdminResult | null = null;
 let selectedTrophyInventoryId: string | null = null;
+let trophyDrag: {
+  inventoryId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startItemX: number;
+  startItemY: number;
+  layout: TrophyRoomLayout;
+} | null = null;
 let videoChatJoined = false;
 let videoChatSending = false;
 let videoChatMuted = false;
@@ -2142,6 +2151,27 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await moveSelectedTrophy(move.dataset.trophyMove ?? "");
     return;
   }
+});
+
+workspaceWindowDynamic.addEventListener("pointerdown", (event) => {
+  const target = event.target as HTMLElement;
+  const trophy = target.closest<HTMLButtonElement>("[data-trophy-select]");
+  if (!trophy) {
+    return;
+  }
+  startTrophyDrag(event, trophy);
+});
+
+workspaceWindowDynamic.addEventListener("pointermove", (event) => {
+  updateTrophyDrag(event);
+});
+
+workspaceWindowDynamic.addEventListener("pointerup", (event) => {
+  void finishTrophyDrag(event);
+});
+
+workspaceWindowDynamic.addEventListener("pointercancel", () => {
+  trophyDrag = null;
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {
@@ -5989,6 +6019,7 @@ function eutheriumWindowMarkup(): string {
           <span>${data.trophyRoom.layout.items.length} placed</span>
         </div>
         ${trophyRoomMarkup(data)}
+        ${trophyPreviewMarkup(data)}
         ${trophyControlsMarkup()}
       </section>
       ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
@@ -6048,32 +6079,36 @@ function eutheriumAwardPanelMarkup(): string {
 }
 
 function trophyRoomMarkup(data: EutheriumMeResult): string {
-  const inventory = new Map(data.inventory.map((entry) => [entry.id, entry]));
   return `
     <div class="trophy-room trophy-bg-${escapeHtml(data.trophyRoom.layout.background)}">
-      ${data.trophyRoom.layout.items
-        .map((placed) => {
-          const entry = inventory.get(placed.inventoryId);
-          const item = entry?.item;
-          if (!entry || !item) {
-            return "";
-          }
-          const selected = selectedTrophyInventoryId === entry.id;
-          return `
-            <button
-              class="trophy-room-item ${selected ? "is-selected" : ""}"
-              data-trophy-select="${escapeHtml(entry.id)}"
-              type="button"
-              style="left:${placed.x}%; top:${placed.y}%; --trophy-scale:${placed.scale};"
-              aria-label="${escapeHtml(item.name)}"
-            >
-              <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
-            </button>
-          `;
-        })
-        .join("")}
+      ${trophyRoomItemsMarkup(data)}
     </div>
   `;
+}
+
+function trophyRoomItemsMarkup(data: EutheriumMeResult): string {
+  const inventory = new Map(data.inventory.map((entry) => [entry.id, entry]));
+  return data.trophyRoom.layout.items
+    .map((placed) => {
+      const entry = inventory.get(placed.inventoryId);
+      const item = entry?.item;
+      if (!entry || !item) {
+        return "";
+      }
+      const selected = selectedTrophyInventoryId === entry.id;
+      return `
+        <button
+          class="trophy-room-item ${selected ? "is-selected" : ""}"
+          data-trophy-select="${escapeHtml(entry.id)}"
+          type="button"
+          style="left:${placed.x}%; top:${placed.y}%; --trophy-scale:${placed.scale};"
+          aria-label="${escapeHtml(item.name)}"
+        >
+          <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
+        </button>
+      `;
+    })
+    .join("");
 }
 
 function trophyControlsMarkup(): string {
@@ -6090,6 +6125,33 @@ function trophyControlsMarkup(): string {
       <button data-trophy-move="smaller" type="button">Smaller</button>
       <button data-trophy-move="larger" type="button">Larger</button>
       <button data-trophy-move="remove" type="button">Remove</button>
+    </div>
+  `;
+}
+
+function trophyPreviewMarkup(data: EutheriumMeResult): string {
+  const selected = selectedTrophyEntry(data);
+  const item = selected?.item;
+  if (!selected || !item) {
+    return `
+      <div class="trophy-preview">
+        <div class="trophy-preview-empty">
+          <strong>No trophy selected</strong>
+          <span>Place an inventory item, then drag it around the room.</span>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="trophy-preview">
+      <div class="trophy-preview-orbit">
+        <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
+      </div>
+      <div class="trophy-preview-meta">
+        <span>${escapeHtml(item.rarity)}</span>
+        <strong>${escapeHtml(item.name)}</strong>
+        <p>${escapeHtml(item.description)}</p>
+      </div>
     </div>
   `;
 }
@@ -6201,6 +6263,79 @@ async function placeTrophyItem(inventoryId: string): Promise<void> {
   await saveTrophyLayout(layout);
 }
 
+function startTrophyDrag(event: PointerEvent, button: HTMLButtonElement): void {
+  if (!eutheriumMe || eutheriumSaving) {
+    return;
+  }
+  const inventoryId = button.dataset.trophySelect ?? "";
+  const item = eutheriumMe.trophyRoom.layout.items.find((candidate) => candidate.inventoryId === inventoryId);
+  if (!inventoryId || !item) {
+    return;
+  }
+  selectedTrophyInventoryId = inventoryId;
+  trophyDrag = {
+    inventoryId,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startItemX: item.x,
+    startItemY: item.y,
+    layout: cloneTrophyLayout(eutheriumMe.trophyRoom.layout),
+  };
+  button.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  renderWorkspaceWindow();
+}
+
+function updateTrophyDrag(event: PointerEvent): void {
+  if (!trophyDrag || !eutheriumMe || event.pointerId !== trophyDrag.pointerId) {
+    return;
+  }
+  const room = workspaceWindowDynamic.querySelector<HTMLElement>(".trophy-room");
+  if (!room) {
+    return;
+  }
+  const rect = room.getBoundingClientRect();
+  const item = trophyDrag.layout.items.find((candidate) => candidate.inventoryId === trophyDrag?.inventoryId);
+  if (!item || rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+  const deltaX = ((event.clientX - trophyDrag.startX) / rect.width) * 100;
+  const deltaY = ((event.clientY - trophyDrag.startY) / rect.height) * 100;
+  item.x = clampTrophyPercent(trophyDrag.startItemX + deltaX);
+  item.y = clampTrophyPercent(trophyDrag.startItemY + deltaY);
+  eutheriumMe = {
+    ...eutheriumMe,
+    trophyRoom: {
+      ...eutheriumMe.trophyRoom,
+      layout: cloneTrophyLayout(trophyDrag.layout),
+    },
+  };
+  renderTrophyRoomLive();
+  event.preventDefault();
+}
+
+async function finishTrophyDrag(event: PointerEvent): Promise<void> {
+  if (!trophyDrag || event.pointerId !== trophyDrag.pointerId) {
+    return;
+  }
+  const layout = cloneTrophyLayout(trophyDrag.layout);
+  trophyDrag = null;
+  event.preventDefault();
+  await saveTrophyLayout(layout);
+}
+
+function renderTrophyRoomLive(): void {
+  if (!eutheriumMe || activeWorkspaceWindow !== "eutherium") {
+    return;
+  }
+  const room = workspaceWindowDynamic.querySelector<HTMLElement>(".trophy-room");
+  if (!room) {
+    return;
+  }
+  room.innerHTML = trophyRoomItemsMarkup(eutheriumMe);
+}
+
 async function moveSelectedTrophy(action: string): Promise<void> {
   if (!eutheriumMe || !selectedTrophyInventoryId) {
     return;
@@ -6236,8 +6371,8 @@ async function moveSelectedTrophy(action: string): Promise<void> {
   }
   layout.items = layout.items.map((candidate) => ({
     ...candidate,
-    x: Math.max(0, Math.min(100, candidate.x)),
-    y: Math.max(0, Math.min(100, candidate.y)),
+    x: clampTrophyPercent(candidate.x),
+    y: clampTrophyPercent(candidate.y),
     scale: Math.max(0.4, Math.min(2.2, candidate.scale)),
   }));
   await saveTrophyLayout(layout);
@@ -6270,6 +6405,17 @@ function cloneTrophyLayout(layout: TrophyRoomLayout): TrophyRoomLayout {
     background: layout.background,
     items: layout.items.map((item) => ({ ...item })),
   };
+}
+
+function selectedTrophyEntry(data: EutheriumMeResult): EutheriumInventoryEntry | null {
+  if (!selectedTrophyInventoryId) {
+    return null;
+  }
+  return data.inventory.find((entry) => entry.id === selectedTrophyInventoryId) ?? null;
+}
+
+function clampTrophyPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
 }
 
 function formatEutherium(value: number): string {
