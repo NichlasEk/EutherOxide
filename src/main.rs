@@ -3945,6 +3945,7 @@ fn set_host_user_permissions(
     user.can_launch_roms = permissions.can_launch_roms;
     user.can_upload_roms = permissions.can_upload_roms;
     user.can_manage_library = permissions.can_manage_library;
+    user.can_award_eutherium = permissions.can_award_eutherium;
     save_host_users(&users)
 }
 
