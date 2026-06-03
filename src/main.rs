@@ -796,6 +796,7 @@ struct HostUser {
     can_launch_roms: bool,
     can_upload_roms: bool,
     can_manage_library: bool,
+    can_award_eutherium: bool,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -805,6 +806,7 @@ struct HostPermissions {
     can_launch_roms: bool,
     can_upload_roms: bool,
     can_manage_library: bool,
+    can_award_eutherium: bool,
 }
 
 struct HostSession {
@@ -917,6 +919,78 @@ struct HostShoppingListMemberEntry {
 struct HostShoppingListManifest {
     owner: String,
     members: Vec<HostShoppingListMemberEntry>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutheriumLedgerEntry {
+    id: String,
+    user_id: String,
+    amount: i64,
+    reason: String,
+    source: String,
+    #[serde(default)]
+    created_by_user_id: String,
+    created_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutheriumItem {
+    id: &'static str,
+    name: &'static str,
+    item_type: &'static str,
+    price: i64,
+    description: &'static str,
+    image_path: String,
+    rarity: &'static str,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostInventoryEntry {
+    id: String,
+    user_id: String,
+    item_id: String,
+    acquired_unix_ms: u64,
+    equipped_to_item_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostTrophyRoomLayout {
+    background: String,
+    items: Vec<HostTrophyRoomLayoutItem>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostTrophyRoomLayoutItem {
+    inventory_id: String,
+    x: f64,
+    y: f64,
+    scale: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutheriumAwardRequest {
+    user_id: String,
+    amount: i64,
+    reason: String,
+    source: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostShopBuyRequest {
+    item_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostTrophyRoomLayoutRequest {
+    layout: HostTrophyRoomLayout,
 }
 
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
@@ -1261,6 +1335,68 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             set_host_shopping_list_role(state, &user, &update.user, &update.role)?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
+        ("GET", "/api/eutherium/me") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("GET", "/api/eutherium/ledger") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_eutherium_ledger_result(&user)?)
+        }
+        ("POST", "/api/eutherium/award") => {
+            let awarder = match require_host_eutherium_awarder(state, &request) {
+                Ok(awarder) => awarder,
+                Err(err) => return send_error(stream, 403, &err.to_string()),
+            };
+            let award: HostEutheriumAwardRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            award_host_eutherium(state, &awarder, award)?;
+            if is_host_admin(state, &awarder)? {
+                send_json(stream, &host_eutherium_admin_result(state)?)
+            } else {
+                send_json(stream, &serde_json::json!({ "ok": true }))
+            }
+        }
+        ("GET", "/api/eutherium/admin") => {
+            if let Err(err) = require_host_admin(state, &request) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &host_eutherium_admin_result(state)?)
+        }
+        ("GET", "/api/shop/items") => {
+            require_host_user(state, &request)?;
+            send_json(stream, &serde_json::json!({ "items": host_shop_items() }))
+        }
+        ("POST", "/api/shop/buy") => {
+            let user = require_host_user(state, &request)?;
+            let buy: HostShopBuyRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            buy_host_shop_item(&user, &buy.item_id)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("GET", "/api/inventory") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_inventory_result(&user)?)
+        }
+        ("POST", "/api/inventory/equip") => {
+            require_host_user(state, &request)?;
+            send_json(
+                stream,
+                &serde_json::json!({ "ok": true, "message": "equipment slots are reserved for item-to-item trophies" }),
+            )
+        }
+        ("GET", path) if path.starts_with("/api/trophy-room/") => {
+            require_host_user(state, &request)?;
+            let room_user = host_trophy_room_user_from_path(path)?;
+            send_json(stream, &host_trophy_room_result(&room_user)?)
+        }
+        ("POST", "/api/trophy-room/layout") => {
+            let user = require_host_user(state, &request)?;
+            let update: HostTrophyRoomLayoutRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            save_host_trophy_room_layout(&user, update.layout)?;
+            send_json(stream, &host_trophy_room_result(&user)?)
+        }
         ("GET", "/api/video-chat") => {
             let user = require_host_user(state, &request)?;
             let instance_id = host_instance_id(&request.path)?;
@@ -1366,6 +1502,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 can_launch_roms: form_bool(&form, "can_launch_roms"),
                 can_upload_roms: form_bool(&form, "can_upload_roms"),
                 can_manage_library: form_bool(&form, "can_manage_library"),
+                can_award_eutherium: form_bool(&form, "can_award_eutherium"),
             };
             set_host_user_permissions(state, &username, permissions)?;
             send_json(stream, &host_user_list(state)?)
@@ -1740,6 +1877,19 @@ fn require_host_admin(state: &HostState, request: &HttpRequest) -> io::Result<St
     }
 }
 
+fn require_host_eutherium_awarder(state: &HostState, request: &HttpRequest) -> io::Result<String> {
+    let user = require_host_user(state, request)?;
+    let permissions = host_permissions(state, &user)?;
+    if permissions.can_award_eutherium {
+        Ok(user)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Eutherium award permission required",
+        ))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum HostPermission {
     Play,
@@ -1762,6 +1912,7 @@ fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermiss
             can_launch_roms: false,
             can_upload_roms: false,
             can_manage_library: false,
+            can_award_eutherium: false,
         });
     };
     Ok(host_permissions_for_user(user))
@@ -1774,6 +1925,7 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
             can_launch_roms: true,
             can_upload_roms: true,
             can_manage_library: true,
+            can_award_eutherium: true,
         };
     }
     HostPermissions {
@@ -1781,6 +1933,7 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
         can_launch_roms: user.can_launch_roms,
         can_upload_roms: user.can_upload_roms,
         can_manage_library: user.can_manage_library,
+        can_award_eutherium: user.can_award_eutherium,
     }
 }
 
@@ -2538,6 +2691,391 @@ fn require_existing_host_user(state: &HostState, username: &str) -> io::Result<S
         .find(|user| user.name == username && !user.banned)
         .map(|user| user.name.clone())
         .ok_or_else(|| invalid_request("user not found"))
+}
+
+fn host_eutherium_me(state: &HostState, user: &str) -> io::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "user": user,
+        "isAdmin": is_host_admin(state, user)?,
+        "balance": host_eutherium_balance(user)?,
+        "ledger": host_eutherium_user_ledger(user, 12)?,
+        "inventory": host_inventory_entries(user)?,
+        "items": host_shop_items(),
+        "trophyRoom": host_trophy_room_result(user)?,
+    }))
+}
+
+fn host_eutherium_admin_result(state: &HostState) -> io::Result<serde_json::Value> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut rows = Vec::new();
+    for user in users.iter().filter(|user| !user.banned) {
+        rows.push(serde_json::json!({
+            "user": user.name,
+            "admin": user.admin,
+            "balance": host_eutherium_balance(&user.name)?,
+        }));
+    }
+    Ok(serde_json::json!({
+        "users": rows,
+        "ledger": host_eutherium_ledger_tail(28)?,
+    }))
+}
+
+fn host_eutherium_ledger_result(user: &str) -> io::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "user": user,
+        "balance": host_eutherium_balance(user)?,
+        "ledger": host_eutherium_user_ledger(user, 80)?,
+    }))
+}
+
+fn award_host_eutherium(
+    state: &HostState,
+    awarder: &str,
+    award: HostEutheriumAwardRequest,
+) -> io::Result<()> {
+    let user = require_existing_host_user(state, &award.user_id)?;
+    if award.amount <= 0 || award.amount > 1_000_000 {
+        return Err(invalid_request(
+            "award amount must be between 1 and 1000000",
+        ));
+    }
+    if !is_host_admin(state, awarder)? {
+        if award.amount > 3_000 {
+            return Err(invalid_request("subadmin award limit is 3000 per grant"));
+        }
+        let awarded_today = host_eutherium_awarded_today_by(awarder)?;
+        if awarded_today + award.amount > 10_000 {
+            return Err(invalid_request("subadmin daily award limit is 10000"));
+        }
+    }
+    let reason = award.reason.trim();
+    if reason.is_empty() || reason.len() > 160 {
+        return Err(invalid_request("award reason must be 1-160 characters"));
+    }
+    append_host_eutherium_ledger(HostEutheriumLedgerEntry {
+        id: host_eutherium_entry_id("award", &user),
+        user_id: user,
+        amount: award.amount,
+        reason: reason.to_string(),
+        source: award
+            .source
+            .map(|source| source.trim().to_string())
+            .filter(|source| !source.is_empty())
+            .unwrap_or_else(|| "manual_award".to_string()),
+        created_by_user_id: awarder.to_string(),
+        created_unix_ms: unix_ms_now(),
+    })
+}
+
+fn buy_host_shop_item(user: &str, item_id: &str) -> io::Result<()> {
+    let item_id = item_id.trim();
+    let Some(item) = host_shop_items()
+        .into_iter()
+        .find(|item| item.id == item_id)
+    else {
+        return Err(invalid_request("shop item not found"));
+    };
+    if host_eutherium_balance(user)? < item.price {
+        return Err(invalid_request("not enough Eutherium"));
+    }
+    append_host_eutherium_ledger(HostEutheriumLedgerEntry {
+        id: host_eutherium_entry_id("buy", user),
+        user_id: user.to_string(),
+        amount: -item.price,
+        reason: format!("Bought {}", item.name),
+        source: "shop".to_string(),
+        created_by_user_id: user.to_string(),
+        created_unix_ms: unix_ms_now(),
+    })?;
+    let mut inventory = load_host_inventory()?;
+    inventory.push(HostInventoryEntry {
+        id: host_eutherium_entry_id("inv", user),
+        user_id: user.to_string(),
+        item_id: item.id.to_string(),
+        acquired_unix_ms: unix_ms_now(),
+        equipped_to_item_id: None,
+    });
+    save_host_inventory(&inventory)
+}
+
+fn host_inventory_result(user: &str) -> io::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "user": user,
+        "inventory": host_inventory_entries(user)?,
+        "items": host_shop_items(),
+    }))
+}
+
+fn host_inventory_entries(user: &str) -> io::Result<Vec<serde_json::Value>> {
+    let items = host_shop_items();
+    Ok(load_host_inventory()?
+        .into_iter()
+        .filter(|entry| entry.user_id == user)
+        .map(|entry| {
+            let item = items.iter().find(|item| item.id == entry.item_id);
+            serde_json::json!({
+                "id": entry.id,
+                "userId": entry.user_id,
+                "itemId": entry.item_id,
+                "acquiredUnixMs": entry.acquired_unix_ms,
+                "equippedToItemId": entry.equipped_to_item_id,
+                "item": item,
+            })
+        })
+        .collect())
+}
+
+fn host_trophy_room_result(user: &str) -> io::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "user": user,
+        "layout": load_host_trophy_room_layout(user)?,
+        "inventory": host_inventory_entries(user)?,
+    }))
+}
+
+fn save_host_trophy_room_layout(user: &str, mut layout: HostTrophyRoomLayout) -> io::Result<()> {
+    if layout.background.trim().is_empty() {
+        layout.background = "server_basement".to_string();
+    }
+    if layout.items.len() > 80 {
+        return Err(invalid_request("trophy room is too large"));
+    }
+    let inventory_ids: HashSet<String> = load_host_inventory()?
+        .into_iter()
+        .filter(|entry| entry.user_id == user)
+        .map(|entry| entry.id)
+        .collect();
+    layout
+        .items
+        .retain(|item| inventory_ids.contains(&item.inventory_id));
+    for item in &mut layout.items {
+        item.x = item.x.clamp(0.0, 100.0);
+        item.y = item.y.clamp(0.0, 100.0);
+        item.scale = item.scale.clamp(0.4, 2.2);
+    }
+    let path = host_trophy_room_layout_path(user);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(&layout).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn load_host_trophy_room_layout(user: &str) -> io::Result<HostTrophyRoomLayout> {
+    let path = host_trophy_room_layout_path(user);
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(HostTrophyRoomLayout {
+            background: "server_basement".to_string(),
+            items: Vec::new(),
+        }),
+        Err(err) => Err(err),
+    }
+}
+
+fn host_trophy_room_user_from_path(path: &str) -> io::Result<String> {
+    let raw = path
+        .trim_start_matches("/api/trophy-room/")
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    percent_decode(raw).and_then(|value| {
+        if value.trim().is_empty() || value.len() > 80 {
+            Err(invalid_request("invalid trophy room user"))
+        } else {
+            Ok(value)
+        }
+    })
+}
+
+fn host_eutherium_balance(user: &str) -> io::Result<i64> {
+    Ok(load_host_eutherium_ledger()?
+        .into_iter()
+        .filter(|entry| entry.user_id == user)
+        .map(|entry| entry.amount)
+        .sum())
+}
+
+fn host_eutherium_awarded_today_by(awarder: &str) -> io::Result<i64> {
+    let day_start = unix_ms_now().saturating_sub(unix_ms_now() % 86_400_000);
+    Ok(load_host_eutherium_ledger()?
+        .into_iter()
+        .filter(|entry| {
+            entry.created_by_user_id == awarder
+                && entry.source == "manual_award"
+                && entry.amount > 0
+                && entry.created_unix_ms >= day_start
+        })
+        .map(|entry| entry.amount)
+        .sum())
+}
+
+fn host_eutherium_user_ledger(
+    user: &str,
+    limit: usize,
+) -> io::Result<Vec<HostEutheriumLedgerEntry>> {
+    let mut entries: Vec<_> = load_host_eutherium_ledger()?
+        .into_iter()
+        .filter(|entry| entry.user_id == user)
+        .collect();
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_unix_ms));
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+fn host_eutherium_ledger_tail(limit: usize) -> io::Result<Vec<HostEutheriumLedgerEntry>> {
+    let mut entries = load_host_eutherium_ledger()?;
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_unix_ms));
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+fn append_host_eutherium_ledger(entry: HostEutheriumLedgerEntry) -> io::Result<()> {
+    let mut ledger = load_host_eutherium_ledger()?;
+    ledger.push(entry);
+    save_host_eutherium_ledger(&ledger)
+}
+
+fn load_host_eutherium_ledger() -> io::Result<Vec<HostEutheriumLedgerEntry>> {
+    match fs::read_to_string(host_eutherium_ledger_path()) {
+        Ok(contents) => {
+            serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_host_eutherium_ledger(ledger: &[HostEutheriumLedgerEntry]) -> io::Result<()> {
+    let path = host_eutherium_ledger_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(ledger).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn load_host_inventory() -> io::Result<Vec<HostInventoryEntry>> {
+    match fs::read_to_string(host_eutherium_inventory_path()) {
+        Ok(contents) => {
+            serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_host_inventory(inventory: &[HostInventoryEntry]) -> io::Result<()> {
+    let path = host_eutherium_inventory_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(inventory).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn host_shop_items() -> Vec<HostEutheriumItem> {
+    vec![
+        HostEutheriumItem {
+            id: "goat",
+            name: "Goat",
+            item_type: "creature",
+            price: 1000,
+            description: "A proud trophy goat for serious family infrastructure.",
+            image_path: host_trophy_icon("goat"),
+            rarity: "rare",
+        },
+        HostEutheriumItem {
+            id: "goat-fez",
+            name: "Fez for Goat",
+            item_type: "accessory",
+            price: 500,
+            description: "Small hat, major authority. Can later be equipped to a goat.",
+            image_path: host_trophy_icon("goat-fez"),
+            rarity: "deeply unnecessary",
+        },
+        HostEutheriumItem {
+            id: "soft-cheese-monument",
+            name: "Soft Cheese Monument",
+            item_type: "monument",
+            price: 1200,
+            description: "A strange creamy landmark for the trophy shelf.",
+            image_path: host_trophy_icon("soft-cheese-monument"),
+            rarity: "rare",
+        },
+        HostEutheriumItem {
+            id: "angry-duck",
+            name: "Angry Duck",
+            item_type: "creature",
+            price: 800,
+            description: "Judges the room silently and often correctly.",
+            image_path: host_trophy_icon("angry-duck"),
+            rarity: "common",
+        },
+        HostEutheriumItem {
+            id: "mpa-inspector-cage",
+            name: "MPA Inspector in Cage",
+            item_type: "oddity",
+            price: 2500,
+            description: "A regulatory artifact with excellent shelf presence.",
+            image_path: host_trophy_icon("mpa-inspector-cage"),
+            rarity: "legendary",
+        },
+        HostEutheriumItem {
+            id: "broken-stool",
+            name: "Broken Stool",
+            item_type: "furniture",
+            price: 300,
+            description: "It has seen things. It refuses to elaborate.",
+            image_path: host_trophy_icon("broken-stool"),
+            rarity: "common",
+        },
+        HostEutheriumItem {
+            id: "purple-server-relic",
+            name: "Purple Server Relic",
+            item_type: "relic",
+            price: 5000,
+            description: "A humming relic from an older chamber.",
+            image_path: host_trophy_icon("purple-server-relic"),
+            rarity: "legendary",
+        },
+    ]
+}
+
+fn host_trophy_icon(kind: &str) -> String {
+    let (bg, fg, mark) = match kind {
+        "goat" => ("#d9f0bc", "#1e2a18", "G"),
+        "goat-fez" => ("#c93838", "#fff4de", "F"),
+        "soft-cheese-monument" => ("#f5d76e", "#3b2b0c", "M"),
+        "angry-duck" => ("#f0c542", "#221d0d", "D"),
+        "mpa-inspector-cage" => ("#9dd4ff", "#13212b", "I"),
+        "broken-stool" => ("#a6784f", "#fff1d9", "S"),
+        "purple-server-relic" => ("#8e6cf0", "#f4efff", "R"),
+        _ => ("#d9f0bc", "#1e2a18", "?"),
+    };
+    let bg = bg.trim_start_matches('#');
+    let fg = fg.trim_start_matches('#');
+    format!(
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop stop-color='%23{bg}'/%3E%3Cstop offset='1' stop-color='%23061108'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='96' height='96' rx='16' fill='url(%23g)'/%3E%3Ccircle cx='48' cy='48' r='30' fill='none' stroke='%23{fg}' stroke-width='6'/%3E%3Ctext x='48' y='59' text-anchor='middle' font-family='Arial,sans-serif' font-size='34' font-weight='900' fill='%23{fg}'%3E{mark}%3C/text%3E%3C/svg%3E"
+    )
+}
+
+fn host_eutherium_entry_id(prefix: &str, user: &str) -> String {
+    format!(
+        "{}-{}-{}",
+        prefix,
+        unix_ms_now(),
+        host_shared_doc_user_slug(user)
+    )
 }
 
 fn default_shopping_list_markdown() -> String {
@@ -3311,6 +3849,7 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         can_launch_roms: false,
         can_upload_roms: false,
         can_manage_library: false,
+        can_award_eutherium: false,
     });
     save_host_users(&users)
 }
@@ -6540,6 +7079,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut can_launch_roms = false;
     let mut can_upload_roms = false;
     let mut can_manage_library = false;
+    let mut can_award_eutherium = false;
     for line in contents.lines().map(str::trim) {
         if line.starts_with("[[user]]") {
             if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
@@ -6556,6 +7096,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_launch_roms,
                     can_upload_roms,
                     can_manage_library,
+                    can_award_eutherium,
                 });
             }
             app_token = None;
@@ -6565,6 +7106,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_launch_roms = false;
             can_upload_roms = false;
             can_manage_library = false;
+            can_award_eutherium = false;
             continue;
         }
         if line.starts_with('#') || line.is_empty() {
@@ -6588,6 +7130,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_upload_roms = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "can_manage_library") {
             can_manage_library = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_award_eutherium") {
+            can_award_eutherium = value;
         }
     }
     if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
@@ -6602,6 +7146,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_launch_roms,
             can_upload_roms,
             can_manage_library,
+            can_award_eutherium,
         });
     }
     if users.is_empty() {
@@ -6639,6 +7184,10 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
         contents.push_str(&format!(
             "can_manage_library = {}\n",
             user.can_manage_library
+        ));
+        contents.push_str(&format!(
+            "can_award_eutherium = {}\n",
+            user.can_award_eutherium
         ));
     }
     fs::write(host_users_path(), contents)
@@ -6705,6 +7254,24 @@ fn host_chat_path() -> PathBuf {
 
 fn host_audit_path() -> PathBuf {
     host_dir().join("audit.log")
+}
+
+fn host_eutherium_dir() -> PathBuf {
+    host_dir().join("eutherium")
+}
+
+fn host_eutherium_ledger_path() -> PathBuf {
+    host_eutherium_dir().join("ledger.json")
+}
+
+fn host_eutherium_inventory_path() -> PathBuf {
+    host_eutherium_dir().join("inventory.json")
+}
+
+fn host_trophy_room_layout_path(user: &str) -> PathBuf {
+    host_user_data_dir(user)
+        .join("eutherium")
+        .join("trophy-room.json")
 }
 
 fn ensure_host_user_data_dir(user: &str) -> io::Result<PathBuf> {

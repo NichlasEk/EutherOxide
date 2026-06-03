@@ -11,6 +11,11 @@ const eutherDogsAssetModules = import.meta.glob("../assets/eutherdogs/**/*.{png,
   query: "?url",
   import: "default",
 }) as Record<string, string>;
+const eutheriumIconModules = import.meta.glob("../assets/eutherium/icons/*.png", {
+  eager: true,
+  query: "?url",
+  import: "default",
+}) as Record<string, string>;
 
 declare global {
   interface Window {
@@ -233,6 +238,7 @@ type HostPermissions = {
   canLaunchRoms: boolean;
   canUploadRoms: boolean;
   canManageLibrary: boolean;
+  canAwardEutherium: boolean;
 };
 
 type AuthStatus = {
@@ -280,7 +286,7 @@ type VideoChatResult = {
 
 type PlayMode = "megadrive" | "eutherdogs" | "eutherdoom";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
-type WorkspaceWindow = "interaction" | "shopping" | "friends" | "spaces" | "profile" | "settings";
+type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "friends" | "spaces" | "profile" | "settings";
 
 type InteractionFriend = {
   name: string;
@@ -339,6 +345,68 @@ type ShoppingListItem = {
 type ShoppingListCategoryGroup = {
   name: string;
   items: ShoppingListItem[];
+};
+
+type EutheriumShopItem = {
+  id: string;
+  name: string;
+  itemType: string;
+  price: number;
+  description: string;
+  imagePath: string;
+  rarity: string;
+};
+
+type EutheriumLedgerEntry = {
+  id: string;
+  userId: string;
+  amount: number;
+  reason: string;
+  source: string;
+  createdByUserId: string;
+  createdUnixMs: number;
+};
+
+type EutheriumInventoryEntry = {
+  id: string;
+  userId: string;
+  itemId: string;
+  acquiredUnixMs: number;
+  equippedToItemId?: string | null;
+  item?: EutheriumShopItem | null;
+};
+
+type TrophyRoomLayoutItem = {
+  inventoryId: string;
+  x: number;
+  y: number;
+  scale: number;
+};
+
+type TrophyRoomLayout = {
+  background: string;
+  items: TrophyRoomLayoutItem[];
+};
+
+type TrophyRoomResult = {
+  user: string;
+  layout: TrophyRoomLayout;
+  inventory: EutheriumInventoryEntry[];
+};
+
+type EutheriumMeResult = {
+  user: string;
+  isAdmin: boolean;
+  balance: number;
+  ledger: EutheriumLedgerEntry[];
+  inventory: EutheriumInventoryEntry[];
+  items: EutheriumShopItem[];
+  trophyRoom: TrophyRoomResult;
+};
+
+type EutheriumAdminResult = {
+  users: Array<{ user: string; admin: boolean; balance: number }>;
+  ledger: EutheriumLedgerEntry[];
 };
 
 type PadBinding = {
@@ -929,6 +997,7 @@ let hostPermissions: HostPermissions = {
   canLaunchRoms: false,
   canUploadRoms: false,
   canManageLibrary: false,
+  canAwardEutherium: false,
 };
 let lobbyStatus: LobbyStatus | null = null;
 let doomStatus: DoomStatus | null = null;
@@ -956,6 +1025,12 @@ let shoppingListShareStatus = "Not shared";
 let interactionUsers: InteractionFriend[] = [];
 let interactionUsersLoaded = false;
 let interactionUsersStatus = "Mock users";
+let eutheriumLoaded = false;
+let eutheriumSaving = false;
+let eutheriumStatus = "Not loaded";
+let eutheriumMe: EutheriumMeResult | null = null;
+let eutheriumAdmin: EutheriumAdminResult | null = null;
+let selectedTrophyInventoryId: string | null = null;
 let videoChatJoined = false;
 let videoChatSending = false;
 let videoChatMuted = false;
@@ -1664,6 +1739,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
+      <button data-user-menu-action="eutherium" type="button" role="menuitem">Eutherium</button>
       <button data-user-menu-action="get-list-app" type="button" role="menuitem">Get the list app</button>
       <button data-user-menu-action="admin" type="button" role="menuitem" hidden>Admin</button>
       <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
@@ -1754,6 +1830,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="admin-form">
             <input id="invite-email" type="email" placeholder="invite email placeholder" aria-label="invite email" />
             <button id="invite-send" type="button">Invite</button>
+          </div>
+          <div class="admin-award-panel">
+            <p class="section-label">Eutherium Dispenser</p>
+            <div class="admin-award-form">
+              <select id="admin-award-user" aria-label="award user"></select>
+              <input id="admin-award-amount" type="number" min="1" step="1" value="100" aria-label="award amount" />
+              <input id="admin-award-reason" type="text" placeholder="reason" aria-label="award reason" />
+              <button id="admin-award-send" type="button">Award</button>
+            </div>
+            <span id="admin-award-status">Ledger only, traceable awards</span>
           </div>
         </section>
       </div>
@@ -1873,6 +1959,11 @@ const adminPassword = document.querySelector<HTMLInputElement>("#admin-password"
 const adminUserAdd = document.querySelector<HTMLButtonElement>("#admin-user-add")!;
 const inviteEmail = document.querySelector<HTMLInputElement>("#invite-email")!;
 const inviteSend = document.querySelector<HTMLButtonElement>("#invite-send")!;
+const adminAwardUser = document.querySelector<HTMLSelectElement>("#admin-award-user")!;
+const adminAwardAmount = document.querySelector<HTMLInputElement>("#admin-award-amount")!;
+const adminAwardReason = document.querySelector<HTMLInputElement>("#admin-award-reason")!;
+const adminAwardSend = document.querySelector<HTMLButtonElement>("#admin-award-send")!;
+const adminAwardStatus = document.querySelector<HTMLElement>("#admin-award-status")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
@@ -2016,6 +2107,41 @@ interactionLobbyPage.addEventListener("click", (event) => {
 
 workspaceWindowClose.addEventListener("click", () => {
   closeWorkspaceWindow();
+});
+
+workspaceWindowDynamic.addEventListener("click", async (event) => {
+  const target = event.target as HTMLElement;
+  const refresh = target.closest<HTMLButtonElement>("[data-eutherium-refresh]");
+  if (refresh) {
+    await loadEutherium(true);
+    return;
+  }
+  const buy = target.closest<HTMLButtonElement>("[data-eutherium-buy]");
+  if (buy) {
+    await buyEutheriumItem(buy.dataset.eutheriumBuy ?? "");
+    return;
+  }
+  const award = target.closest<HTMLButtonElement>("[data-eutherium-award-submit]");
+  if (award) {
+    await awardEutheriumFromWorkspace();
+    return;
+  }
+  const place = target.closest<HTMLButtonElement>("[data-trophy-place]");
+  if (place) {
+    await placeTrophyItem(place.dataset.trophyPlace ?? "");
+    return;
+  }
+  const select = target.closest<HTMLButtonElement>("[data-trophy-select]");
+  if (select) {
+    selectedTrophyInventoryId = select.dataset.trophySelect ?? null;
+    renderWorkspaceWindow();
+    return;
+  }
+  const move = target.closest<HTMLButtonElement>("[data-trophy-move]");
+  if (move) {
+    await moveSelectedTrophy(move.dataset.trophyMove ?? "");
+    return;
+  }
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {
@@ -2311,6 +2437,7 @@ adminUsers.addEventListener("click", async (event) => {
         can_launch_roms: String(next.canLaunchRoms),
         can_upload_roms: String(next.canUploadRoms),
         can_manage_library: String(next.canManageLibrary),
+        can_award_eutherium: String(next.canAwardEutherium),
       }),
     },
     1200,
@@ -2322,6 +2449,10 @@ adminUsers.addEventListener("click", async (event) => {
 
 inviteSend.addEventListener("click", async () => {
   await sendInvitePlaceholder();
+});
+
+adminAwardSend.addEventListener("click", async () => {
+  await awardEutheriumFromAdminPanel();
 });
 
 perfToggle.addEventListener("click", () => {
@@ -3577,6 +3708,7 @@ function playHomeMarkup(): string {
       <div class="lobby-dock-actions">
         <button data-reaction-home-action="refresh" type="button">Scan rooms</button>
         <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
+        <button data-reaction-home-action="eutherium" type="button">Eutherium</button>
         <button data-reaction-home-action="chat-focus" type="button">Reaction Chat</button>
       </div>
     </section>
@@ -3621,6 +3753,7 @@ function reactionLobbyHomeMarkup(): string {
           ${reactionSocialToolCard("Video Chat", videoChatStatusMessage, "Camera, watch, mute", "video-chat")}
           ${reactionSocialToolCard("Reaction Chat", "Live room chat", "Room feed", "chat-focus")}
           ${reactionSocialToolCard("Shopping List", "Shared markdown", "Synced Markdown", undefined, "shopping")}
+          ${reactionSocialToolCard("Eutherium", "Ledger, shop, trophies", "Family rewards", undefined, "eutherium")}
           ${reactionSocialToolCard("Friends", "Online users", "Host users", undefined, "friends")}
           ${reactionSocialToolCard("Shared Spaces", `${interactionSpaces.length} spaces`, "Docs and rooms", undefined, "spaces")}
           ${reactionSocialToolCard("Social Desk", `${visibleInteractionFriends().filter((friend) => friend.status === "Online").length} online`, "Invites and modules", undefined, "interaction")}
@@ -3694,6 +3827,7 @@ function interactionLobbyPageMarkup(): string {
           ${quickActionCard("Add friend", "Send a request into the friend mesh", "friends")}
           ${quickActionCard("Create shared space", "Start a room for people and files", "spaces")}
           ${quickActionCard("Create shopping list", "Make a shared Markdown checklist", "shopping")}
+          ${quickActionCard("Open Eutherium", "Shop, inventory and trophy room", "eutherium")}
           ${quickActionCard("Start chat", "Open a direct line", "interaction")}
         </div>
       </div>
@@ -4834,6 +4968,7 @@ async function refreshAuthStatus(): Promise<void> {
           canLaunchRoms: false,
           canUploadRoms: false,
           canManageLibrary: false,
+          canAwardEutherium: false,
         };
     updateChatPolling(status.authenticated);
     if (!status.authenticated) {
@@ -4848,6 +4983,7 @@ async function refreshAuthStatus(): Promise<void> {
       canLaunchRoms: false,
       canUploadRoms: false,
       canManageLibrary: false,
+      canAwardEutherium: false,
     };
     updateChatPolling(false);
     void leaveVideoChat(false);
@@ -4855,6 +4991,9 @@ async function refreshAuthStatus(): Promise<void> {
   renderAdminAccess();
   if (previousUser !== hostUsername) {
     shoppingListLoaded = false;
+    eutheriumLoaded = false;
+    eutheriumMe = null;
+    selectedTrophyInventoryId = null;
     interactionUsersLoaded = false;
     interactionUsers = [];
   }
@@ -5361,6 +5500,79 @@ async function sendInvitePlaceholder(): Promise<void> {
   pushTrace("Invite placeholder logged");
 }
 
+async function awardEutheriumFromAdminPanel(): Promise<void> {
+  const userId = adminAwardUser.value.trim();
+  const amount = numberInput(adminAwardAmount, 0);
+  const reason = adminAwardReason.value.trim();
+  if (!userId || amount <= 0 || !reason) {
+    adminAwardStatus.textContent = "Choose user, amount and reason";
+    return;
+  }
+  adminAwardSend.disabled = true;
+  adminAwardStatus.textContent = "Writing ledger";
+  try {
+    const result = await bridgeJson<unknown>(
+      "/api/eutherium/award",
+      {
+        method: "POST",
+        body: JSON.stringify({ userId, amount, reason, source: "manual_award" }),
+      },
+      1400,
+    );
+    if (hostIsAdmin && isEutheriumAdminResult(result)) {
+      eutheriumAdmin = result;
+    }
+    adminAwardReason.value = "";
+    adminAwardStatus.textContent = `Awarded ${amount} to ${displayUserName(userId)}`;
+    eutheriumLoaded = false;
+    if (activeWorkspaceWindow === "eutherium") {
+      await loadEutherium();
+    }
+  } catch (err) {
+    adminAwardStatus.textContent = err instanceof Error ? err.message : "Award failed";
+  } finally {
+    adminAwardSend.disabled = false;
+  }
+}
+
+async function awardEutheriumFromWorkspace(): Promise<void> {
+  const userInput = workspaceWindowDynamic.querySelector<HTMLSelectElement>("#eutherium-award-user");
+  const amountInput = workspaceWindowDynamic.querySelector<HTMLInputElement>("#eutherium-award-amount");
+  const reasonInput = workspaceWindowDynamic.querySelector<HTMLInputElement>("#eutherium-award-reason");
+  const userId = userInput?.value.trim() ?? "";
+  const amount = amountInput ? numberInput(amountInput, 0) : 0;
+  const reason = reasonInput?.value.trim() ?? "";
+  if (!userId || amount <= 0 || !reason) {
+    eutheriumStatus = "Choose user, amount and reason";
+    renderWorkspaceWindow();
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Writing ledger";
+  renderWorkspaceWindow();
+  try {
+    const result = await bridgeJson<unknown>(
+      "/api/eutherium/award",
+      {
+        method: "POST",
+        body: JSON.stringify({ userId, amount, reason, source: "manual_award" }),
+      },
+      1400,
+    );
+    if (hostIsAdmin && isEutheriumAdminResult(result)) {
+      eutheriumAdmin = result;
+    }
+    eutheriumLoaded = false;
+    eutheriumStatus = `Awarded ${amount} to ${displayUserName(userId)}`;
+    await loadEutherium(true);
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "Award failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
 function updateChatPolling(enabled: boolean): void {
   if (isTauri || !enabled) {
     if (chatPollTimer !== null) {
@@ -5549,6 +5761,7 @@ function isWorkspaceWindow(value: unknown): value is WorkspaceWindow {
   return (
     value === "interaction" ||
     value === "shopping" ||
+    value === "eutherium" ||
     value === "friends" ||
     value === "spaces" ||
     value === "profile" ||
@@ -5594,6 +5807,9 @@ async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise
       return;
     case "chat-focus":
       focusReactionChat();
+      return;
+    case "eutherium":
+      openWorkspaceWindow("eutherium");
       return;
     case "open":
     case "join":
@@ -5667,6 +5883,8 @@ function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
       return "Interaction Lobby";
     case "shopping":
       return "Shopping List";
+    case "eutherium":
+      return "Eutherium";
     case "friends":
       return "Friends";
     case "spaces":
@@ -5687,6 +5905,11 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
   if (windowName === "shopping") {
     void loadShoppingList();
     void loadInteractionUsers();
+  } else if (windowName === "eutherium") {
+    void loadEutherium();
+    if (hostPermissions.canAwardEutherium) {
+      void loadInteractionUsers();
+    }
   } else if (windowName === "interaction" || windowName === "friends" || windowName === "spaces") {
     void loadInteractionUsers();
   }
@@ -5734,7 +5957,332 @@ function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
       return settingsWindowMarkup();
     case "shopping":
       return "";
+    case "eutherium":
+      return eutheriumWindowMarkup();
   }
+}
+
+function eutheriumWindowMarkup(): string {
+  if (!hostUsername) {
+    return `<div class="interaction-panel"><p class="section-label">Eutherium</p><strong>Login required</strong></div>`;
+  }
+  const data = eutheriumMe;
+  if (!data) {
+    return `<div class="interaction-panel eutherium-loading"><p class="section-label">Eutherium</p><strong>${escapeHtml(eutheriumStatus)}</strong></div>`;
+  }
+  return `
+    <div class="eutherium-window">
+      <section class="eutherium-balance-panel">
+        <div>
+          <p class="section-label">Eutherium Ledger</p>
+          <strong>${formatEutherium(data.balance)} EUX</strong>
+          <span>${escapeHtml(eutheriumStatus)}</span>
+        </div>
+        <button class="mini-action" data-eutherium-refresh type="button">Sync</button>
+      </section>
+      <section class="eutherium-trophy-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Trophy Room</p>
+            <strong>${escapeHtml(displayUserName(data.user))}'s room</strong>
+          </div>
+          <span>${data.trophyRoom.layout.items.length} placed</span>
+        </div>
+        ${trophyRoomMarkup(data)}
+        ${trophyControlsMarkup()}
+      </section>
+      ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
+      <section class="eutherium-shop-panel">
+        <div class="section-head">
+          <p class="section-label">Shop</p>
+          <span>No real money, only glory</span>
+        </div>
+        <div class="eutherium-shop-grid">
+          ${data.items.map((item) => shopItemMarkup(item, data.balance)).join("")}
+        </div>
+      </section>
+      <section class="eutherium-inventory-panel">
+        <div class="section-head">
+          <p class="section-label">Inventory</p>
+          <span>${data.inventory.length} trophies</span>
+        </div>
+        <div class="eutherium-inventory-grid">
+          ${data.inventory.length ? data.inventory.map((entry) => inventoryItemMarkup(entry, data.trophyRoom.layout)).join("") : `<span>No trophies yet</span>`}
+        </div>
+      </section>
+      <section class="eutherium-ledger-panel">
+        <div class="section-head">
+          <p class="section-label">Recent Ledger</p>
+          <span>Traceable</span>
+        </div>
+        <div class="eutherium-ledger-list">
+          ${data.ledger.length ? data.ledger.map(ledgerEntryMarkup).join("") : `<span>No ledger entries yet</span>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function eutheriumAwardPanelMarkup(): string {
+  const candidates = visibleInteractionFriends().filter((friend) => !friend.isCurrentUser || hostIsAdmin);
+  const options = candidates.length
+    ? candidates.map((friend) => `<option value="${escapeHtml(friend.name)}">${escapeHtml(displayUserName(friend.name))}</option>`).join("")
+    : `<option value="">No users loaded</option>`;
+  return `
+    <section class="eutherium-award-panel">
+      <div class="section-head">
+        <div>
+          <p class="section-label">Eutherium Dispenser</p>
+          <strong>Manual award</strong>
+        </div>
+        <span>${hostIsAdmin ? "Admin unlimited" : "Subadmin 3000 / 10000 daily"}</span>
+      </div>
+      <div class="eutherium-award-form">
+        <select id="eutherium-award-user" aria-label="award user">${options}</select>
+        <input id="eutherium-award-amount" type="number" min="1" step="1" value="100" aria-label="award amount" />
+        <input id="eutherium-award-reason" type="text" placeholder="reason" aria-label="award reason" />
+        <button data-eutherium-award-submit type="button">Award</button>
+      </div>
+    </section>
+  `;
+}
+
+function trophyRoomMarkup(data: EutheriumMeResult): string {
+  const inventory = new Map(data.inventory.map((entry) => [entry.id, entry]));
+  return `
+    <div class="trophy-room trophy-bg-${escapeHtml(data.trophyRoom.layout.background)}">
+      ${data.trophyRoom.layout.items
+        .map((placed) => {
+          const entry = inventory.get(placed.inventoryId);
+          const item = entry?.item;
+          if (!entry || !item) {
+            return "";
+          }
+          const selected = selectedTrophyInventoryId === entry.id;
+          return `
+            <button
+              class="trophy-room-item ${selected ? "is-selected" : ""}"
+              data-trophy-select="${escapeHtml(entry.id)}"
+              type="button"
+              style="left:${placed.x}%; top:${placed.y}%; --trophy-scale:${placed.scale};"
+              aria-label="${escapeHtml(item.name)}"
+            >
+              <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function trophyControlsMarkup(): string {
+  if (!selectedTrophyInventoryId) {
+    return `<div class="trophy-controls"><span>Select a placed trophy to move it</span></div>`;
+  }
+  return `
+    <div class="trophy-controls">
+      <span>Selected trophy</span>
+      <button data-trophy-move="up" type="button">Up</button>
+      <button data-trophy-move="left" type="button">Left</button>
+      <button data-trophy-move="right" type="button">Right</button>
+      <button data-trophy-move="down" type="button">Down</button>
+      <button data-trophy-move="smaller" type="button">Smaller</button>
+      <button data-trophy-move="larger" type="button">Larger</button>
+      <button data-trophy-move="remove" type="button">Remove</button>
+    </div>
+  `;
+}
+
+function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
+  const affordable = balance >= item.price;
+  return `
+    <article class="eutherium-item-card rarity-${escapeHtml(item.rarity.replaceAll(" ", "-"))}">
+      <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
+      <div>
+        <span>${escapeHtml(item.rarity)}</span>
+        <strong>${escapeHtml(item.name)}</strong>
+        <p>${escapeHtml(item.description)}</p>
+      </div>
+      <button data-eutherium-buy="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
+        ${formatEutherium(item.price)} EUX
+      </button>
+    </article>
+  `;
+}
+
+function inventoryItemMarkup(entry: EutheriumInventoryEntry, layout: TrophyRoomLayout): string {
+  const item = entry.item;
+  const placed = layout.items.some((placedItem) => placedItem.inventoryId === entry.id);
+  return `
+    <article class="eutherium-inventory-card ${selectedTrophyInventoryId === entry.id ? "is-selected" : ""}">
+      ${item ? `<img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />` : ""}
+      <div>
+        <strong>${escapeHtml(item?.name ?? entry.itemId)}</strong>
+        <span>${placed ? "Placed in room" : "In inventory"}</span>
+      </div>
+      <button data-trophy-place="${escapeHtml(entry.id)}" type="button" ${placed ? "disabled" : ""}>Place</button>
+    </article>
+  `;
+}
+
+function ledgerEntryMarkup(entry: EutheriumLedgerEntry): string {
+  const positive = entry.amount >= 0;
+  const creator = entry.createdByUserId ? ` by ${displayUserName(entry.createdByUserId)}` : "";
+  return `
+    <div class="eutherium-ledger-entry ${positive ? "is-positive" : "is-negative"}">
+      <strong>${positive ? "+" : ""}${formatEutherium(entry.amount)} EUX</strong>
+      <span>${escapeHtml(entry.reason)}${escapeHtml(creator)}</span>
+      <em>${escapeHtml(entry.source)}</em>
+    </div>
+  `;
+}
+
+async function loadEutherium(force = false): Promise<void> {
+  if ((eutheriumLoaded && !force) || eutheriumSaving) {
+    return;
+  }
+  if (!hostUsername) {
+    eutheriumStatus = "Login required";
+    eutheriumMe = null;
+    renderWorkspaceWindow();
+    return;
+  }
+  eutheriumStatus = "Loading";
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>("/api/eutherium/me", {}, 1200);
+    eutheriumLoaded = true;
+    eutheriumStatus = "Synced";
+    if (!selectedTrophyInventoryId && eutheriumMe.trophyRoom.layout.items[0]) {
+      selectedTrophyInventoryId = eutheriumMe.trophyRoom.layout.items[0].inventoryId;
+    }
+  } catch (err) {
+    eutheriumLoaded = false;
+    eutheriumStatus = err instanceof Error ? err.message : "Sync failed";
+  }
+  if (activeWorkspaceWindow === "eutherium") {
+    renderWorkspaceWindow();
+  }
+}
+
+async function buyEutheriumItem(itemId: string): Promise<void> {
+  if (!itemId) {
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Buying";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/buy",
+      { method: "POST", body: JSON.stringify({ itemId }) },
+      1400,
+    );
+    eutheriumLoaded = true;
+    eutheriumStatus = "Bought";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "Buy failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function placeTrophyItem(inventoryId: string): Promise<void> {
+  if (!eutheriumMe || !inventoryId) {
+    return;
+  }
+  const layout = cloneTrophyLayout(eutheriumMe.trophyRoom.layout);
+  if (!layout.items.some((item) => item.inventoryId === inventoryId)) {
+    const offset = layout.items.length % 5;
+    layout.items.push({ inventoryId, x: 22 + offset * 14, y: 54 + (layout.items.length % 2) * 16, scale: 1 });
+  }
+  selectedTrophyInventoryId = inventoryId;
+  await saveTrophyLayout(layout);
+}
+
+async function moveSelectedTrophy(action: string): Promise<void> {
+  if (!eutheriumMe || !selectedTrophyInventoryId) {
+    return;
+  }
+  const layout = cloneTrophyLayout(eutheriumMe.trophyRoom.layout);
+  const item = layout.items.find((candidate) => candidate.inventoryId === selectedTrophyInventoryId);
+  if (!item) {
+    return;
+  }
+  switch (action) {
+    case "up":
+      item.y -= 5;
+      break;
+    case "down":
+      item.y += 5;
+      break;
+    case "left":
+      item.x -= 5;
+      break;
+    case "right":
+      item.x += 5;
+      break;
+    case "smaller":
+      item.scale -= 0.1;
+      break;
+    case "larger":
+      item.scale += 0.1;
+      break;
+    case "remove":
+      layout.items = layout.items.filter((candidate) => candidate.inventoryId !== selectedTrophyInventoryId);
+      selectedTrophyInventoryId = null;
+      break;
+  }
+  layout.items = layout.items.map((candidate) => ({
+    ...candidate,
+    x: Math.max(0, Math.min(100, candidate.x)),
+    y: Math.max(0, Math.min(100, candidate.y)),
+    scale: Math.max(0.4, Math.min(2.2, candidate.scale)),
+  }));
+  await saveTrophyLayout(layout);
+}
+
+async function saveTrophyLayout(layout: TrophyRoomLayout): Promise<void> {
+  eutheriumSaving = true;
+  eutheriumStatus = "Saving room";
+  renderWorkspaceWindow();
+  try {
+    const result = await bridgeJson<TrophyRoomResult>(
+      "/api/trophy-room/layout",
+      { method: "POST", body: JSON.stringify({ layout }) },
+      1400,
+    );
+    if (eutheriumMe) {
+      eutheriumMe = { ...eutheriumMe, trophyRoom: result };
+    }
+    eutheriumStatus = "Room saved";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "Room save failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+function cloneTrophyLayout(layout: TrophyRoomLayout): TrophyRoomLayout {
+  return {
+    background: layout.background,
+    items: layout.items.map((item) => ({ ...item })),
+  };
+}
+
+function formatEutherium(value: number): string {
+  return new Intl.NumberFormat("sv-SE").format(value);
+}
+
+function eutheriumItemIconUrl(item: EutheriumShopItem): string {
+  const match = Object.entries(eutheriumIconModules).find(([path]) => path.endsWith(`/${item.id}.png`));
+  return match?.[1] ?? item.imagePath;
+}
+
+function isEutheriumAdminResult(value: unknown): value is EutheriumAdminResult {
+  return Boolean(value && typeof value === "object" && Array.isArray((value as EutheriumAdminResult).users));
 }
 
 function interactionDeskWindowMarkup(): string {
@@ -5966,6 +6514,9 @@ async function handleUserMenuAction(action: string): Promise<void> {
       return;
     case "shopping-list":
       openWorkspaceWindow("shopping");
+      return;
+    case "eutherium":
+      openWorkspaceWindow("eutherium");
       return;
     case "get-list-app":
       window.location.href = "/downloads/eutherlist.apk";
@@ -7329,6 +7880,17 @@ function renderAdminAccess(): void {
 }
 
 function renderHostUsers(): void {
+  const awardUsers = hostUsers.filter((user) => !user.banned);
+  adminAwardUser.innerHTML = awardUsers.length
+    ? awardUsers
+        .map((user) => `<option value="${escapeHtml(user.name)}">${escapeHtml(displayUserName(user.name))}</option>`)
+        .join("")
+    : `<option value="">No active users</option>`;
+  adminAwardUser.disabled = awardUsers.length === 0;
+  adminAwardSend.disabled = awardUsers.length === 0;
+  if (selectedAdminUser && awardUsers.some((user) => user.name === selectedAdminUser)) {
+    adminAwardUser.value = selectedAdminUser;
+  }
   adminUsers.innerHTML = hostUsers.length
     ? hostUsers
         .map(
@@ -7349,6 +7911,7 @@ function renderHostUsers(): void {
                 ${hostPermissionButton(user, "canLaunchRoms", "Launch")}
                 ${hostPermissionButton(user, "canUploadRoms", "Upload")}
                 ${hostPermissionButton(user, "canManageLibrary", "Library")}
+                ${hostPermissionButton(user, "canAwardEutherium", "Eutherium")}
               </div>
             </div>
           `,
@@ -7363,6 +7926,7 @@ function hostPermissionSummary(permissions: HostPermissions): string {
     permissions.canLaunchRoms ? "Launch" : "",
     permissions.canUploadRoms ? "Upload" : "",
     permissions.canManageLibrary ? "Library" : "",
+    permissions.canAwardEutherium ? "Eutherium" : "",
   ].filter(Boolean);
   return labels.length ? labels.join(", ") : "Read-only";
 }

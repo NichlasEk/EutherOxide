@@ -4149,6 +4149,226 @@ h2 {
   gap: 8px;
 }
 
+.eutherium-window {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 12px;
+}
+
+.eutherium-balance-panel,
+.eutherium-trophy-panel,
+.eutherium-award-panel,
+.eutherium-shop-panel,
+.eutherium-inventory-panel,
+.eutherium-ledger-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(165, 222, 114, 0.18);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(4, 13, 8, 0.86), rgba(18, 15, 9, 0.78)),
+    repeating-linear-gradient(90deg, rgba(165, 222, 114, 0.025) 0 1px, transparent 1px 22px);
+}
+
+.eutherium-balance-panel {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.eutherium-balance-panel strong {
+  display: block;
+  color: #f3ffcc;
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.eutherium-balance-panel span {
+  color: #9fbd91;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.eutherium-trophy-panel {
+  min-height: 420px;
+}
+
+.trophy-room {
+  position: relative;
+  min-height: 330px;
+  overflow: hidden;
+  border: 1px solid rgba(214, 233, 95, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(23, 35, 24, 0.95) 0 54%, rgba(42, 31, 19, 0.98) 54%),
+    repeating-linear-gradient(0deg, transparent 0 31px, rgba(214, 233, 95, 0.06) 31px 32px);
+  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.45);
+}
+
+.trophy-room::before {
+  content: "";
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 54%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(214, 233, 95, 0.18);
+}
+
+.trophy-room-item {
+  position: absolute;
+  width: 74px;
+  height: 74px;
+  padding: 0;
+  transform: translate(-50%, -50%) scale(var(--trophy-scale, 1));
+  border: 1px solid rgba(214, 233, 95, 0.24);
+  border-radius: 14px;
+  background: rgba(5, 10, 6, 0.5);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.28);
+}
+
+.trophy-room-item.is-selected {
+  border-color: rgba(238, 255, 176, 0.8);
+  box-shadow:
+    0 0 0 2px rgba(238, 255, 176, 0.18),
+    0 16px 34px rgba(0, 0, 0, 0.38);
+}
+
+.trophy-room-item img,
+.eutherium-item-card img,
+.eutherium-inventory-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.trophy-controls {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 7px;
+  align-items: center;
+}
+
+.trophy-controls span {
+  grid-column: 1 / -1;
+  color: #a8c89a;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.trophy-controls button,
+.eutherium-item-card button,
+.eutherium-inventory-card button {
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.eutherium-shop-panel {
+  grid-row: span 2;
+}
+
+.eutherium-award-panel {
+  grid-column: 1;
+}
+
+.eutherium-award-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px minmax(0, 1.2fr) 86px;
+  gap: 8px;
+}
+
+.eutherium-award-form input,
+.eutherium-award-form select {
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
+.eutherium-shop-grid,
+.eutherium-inventory-grid,
+.eutherium-ledger-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.eutherium-item-card,
+.eutherium-inventory-card,
+.eutherium-ledger-entry {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(165, 222, 114, 0.16);
+  border-radius: 8px;
+  background: rgba(4, 10, 7, 0.64);
+}
+
+.eutherium-item-card img,
+.eutherium-inventory-card img {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+}
+
+.eutherium-item-card strong,
+.eutherium-inventory-card strong {
+  display: block;
+  overflow: hidden;
+  color: #eef8dd;
+  font-size: 0.86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherium-item-card span,
+.eutherium-inventory-card span,
+.eutherium-ledger-entry span,
+.eutherium-ledger-entry em {
+  color: #9fbd91;
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.eutherium-item-card p {
+  margin: 3px 0 0;
+  color: #b8c9a8;
+  font-size: 0.68rem;
+  line-height: 1.25;
+}
+
+.eutherium-inventory-card.is-selected {
+  border-color: rgba(238, 255, 176, 0.55);
+  background: rgba(75, 81, 18, 0.34);
+}
+
+.eutherium-ledger-entry {
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+}
+
+.eutherium-ledger-entry strong {
+  color: #f3ffcc;
+  font-size: 0.82rem;
+}
+
+.eutherium-ledger-entry.is-negative strong {
+  color: #ffb7a8;
+}
+
 .shopping-markdown-editor {
   border: 1px solid rgba(46, 199, 255, 0.14);
   border-radius: 8px;
@@ -4452,7 +4672,7 @@ h2 {
 .admin-permissions {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -4490,6 +4710,39 @@ h2 {
   color: #edf6dd;
   padding: 0 10px;
   font-size: 0.78rem;
+}
+
+.admin-award-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(214, 233, 95, 0.2);
+  border-radius: 8px;
+  background: rgba(8, 16, 8, 0.72);
+}
+
+.admin-award-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px minmax(0, 1.2fr) 86px;
+  gap: 8px;
+}
+
+.admin-award-form input,
+.admin-award-form select {
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
+.admin-award-panel span {
+  color: #aac99c;
+  font-size: 0.72rem;
+  font-weight: 800;
 }
 
 .binding-list,
@@ -4848,6 +5101,10 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .eutherium-window {
+    grid-template-columns: 1fr;
+  }
+
   .controls-body {
     grid-template-columns: 1fr;
   }
@@ -4892,8 +5149,30 @@ h2 {
   }
 
   .admin-form,
+  .admin-award-form,
+  .eutherium-award-form,
   .admin-form:has(#invite-email) {
     grid-template-columns: 1fr;
+  }
+
+  .admin-permissions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trophy-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .eutherium-item-card,
+  .eutherium-inventory-card,
+  .eutherium-ledger-entry {
+    grid-template-columns: 54px minmax(0, 1fr);
+  }
+
+  .eutherium-item-card button,
+  .eutherium-inventory-card button,
+  .eutherium-ledger-entry em {
+    grid-column: 1 / -1;
   }
 
   .stage-header,
