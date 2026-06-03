@@ -5569,9 +5569,8 @@ async function startEutherDukeRenderer(): Promise<void> {
     }
     eutherDukeRuntimePanel.hidden = true;
     eutherDukeFrame.hidden = false;
-    if (!eutherDukeFrame.src.endsWith("/eutherduke-runtime/index.html")) {
-      eutherDukeFrame.src = "/eutherduke-runtime/index.html";
-    }
+    const runtimeUrl = `/eutherduke-runtime/index.html?v=${Date.now()}`;
+    eutherDukeFrame.src = runtimeUrl;
   } catch {
     eutherDukeFrame.removeAttribute("src");
     eutherDukeFrame.hidden = true;
