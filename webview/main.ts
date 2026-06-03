@@ -1025,6 +1025,7 @@ let doomStatus: DoomStatus | null = null;
 let doomDriveTimer: number | null = null;
 let doomDriveInFlight = false;
 let doomEventPollTimer: number | null = null;
+let doomEventStream: EventSource | null = null;
 let doomLastEventId = 0;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
@@ -1451,20 +1452,24 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <strong id="doom-title">Lockstep Relay</strong>
           <span id="doom-meta">No Doom server selected</span>
         </div>
+        <div class="doom-vessel-status" id="doom-vessel-status"></div>
         <div class="doom-actions">
           <button id="doom-ready" type="button">Ready</button>
-          <button id="doom-unready" type="button">Unready</button>
-          <button id="doom-send" type="button">Send Tic</button>
+          <button id="doom-unready" type="button">Stand</button>
           <button id="doom-drive" type="button">Drive</button>
+          <button id="doom-send" type="button">Debug</button>
         </div>
-        <div class="doom-command-grid">
-          <label>Tic <input id="doom-tic" type="number" value="0" min="0" step="1" /></label>
-          <label>Forward <input id="doom-forward" type="number" value="10" min="-127" max="127" step="1" /></label>
-          <label>Strafe <input id="doom-strafe" type="number" value="0" min="-127" max="127" step="1" /></label>
-          <label>Turn <input id="doom-turn" type="number" value="0" min="-32768" max="32767" step="1" /></label>
-          <label>Buttons <input id="doom-buttons" type="number" value="1" min="0" max="65535" step="1" /></label>
-          <label>Weapon <input id="doom-weapon" type="number" value="0" min="0" max="255" step="1" /></label>
-        </div>
+        <details class="doom-debug-details">
+          <summary>Debug tic controls</summary>
+          <div class="doom-command-grid">
+            <label>Tic <input id="doom-tic" type="number" value="0" min="0" step="1" /></label>
+            <label>Forward <input id="doom-forward" type="number" value="10" min="-127" max="127" step="1" /></label>
+            <label>Strafe <input id="doom-strafe" type="number" value="0" min="-127" max="127" step="1" /></label>
+            <label>Turn <input id="doom-turn" type="number" value="0" min="-32768" max="32767" step="1" /></label>
+            <label>Buttons <input id="doom-buttons" type="number" value="1" min="0" max="65535" step="1" /></label>
+            <label>Weapon <input id="doom-weapon" type="number" value="0" min="0" max="255" step="1" /></label>
+          </div>
+        </details>
         <div class="doom-frame-log" id="doom-frame-log"></div>
       </div>
 
@@ -2019,6 +2024,7 @@ const doomSend = document.querySelector<HTMLButtonElement>("#doom-send")!;
 const doomDrive = document.querySelector<HTMLButtonElement>("#doom-drive")!;
 const doomTitle = document.querySelector<HTMLElement>("#doom-title")!;
 const doomMeta = document.querySelector<HTMLElement>("#doom-meta")!;
+const doomVesselStatus = document.querySelector<HTMLDivElement>("#doom-vessel-status")!;
 const doomTic = document.querySelector<HTMLInputElement>("#doom-tic")!;
 const doomForward = document.querySelector<HTMLInputElement>("#doom-forward")!;
 const doomStrafe = document.querySelector<HTMLInputElement>("#doom-strafe")!;
@@ -5265,7 +5271,7 @@ async function refreshDoomStatus(): Promise<void> {
   try {
     doomStatus = await bridgeJson<DoomStatus>("/api/doom/status", {}, 900);
     doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
-    setDoomEventPolling(true);
+    startDoomEventStream();
   } catch (err) {
     doomStatus = null;
     setDoomEventPolling(false);
@@ -5275,6 +5281,9 @@ async function refreshDoomStatus(): Promise<void> {
 }
 
 function setDoomEventPolling(active: boolean): void {
+  if (!active) {
+    stopDoomEventStream();
+  }
   if (!active) {
     if (doomEventPollTimer !== null) {
       window.clearInterval(doomEventPollTimer);
@@ -5288,6 +5297,40 @@ function setDoomEventPolling(active: boolean): void {
   doomEventPollTimer = window.setInterval(() => {
     void pollDoomEvents();
   }, 500);
+}
+
+function startDoomEventStream(): void {
+  if (doomEventStream || activeLobbyInstance()?.kind !== "eutherdoom") {
+    return;
+  }
+  if (doomEventPollTimer !== null) {
+    window.clearInterval(doomEventPollTimer);
+    doomEventPollTimer = null;
+  }
+  doomEventStream = new EventSource(bridgeUrl(`/api/doom/stream?after=${doomLastEventId}`), {
+    withCredentials: true,
+  });
+  doomEventStream.onmessage = (event) => {
+    try {
+      const doomEvent = JSON.parse(event.data) as DoomServerEvent;
+      doomLastEventId = Math.max(doomLastEventId, Number(doomEvent.id ?? 0));
+      applyDoomEvents([doomEvent]);
+      renderLobby();
+    } catch (err) {
+      doomMeta.textContent = err instanceof Error ? err.message : "Doom stream parse failed";
+    }
+  };
+  doomEventStream.onerror = () => {
+    stopDoomEventStream();
+    if (activeLobbyInstance()?.kind === "eutherdoom") {
+      setDoomEventPolling(true);
+    }
+  };
+}
+
+function stopDoomEventStream(): void {
+  doomEventStream?.close();
+  doomEventStream = null;
 }
 
 async function pollDoomEvents(): Promise<void> {
@@ -5398,6 +5441,7 @@ async function setDoomReady(ready: boolean): Promise<void> {
   doomStatus = await bridgeJson<DoomStatus>(`/api/doom/ready${query}`, { method: "POST" }, 1200);
   doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
   pushTrace(`Doom P${claimedLobbyPlayer} ${ready ? "ready" : "unready"}`);
+  setDoomDriveActive(ready);
   renderDoomPanel();
 }
 
@@ -5434,7 +5478,7 @@ function setDoomDriveActive(active: boolean): void {
   }
   doomDriveTimer = window.setInterval(() => {
     void driveDoomTick();
-  }, 65);
+  }, 35);
   void driveDoomTick();
   renderDoomPanel();
 }
@@ -8117,25 +8161,34 @@ function renderDoomPanel(): void {
     return;
   }
   if (doomStatus) {
-    setDoomEventPolling(true);
+    startDoomEventStream();
   }
 
   const players = doomStatus?.players ?? [];
-  const playerSummary = [1, 2]
-    .map((player) => {
-      const slot = players.find((entry) => entry.player === player);
-      return `P${player}:${slot ? `${slot.user}${slot.ready ? "/ready" : "/wait"}` : "open"}`;
-    })
-    .join(" ");
+  const readyCount = players.filter((player) => player.ready).length;
+  const streamMode = doomEventStream ? "stream" : doomEventPollTimer !== null ? "poll" : "idle";
 
   doomTitle.textContent = instance?.name ?? "EutherDoom Server";
-  doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${playerSummary} | replay ${doomStatus?.replayEvents ?? 0}`;
+  doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${readyCount}/2 ready | ${streamMode} | replay ${doomStatus?.replayEvents ?? 0}`;
+  doomVesselStatus.innerHTML = [1, 2]
+    .map((player) => {
+      const slot = players.find((entry) => entry.player === player);
+      const mine = claimedLobbyPlayer === player;
+      return `
+        <div class="doom-player-slot ${slot?.ready ? "is-ready" : ""} ${mine ? "is-mine" : ""}">
+          <span>P${player}</span>
+          <strong>${escapeHtml(slot?.user ?? "Open")}</strong>
+          <em>${slot ? slot.ready ? "Ready" : "Wait" : "Join"}</em>
+        </div>
+      `;
+    })
+    .join("");
   doomReady.disabled = claimedLobbyPlayer === null;
   doomUnready.disabled = claimedLobbyPlayer === null;
   doomSend.disabled = claimedLobbyPlayer === null;
   doomDrive.disabled = claimedLobbyPlayer === null;
   doomDrive.classList.toggle("is-selected", doomDriveTimer !== null);
-  doomDrive.textContent = doomDriveTimer === null ? "Drive" : "Driving";
+  doomDrive.textContent = doomDriveTimer === null ? "Drive" : "Live";
   doomReplay.disabled = !doomStatus || doomStatus.replayEvents === 0;
   doomReset.disabled = !canHostMutate();
 

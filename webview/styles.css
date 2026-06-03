@@ -1937,11 +1937,16 @@ h2 {
 }
 
 .lobby-actions,
-.doom-actions,
 .admin-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
+}
+
+.doom-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
 }
 
 .lobby-instances {
@@ -1990,6 +1995,76 @@ h2 {
   min-height: 34px;
   font-size: 0.76rem;
   font-weight: 900;
+}
+
+.doom-actions button {
+  min-width: 0;
+  min-height: 32px;
+  padding-inline: 7px;
+  font-size: 0.72rem;
+  white-space: normal;
+}
+
+.doom-vessel-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.doom-player-slot {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid rgba(98, 218, 168, 0.16);
+  border-radius: 8px;
+  background: rgba(3, 8, 7, 0.72);
+}
+
+.doom-player-slot.is-ready {
+  border-color: rgba(94, 244, 156, 0.34);
+  background: rgba(11, 35, 20, 0.7);
+}
+
+.doom-player-slot.is-mine {
+  box-shadow: inset 0 0 0 1px rgba(214, 233, 95, 0.34);
+}
+
+.doom-player-slot span,
+.doom-player-slot em {
+  color: #aac99c;
+  font-size: 0.58rem;
+  font-style: normal;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.doom-player-slot strong {
+  min-width: 0;
+  color: #eef8dd;
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doom-debug-details {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.doom-debug-details summary {
+  min-height: 32px;
+  padding: 8px 10px;
+  border: 1px solid rgba(98, 218, 168, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 13, 10, 0.72);
+  color: #aac99c;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
 }
 
 .doom-command-grid {

@@ -1246,6 +1246,14 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .unwrap_or(0);
             send_json(stream, &host_doom_events(state, &instance_id, after_id)?)
         }
+        ("GET", "/api/doom/stream") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let after_id = query_string_value(&request.path, "after")?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            stream_host_doom_events(stream, state, &instance_id, after_id)
+        }
         ("GET", "/api/doom/replay") => {
             require_host_user(state, &request)?;
             let instance_id = host_instance_id(&request.path)?;
@@ -3629,6 +3637,67 @@ fn host_doom_events(
         "lastEventId": doom.last_event_id(),
         "events": events,
     }))
+}
+
+fn stream_host_doom_events(
+    stream: &mut TcpStream,
+    state: &HostState,
+    instance_id: &str,
+    after_id: u64,
+) -> io::Result<()> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherDoom {
+        return Err(invalid_request("selected instance is not EutherDoom"));
+    }
+    stream.set_nodelay(true)?;
+    send_event_stream_header(stream)?;
+    let mut last_event_id = after_id;
+    let mut last_ping = Instant::now();
+    loop {
+        let instance = match host_instance_snapshot(state, instance_id) {
+            Ok(instance) if instance.kind == HostInstanceKind::EutherDoom => instance,
+            _ => break Ok(()),
+        };
+        release_expired_doom_players(&instance)?;
+        let (events, current_last_event_id) = {
+            let mut doom = instance
+                .doom
+                .as_ref()
+                .ok_or_else(|| io::Error::other("doom instance missing state"))?
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            doom.tick(Instant::now());
+            let events = doom
+                .queued_events_after(last_event_id)
+                .iter()
+                .map(doom_queued_event_json)
+                .collect::<Vec<_>>();
+            (events, doom.last_event_id())
+        };
+        if !events.is_empty() {
+            for event in events {
+                let payload = serde_json::to_string(&event)
+                    .map_err(|err| io::Error::other(err.to_string()))?;
+                if write!(stream, "data: {payload}\n\n").is_err() {
+                    return Ok(());
+                }
+            }
+            if stream.flush().is_err() {
+                return Ok(());
+            }
+            last_event_id = current_last_event_id;
+            last_ping = Instant::now();
+        } else if last_ping.elapsed() >= Duration::from_secs(5) {
+            if write!(stream, ": doom ping\n\n").is_err() {
+                break Ok(());
+            }
+            if stream.flush().is_err() {
+                break Ok(());
+            }
+            last_ping = Instant::now();
+        }
+        thread::sleep(Duration::from_millis(33));
+    }
 }
 
 fn host_doom_replay(state: &HostState, instance_id: &str) -> io::Result<String> {
