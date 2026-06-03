@@ -439,6 +439,70 @@ button:disabled {
   overflow: auto;
 }
 
+.eutherdogs-loading-panel {
+  align-self: center;
+  display: grid;
+  gap: 10px;
+  width: min(460px, 100%);
+  margin: auto;
+  padding: 18px;
+  border: 1px solid rgba(39, 242, 255, 0.34);
+  background:
+    linear-gradient(180deg, rgba(4, 18, 18, 0.86), rgba(5, 7, 10, 0.92)),
+    repeating-linear-gradient(90deg, rgba(39, 242, 255, 0.06) 0 1px, transparent 1px 14px);
+  box-shadow:
+    inset 0 0 28px rgba(39, 242, 255, 0.08),
+    0 14px 36px rgba(0, 0, 0, 0.38);
+  text-align: center;
+}
+
+.eutherdogs-loading-panel strong {
+  color: #ffffff;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.eutherdogs-loading-panel p,
+.eutherdogs-loading-panel small {
+  margin: 0;
+}
+
+.eutherdogs-loading-panel p {
+  color: #b9fff4;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.eutherdogs-loading-panel small {
+  color: #ffef6e;
+  font-size: 0.72rem;
+}
+
+.eutherdogs-loading-meter {
+  position: relative;
+  height: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 239, 110, 0.42);
+  background: rgba(0, 0, 0, 0.54);
+}
+
+.eutherdogs-loading-meter::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 10px, rgba(255, 255, 255, 0.12) 10px 12px);
+  pointer-events: none;
+}
+
+.eutherdogs-loading-meter span {
+  display: block;
+  height: 100%;
+  background:
+    linear-gradient(90deg, #27f2ff, #39f7c8 58%, #ffef6e);
+  box-shadow: 0 0 18px rgba(39, 242, 255, 0.52);
+  transition: width 120ms linear;
+}
+
 .eutherdogs-store-item {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) auto;

@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
@@ -34,6 +35,9 @@ const HOST_PLAYER_LEASE_TIMEOUT: Duration = Duration::from_secs(8);
 const HOST_VIDEO_CHAT_PARTICIPANT_TIMEOUT_MS: u64 = 12_000;
 const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
 const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
+const EUTHERDOGS_SERVER_PUBLISH_HZ: f64 = 60.0;
+const EUTHERDOGS_TICKS_PER_PUBLISH: u8 = 1;
+const EUTHERDOGS_STATIC_REFRESH_FRAMES: u16 = 240;
 const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
 const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
 const DEFAULT_EUTHERLIST_APK_PATH: &str = "/home/nichlas/EutherList-release-signed.apk";
@@ -5365,7 +5369,7 @@ fn ensure_eutherdogs_runner(state: &BridgeState) -> io::Result<()> {
 }
 
 fn eutherdogs_runner_loop(state: &BridgeState) -> io::Result<()> {
-    let frame_time = Duration::from_secs_f64(1.0 / 60.0);
+    let frame_time = Duration::from_secs_f64(1.0 / EUTHERDOGS_SERVER_PUBLISH_HZ);
     let mut next_frame_due = Instant::now();
     loop {
         if state.shutdown.load(Ordering::SeqCst) {
@@ -5388,7 +5392,7 @@ fn eutherdogs_runner_loop(state: &BridgeState) -> io::Result<()> {
                 .eutherdogs
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            dogs.tick_held()
+            dogs.tick_held_steps(EUTHERDOGS_TICKS_PER_PUBLISH)
         };
         let mut latest = state
             .eutherdogs_latest
@@ -5602,7 +5606,12 @@ fn bridge_eutherdogs_stream(
     touch_eutherdogs_poll(state)?;
     ensure_eutherdogs_runner(state)?;
     let mut last_frame = None;
-    let mut full_refresh_countdown = 0u8;
+    let mut full_refresh_countdown = 0u16;
+    let mut last_tiles_signature = None;
+    let mut last_visibility_signature = None;
+    let mut last_store_signature = None;
+    let mut last_actor_signatures = HashMap::<String, u64>::new();
+    let mut last_bullet_signatures = HashMap::<u32, u64>::new();
     loop {
         if state.shutdown.load(Ordering::SeqCst) {
             break Ok(());
@@ -5610,8 +5619,27 @@ fn bridge_eutherdogs_stream(
         touch_eutherdogs_poll(state)?;
         let frame = latest_eutherdogs_frame(state, player_index)?;
         if Some(frame.frame) != last_frame {
-            let include_static = last_frame.is_none() || full_refresh_countdown == 0;
-            let payload = eutherdogs_stream_payload(state, &frame, player_index, include_static)?;
+            let tiles_signature = eutherdogs_tiles_signature(&frame.tiles);
+            let visibility_signature = eutherdogs_visibility_signature(&frame.visibility);
+            let store_signature = eutherdogs_store_signature(&frame.store);
+            let include_all = last_frame.is_none() || full_refresh_countdown == 0;
+            let include_tiles = include_all || last_tiles_signature != Some(tiles_signature);
+            let include_visibility =
+                include_all || last_visibility_signature != Some(visibility_signature);
+            let include_store = include_all || last_store_signature != Some(store_signature);
+            let actor_delta = eutherdogs_actor_delta(&frame.characters, &last_actor_signatures);
+            let bullet_delta = eutherdogs_bullet_delta(&frame.bullets, &last_bullet_signatures);
+            let payload = eutherdogs_stream_payload(
+                state,
+                &frame,
+                player_index,
+                include_all,
+                include_tiles,
+                include_visibility,
+                include_store,
+                &actor_delta,
+                &bullet_delta,
+            )?;
             if write!(stream, "data: {payload}\n\n").is_err() {
                 break Ok(());
             }
@@ -5619,8 +5647,19 @@ fn bridge_eutherdogs_stream(
                 break Ok(());
             }
             last_frame = Some(frame.frame);
-            full_refresh_countdown = if include_static {
-                30
+            if include_tiles {
+                last_tiles_signature = Some(tiles_signature);
+            }
+            if include_visibility {
+                last_visibility_signature = Some(visibility_signature);
+            }
+            if include_store {
+                last_store_signature = Some(store_signature);
+            }
+            last_actor_signatures = actor_delta.next_signatures;
+            last_bullet_signatures = bullet_delta.next_signatures;
+            full_refresh_countdown = if include_all {
+                EUTHERDOGS_STATIC_REFRESH_FRAMES
             } else {
                 full_refresh_countdown.saturating_sub(1)
             };
@@ -5633,7 +5672,12 @@ fn eutherdogs_stream_payload(
     state: &BridgeState,
     frame: &euther_oxide::eutherdogs::EutherDogsFrame,
     player_index: usize,
-    include_static: bool,
+    include_dimensions: bool,
+    include_tiles: bool,
+    include_visibility: bool,
+    include_store: bool,
+    actor_delta: &EutherDogsActorDelta,
+    bullet_delta: &EutherDogsBulletDelta,
 ) -> io::Result<String> {
     let acked_input_seq = state
         .eutherdogs_input_seq
@@ -5641,26 +5685,243 @@ fn eutherdogs_stream_payload(
         .map_err(|err| io::Error::other(err.to_string()))?[player_index];
     let mut value = serde_json::json!({
         "frame": frame.frame,
-        "characters": frame.characters,
-        "bullets": frame.bullets,
-        "inspectionDialogues": frame.inspection_dialogues,
-        "summary": frame.summary,
-        "audioEvents": frame.audio_events,
-        "highscoreCount": frame.highscore_count,
-        "ackedInputSeq": acked_input_seq,
+        "compact": 1,
+        "d": frame.inspection_dialogues.iter().map(|dialogue| serde_json::json!([
+            dialogue.player,
+            dialogue.inspector_id,
+            dialogue.question,
+            dialogue.complete,
+        ])).collect::<Vec<_>>(),
+        "s": [
+            frame.summary.mission,
+            frame.summary.max_mission,
+            serde_json::json!(frame.summary.status),
+            serde_json::json!(frame.summary.elapsed_ticks),
+            serde_json::json!(frame.summary.score),
+            serde_json::json!(frame.summary.cash),
+            serde_json::json!(frame.summary.kills),
+            serde_json::json!(frame.summary.targets_destroyed),
+            serde_json::json!(frame.summary.objects_collected),
+            serde_json::json!(frame.summary.shots_fired),
+            serde_json::json!(frame.summary.hits),
+            serde_json::json!(frame.summary.damage_taken),
+            serde_json::json!(frame.summary.targets_left),
+            serde_json::json!(frame.summary.objects_left),
+            serde_json::json!(frame.summary.minimum_kills),
+            serde_json::json!(frame.summary.time_remaining_ticks),
+            serde_json::json!(frame.summary.boss_active),
+            serde_json::json!(frame.summary.boss_name),
+            serde_json::json!(frame.summary.boss_armor),
+            serde_json::json!(frame.summary.boss_max_armor),
+            serde_json::json!(frame.summary.routine_read),
+            serde_json::json!(frame.summary.routine_total),
+            serde_json::json!(frame.summary.inspection_answers),
+            serde_json::json!(frame.summary.inspection_protocol),
+        ],
+        "a": frame.audio_events,
+        "h": frame.highscore_count,
+        "q": acked_input_seq,
     });
-    if include_static {
+    if include_dimensions {
+        value["c"] = serde_json::json!(
+            frame
+                .characters
+                .iter()
+                .map(eutherdogs_actor_row)
+                .collect::<Vec<_>>()
+        );
+        value["b"] = serde_json::json!(
+            frame
+                .bullets
+                .iter()
+                .map(eutherdogs_bullet_row)
+                .collect::<Vec<_>>()
+        );
+    } else {
+        if !actor_delta.changed_rows.is_empty() {
+            value["ac"] = serde_json::json!(actor_delta.changed_rows);
+        }
+        if !actor_delta.removed_keys.is_empty() {
+            value["ar"] = serde_json::json!(actor_delta.removed_keys);
+        }
+        if !bullet_delta.changed_rows.is_empty() {
+            value["bc"] = serde_json::json!(bullet_delta.changed_rows);
+        }
+        if !bullet_delta.removed_ids.is_empty() {
+            value["br"] = serde_json::json!(bullet_delta.removed_ids);
+        }
+    }
+    if include_dimensions {
         value["width"] = serde_json::json!(frame.width);
         value["height"] = serde_json::json!(frame.height);
         value["tileWidth"] = serde_json::json!(frame.tile_width);
         value["tileHeight"] = serde_json::json!(frame.tile_height);
         value["characterWidth"] = serde_json::json!(frame.character_width);
         value["characterHeight"] = serde_json::json!(frame.character_height);
+    }
+    if include_tiles {
         value["tiles"] = serde_json::json!(frame.tiles);
+    }
+    if include_visibility {
         value["visibility"] = serde_json::json!(frame.visibility);
+    }
+    if include_store {
         value["store"] = serde_json::json!(frame.store);
     }
     serde_json::to_string(&value).map_err(|err| io::Error::other(err.to_string()))
+}
+
+struct EutherDogsActorDelta {
+    changed_rows: Vec<serde_json::Value>,
+    removed_keys: Vec<String>,
+    next_signatures: HashMap<String, u64>,
+}
+
+struct EutherDogsBulletDelta {
+    changed_rows: Vec<serde_json::Value>,
+    removed_ids: Vec<u32>,
+    next_signatures: HashMap<u32, u64>,
+}
+
+fn eutherdogs_actor_delta(
+    actors: &[euther_oxide::eutherdogs::EutherDogsActor],
+    previous: &HashMap<String, u64>,
+) -> EutherDogsActorDelta {
+    let mut changed_rows = Vec::new();
+    let mut next_signatures = HashMap::new();
+    for actor in actors {
+        let key = eutherdogs_actor_key(actor);
+        let signature = eutherdogs_actor_signature(actor);
+        if previous.get(&key) != Some(&signature) {
+            changed_rows.push(eutherdogs_actor_row(actor));
+        }
+        next_signatures.insert(key, signature);
+    }
+    let removed_keys = previous
+        .keys()
+        .filter(|key| !next_signatures.contains_key(*key))
+        .cloned()
+        .collect();
+    EutherDogsActorDelta {
+        changed_rows,
+        removed_keys,
+        next_signatures,
+    }
+}
+
+fn eutherdogs_bullet_delta(
+    bullets: &[euther_oxide::eutherdogs::EutherDogsBullet],
+    previous: &HashMap<u32, u64>,
+) -> EutherDogsBulletDelta {
+    let mut changed_rows = Vec::new();
+    let mut next_signatures = HashMap::new();
+    for bullet in bullets {
+        let signature = eutherdogs_bullet_signature(bullet);
+        if previous.get(&bullet.id) != Some(&signature) {
+            changed_rows.push(eutherdogs_bullet_row(bullet));
+        }
+        next_signatures.insert(bullet.id, signature);
+    }
+    let removed_ids = previous
+        .keys()
+        .filter(|id| !next_signatures.contains_key(*id))
+        .copied()
+        .collect();
+    EutherDogsBulletDelta {
+        changed_rows,
+        removed_ids,
+        next_signatures,
+    }
+}
+
+fn eutherdogs_actor_key(actor: &euther_oxide::eutherdogs::EutherDogsActor) -> String {
+    format!("{}:{}", actor.faction, actor.id)
+}
+
+fn eutherdogs_actor_row(actor: &euther_oxide::eutherdogs::EutherDogsActor) -> serde_json::Value {
+    serde_json::json!([
+        actor.id,
+        actor.faction,
+        actor.x,
+        actor.y,
+        actor.direction,
+        actor.sprite,
+        actor.armor,
+        actor.lives,
+        actor.alive,
+        actor.active_weapon,
+        actor.ammo,
+    ])
+}
+
+fn eutherdogs_bullet_row(bullet: &euther_oxide::eutherdogs::EutherDogsBullet) -> serde_json::Value {
+    serde_json::json!([
+        bullet.id,
+        bullet.x,
+        bullet.y,
+        bullet.dx,
+        bullet.dy,
+        bullet.owner_faction,
+        bullet.weapon,
+    ])
+}
+
+fn eutherdogs_actor_signature(actor: &euther_oxide::eutherdogs::EutherDogsActor) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    actor.id.hash(&mut hasher);
+    actor.faction.hash(&mut hasher);
+    actor.x.hash(&mut hasher);
+    actor.y.hash(&mut hasher);
+    actor.direction.hash(&mut hasher);
+    actor.sprite.hash(&mut hasher);
+    actor.armor.hash(&mut hasher);
+    actor.lives.hash(&mut hasher);
+    actor.alive.hash(&mut hasher);
+    actor.active_weapon.hash(&mut hasher);
+    actor.ammo.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn eutherdogs_bullet_signature(bullet: &euther_oxide::eutherdogs::EutherDogsBullet) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bullet.id.hash(&mut hasher);
+    bullet.x.hash(&mut hasher);
+    bullet.y.hash(&mut hasher);
+    bullet.dx.hash(&mut hasher);
+    bullet.dy.hash(&mut hasher);
+    bullet.owner_faction.hash(&mut hasher);
+    bullet.weapon.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn eutherdogs_tiles_signature(tiles: &[&'static str]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tiles.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn eutherdogs_visibility_signature(visibility: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    visibility.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn eutherdogs_store_signature(store: &[euther_oxide::eutherdogs::EutherDogsStoreItem]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for item in store {
+        item.id.hash(&mut hasher);
+        item.label.hash(&mut hasher);
+        item.price.hash(&mut hasher);
+        item.detail.hash(&mut hasher);
+        item.weapon.hash(&mut hasher);
+        item.ammo.hash(&mut hasher);
+        item.armor.hash(&mut hasher);
+        item.owned.hash(&mut hasher);
+        item.current_ammo.hash(&mut hasher);
+        item.active.hash(&mut hasher);
+        item.affordable.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn bridge_stream_frame_audio(

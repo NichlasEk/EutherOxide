@@ -657,8 +657,23 @@ type DogsInspectionDialogue = {
   complete: boolean;
 };
 
-type DogsStreamFrame = Partial<DogsCoreFrame> &
-  Pick<DogsCoreFrame, "frame" | "characters" | "bullets" | "summary">;
+type DogsStreamFrame = Partial<DogsCoreFrame> & Pick<DogsCoreFrame, "frame">;
+
+type DogsCompactStreamFrame = Partial<DogsCoreFrame> & {
+  frame: number;
+  compact?: 1;
+  c?: unknown[];
+  b?: unknown[];
+  ac?: unknown[];
+  ar?: unknown[];
+  bc?: unknown[];
+  br?: unknown[];
+  d?: unknown[];
+  s?: unknown[];
+  a?: string[];
+  h?: number;
+  q?: number;
+};
 
 type DogsHighScoreEntry = {
   id: string;
@@ -1111,9 +1126,13 @@ let dogsScoresReturnMode: Exclude<DogsMenuMode, null> = "briefing";
 let dogsInventoryOpen = false;
 let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
+const dogsImageLoadPromises = new Map<string, Promise<void>>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
+let dogsPreloadedAssetMode: DogsAssetMode | null = null;
+let dogsPreloadProgress: { loaded: number; total: number; label: string } | null = null;
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
 let dogsRenderActorPositions = new Map<string, { x: number; y: number }>();
+let dogsLastRenderAt = performance.now();
 let dogsActorFacings = new Map<string, DogsActorFacing>();
 let dogsLastExitReady = false;
 let dogsLastPortalHumFrame = -9999;
@@ -2786,7 +2805,7 @@ eutherDogsStartShift.addEventListener("click", () => {
     void retryDogsShift();
     return;
   }
-  startDogsShift();
+  void startDogsShift();
 });
 
 eutherDogsInventoryClose.addEventListener("click", () => {
@@ -10053,6 +10072,89 @@ function preloadDogsImage(url: string | null): void {
   dogsImageCache.set(url, image);
 }
 
+async function preloadDogsImageDecoded(url: string | null): Promise<void> {
+  if (!url) return;
+  const cached = dogsImageCache.get(url);
+  if (cached?.complete && cached.naturalWidth > 0) {
+    await cached.decode?.().catch(() => undefined);
+    return;
+  }
+  const pending = dogsImageLoadPromises.get(url);
+  if (pending) {
+    await pending;
+    return;
+  }
+  const image = cached ?? new Image();
+  if (!cached) {
+    dogsImageCache.set(url, image);
+  }
+  const promise = new Promise<void>((resolve) => {
+    if (image.complete) {
+      resolve();
+      return;
+    }
+    image.addEventListener("load", () => resolve(), { once: true });
+    image.addEventListener("error", () => resolve(), { once: true });
+    if (!image.src) {
+      image.src = url;
+    }
+  })
+    .then(() => image.decode?.().catch(() => undefined))
+    .then(() => undefined)
+    .finally(() => {
+      dogsImageLoadPromises.delete(url);
+    });
+  dogsImageLoadPromises.set(url, promise);
+  if (!image.src) {
+    image.src = url;
+  }
+  await promise;
+}
+
+function dogsPreloadImageUrls(): string[] {
+  const urls = new Set<string>();
+  for (const [key, url] of eutherDogsAssets) {
+    if (!/\.(png|jpg|jpeg|webp|svg)(\?|#|$)/i.test(url)) continue;
+    if (key.startsWith("highres.")) {
+      if (dogsAssetMode === "2x") {
+        urls.add(url);
+      }
+      continue;
+    }
+    urls.add(url);
+  }
+  return Array.from(urls);
+}
+
+async function preloadDogsVisualAssets(force = false): Promise<void> {
+  if (!force && dogsPreloadedAssetMode === dogsAssetMode) return;
+  const urls = dogsPreloadImageUrls();
+  dogsPreloadProgress = { loaded: 0, total: urls.length, label: "Reading RX asset manifest" };
+  renderDogsMenu();
+  for (let index = 0; index < urls.length; index += 1) {
+    dogsPreloadProgress = {
+      loaded: index,
+      total: urls.length,
+      label: "Decoding sprites and tiles",
+    };
+    renderDogsMenu();
+    await preloadDogsImageDecoded(urls[index]);
+  }
+  dogsPreloadProgress = {
+    loaded: urls.length,
+    total: urls.length,
+    label: "Cache warm",
+  };
+  renderDogsMenu();
+  dogsPreloadedAssetMode = dogsAssetMode;
+  window.setTimeout(() => {
+    dogsPreloadProgress = null;
+    if (dogsMenuMode) {
+      renderDogsMenu();
+    }
+  }, 250);
+}
+
 function preloadDogsCombatAssets(): void {
   for (const style of Object.values(dogsProjectileStyles)) {
     preloadDogsImage(dogsAsset("sprites.projectiles", style.asset));
@@ -10858,8 +10960,8 @@ function predictedDogsActor(actor: DogsCoreActor | undefined): DogsCoreActor | u
   if (dx === 0 && dy === 0) {
     return actor;
   }
-  const unacked = Math.min(3, Math.max(1, dogsInputSeq - dogsLastAckedInputSeq));
-  const distance = 3 * unacked;
+  const unacked = Math.min(2, Math.max(1, dogsInputSeq - dogsLastAckedInputSeq));
+  const distance = 1.4 * unacked;
   const diagonal = dx !== 0 && dy !== 0 ? Math.SQRT1_2 : 1;
   return {
     ...actor,
@@ -10881,12 +10983,15 @@ function smoothDogsActor(actor: DogsCoreActor, isLocalPlayer: boolean): DogsCore
     dogsRenderActorPositions.set(key, { x: actor.x, y: actor.y });
     return actor;
   }
-  const factor = isLocalPlayer ? 0.72 : 0.42;
-  const x = previous.x + dx * factor;
-  const y = previous.y + dy * factor;
+  const elapsedFrames = Math.min(3, Math.max(0.5, (performance.now() - dogsLastRenderAt) / (1000 / 60)));
+  const distance = Math.hypot(dx, dy);
+  const maxStep = (isLocalPlayer ? 3.4 : 3.0) * elapsedFrames;
+  const step = distance <= maxStep || distance === 0 ? 1 : maxStep / distance;
+  const x = previous.x + dx * step;
+  const y = previous.y + dy * step;
   const smoothed = { x, y };
   dogsRenderActorPositions.set(key, smoothed);
-  return { ...actor, x: Math.round(x), y: Math.round(y) };
+  return { ...actor, x, y };
 }
 
 function dogsCurrentCash(): number {
@@ -11520,7 +11625,8 @@ function hideDogsMenu(): void {
   eutherDogsMenu.classList.remove("is-open");
 }
 
-function startDogsShift(): void {
+async function startDogsShift(): Promise<void> {
+  await preloadDogsVisualAssets();
   hideDogsMenu();
   hideDogsInventory();
   if (controlsOpen) {
@@ -11543,6 +11649,26 @@ function renderDogsMenu(): void {
   const mission = dogsFrame?.summary.mission ?? selectedDogsMission;
   const maxMission = dogsFrame?.summary.maxMission ?? 10;
   eutherDogsMenuCash.textContent = `$${cash}`;
+  if (dogsPreloadProgress) {
+    const total = Math.max(1, dogsPreloadProgress.total);
+    const percent = Math.min(100, Math.round((dogsPreloadProgress.loaded / total) * 100));
+    eutherDogsMenuKicker.textContent = "RX Asset Warmup";
+    eutherDogsMenuTitle.textContent = "Preparing the counter";
+    eutherDogsStartShift.textContent = `${percent}%`;
+    eutherDogsStartShift.disabled = true;
+    eutherDogsMenuBody.innerHTML = `
+      <div class="eutherdogs-loading-panel">
+        <div class="eutherdogs-loading-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+          <span style="width: ${percent}%"></span>
+        </div>
+        <strong>${percent}%</strong>
+        <p>${escapeHtml(dogsPreloadProgress.label)}</p>
+        <small>${dogsPreloadProgress.loaded} / ${dogsPreloadProgress.total} visual assets cached</small>
+      </div>
+    `;
+    return;
+  }
+  eutherDogsStartShift.disabled = false;
   eutherDogsStaffOpen.classList.toggle("is-active", dogsMenuMode === "staff");
   eutherDogsStoreOpen.classList.toggle("is-active", dogsMenuMode === "store");
   eutherDogsBriefingOpen.classList.toggle("is-active", dogsMenuMode === "briefing");
@@ -11834,7 +11960,10 @@ function setDogsAssetMode(mode: DogsAssetMode): void {
   dogsAssetMode = mode;
   localStorage.setItem(dogsAssetModeStorageKey, mode);
   dogsImageCache.clear();
+  dogsImageLoadPromises.clear();
   dogsSfxCache.clear();
+  dogsPreloadedAssetMode = null;
+  dogsPreloadProgress = null;
   applyEutherDogsCssAssets();
   preloadDogsCombatAssets();
   renderDogsAssetMode();
@@ -12001,7 +12130,7 @@ function startDogsSnapshotStream(): void {
   });
   dogsStream.onmessage = (event) => {
     try {
-      dogsFrame = mergeDogsStreamFrame(dogsFrame, JSON.parse(event.data) as DogsStreamFrame);
+      dogsFrame = mergeDogsStreamFrame(dogsFrame, JSON.parse(event.data) as DogsStreamFrame | DogsCompactStreamFrame);
       dogsLastAckedInputSeq = dogsFrame.ackedInputSeq ?? dogsLastAckedInputSeq;
       lastDogsSnapshotAt = performance.now();
       dogsSnapshotMisses = 0;
@@ -12016,7 +12145,8 @@ function startDogsSnapshotStream(): void {
   };
 }
 
-function mergeDogsStreamFrame(previous: DogsCoreFrame | null, patch: DogsStreamFrame): DogsCoreFrame {
+function mergeDogsStreamFrame(previous: DogsCoreFrame | null, raw: DogsStreamFrame | DogsCompactStreamFrame): DogsCoreFrame {
+  const patch = decodeDogsStreamFrame(raw, previous);
   if (!previous && (!patch.tiles || !patch.visibility || !patch.store)) {
     throw new Error("EutherDogs stream missing initial static state");
   }
@@ -12031,14 +12161,148 @@ function mergeDogsStreamFrame(previous: DogsCoreFrame | null, patch: DogsStreamF
     characterHeight: patch.characterHeight ?? base.characterHeight,
     tiles: patch.tiles ?? base.tiles,
     visibility: patch.visibility ?? base.visibility,
-    characters: patch.characters,
-    bullets: patch.bullets,
+    characters: patch.characters ?? base.characters,
+    bullets: patch.bullets ?? base.bullets,
     inspectionDialogues: patch.inspectionDialogues ?? base.inspectionDialogues ?? [],
-    summary: patch.summary,
+    summary: patch.summary ?? base.summary,
     store: patch.store ?? base.store,
     audioEvents: patch.audioEvents ?? [],
     highscoreCount: patch.highscoreCount ?? base.highscoreCount,
     ackedInputSeq: patch.ackedInputSeq ?? base.ackedInputSeq,
+  };
+}
+
+function decodeDogsStreamFrame(raw: DogsStreamFrame | DogsCompactStreamFrame, previous: DogsCoreFrame | null): DogsStreamFrame {
+  if (!("compact" in raw) && !("c" in raw) && !("b" in raw) && !("s" in raw)) {
+    return raw as DogsStreamFrame;
+  }
+  const compact = raw as DogsCompactStreamFrame;
+  const characters = decodeDogsActorPatch(previous?.characters ?? [], compact);
+  const bullets = decodeDogsBulletPatch(previous?.bullets ?? [], compact);
+  return {
+    ...compact,
+    frame: compact.frame,
+    characters,
+    bullets,
+    inspectionDialogues: (compact.d ?? [])
+      .map(decodeDogsInspectionDialogueRow)
+      .filter((dialogue): dialogue is DogsInspectionDialogue => dialogue !== null),
+    summary: compact.s ? decodeDogsSummaryRow(compact.s) : previous?.summary,
+    audioEvents: compact.a ?? [],
+    highscoreCount: compact.h ?? compact.highscoreCount ?? 0,
+    ackedInputSeq: compact.q ?? compact.ackedInputSeq,
+  };
+}
+
+function decodeDogsActorPatch(previous: DogsCoreActor[], compact: DogsCompactStreamFrame): DogsCoreActor[] {
+  if (compact.c) {
+    return compact.c.map(decodeDogsActorRow).filter((actor): actor is DogsCoreActor => actor !== null);
+  }
+  const actors = new Map(previous.map((actor) => [dogsActorWireKey(actor), actor]));
+  for (const key of compact.ar ?? []) {
+    actors.delete(String(key));
+  }
+  for (const actor of (compact.ac ?? []).map(decodeDogsActorRow)) {
+    if (actor) {
+      actors.set(dogsActorWireKey(actor), actor);
+    }
+  }
+  return Array.from(actors.values());
+}
+
+function decodeDogsBulletPatch(previous: DogsCoreBullet[], compact: DogsCompactStreamFrame): DogsCoreBullet[] {
+  if (compact.b) {
+    return compact.b.map(decodeDogsBulletRow).filter((bullet): bullet is DogsCoreBullet => bullet !== null);
+  }
+  const bullets = new Map(previous.map((bullet) => [bullet.id, bullet]));
+  for (const id of compact.br ?? []) {
+    bullets.delete(Number(id));
+  }
+  for (const bullet of (compact.bc ?? []).map(decodeDogsBulletRow)) {
+    if (bullet) {
+      bullets.set(bullet.id, bullet);
+    }
+  }
+  return Array.from(bullets.values());
+}
+
+function dogsActorWireKey(actor: Pick<DogsCoreActor, "faction" | "id">): string {
+  return `${actor.faction}:${actor.id}`;
+}
+
+function decodeDogsActorRow(row: unknown): DogsCoreActor | null {
+  if (!Array.isArray(row) || row.length < 11) {
+    return null;
+  }
+  return {
+    id: Number(row[0]),
+    faction: String(row[1]),
+    x: Number(row[2]),
+    y: Number(row[3]),
+    direction: String(row[4]),
+    sprite: String(row[5]),
+    armor: Number(row[6]),
+    lives: Number(row[7]),
+    alive: Boolean(row[8]),
+    activeWeapon: String(row[9]),
+    ammo: Number(row[10]),
+  };
+}
+
+function decodeDogsBulletRow(row: unknown): DogsCoreBullet | null {
+  if (!Array.isArray(row) || row.length < 7) {
+    return null;
+  }
+  return {
+    id: Number(row[0]),
+    x: Number(row[1]),
+    y: Number(row[2]),
+    dx: Number(row[3]),
+    dy: Number(row[4]),
+    ownerFaction: String(row[5]),
+    weapon: String(row[6]),
+  };
+}
+
+function decodeDogsInspectionDialogueRow(row: unknown): DogsInspectionDialogue | null {
+  if (!Array.isArray(row) || row.length < 4) {
+    return null;
+  }
+  return {
+    player: Number(row[0]),
+    inspectorId: Number(row[1]),
+    question: String(row[2]),
+    complete: Boolean(row[3]),
+  };
+}
+
+function decodeDogsSummaryRow(row: unknown): DogsCoreSummary {
+  const values = Array.isArray(row) ? row : [];
+  return {
+    mission: Number(values[0] ?? 0),
+    maxMission: Number(values[1] ?? 0),
+    status: String(values[2] ?? "running"),
+    elapsedTicks: Number(values[3] ?? 0),
+    score: Number(values[4] ?? 0),
+    cash: Number(values[5] ?? 0),
+    kills: Number(values[6] ?? 0),
+    targetsDestroyed: Number(values[7] ?? 0),
+    objectsCollected: Number(values[8] ?? 0),
+    shotsFired: Number(values[9] ?? 0),
+    hits: Number(values[10] ?? 0),
+    damageTaken: Number(values[11] ?? 0),
+    targetsLeft: Number(values[12] ?? 0),
+    objectsLeft: Number(values[13] ?? 0),
+    minimumKills: Number(values[14] ?? 0),
+    timeRemainingTicks: values[15] == null ? null : Number(values[15]),
+    bossActive: Boolean(values[16]),
+    bossName: values[17] == null ? null : String(values[17]),
+    bossArmor: values[18] == null ? null : Number(values[18]),
+    bossMaxArmor: values[19] == null ? null : Number(values[19]),
+    routineRead: Number(values[20] ?? 0),
+    routineTotal: Number(values[21] ?? 0),
+    inspectionAnswers: Number(values[22] ?? 0),
+    inspectionProtocol: Number(values[23] ?? 0),
   };
 }
 
@@ -12056,6 +12320,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   };
   dogsPreviousActorPositions = new Map();
   dogsRenderActorPositions = new Map();
+  dogsLastRenderAt = performance.now();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
@@ -12093,6 +12358,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
 async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
   dogsPreviousActorPositions = new Map();
   dogsRenderActorPositions = new Map();
+  dogsLastRenderAt = performance.now();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
@@ -12131,8 +12397,12 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   if (isTauri) {
     return await invoke<DogsCoreFrame>("run_eutherdogs_frame", { input });
   }
-  await syncDogsBridgeInput(input);
   if (dogsStream && dogsFrame) {
+    void syncDogsBridgeInput(input).catch((err) => {
+      dogsSnapshotMisses += 1;
+      ui.transportMode = "DOGS INPUT HOLD";
+      ui.lastError = err instanceof Error ? err.message : String(err);
+    });
     const age = performance.now() - lastDogsSnapshotAt;
     if (age > 450) {
       stopDogsSnapshotStream();
@@ -12141,8 +12411,9 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
     }
     return dogsFrame;
   }
+  await syncDogsBridgeInput(input);
   const now = performance.now();
-  if (dogsFrame && now - lastDogsSnapshotAt < 33) {
+  if (dogsFrame && now - lastDogsSnapshotAt < 50) {
     return dogsFrame;
   }
   return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
@@ -12202,10 +12473,15 @@ async function purchaseDogsCoreItem(itemId: string): Promise<DogsCoreFrame> {
 }
 
 function drawDogsFrame(frame: DogsCoreFrame | null): void {
+  const renderNow = performance.now();
+  const visualFrame = Math.floor(renderNow / (1000 / 60));
   dogsInspectionAnswerRects = [];
   dogsContext.fillStyle = "#07100d";
   dogsContext.fillRect(0, 0, dogsCanvas.width, dogsCanvas.height);
-  if (!frame) return;
+  if (!frame) {
+    dogsLastRenderAt = renderNow;
+    return;
+  }
 
   const worldW = frame.width * frame.tileWidth;
   const worldH = frame.height * frame.tileHeight;
@@ -12280,12 +12556,12 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
       drawDogsImage(baseFloorAsset, tileX, tileY, tileW, tileH, colors.floor, "cover");
       if (tile === "spilled_syrup") {
-        drawDogsVentFan(tileX, tileY, tileW, tileH, frame.frame);
+        drawDogsVentFan(tileX, tileY, tileW, tileH, visualFrame);
       } else {
         drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b", dogsTileImageFit(tile));
       }
       if (tile === "service_elevator") {
-        drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, frame.frame);
+        drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, visualFrame);
       }
     }
   }
@@ -12339,7 +12615,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     nextActorFacings.set(actorKey, facing);
     const sheetAsset = dogsActorSheetAsset(actor);
     if (sheetAsset) {
-      const frameColumn = moving ? Math.floor(frame.frame / 8) % 3 : 1;
+      const frameColumn = moving ? Math.floor(visualFrame / 8) % 3 : 1;
       const frameRow = dogsActorFacingRow(facing);
       const sheetFrameSize = dogsAssetMode === "2x" ? 64 : 32;
       const drewFrame = drawDogsImageFrame(
@@ -12372,7 +12648,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   drawDogsImpactEffects(frame, cameraX, cameraY, scale, yScale);
   for (const bullet of frame.bullets) {
     if (bullet.ownerFaction !== "player" && dogsPixelVisibility(frame, bullet.x, bullet.y) < 255) continue;
-    drawDogsProjectile(bullet, cameraX, cameraY, scale, yScale, frame.frame);
+    drawDogsProjectile(bullet, cameraX, cameraY, scale, yScale, visualFrame);
   }
   drawDogsVisibilityFog(frame, cameraX, cameraY, scale, yScale, firstTileX, firstTileY, lastTileX, lastTileY);
   drawDogsInspectionDialogues(frame, cameraX, cameraY, scale, yScale);
@@ -12406,6 +12682,7 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   if (dogsInventoryOpen) {
     renderDogsInventoryPopup();
   }
+  dogsLastRenderAt = renderNow;
 }
 
 function readStoredPlayerPort(): PlayerPort {

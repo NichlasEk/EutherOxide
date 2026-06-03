@@ -274,7 +274,11 @@ impl EutherDogsRuntime {
     }
 
     pub fn tick_held(&mut self) -> [EutherDogsFrame; 2] {
-        self.tick_held_with_audio()
+        self.tick_held_with_audio(1)
+    }
+
+    pub fn tick_held_steps(&mut self, ticks: u8) -> [EutherDogsFrame; 2] {
+        self.tick_held_with_audio(ticks.max(1))
     }
 
     pub fn snapshot_for_player(&mut self, player_index: usize) -> EutherDogsFrame {
@@ -282,11 +286,11 @@ impl EutherDogsRuntime {
     }
 
     fn tick_held_for_player(&mut self, player_index: usize) -> EutherDogsFrame {
-        let frames = self.tick_held_with_audio();
+        let frames = self.tick_held_with_audio(1);
         frames[player_index.min(1)].clone()
     }
 
-    fn tick_held_with_audio(&mut self) -> [EutherDogsFrame; 2] {
+    fn tick_held_with_audio(&mut self, ticks: u8) -> [EutherDogsFrame; 2] {
         let held_inputs = self.held_inputs;
         let player_inputs: Vec<PlayerInput> = held_inputs
             .into_iter()
@@ -299,8 +303,27 @@ impl EutherDogsRuntime {
             })
             .collect();
         self.game.tick(&player_inputs, FixedStep { ticks: 1 });
+        let remaining_ticks = ticks.saturating_sub(1);
+        if remaining_ticks > 0 {
+            let continued_inputs: Vec<PlayerInput> = held_inputs
+                .into_iter()
+                .enumerate()
+                .map(|(player_index, input)| PlayerInput {
+                    player_index,
+                    command: self.input_command_for_player(player_index, input),
+                    weapon_slot: None,
+                    inspection_answer: None,
+                })
+                .collect();
+            self.game.tick(
+                &continued_inputs,
+                FixedStep {
+                    ticks: remaining_ticks as u32,
+                },
+            );
+        }
         self.update_inspection_protocol_state();
-        self.frame += 1;
+        self.frame += ticks as u64;
         for (input, cooldown) in self
             .held_inputs
             .iter_mut()
@@ -308,7 +331,7 @@ impl EutherDogsRuntime {
         {
             input.weapon_slot = None;
             input.inspection_answer = None;
-            *cooldown = cooldown.saturating_sub(1);
+            *cooldown = cooldown.saturating_sub(ticks);
         }
         let audio_events = self.game.drain_audio_events();
         [
