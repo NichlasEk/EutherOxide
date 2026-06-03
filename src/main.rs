@@ -1288,7 +1288,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let player = bridge_player_index(&request)?;
             let command = host_doom_command(&request)?;
             submit_host_doom_command(state, &instance_id, &client_id, player, command)?;
-            send_json(stream, &host_doom_status(state, &instance_id)?)
+            if query_string_value(&request.path, "compact")?.as_deref() == Some("1") {
+                send_json(
+                    stream,
+                    &serde_json::json!({
+                        "ok": true,
+                        "currentTic": command.tic,
+                    }),
+                )
+            } else {
+                send_json(stream, &host_doom_status(state, &instance_id)?)
+            }
         }
         ("POST", "/api/doom/reset") => {
             let user = require_host_user(state, &request)?;
@@ -1549,6 +1559,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             };
             if request.method != "GET" && !valid_csrf_token(state, &request)? {
                 return send_error(stream, 403, "csrf token required");
+            }
+            if path.starts_with("/eutherdoom-runtime/") {
+                return send_eutherdoom_runtime_static(stream, path);
             }
             if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
                 return send_host_static(stream, path);
@@ -4306,6 +4319,31 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    send_response(stream, 200, content_type, &bytes)
+}
+
+fn send_eutherdoom_runtime_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let root = env::var("EUTHERDOOM_RUNTIME_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/home/nichlas/eutherdoom-runtime"))
+        .canonicalize()?;
+    let relative = path.trim_start_matches("/eutherdoom-runtime/");
+    let canonical = root.join(safe_relative_path(relative)?).canonicalize()?;
+    if !canonical.starts_with(&root) || !canonical.is_file() {
+        return send_error(stream, 404, "not found");
+    }
+    let bytes = fs::read(&canonical)?;
+    let content_type = match canonical
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("jsdos") => "application/octet-stream",
+        Some("zip") => "application/zip",
         _ => "application/octet-stream",
     };
     send_response(stream, 200, content_type, &bytes)

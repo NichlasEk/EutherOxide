@@ -21,6 +21,7 @@ declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
     webkitAudioContext?: typeof AudioContext;
+    Dos?: (element: HTMLElement, options: Record<string, unknown>) => { stop?: () => Promise<void> };
   }
 }
 
@@ -781,6 +782,7 @@ const dogsAssetModeStorageKey = "eutheroxide-eutherdogs-asset-mode";
 const dogsCharactersStorageKey = "eutheroxide-eutherdogs-characters";
 const bridgeClientStorageKey = "eutheroxide-bridge-client-id";
 const playerPortStorageKey = "eutheroxide-player-port";
+const doomMouseSensitivityStorageKey = "eutheroxide-eutherdoom-mouse-sensitivity";
 const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
 const dogsHighScoreLimit = 10;
 let audioVolume = readStoredVolume();
@@ -1024,9 +1026,14 @@ let lobbyStatus: LobbyStatus | null = null;
 let doomStatus: DoomStatus | null = null;
 let doomDriveTimer: number | null = null;
 let doomDriveInFlight = false;
+let doomDriveSubmitted = 0;
 let doomEventPollTimer: number | null = null;
 let doomEventStream: EventSource | null = null;
 let doomLastEventId = 0;
+let doomRendererStarted = false;
+let doomRendererController: { stop?: () => Promise<void>; setMouseSensitivity?: (value: number) => void } | null = null;
+let doomRuntimeScriptPromise: Promise<void> | null = null;
+let doomMouseSensitivity = readStoredDoomMouseSensitivity();
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
@@ -1543,6 +1550,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <strong id="mic-volume-value">100%</strong>
         </div>
         <input id="mic-volume-slider" type="range" min="0" max="160" value="100" aria-label="mic volume" />
+        <div class="volume-head doom-mouse-head">
+          <p class="section-label">Doom mouse</p>
+          <strong id="doom-mouse-sensitivity-value">2.2x</strong>
+        </div>
+        <input id="doom-mouse-sensitivity" type="range" min="0.6" max="4" step="0.1" value="2.2" aria-label="doom mouse sensitivity" />
       </div>
 
       <div class="rail-section">
@@ -1599,6 +1611,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <canvas id="shader-video" width="320" height="224"></canvas>
           <video id="bridge-video" muted playsinline autoplay></video>
           <audio id="bridge-audio" autoplay></audio>
+          <div id="eutherdoom-renderer" class="eutherdoom-renderer" aria-hidden="true">
+            <div id="eutherdoom-dos" class="eutherdoom-dos"></div>
+            <div id="eutherdoom-renderer-status" class="eutherdoom-renderer-status">Doom runtime idle</div>
+          </div>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
           <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
           <div id="eutherdogs-console" class="eutherdogs-console" aria-hidden="true">
@@ -1894,6 +1910,9 @@ videoContext = videoCanvas.getContext("2d", { alpha: false })!;
 shaderCanvas = document.querySelector<HTMLCanvasElement>("#shader-video")!;
 const bridgeVideo = document.querySelector<HTMLVideoElement>("#bridge-video")!;
 const bridgeRtcAudio = document.querySelector<HTMLAudioElement>("#bridge-audio")!;
+const eutherDoomRenderer = document.querySelector<HTMLDivElement>("#eutherdoom-renderer")!;
+const eutherDoomDos = document.querySelector<HTMLDivElement>("#eutherdoom-dos")!;
+const eutherDoomRendererStatus = document.querySelector<HTMLDivElement>("#eutherdoom-renderer-status")!;
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 bridgeVideo.addEventListener("loadedmetadata", syncBridgeVideoGeometry);
@@ -2025,6 +2044,8 @@ const doomDrive = document.querySelector<HTMLButtonElement>("#doom-drive")!;
 const doomTitle = document.querySelector<HTMLElement>("#doom-title")!;
 const doomMeta = document.querySelector<HTMLElement>("#doom-meta")!;
 const doomVesselStatus = document.querySelector<HTMLDivElement>("#doom-vessel-status")!;
+const doomMouseSensitivityInput = document.querySelector<HTMLInputElement>("#doom-mouse-sensitivity")!;
+const doomMouseSensitivityValue = document.querySelector<HTMLElement>("#doom-mouse-sensitivity-value")!;
 const doomTic = document.querySelector<HTMLInputElement>("#doom-tic")!;
 const doomForward = document.querySelector<HTMLInputElement>("#doom-forward")!;
 const doomStrafe = document.querySelector<HTMLInputElement>("#doom-strafe")!;
@@ -2091,6 +2112,7 @@ void refreshLobby();
 void refreshHostUsers();
 updateVolumeUi();
 updateMicVolumeUi();
+updateDoomMouseSensitivityUi();
 applyAudioVolume();
 applyMobileMode();
 renderDogsAssetMode();
@@ -2420,6 +2442,10 @@ doomSend.addEventListener("click", async () => {
 
 doomDrive.addEventListener("click", () => {
   setDoomDriveActive(doomDriveTimer === null);
+});
+
+doomMouseSensitivityInput.addEventListener("input", () => {
+  setDoomMouseSensitivity(Number(doomMouseSensitivityInput.value));
 });
 
 doomReset.addEventListener("click", async () => {
@@ -5432,6 +5458,86 @@ function setDoomPlayerReady(player: number, ready: boolean): void {
   }
 }
 
+function loadExternalStylesheet(id: string, href: string): void {
+  if (document.getElementById(id)) {
+    return;
+  }
+  const link = document.createElement("link");
+  link.id = id;
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+function loadExternalScript(id: string, src: string): Promise<void> {
+  if (document.getElementById(id)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.id = id;
+    script.src = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Could not load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureEutherDoomRuntime(): Promise<void> {
+  loadExternalStylesheet("eutherdoom-jsdos-css", "/eutherdoom-runtime/js-dos/js-dos.css");
+  if (!doomRuntimeScriptPromise) {
+    doomRuntimeScriptPromise = loadExternalScript("eutherdoom-jsdos-js", "/eutherdoom-runtime/js-dos/js-dos.js");
+  }
+  await doomRuntimeScriptPromise;
+}
+
+async function startEutherDoomRenderer(): Promise<void> {
+  eutherDoomRenderer.setAttribute("aria-hidden", "false");
+  if (doomRendererStarted) {
+    return;
+  }
+  doomRendererStarted = true;
+  eutherDoomRendererStatus.textContent = "Loading Doom runtime";
+  eutherDoomDos.innerHTML = "";
+  try {
+    await ensureEutherDoomRuntime();
+    if (!window.Dos) {
+      throw new Error("js-dos runtime missing");
+    }
+    eutherDoomRendererStatus.textContent = "Starting Doom";
+    doomRendererController = window.Dos(eutherDoomDos, {
+      url: "/eutherdoom-runtime/bundles/doom.jsdos",
+      pathPrefix: "/eutherdoom-runtime/js-dos/emulators/",
+      autoStart: true,
+      noCloud: true,
+      kiosk: true,
+      workerThread: true,
+      renderAspect: "fit",
+      mouseSensitivity: doomMouseSensitivity,
+    });
+    eutherDoomRendererStatus.textContent = "Doom running";
+  } catch (err) {
+    doomRendererStarted = false;
+    eutherDoomRendererStatus.textContent = err instanceof Error ? err.message : "Doom runtime failed";
+  }
+}
+
+async function stopEutherDoomRenderer(): Promise<void> {
+  eutherDoomRenderer.setAttribute("aria-hidden", "true");
+  if (!doomRendererStarted) {
+    return;
+  }
+  doomRendererStarted = false;
+  try {
+    await doomRendererController?.stop?.();
+  } catch {
+    // Runtime teardown is best-effort; route switches must not get stuck.
+  }
+  doomRendererController = null;
+  eutherDoomDos.innerHTML = "";
+  eutherDoomRendererStatus.textContent = "Doom runtime idle";
+}
+
 async function setDoomReady(ready: boolean): Promise<void> {
   if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
     pushTrace("Claim Doom P1 or P2 first");
@@ -5465,6 +5571,7 @@ function setDoomDriveActive(active: boolean): void {
       doomDriveTimer = null;
     }
     doomDriveInFlight = false;
+    doomDriveSubmitted = 0;
     renderDoomPanel();
     return;
   }
@@ -5494,9 +5601,10 @@ async function driveDoomTick(): Promise<void> {
   doomDriveInFlight = true;
   try {
     const command = doomCommandFromInput();
-    doomStatus = await bridgeJson<DoomStatus>(`/api/doom/cmd?${doomCommandParams(command)}`, { method: "POST" }, 700);
-    doomLastEventId = doomStatus.lastEventId ?? doomLastEventId;
-    doomTic.value = doomStatus.currentTic.toString();
+    const params = doomCommandParams(command);
+    params.set("compact", "1");
+    await bridgeRequest(`/api/doom/cmd?${params}`, { method: "POST" }, 450);
+    doomDriveSubmitted = command.tic;
     renderDoomPanel();
   } catch (err) {
     try {
@@ -5894,6 +6002,11 @@ function applyAppRoute(): void {
   }
   if (playMode === "eutherdoom" && activeLobbyInstance()?.kind === "eutherdoom") {
     void refreshDoomStatus();
+  }
+  if (!showingLobby && appRoute === "eutherdoom") {
+    void startEutherDoomRenderer();
+  } else {
+    void stopEutherDoomRenderer();
   }
 }
 
@@ -8167,9 +8280,11 @@ function renderDoomPanel(): void {
   const players = doomStatus?.players ?? [];
   const readyCount = players.filter((player) => player.ready).length;
   const streamMode = doomEventStream ? "stream" : doomEventPollTimer !== null ? "poll" : "idle";
+  const currentTic = doomStatus?.currentTic ?? instance?.frame ?? 0;
+  const driveLead = doomDriveTimer === null ? "" : ` | drive ${Math.max(0, doomDriveSubmitted - currentTic)}`;
 
   doomTitle.textContent = instance?.name ?? "EutherDoom Server";
-  doomMeta.textContent = `tic ${doomStatus?.currentTic ?? instance?.frame ?? 0} | ${readyCount}/2 ready | ${streamMode} | replay ${doomStatus?.replayEvents ?? 0}`;
+  doomMeta.textContent = `tic ${currentTic} | ${readyCount}/2 ready | ${streamMode}${driveLead} | replay ${doomStatus?.replayEvents ?? 0}`;
   doomVesselStatus.innerHTML = [1, 2]
     .map((player) => {
       const slot = players.find((entry) => entry.player === player);
@@ -9683,6 +9798,18 @@ function readStoredVolume(): number {
 function readStoredMicVolume(): number {
   const stored = Number(localStorage.getItem(micVolumeStorageKey));
   return Number.isFinite(stored) ? clampMicVolume(stored) : 1;
+}
+
+function clampDoomMouseSensitivity(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 2.2;
+  }
+  return Math.min(Math.max(value, 0.6), 4);
+}
+
+function readStoredDoomMouseSensitivity(): number {
+  const stored = Number(localStorage.getItem(doomMouseSensitivityStorageKey));
+  return Number.isFinite(stored) ? clampDoomMouseSensitivity(stored) : 2.2;
 }
 
 function parseEutherDogsManifest(toml: string, modules: Record<string, string>): Map<string, string> {
@@ -12807,6 +12934,13 @@ function setMicVolume(value: number): void {
   applyVideoChatMicVolume();
 }
 
+function setDoomMouseSensitivity(value: number): void {
+  doomMouseSensitivity = clampDoomMouseSensitivity(value);
+  localStorage.setItem(doomMouseSensitivityStorageKey, doomMouseSensitivity.toString());
+  doomRendererController?.setMouseSensitivity?.(doomMouseSensitivity);
+  updateDoomMouseSensitivityUi();
+}
+
 function updateVolumeUi(): void {
   volumeSlider.value = Math.round(audioVolume * 100).toString();
   volumeValue.textContent = `${Math.round(audioVolume * 100)}%`;
@@ -12831,6 +12965,11 @@ function updateMicVolumeUi(): void {
   if (settingsMicVolumeValue) {
     settingsMicVolumeValue.textContent = `${Math.round(micVolume * 100)}%`;
   }
+}
+
+function updateDoomMouseSensitivityUi(): void {
+  doomMouseSensitivityInput.value = doomMouseSensitivity.toFixed(1);
+  doomMouseSensitivityValue.textContent = `${doomMouseSensitivity.toFixed(1)}x`;
 }
 
 function applyAudioVolume(): void {
