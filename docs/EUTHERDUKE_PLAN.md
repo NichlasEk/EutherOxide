@@ -50,13 +50,15 @@ EM_CONFIG=/home/nichlas/.emscripten-eutherduke emmake make -C /home/nichlas/euth
   RELEASE=1 DEBUGANYWAY=0 NETCODE=0 STARTUP_WINDOW=0 \
   USE_OPENGL=0 POLYMER=0 USE_LIBVPX=0 USE_MIMALLOC=0 \
   HAVE_VORBIS=0 HAVE_FLAC=0 HAVE_XMP=0 SDL_STATIC=0 \
-  LTO=0 CFLAGS='-pthread' \
+  LTO=0 \
   CUSTOMOPT='-DB_LITTLE_ENDIAN=1 -DB_BIG_ENDIAN=0' \
   LDFLAGS='-sUSE_SDL=2 -sALLOW_MEMORY_GROWTH=1 -sASYNCIFY=1 -sMODULARIZE=1 -sEXPORT_NAME=EutherDukeModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=FS,callMain'
 ```
 
-The current runtime is pthread-based. EutherHost sends COOP/COEP/CORP headers so browser
-`SharedArrayBuffer` support is available for the iframe runtime.
+The current runtime is single-threaded. That avoids the browser `SharedArrayBuffer` and
+`crossOriginIsolated` requirement, which is important for LAN HTTP testing. The external
+EDuke32 checkout has a local Common.mak patch that skips `LIBS += -pthread` when
+`SUBPLATFORM=EMSCRIPTEN`.
 
 ## Legal Data Boundary
 
