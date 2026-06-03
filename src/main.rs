@@ -5685,9 +5685,6 @@ fn send_response_with_headers(
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
-         Cross-Origin-Opener-Policy: same-origin\r\n\
-         Cross-Origin-Embedder-Policy: require-corp\r\n\
-         Cross-Origin-Resource-Policy: same-origin\r\n\
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
