@@ -2582,6 +2582,119 @@ h2 {
   white-space: nowrap;
 }
 
+.eutherium-lobby-panel {
+  align-content: start;
+}
+
+.eutherium-lobby-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 10px;
+}
+
+.eutherium-lobby-balance,
+.eutherium-lobby-actions,
+.eutherium-lobby-award-form,
+.eutherium-lobby-feed {
+  min-width: 0;
+}
+
+.eutherium-lobby-balance {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid rgba(214, 233, 95, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.62);
+}
+
+.eutherium-lobby-balance span,
+.eutherium-lobby-award-row span,
+.eutherium-lobby-award-row em {
+  color: #9fbd91;
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.eutherium-lobby-balance strong {
+  overflow: hidden;
+  color: #f3ffcc;
+  font-size: 1.2rem;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherium-lobby-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.eutherium-lobby-actions button,
+.eutherium-lobby-award-form button {
+  min-height: 42px;
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.eutherium-lobby-award-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px minmax(0, 1.2fr) 84px;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(214, 233, 95, 0.14);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.42);
+}
+
+.eutherium-lobby-award-form input,
+.eutherium-lobby-award-form select {
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 0 10px;
+  font-size: 0.76rem;
+}
+
+.eutherium-lobby-feed {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.eutherium-lobby-feed > span {
+  color: #9fbd91;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.eutherium-lobby-award-row {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(165, 222, 114, 0.14);
+  border-radius: 8px;
+  background: rgba(4, 10, 7, 0.58);
+}
+
+.eutherium-lobby-award-row strong {
+  color: #f3ffcc;
+  font-size: 0.82rem;
+}
+
+.eutherium-lobby-award-row span,
+.eutherium-lobby-award-row em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .reaction-mode-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5154,7 +5267,9 @@ h2 {
   .reaction-mode-grid,
   .reaction-lobby-start-grid,
   .reaction-lobby-tools,
-  .reaction-social-grid {
+  .reaction-social-grid,
+  .eutherium-lobby-grid,
+  .eutherium-lobby-feed {
     grid-template-columns: 1fr;
   }
 
@@ -5240,7 +5355,12 @@ h2 {
   .admin-form,
   .admin-award-form,
   .eutherium-award-form,
+  .eutherium-lobby-award-form,
   .admin-form:has(#invite-email) {
+    grid-template-columns: 1fr;
+  }
+
+  .eutherium-lobby-actions {
     grid-template-columns: 1fr;
   }
 

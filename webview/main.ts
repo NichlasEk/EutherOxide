@@ -409,6 +409,12 @@ type EutheriumAdminResult = {
   ledger: EutheriumLedgerEntry[];
 };
 
+type EutheriumActivityResult = {
+  user: string;
+  balance: number;
+  awards: EutheriumLedgerEntry[];
+};
+
 type PadBinding = {
   kind: "button" | "axis";
   code: string;
@@ -1030,6 +1036,9 @@ let eutheriumSaving = false;
 let eutheriumStatus = "Not loaded";
 let eutheriumMe: EutheriumMeResult | null = null;
 let eutheriumAdmin: EutheriumAdminResult | null = null;
+let eutheriumLobbyStatus = "Not loaded";
+let eutheriumLobbyBalance: number | null = null;
+let eutheriumLobbyAwards: EutheriumLedgerEntry[] = [];
 let selectedTrophyInventoryId: string | null = null;
 let trophyDrag: {
   inventoryId: string;
@@ -1886,6 +1895,10 @@ const playModeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(
 const reactionLobbyHome = document.querySelector<HTMLElement>("#reaction-lobby-home")!;
 const reactionLobbySummary = document.querySelector<HTMLDivElement>("#reaction-lobby-summary")!;
 const reactionLobbyVessels = document.querySelector<HTMLDivElement>("#reaction-lobby-vessels")!;
+const eutheriumLobbyStatusEl = document.querySelector<HTMLElement>("#eutherium-lobby-status")!;
+const eutheriumLobbyBalanceEl = document.querySelector<HTMLElement>("#eutherium-lobby-balance")!;
+const eutheriumLobbyAwardEl = document.querySelector<HTMLDivElement>("#eutherium-lobby-award")!;
+const eutheriumLobbyFeedEl = document.querySelector<HTMLDivElement>("#eutherium-lobby-feed")!;
 const lobbySection = document.querySelector<HTMLDivElement>("#lobby-section")!;
 const dogsModeSection = document.querySelector<HTMLDivElement>("#dogs-mode-section")!;
 const shoppingListPanel = document.querySelector<HTMLDivElement>("#interaction-shopping-panel")!;
@@ -2083,6 +2096,11 @@ userMenuDropdown.addEventListener("click", (event) => {
 });
 
 reactionCorePage.addEventListener("click", (event) => {
+  const lobbyAward = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-eutherium-lobby-award-submit]");
+  if (lobbyAward) {
+    void awardEutheriumFromLobby();
+    return;
+  }
   const routeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-app-route]");
   if (routeButton && handleAppRouteButton(routeButton)) {
     return;
@@ -3755,6 +3773,30 @@ function reactionLobbyHomeMarkup(): string {
         </div>
         <div class="reaction-lobby-summary" id="reaction-lobby-summary">Scanning</div>
       </div>
+      <section class="reaction-lobby-panel eutherium-lobby-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Eutherium</p>
+            <strong>Rewards, shop, trophy room</strong>
+          </div>
+          <span id="eutherium-lobby-status">Not loaded</span>
+        </div>
+        <div class="eutherium-lobby-grid">
+          <div class="eutherium-lobby-balance">
+            <span>Your balance</span>
+            <strong id="eutherium-lobby-balance">-- EUX</strong>
+          </div>
+          <div class="eutherium-lobby-actions">
+            <button data-workspace-window="eutherium" type="button">Shop</button>
+            <button data-workspace-window="eutherium" type="button">Trophy Room</button>
+            <button data-reaction-home-action="eutherium-refresh" type="button">Sync</button>
+          </div>
+        </div>
+        <div class="eutherium-lobby-award" id="eutherium-lobby-award"></div>
+        <div class="eutherium-lobby-feed" id="eutherium-lobby-feed">
+          <span>No recent awards</span>
+        </div>
+      </section>
       <section class="reaction-lobby-panel reaction-lobby-play-panel">
         <div class="section-head">
           <div>
@@ -5023,12 +5065,16 @@ async function refreshAuthStatus(): Promise<void> {
     shoppingListLoaded = false;
     eutheriumLoaded = false;
     eutheriumMe = null;
+    eutheriumLobbyBalance = null;
+    eutheriumLobbyAwards = [];
+    eutheriumLobbyStatus = "Not loaded";
     selectedTrophyInventoryId = null;
     interactionUsersLoaded = false;
     interactionUsers = [];
   }
   renderUserMenu();
   renderInteractionUsers();
+  renderEutheriumLobby();
   if (appRoute === "interactionLobby") {
     void loadInteractionUsers();
   }
@@ -5558,6 +5604,7 @@ async function awardEutheriumFromAdminPanel(): Promise<void> {
     if (activeWorkspaceWindow === "eutherium") {
       await loadEutherium();
     }
+    await loadEutheriumLobby(true);
   } catch (err) {
     adminAwardStatus.textContent = err instanceof Error ? err.message : "Award failed";
   } finally {
@@ -5594,12 +5641,45 @@ async function awardEutheriumFromWorkspace(): Promise<void> {
     }
     eutheriumLoaded = false;
     eutheriumStatus = `Awarded ${amount} to ${displayUserName(userId)}`;
+    await loadEutheriumLobby(true);
     await loadEutherium(true);
   } catch (err) {
     eutheriumStatus = err instanceof Error ? err.message : "Award failed";
   } finally {
     eutheriumSaving = false;
     renderWorkspaceWindow();
+  }
+}
+
+async function awardEutheriumFromLobby(): Promise<void> {
+  const userInput = eutheriumLobbyAwardEl.querySelector<HTMLSelectElement>("#eutherium-lobby-award-user");
+  const amountInput = eutheriumLobbyAwardEl.querySelector<HTMLInputElement>("#eutherium-lobby-award-amount");
+  const reasonInput = eutheriumLobbyAwardEl.querySelector<HTMLInputElement>("#eutherium-lobby-award-reason");
+  const userId = userInput?.value.trim() ?? "";
+  const amount = amountInput ? numberInput(amountInput, 0) : 0;
+  const reason = reasonInput?.value.trim() ?? "";
+  if (!userId || amount <= 0 || !reason) {
+    eutheriumLobbyStatus = "Choose user, amount and reason";
+    renderEutheriumLobby();
+    return;
+  }
+  eutheriumLobbyStatus = "Writing ledger";
+  renderEutheriumLobby();
+  try {
+    await bridgeJson<unknown>(
+      "/api/eutherium/award",
+      {
+        method: "POST",
+        body: JSON.stringify({ userId, amount, reason, source: "manual_award" }),
+      },
+      1400,
+    );
+    eutheriumLobbyStatus = `Awarded ${amount} to ${displayUserName(userId)}`;
+    eutheriumLoaded = false;
+    await loadEutheriumLobby(true);
+  } catch (err) {
+    eutheriumLobbyStatus = err instanceof Error ? err.message : "Award failed";
+    renderEutheriumLobby();
   }
 }
 
@@ -5743,6 +5823,12 @@ function applyAppRoute(): void {
     void loadShoppingList();
     void loadInteractionUsers();
   }
+  if (!showingLobby && appRoute === "playHome") {
+    void loadEutheriumLobby();
+    if (hostPermissions.canAwardEutherium) {
+      void loadInteractionUsers();
+    }
+  }
   if (playMode === "eutherdoom" && activeLobbyInstance()?.kind === "eutherdoom") {
     void refreshDoomStatus();
   }
@@ -5840,6 +5926,9 @@ async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise
       return;
     case "eutherium":
       openWorkspaceWindow("eutherium");
+      return;
+    case "eutherium-refresh":
+      await loadEutheriumLobby(true);
       return;
     case "open":
     case "join":
@@ -6225,6 +6314,67 @@ async function loadEutherium(force = false): Promise<void> {
   if (activeWorkspaceWindow === "eutherium") {
     renderWorkspaceWindow();
   }
+}
+
+async function loadEutheriumLobby(force = false): Promise<void> {
+  if (isTauri || !hostUsername) {
+    eutheriumLobbyStatus = hostUsername ? "Unavailable" : "Login required";
+    renderEutheriumLobby();
+    return;
+  }
+  if (eutheriumLobbyBalance !== null && !force) {
+    renderEutheriumLobby();
+    return;
+  }
+  eutheriumLobbyStatus = "Loading";
+  renderEutheriumLobby();
+  try {
+    const result = await bridgeJson<EutheriumActivityResult>("/api/eutherium/activity", {}, 1000);
+    eutheriumLobbyBalance = result.balance;
+    eutheriumLobbyAwards = result.awards;
+    eutheriumLobbyStatus = "Synced";
+  } catch (err) {
+    eutheriumLobbyStatus = err instanceof Error ? err.message : "Sync failed";
+  }
+  renderEutheriumLobby();
+}
+
+function renderEutheriumLobby(): void {
+  eutheriumLobbyStatusEl.textContent = eutheriumLobbyStatus;
+  eutheriumLobbyBalanceEl.textContent =
+    eutheriumLobbyBalance === null ? "-- EUX" : `${formatEutherium(eutheriumLobbyBalance)} EUX`;
+  eutheriumLobbyFeedEl.innerHTML = eutheriumLobbyAwards.length
+    ? eutheriumLobbyAwards.map(eutheriumLobbyAwardMarkup).join("")
+    : `<span>No recent awards</span>`;
+  eutheriumLobbyAwardEl.innerHTML = hostPermissions.canAwardEutherium
+    ? eutheriumLobbyAwardPanelMarkup()
+    : "";
+}
+
+function eutheriumLobbyAwardPanelMarkup(): string {
+  const candidates = visibleInteractionFriends().filter((friend) => !friend.isCurrentUser || hostIsAdmin);
+  const options = candidates.length
+    ? candidates.map((friend) => `<option value="${escapeHtml(friend.name)}">${escapeHtml(displayUserName(friend.name))}</option>`).join("")
+    : `<option value="">No users loaded</option>`;
+  return `
+    <div class="eutherium-lobby-award-form">
+      <select id="eutherium-lobby-award-user" aria-label="award user">${options}</select>
+      <input id="eutherium-lobby-award-amount" type="number" min="1" step="1" value="100" aria-label="award amount" />
+      <input id="eutherium-lobby-award-reason" type="text" placeholder="reason" aria-label="award reason" />
+      <button data-eutherium-lobby-award-submit type="button">Award</button>
+    </div>
+  `;
+}
+
+function eutheriumLobbyAwardMarkup(entry: EutheriumLedgerEntry): string {
+  const from = entry.createdByUserId ? displayUserName(entry.createdByUserId) : "System";
+  return `
+    <div class="eutherium-lobby-award-row">
+      <strong>+${formatEutherium(entry.amount)} EUX</strong>
+      <span>${escapeHtml(from)} gave ${escapeHtml(displayUserName(entry.userId))}</span>
+      <em>${escapeHtml(entry.reason)}</em>
+    </div>
+  `;
 }
 
 async function buyEutheriumItem(itemId: string): Promise<void> {
@@ -6632,6 +6782,7 @@ function renderInteractionUsers(): void {
   friendPreviewCount.textContent = `${onlineCount} online / ${interactionUsersStatus}`;
   friendPreviewRows.innerHTML = friendRowsMarkup(friends);
   renderShoppingShareControls();
+  renderEutheriumLobby();
   if (activeWorkspaceWindow) {
     renderWorkspaceWindow();
   }
@@ -7837,6 +7988,7 @@ function renderReactionLobbyHome(): void {
         <span>Start a MegaDrive chamber, start EutherDoom, or open EutherDogs.</span>
       </div>
     `;
+  renderEutheriumLobby();
   renderReactionLobbyToolStatus();
 }
 

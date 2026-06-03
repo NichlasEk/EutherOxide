@@ -1343,6 +1343,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let user = require_host_user(state, &request)?;
             send_json(stream, &host_eutherium_ledger_result(&user)?)
         }
+        ("GET", "/api/eutherium/activity") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_eutherium_activity_result(&user)?)
+        }
         ("POST", "/api/eutherium/award") => {
             let awarder = match require_host_eutherium_awarder(state, &request) {
                 Ok(awarder) => awarder,
@@ -2732,6 +2736,14 @@ fn host_eutherium_ledger_result(user: &str) -> io::Result<serde_json::Value> {
     }))
 }
 
+fn host_eutherium_activity_result(user: &str) -> io::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "user": user,
+        "balance": host_eutherium_balance(user)?,
+        "awards": host_eutherium_recent_awards(12)?,
+    }))
+}
+
 fn award_host_eutherium(
     state: &HostState,
     awarder: &str,
@@ -2932,6 +2944,16 @@ fn host_eutherium_user_ledger(
 
 fn host_eutherium_ledger_tail(limit: usize) -> io::Result<Vec<HostEutheriumLedgerEntry>> {
     let mut entries = load_host_eutherium_ledger()?;
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_unix_ms));
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+fn host_eutherium_recent_awards(limit: usize) -> io::Result<Vec<HostEutheriumLedgerEntry>> {
+    let mut entries: Vec<_> = load_host_eutherium_ledger()?
+        .into_iter()
+        .filter(|entry| entry.amount > 0 && entry.source == "manual_award")
+        .collect();
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_unix_ms));
     entries.truncate(limit);
     Ok(entries)
