@@ -1561,7 +1561,22 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return send_error(stream, 403, "csrf token required");
             }
             if path.starts_with("/eutherdoom-runtime/") {
-                return send_eutherdoom_runtime_static(stream, path);
+                return send_external_runtime_static(
+                    stream,
+                    path,
+                    "/eutherdoom-runtime/",
+                    "EUTHERDOOM_RUNTIME_PATH",
+                    "/home/nichlas/eutherdoom-runtime",
+                );
+            }
+            if path.starts_with("/eutherduke-runtime/") {
+                return send_external_runtime_static(
+                    stream,
+                    path,
+                    "/eutherduke-runtime/",
+                    "EUTHERDUKE_RUNTIME_PATH",
+                    "/home/nichlas/eutherduke-runtime",
+                );
             }
             if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
                 return send_host_static(stream, path);
@@ -4324,12 +4339,18 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     send_response(stream, 200, content_type, &bytes)
 }
 
-fn send_eutherdoom_runtime_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
-    let root = env::var("EUTHERDOOM_RUNTIME_PATH")
+fn send_external_runtime_static(
+    stream: &mut TcpStream,
+    path: &str,
+    mount: &str,
+    env_key: &str,
+    default_root: &str,
+) -> io::Result<()> {
+    let root = env::var(env_key)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/nichlas/eutherdoom-runtime"))
+        .unwrap_or_else(|_| PathBuf::from(default_root))
         .canonicalize()?;
-    let relative = path.trim_start_matches("/eutherdoom-runtime/");
+    let relative = path.trim_start_matches(mount);
     let canonical = root.join(safe_relative_path(relative)?).canonicalize()?;
     if !canonical.starts_with(&root) || !canonical.is_file() {
         return send_error(stream, 404, "not found");
@@ -4339,11 +4360,17 @@ fn send_eutherdoom_runtime_static(stream: &mut TcpStream, path: &str) -> io::Res
         .extension()
         .and_then(|extension| extension.to_str())
     {
+        Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
         Some("wasm") => "application/wasm",
         Some("jsdos") => "application/octet-stream",
         Some("zip") => "application/zip",
+        Some("data") => "application/octet-stream",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
         _ => "application/octet-stream",
     };
     send_response(stream, 200, content_type, &bytes)
@@ -5658,6 +5685,9 @@ fn send_response_with_headers(
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
+         Cross-Origin-Opener-Policy: same-origin\r\n\
+         Cross-Origin-Embedder-Policy: require-corp\r\n\
+         Cross-Origin-Resource-Policy: same-origin\r\n\
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\

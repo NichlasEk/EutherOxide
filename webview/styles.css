@@ -82,7 +82,11 @@ button:disabled {
 .play-mode-eutherdoom #video,
 .play-mode-eutherdoom #shader-video,
 .play-mode-eutherdoom #bridge-video,
-.play-mode-eutherdoom #eutherdogs-canvas {
+.play-mode-eutherdoom #eutherdogs-canvas,
+.play-mode-eutherduke #video,
+.play-mode-eutherduke #shader-video,
+.play-mode-eutherduke #bridge-video,
+.play-mode-eutherduke #eutherdogs-canvas {
   opacity: 0;
   pointer-events: none;
 }
@@ -148,6 +152,69 @@ button:disabled {
   line-height: 1.15;
   text-transform: uppercase;
   letter-spacing: 0;
+}
+
+.eutherduke-renderer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: stretch;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 35% 24%, rgba(255, 216, 93, 0.14), transparent 38%),
+    linear-gradient(135deg, #080503, #120607 58%, #040202);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.play-mode-eutherduke .eutherduke-renderer {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.eutherduke-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+.eutherduke-runtime-panel {
+  place-self: center;
+  display: grid;
+  gap: 8px;
+  width: min(440px, calc(100% - 28px));
+  padding: 16px;
+  border: 1px solid rgba(255, 216, 93, 0.26);
+  border-radius: 8px;
+  background: rgba(5, 4, 3, 0.84);
+  box-shadow: inset 0 0 34px rgba(255, 104, 85, 0.08);
+}
+
+.eutherduke-runtime-panel span,
+.eutherduke-runtime-panel strong,
+.eutherduke-runtime-panel p {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.eutherduke-runtime-panel span {
+  color: #ffcf64;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherduke-runtime-panel strong {
+  color: #fff1ca;
+  font-size: 1rem;
+}
+
+.eutherduke-runtime-panel p {
+  color: #d9b9a8;
+  font-size: 0.76rem;
+  line-height: 1.35;
 }
 
 .eutherdogs-mode .screen-glass {
@@ -2300,6 +2367,10 @@ h2 {
   border-color: rgba(255, 104, 85, 0.22);
 }
 
+.mode-card-eutherduke {
+  border-color: rgba(255, 207, 100, 0.24);
+}
+
 .mode-card:hover:not(:disabled),
 .mode-card.is-selected {
   border-color: rgba(230, 247, 147, 0.55);
@@ -2968,6 +3039,10 @@ h2 {
 
 .reaction-mode-eutherdoom {
   border-color: rgba(255, 104, 85, 0.26);
+}
+
+.reaction-mode-eutherduke {
+  border-color: rgba(255, 207, 100, 0.28);
 }
 
 .reaction-lobby-start-grid,

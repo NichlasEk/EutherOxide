@@ -285,7 +285,7 @@ type VideoChatResult = {
   signals: VideoChatSignal[];
 };
 
-type PlayMode = "megadrive" | "eutherdogs" | "eutherdoom";
+type PlayMode = "megadrive" | "eutherdogs" | "eutherdoom" | "eutherduke";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
 type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "friends" | "spaces" | "profile" | "settings";
 
@@ -1222,6 +1222,13 @@ const playModeCards: Array<{
     detail: "Start or join Doom rooms with ready state and replay tools.",
     action: "Open EutherDoom",
   },
+  {
+    mode: "eutherduke",
+    label: "EutherDuke",
+    kicker: "Build engine lab",
+    detail: "EDuke32/WASM vessel foundation for real client-side Duke.",
+    action: "Open EutherDuke",
+  },
 ];
 const shoppingCategoryOrder = [
   "Frukt & grönt",
@@ -1395,6 +1402,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-play-mode="megadrive" type="button">MegaDrive</button>
             <button data-play-mode="eutherdogs" type="button">EutherDogs</button>
             <button data-play-mode="eutherdoom" type="button">EutherDoom</button>
+            <button data-play-mode="eutherduke" type="button">EutherDuke</button>
           </div>
         </div>
         <div class="app-nav-group">
@@ -1614,6 +1622,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div id="eutherdoom-renderer" class="eutherdoom-renderer" aria-hidden="true">
             <div id="eutherdoom-dos" class="eutherdoom-dos"></div>
             <div id="eutherdoom-renderer-status" class="eutherdoom-renderer-status">Doom runtime idle</div>
+          </div>
+          <div id="eutherduke-renderer" class="eutherduke-renderer" aria-hidden="true">
+            <iframe id="eutherduke-frame" class="eutherduke-frame" title="EutherDuke runtime"></iframe>
+            <div id="eutherduke-runtime-panel" class="eutherduke-runtime-panel">
+              <span>EDuke32 / WebAssembly Vessel</span>
+              <strong>EutherDuke runtime not installed</strong>
+              <p>Expected external runtime at /home/nichlas/eutherduke-runtime with index.html, wasm/data files, and legal Duke game data.</p>
+            </div>
           </div>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
           <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
@@ -1913,6 +1929,9 @@ const bridgeRtcAudio = document.querySelector<HTMLAudioElement>("#bridge-audio")
 const eutherDoomRenderer = document.querySelector<HTMLDivElement>("#eutherdoom-renderer")!;
 const eutherDoomDos = document.querySelector<HTMLDivElement>("#eutherdoom-dos")!;
 const eutherDoomRendererStatus = document.querySelector<HTMLDivElement>("#eutherdoom-renderer-status")!;
+const eutherDukeRenderer = document.querySelector<HTMLDivElement>("#eutherduke-renderer")!;
+const eutherDukeFrame = document.querySelector<HTMLIFrameElement>("#eutherduke-frame")!;
+const eutherDukeRuntimePanel = document.querySelector<HTMLDivElement>("#eutherduke-runtime-panel")!;
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 bridgeVideo.addEventListener("loadedmetadata", syncBridgeVideoGeometry);
@@ -3862,6 +3881,7 @@ function reactionLobbyHomeMarkup(): string {
         <div class="reaction-lobby-start-grid">
           <button data-reaction-home-action="start-megadrive" type="button">Start MegaDrive vessel</button>
           <button data-reaction-home-action="start-eutherdoom" type="button">Start EutherDoom vessel</button>
+          <button data-reaction-home-action="open-eutherduke" type="button">Open EutherDuke vessel</button>
         </div>
       </section>
       <section class="reaction-lobby-panel reaction-lobby-social-panel">
@@ -5538,6 +5558,32 @@ async function stopEutherDoomRenderer(): Promise<void> {
   eutherDoomRendererStatus.textContent = "Doom runtime idle";
 }
 
+async function startEutherDukeRenderer(): Promise<void> {
+  eutherDukeRenderer.setAttribute("aria-hidden", "false");
+  eutherDukeRuntimePanel.hidden = false;
+  eutherDukeFrame.hidden = true;
+  try {
+    const response = await fetch("/eutherduke-runtime/index.html", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("EutherDuke runtime not installed");
+    }
+    eutherDukeRuntimePanel.hidden = true;
+    eutherDukeFrame.hidden = false;
+    if (!eutherDukeFrame.src.endsWith("/eutherduke-runtime/index.html")) {
+      eutherDukeFrame.src = "/eutherduke-runtime/index.html";
+    }
+  } catch {
+    eutherDukeFrame.removeAttribute("src");
+    eutherDukeFrame.hidden = true;
+    eutherDukeRuntimePanel.hidden = false;
+  }
+}
+
+function stopEutherDukeRenderer(): void {
+  eutherDukeRenderer.setAttribute("aria-hidden", "true");
+  eutherDukeFrame.hidden = true;
+}
+
 async function setDoomReady(ready: boolean): Promise<void> {
   if (activeLobbyInstance()?.kind !== "eutherdoom" || claimedLobbyPlayer === null) {
     pushTrace("Claim Doom P1 or P2 first");
@@ -5938,6 +5984,11 @@ function appRouteFromToken(token: string | undefined): AppRoute | null {
     case "play/eutherdoom":
     case "play/utherdoom":
       return "eutherdoom";
+    case "eutherduke":
+    case "duke":
+    case "play/eutherduke":
+    case "play/duke":
+      return "eutherduke";
     default:
       return null;
   }
@@ -5974,6 +6025,7 @@ function applyAppRoute(): void {
   document.body.classList.toggle("play-mode-megadrive", !showingLobby && appRoute === "megadrive");
   document.body.classList.toggle("play-mode-eutherdogs", !showingLobby && appRoute === "eutherdogs");
   document.body.classList.toggle("play-mode-eutherdoom", !showingLobby && appRoute === "eutherdoom");
+  document.body.classList.toggle("play-mode-eutherduke", !showingLobby && appRoute === "eutherduke");
 
   playHomePanel.hidden = showingLobby || appRoute !== "playHome";
   reactionLobbyHome.hidden = showingLobby || appRoute !== "playHome";
@@ -6008,6 +6060,11 @@ function applyAppRoute(): void {
   } else {
     void stopEutherDoomRenderer();
   }
+  if (!showingLobby && appRoute === "eutherduke") {
+    void startEutherDukeRenderer();
+  } else {
+    stopEutherDukeRenderer();
+  }
 }
 
 function currentPlayModeRoute(): PlayMode | null {
@@ -6015,7 +6072,7 @@ function currentPlayModeRoute(): PlayMode | null {
 }
 
 function isPlayMode(value: unknown): value is PlayMode {
-  return value === "megadrive" || value === "eutherdogs" || value === "eutherdoom";
+  return value === "megadrive" || value === "eutherdogs" || value === "eutherdoom" || value === "eutherduke";
 }
 
 function playModeLabel(mode: PlayMode | null): string {
@@ -6026,6 +6083,8 @@ function playModeLabel(mode: PlayMode | null): string {
       return "EutherDogs";
     case "eutherdoom":
       return "EutherDoom";
+    case "eutherduke":
+      return "EutherDuke";
     default:
       return "Mode Launcher";
   }
@@ -6093,6 +6152,9 @@ async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise
       return;
     case "open-eutherdogs":
       await activatePlayMode("eutherdogs");
+      return;
+    case "open-eutherduke":
+      await activatePlayMode("eutherduke");
       return;
     case "video-chat":
       openVideoChatPanel();
@@ -6892,6 +6954,10 @@ async function activatePlayMode(mode: PlayMode): Promise<void> {
   if (mode === "megadrive") {
     megaDrivePanel.open = true;
     await selectFirstLobbyInstanceForKind("megadrive");
+    return;
+  }
+
+  if (mode === "eutherduke") {
     return;
   }
 
