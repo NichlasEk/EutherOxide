@@ -1665,6 +1665,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
       <button data-user-menu-action="get-list-app" type="button" role="menuitem">Get the list app</button>
+      <button data-user-menu-action="admin" type="button" role="menuitem" hidden>Admin</button>
       <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
       <button data-user-menu-action="shared-spaces" type="button" role="menuitem">Shared Spaces</button>
       <button data-user-menu-action="settings" type="button" role="menuitem">Settings</button>
@@ -1777,6 +1778,7 @@ const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
 const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
 const userMenuName = document.querySelector<HTMLElement>("#user-menu-name")!;
 const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-dropdown")!;
+const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu-action="admin"]')!;
 const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
 const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
 const workspaceWindowEyebrow = document.querySelector<HTMLElement>("#workspace-window-eyebrow")!;
@@ -2226,12 +2228,7 @@ doomReset.addEventListener("click", async () => {
 });
 
 adminOpen.addEventListener("click", async () => {
-  if (!hostIsAdmin) {
-    return;
-  }
-  adminModal.classList.add("is-open");
-  adminModal.setAttribute("aria-hidden", "false");
-  await refreshHostUsers();
+  await openAdminModal();
 });
 
 adminClose.addEventListener("click", () => {
@@ -5903,6 +5900,7 @@ function setUserMenuOpen(open: boolean): void {
 function renderUserMenu(): void {
   userMenuName.textContent = displayUserName(hostUsername ?? "Nichlas");
   userMenuToggle.classList.toggle("is-selected", activeWorkspaceWindow !== null || appRoute === "interactionLobby");
+  userMenuAdmin.hidden = !hostIsAdmin;
 }
 
 async function loadInteractionUsers(): Promise<void> {
@@ -5955,6 +5953,9 @@ function displayUserName(username: string): string {
 async function handleUserMenuAction(action: string): Promise<void> {
   setUserMenuOpen(false);
   switch (action) {
+    case "admin":
+      await openAdminModal();
+      return;
     case "reaction-lobby":
       closeWorkspaceWindow();
       navigateApp("playHome");
@@ -5987,6 +5988,16 @@ async function handleUserMenuAction(action: string): Promise<void> {
     default:
       return;
   }
+}
+
+async function openAdminModal(): Promise<void> {
+  if (!hostIsAdmin) {
+    return;
+  }
+  closeWorkspaceWindow();
+  adminModal.classList.add("is-open");
+  adminModal.setAttribute("aria-hidden", "false");
+  await refreshHostUsers();
 }
 
 async function logoutHostUser(): Promise<void> {
