@@ -1664,6 +1664,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
+      <button data-user-menu-action="get-list-app" type="button" role="menuitem">Get the list app</button>
       <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
       <button data-user-menu-action="shared-spaces" type="button" role="menuitem">Shared Spaces</button>
       <button data-user-menu-action="settings" type="button" role="menuitem">Settings</button>
@@ -2016,12 +2017,29 @@ workspaceWindowClose.addEventListener("click", () => {
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {
+  const audioResume = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-settings-audio-resume]");
+  if (audioResume) {
+    void unlockAudioFromSettings();
+    return;
+  }
   const workspaceButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-workspace-window]");
   if (workspaceButton && handleWorkspaceWindowButton(workspaceButton)) {
     return;
   }
   if (event.target === workspaceWindowLayer) {
     closeWorkspaceWindow();
+  }
+});
+
+workspaceWindowLayer.addEventListener("input", (event) => {
+  const slider = (event.target as HTMLElement).closest<HTMLInputElement>("[data-settings-audio-slider]");
+  if (!slider) {
+    return;
+  }
+  if (slider.dataset.settingsAudioSlider === "volume") {
+    setAudioVolume(Number(slider.value) / 100);
+  } else if (slider.dataset.settingsAudioSlider === "mic") {
+    setMicVolume(Number(slider.value) / 100);
   }
 });
 
@@ -5815,14 +5833,22 @@ function settingsWindowMarkup(): string {
     <div class="workspace-window-section">
       <div class="section-head">
         <p class="section-label">Settings</p>
-        <span>Split from Play</span>
+        <span>Always available</span>
+      </div>
+      <div class="settings-audio-panel">
+        <div class="volume-head">
+          <p class="section-label">Sound</p>
+          <strong id="settings-volume-value">${Math.round(audioVolume * 100)}%</strong>
+        </div>
+        <input id="settings-volume-slider" data-settings-audio-slider="volume" type="range" min="0" max="100" value="${Math.round(audioVolume * 100)}" aria-label="settings volume" />
+        <div class="volume-head">
+          <p class="section-label">Mic</p>
+          <strong id="settings-mic-volume-value">${Math.round(micVolume * 100)}%</strong>
+        </div>
+        <input id="settings-mic-volume-slider" data-settings-audio-slider="mic" type="range" min="0" max="160" value="${Math.round(micVolume * 100)}" aria-label="settings mic volume" />
+        <button class="primary-action" data-settings-audio-resume="true" type="button">Turn sound on</button>
       </div>
       <div class="workspace-window-grid">
-        <button class="workspace-tool-card" type="button" disabled>
-          <span>Audio</span>
-          <strong>Sound & Mic</strong>
-          <small>Volume controls stay beside play for now.</small>
-        </button>
         <button class="workspace-tool-card" type="button" disabled>
           <span>Controls</span>
           <strong>Input Matrix</strong>
@@ -5939,6 +5965,9 @@ async function handleUserMenuAction(action: string): Promise<void> {
       return;
     case "shopping-list":
       openWorkspaceWindow("shopping");
+      return;
+    case "get-list-app":
+      window.location.href = "/downloads/eutherlist.apk";
       return;
     case "friends":
       openWorkspaceWindow("friends");
@@ -11576,11 +11605,29 @@ function setMicVolume(value: number): void {
 }
 
 function updateVolumeUi(): void {
+  volumeSlider.value = Math.round(audioVolume * 100).toString();
   volumeValue.textContent = `${Math.round(audioVolume * 100)}%`;
+  const settingsVolumeSlider = document.querySelector<HTMLInputElement>("#settings-volume-slider");
+  if (settingsVolumeSlider) {
+    settingsVolumeSlider.value = Math.round(audioVolume * 100).toString();
+  }
+  const settingsVolumeValue = document.querySelector<HTMLElement>("#settings-volume-value");
+  if (settingsVolumeValue) {
+    settingsVolumeValue.textContent = `${Math.round(audioVolume * 100)}%`;
+  }
 }
 
 function updateMicVolumeUi(): void {
+  micVolumeSlider.value = Math.round(micVolume * 100).toString();
   micVolumeValue.textContent = `${Math.round(micVolume * 100)}%`;
+  const settingsMicVolumeSlider = document.querySelector<HTMLInputElement>("#settings-mic-volume-slider");
+  if (settingsMicVolumeSlider) {
+    settingsMicVolumeSlider.value = Math.round(micVolume * 100).toString();
+  }
+  const settingsMicVolumeValue = document.querySelector<HTMLElement>("#settings-mic-volume-value");
+  if (settingsMicVolumeValue) {
+    settingsMicVolumeValue.textContent = `${Math.round(micVolume * 100)}%`;
+  }
 }
 
 function applyAudioVolume(): void {
@@ -11598,6 +11645,16 @@ function applyVideoChatMicVolume(): void {
   if (videoChatMicGain && videoChatMicContext) {
     videoChatMicGain.gain.setTargetAtTime(micVolume, videoChatMicContext.currentTime, 0.01);
   }
+}
+
+async function unlockAudioFromSettings(): Promise<void> {
+  if (audioVolume <= 0.001) {
+    setAudioVolume(0.8);
+  } else {
+    applyAudioVolume();
+  }
+  await ensureAudio();
+  resumeBridgeRtcAudio();
 }
 
 function resetScheduledAudio(): void {

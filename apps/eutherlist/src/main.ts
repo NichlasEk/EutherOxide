@@ -26,6 +26,14 @@ let activeCategory: ShoppingCategory | "Alla" = "Alla";
 let settingsOpen = false;
 let syncTimer: number | null = null;
 let loginMessage = "";
+let deferredRemoteRenderTimer: number | null = null;
+let addItemEditing = false;
+let addItemDraft: AddItemDraft | null = null;
+
+type AddItemDraft = {
+  text: string;
+  category: string;
+};
 
 applyTheme(settings.theme);
 render();
@@ -41,6 +49,69 @@ function render(): void {
     bindListActions();
   } else {
     bindLoginActions();
+  }
+}
+
+function setSyncState(state: SyncState): void {
+  syncState = state;
+  const pill = document.querySelector<HTMLSpanElement>(".sync-pill");
+  if (!pill) {
+    return;
+  }
+  pill.textContent = syncLabel(syncState);
+  pill.className = `sync-pill is-${syncState}`;
+}
+
+function renderRemoteUpdate(): void {
+  if (shouldDeferAddItemRender()) {
+    if (deferredRemoteRenderTimer === null) {
+      deferredRemoteRenderTimer = window.setTimeout(() => {
+        deferredRemoteRenderTimer = null;
+        renderRemoteUpdate();
+      }, 600);
+    }
+    return;
+  }
+  render();
+  restoreAddItemDraft(addItemDraft);
+}
+
+function shouldDeferAddItemRender(): boolean {
+  const draft = captureAddItemDraft();
+  if (draft) {
+    addItemDraft = draft;
+  }
+  return addItemEditing || addItemFormHasFocus() || Boolean(addItemDraft?.text.trim());
+}
+
+function addItemFormHasFocus(): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active.closest("#add-item-form") !== null;
+}
+
+function captureAddItemDraft(): AddItemDraft | null {
+  const input = document.querySelector<HTMLInputElement>("#add-item-input");
+  const category = document.querySelector<HTMLSelectElement>("#add-item-category");
+  if (!input || !category) {
+    return null;
+  }
+  return {
+    text: input.value,
+    category: category.value,
+  };
+}
+
+function restoreAddItemDraft(draft: AddItemDraft | null): void {
+  if (!draft) {
+    return;
+  }
+  const input = document.querySelector<HTMLInputElement>("#add-item-input");
+  const category = document.querySelector<HTMLSelectElement>("#add-item-category");
+  if (input) {
+    input.value = draft.text;
+  }
+  if (category) {
+    category.value = draft.category;
   }
 }
 
@@ -76,7 +147,7 @@ function appMarkup(): string {
         ${shoppingListMarkup(documentState, activeCategory)}
       </section>
 
-      ${addItemBarMarkup()}
+      ${addItemBarMarkup(activeCategory)}
       ${settingsPanelMarkup(settings, settingsOpen)}
     </main>
   `;
@@ -163,7 +234,27 @@ function bindListActions(): void {
     event.preventDefault();
     const input = document.querySelector<HTMLInputElement>("#add-item-input");
     const category = document.querySelector<HTMLSelectElement>("#add-item-category");
-    addItem(input?.value ?? "", category?.value ?? "auto");
+    addItem(input?.value ?? "", category?.value ?? "auto", category?.value ?? "auto");
+  });
+  const addForm = document.querySelector<HTMLFormElement>("#add-item-form");
+  const addInput = document.querySelector<HTMLInputElement>("#add-item-input");
+  const addCategory = document.querySelector<HTMLSelectElement>("#add-item-category");
+  addForm?.addEventListener("focusin", () => {
+    addItemEditing = true;
+    addItemDraft = captureAddItemDraft();
+  });
+  addForm?.addEventListener("focusout", () => {
+    addItemDraft = captureAddItemDraft();
+    window.setTimeout(() => {
+      addItemEditing = addItemFormHasFocus();
+    }, 900);
+  });
+  addInput?.addEventListener("input", () => {
+    addItemEditing = true;
+    addItemDraft = captureAddItemDraft();
+  });
+  addCategory?.addEventListener("change", () => {
+    addItemDraft = captureAddItemDraft();
   });
   document.querySelectorAll<HTMLButtonElement>("[data-item-toggle]").forEach((button) => {
     button.addEventListener("click", () => updateItem(button.dataset.itemToggle ?? "", (item) => ({
@@ -217,7 +308,7 @@ async function login(): Promise<void> {
   }
 }
 
-function addItem(text: string, categoryValue: string): void {
+function addItem(text: string, categoryValue: string, nextCategoryValue = categoryValue): void {
   const clean = text.trim();
   if (!clean || !documentState.canEdit) {
     return;
@@ -227,7 +318,11 @@ function addItem(text: string, categoryValue: string): void {
     ...documentState,
     items: sortItems([...documentState.items, makeShoppingItem(clean, category)]),
   };
+  addItemDraft = { text: "", category: nextCategoryValue };
+  addItemEditing = true;
   commitLocalChange();
+  restoreAddItemDraft({ text: "", category: nextCategoryValue });
+  document.querySelector<HTMLInputElement>("#add-item-input")?.focus();
 }
 
 function updateItem(id: string, updater: (item: ShoppingItem) => ShoppingItem): void {
@@ -253,8 +348,8 @@ function commitLocalChange(): void {
 }
 
 async function syncFromStartup(): Promise<void> {
-  syncState = "syncing";
-  render();
+  setSyncState("syncing");
+  let remoteChanged = false;
   try {
     const remote = await new ShoppingApi(settings).loadList();
     if (store.isDirty()) {
@@ -264,11 +359,14 @@ async function syncFromStartup(): Promise<void> {
     documentState = remote;
     store.saveDocument(documentState);
     store.setDirty(false);
-    syncState = "saved";
+    remoteChanged = true;
+    setSyncState("saved");
   } catch {
-    syncState = navigator.onLine ? "error" : "offline";
+    setSyncState(navigator.onLine ? "error" : "offline");
   }
-  render();
+  if (remoteChanged) {
+    renderRemoteUpdate();
+  }
 }
 
 function scheduleSync(delayMs: number): void {
@@ -288,8 +386,7 @@ async function pushLocal(): Promise<void> {
   if (!settings.token || !store.isDirty()) {
     return;
   }
-  syncState = "syncing";
-  render();
+  setSyncState("syncing");
   try {
     const remote = await new ShoppingApi(settings).saveList(documentState);
     documentState = {
@@ -299,12 +396,11 @@ async function pushLocal(): Promise<void> {
     };
     store.saveDocument(documentState);
     store.setDirty(false);
-    syncState = "saved";
+    setSyncState("saved");
   } catch {
-    syncState = navigator.onLine ? "error" : "offline";
+    setSyncState(navigator.onLine ? "error" : "offline");
     scheduleSync(5000);
   }
-  render();
 }
 
 function syncLabel(state: SyncState): string {

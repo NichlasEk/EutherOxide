@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
@@ -35,6 +36,11 @@ const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
 const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
 const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
 const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
+const DEFAULT_EUTHERLIST_APK_PATH: &str = "/home/nichlas/EutherList-release-signed.apk";
+
+thread_local! {
+    static RESPONSE_CORS_ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -783,6 +789,7 @@ struct HostConfig {
 struct HostUser {
     name: String,
     password_hash: String,
+    app_token: Option<String>,
     banned: bool,
     admin: bool,
     can_play: bool,
@@ -889,6 +896,13 @@ struct HostShoppingListShareUpdate {
 struct HostShoppingListRoleUpdate {
     user: String,
     role: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostAppLoginRequest {
+    username: String,
+    password: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1016,6 +1030,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
 fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     let request = read_http_request(stream)?;
+    set_response_cors_origin(cors_origin_for_request(state, &request));
     if request.method == "OPTIONS" {
         return send_empty(stream, 204);
     }
@@ -1023,13 +1038,35 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         return send_redirect(stream, 308, &location);
     }
     let path = request.path.split('?').next().unwrap_or(&request.path);
-    if request.method != "GET" && path != "/api/login" && !valid_csrf_token(state, &request)? {
+    let app_token_request =
+        host_app_token_path(path) && authenticated_app_user(state, &request)?.is_some();
+    if request.method != "GET"
+        && path != "/api/login"
+        && path != "/api/app/login"
+        && !app_token_request
+        && !valid_csrf_token(state, &request)?
+    {
         return send_error(stream, 403, "csrf token required");
     }
     match (request.method.as_str(), path) {
         ("GET", "/login") => send_login_page(stream, None),
         ("POST", "/api/login") => host_login(stream, state, &request),
+        ("POST", "/api/app/login") => host_app_login(stream, state, &request),
+        ("GET", "/api/app/status") => {
+            let user = require_host_user_or_app(state, &request)?;
+            send_json(
+                stream,
+                &serde_json::json!({
+                    "authenticated": true,
+                    "user": user,
+                }),
+            )
+        }
         ("POST", "/api/logout") => host_logout(stream, state, &request),
+        ("GET", "/downloads/eutherlist.apk") => {
+            require_host_user(state, &request)?;
+            send_eutherlist_apk(stream)
+        }
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
                 let csrf_token = csrf_token_for_request(state, &request)?;
@@ -1189,36 +1226,36 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_json(stream, &host_chat_list(state)?)
         }
         ("GET", "/api/interaction/users") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             send_json(stream, &host_interaction_user_list(state, &user)?)
         }
         ("GET", "/api/interaction/shopping-list") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             let update: HostShoppingListUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             save_host_shopping_list(state, &user, &update.markdown)?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list/share") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             let update: HostShoppingListShareUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             share_host_shopping_list(state, &user, &update.user, update.role.as_deref())?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list/unshare") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             let update: HostShoppingListShareUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             unshare_host_shopping_list(state, &user, &update.user)?;
             send_json(stream, &host_shopping_list(state, &user)?)
         }
         ("POST", "/api/interaction/shopping-list/role") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             let update: HostShoppingListRoleUpdate = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             set_host_shopping_list_role(state, &user, &update.user, &update.role)?;
@@ -1505,6 +1542,90 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
     )
 }
 
+fn host_app_login(
+    stream: &mut TcpStream,
+    state: &HostState,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let login: HostAppLoginRequest =
+        serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
+    let remote_addr = stream
+        .peer_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let username = login.username.trim();
+    if login_rate_limited(state, &remote_addr, username)? {
+        audit_host_event(
+            state,
+            "app_login",
+            Some(username),
+            &remote_addr,
+            false,
+            "rate_limited",
+        )?;
+        return send_error(stream, 429, "too many attempts");
+    }
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(index) = users.iter().position(|user| user.name == username) else {
+        record_login_failure(state, &remote_addr, username)?;
+        audit_host_event(
+            state,
+            "app_login",
+            Some(username),
+            &remote_addr,
+            false,
+            "unknown_user",
+        )?;
+        return send_error(stream, 401, "login rejected");
+    };
+    if users[index].banned {
+        record_login_failure(state, &remote_addr, username)?;
+        audit_host_event(
+            state,
+            "app_login",
+            Some(username),
+            &remote_addr,
+            false,
+            "banned_user",
+        )?;
+        return send_error(stream, 401, "login rejected");
+    }
+    if !verify_password(&login.password, &users[index].password_hash) {
+        record_login_failure(state, &remote_addr, username)?;
+        audit_host_event(
+            state,
+            "app_login",
+            Some(username),
+            &remote_addr,
+            false,
+            "bad_password",
+        )?;
+        return send_error(stream, 401, "login rejected");
+    }
+    let token = match users[index].app_token.clone() {
+        Some(token) if !token.trim().is_empty() => token,
+        _ => {
+            let token = random_token()?;
+            users[index].app_token = Some(token.clone());
+            save_host_users(&users)?;
+            token
+        }
+    };
+    clear_login_failures(state, &remote_addr, username)?;
+    audit_host_event(state, "app_login", Some(username), &remote_addr, true, "ok")?;
+    send_json(
+        stream,
+        &serde_json::json!({
+            "authenticated": true,
+            "user": users[index].name,
+            "token": token,
+        }),
+    )
+}
+
 fn host_logout(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) -> io::Result<()> {
     if let Some(token) = session_token(request) {
         let mut sessions = state
@@ -1556,6 +1677,45 @@ fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Op
 
 fn require_host_user(state: &HostState, request: &HttpRequest) -> io::Result<String> {
     authenticated_user(state, request)?.ok_or_else(|| invalid_request("login required"))
+}
+
+fn require_host_user_or_app(state: &HostState, request: &HttpRequest) -> io::Result<String> {
+    if let Some(user) = authenticated_user(state, request)? {
+        return Ok(user);
+    }
+    authenticated_app_user(state, request)?.ok_or_else(|| invalid_request("login required"))
+}
+
+fn authenticated_app_user(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
+    let Some(token) = app_token(request) else {
+        return Ok(None);
+    };
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(users
+        .iter()
+        .find(|user| {
+            !user.banned
+                && user
+                    .app_token
+                    .as_deref()
+                    .is_some_and(|known| known.as_bytes() == token.as_bytes())
+        })
+        .map(|user| user.name.clone()))
+}
+
+fn host_app_token_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/app/status"
+            | "/api/interaction/users"
+            | "/api/interaction/shopping-list"
+            | "/api/interaction/shopping-list/share"
+            | "/api/interaction/shopping-list/unshare"
+            | "/api/interaction/shopping-list/role"
+    )
 }
 
 fn is_host_admin(state: &HostState, username: &str) -> io::Result<bool> {
@@ -3144,6 +3304,7 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
     users.push(HostUser {
         name: username.to_string(),
         password_hash: hash_host_password(password)?,
+        app_token: None,
         banned: false,
         admin: username == "nichlas",
         can_play: true,
@@ -3247,6 +3408,23 @@ fn session_token(request: &HttpRequest) -> Option<String> {
             (name == "euther_session").then(|| value.to_string())
         })
     })
+}
+
+fn app_token(request: &HttpRequest) -> Option<String> {
+    header_value(request, "x-euther-app-token")
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            header_value(request, "authorization").and_then(|value| {
+                value
+                    .trim()
+                    .strip_prefix("Bearer ")
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_string)
+            })
+        })
 }
 
 fn csrf_token_for_request(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
@@ -3396,6 +3574,46 @@ fn valid_request_origin(state: &HostState, request: &HttpRequest) -> io::Result<
     Ok(origin_host(origin).as_deref() == Some(host))
 }
 
+fn set_response_cors_origin(origin: Option<String>) {
+    RESPONSE_CORS_ORIGIN.with(|slot| *slot.borrow_mut() = origin);
+}
+
+fn response_cors_origin() -> String {
+    RESPONSE_CORS_ORIGIN
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(|| "http://127.0.0.1:5173".to_string())
+}
+
+fn cors_origin_for_request(state: &HostState, request: &HttpRequest) -> Option<String> {
+    let origin = header_value(request, "origin")?;
+    if origin == "null" {
+        return None;
+    }
+    if is_tauri_app_origin(origin)
+        || state
+            .config
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == origin)
+        || header_value(request, "host")
+            .is_some_and(|host| origin_host(origin).as_deref() == Some(host))
+    {
+        return Some(origin.to_string());
+    }
+    None
+}
+
+fn is_tauri_app_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "http://tauri.localhost"
+            | "https://tauri.localhost"
+            | "tauri://localhost"
+            | "http://localhost:5181"
+            | "http://127.0.0.1:5181"
+    )
+}
+
 fn host_canonical_redirect(state: &HostState, request: &HttpRequest) -> Option<String> {
     if !state.config.secure_cookies {
         return None;
@@ -3456,6 +3674,29 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         _ => "application/octet-stream",
     };
     send_response(stream, 200, content_type, &bytes)
+}
+
+fn send_eutherlist_apk(stream: &mut TcpStream) -> io::Result<()> {
+    let apk_path = env::var("EUTHERLIST_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERLIST_APK_PATH));
+    let bytes = match fs::read(&apk_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return send_error(stream, 404, "EutherList APK is not available");
+        }
+        Err(err) => return Err(err),
+    };
+    send_response_with_headers(
+        stream,
+        200,
+        "application/vnd.android.package-archive",
+        &bytes,
+        &[(
+            "Content-Disposition",
+            "attachment; filename=\"EutherList-release-signed.apk\"",
+        )],
+    )
 }
 
 fn resolve_host_static_path(path: &str) -> io::Result<PathBuf> {
@@ -4724,6 +4965,7 @@ fn send_response_with_headers(
     body: &[u8],
     headers: &[(&str, &str)],
 ) -> io::Result<()> {
+    let cors_origin = response_cors_origin();
     let reason = match status {
         200 => "OK",
         303 => "See Other",
@@ -4738,9 +4980,9 @@ fn send_response_with_headers(
     write!(
         stream,
         "HTTP/1.1 {status} {reason}\r\n\
-         Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
+        Access-Control-Allow-Origin: {cors_origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
@@ -4757,12 +4999,13 @@ fn send_response_with_headers(
 }
 
 fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<()> {
+    let cors_origin = response_cors_origin();
     write!(
         stream,
         "HTTP/1.1 200 OK\r\n\
-         Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
+         Access-Control-Allow-Origin: {cors_origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
@@ -4772,12 +5015,13 @@ fn send_stream_header(stream: &mut TcpStream, content_type: &str) -> io::Result<
 }
 
 fn send_event_stream_header(stream: &mut TcpStream) -> io::Result<()> {
+    let cors_origin = response_cors_origin();
     write!(
         stream,
         "HTTP/1.1 200 OK\r\n\
-         Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n\
+         Access-Control-Allow-Origin: {cors_origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
          Cache-Control: no-store\r\n\
@@ -6289,6 +6533,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut users = Vec::new();
     let mut name = None;
     let mut password_hash = None;
+    let mut app_token = None;
     let mut banned = false;
     let mut admin = false;
     let mut can_play = true;
@@ -6302,6 +6547,9 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                 users.push(HostUser {
                     name,
                     password_hash,
+                    app_token: app_token
+                        .take()
+                        .filter(|token: &String| !token.trim().is_empty()),
                     banned,
                     admin,
                     can_play,
@@ -6310,6 +6558,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_manage_library,
                 });
             }
+            app_token = None;
             banned = false;
             admin = false;
             can_play = true;
@@ -6325,6 +6574,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             name = Some(value);
         } else if let Some(value) = parse_toml_assignment(line, "password_hash") {
             password_hash = Some(value);
+        } else if let Some(value) = parse_toml_assignment(line, "app_token") {
+            app_token = Some(value);
         } else if let Some(value) = parse_toml_bool_assignment(line, "banned") {
             banned = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "admin") {
@@ -6344,6 +6595,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
         users.push(HostUser {
             name,
             password_hash,
+            app_token: app_token.filter(|token| !token.trim().is_empty()),
             banned,
             admin,
             can_play,
@@ -6376,6 +6628,9 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
             "password_hash = \"{}\"\n",
             toml_escape(&user.password_hash)
         ));
+        if let Some(app_token) = &user.app_token {
+            contents.push_str(&format!("app_token = \"{}\"\n", toml_escape(app_token)));
+        }
         contents.push_str(&format!("banned = {}\n", user.banned));
         contents.push_str(&format!("admin = {}\n", user.admin));
         contents.push_str(&format!("can_play = {}\n", user.can_play));
