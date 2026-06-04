@@ -1190,6 +1190,10 @@ const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsImageLoadPromises = new Map<string, Promise<void>>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
 const dogsMusicCache = new Map<string, AudioBuffer>();
+const dogsWarmupCanvas = document.createElement("canvas");
+dogsWarmupCanvas.width = 1;
+dogsWarmupCanvas.height = 1;
+const dogsWarmupContext = dogsWarmupCanvas.getContext("2d", { alpha: true });
 let dogsMusicKey: string | null = null;
 let dogsMusicSource: AudioBufferSourceNode | null = null;
 let dogsMusicGain: GainNode | null = null;
@@ -10511,6 +10515,7 @@ async function preloadDogsImageDecoded(url: string | null): Promise<void> {
   const cached = dogsImageCache.get(url);
   if (cached?.complete && cached.naturalWidth > 0) {
     await cached.decode?.().catch(() => undefined);
+    warmDogsImageTexture(cached);
     return;
   }
   const pending = dogsImageLoadPromises.get(url);
@@ -10544,6 +10549,19 @@ async function preloadDogsImageDecoded(url: string | null): Promise<void> {
     image.src = url;
   }
   await promise;
+  warmDogsImageTexture(image);
+}
+
+function warmDogsImageTexture(image: HTMLImageElement): void {
+  if (!dogsWarmupContext || !image.complete || image.naturalWidth <= 0) {
+    return;
+  }
+  try {
+    dogsWarmupContext.clearRect(0, 0, 1, 1);
+    dogsWarmupContext.drawImage(image, 0, 0, 1, 1);
+  } catch {
+    // Texture warmup is opportunistic; rendering can still use the image fallback path.
+  }
 }
 
 function dogsPreloadImageUrls(): string[] {
@@ -10591,6 +10609,13 @@ async function preloadDogsVisualAssets(force = false): Promise<void> {
   dogsPreloadProgress = {
     loaded: urls.length,
     total: urls.length,
+    label: "Decoding combat audio",
+  };
+  renderDogsMenu();
+  await preloadDogsSfxAssets();
+  dogsPreloadProgress = {
+    loaded: urls.length,
+    total: urls.length,
     label: "Cache warm",
   };
   renderDogsMenu();
@@ -10609,6 +10634,29 @@ function preloadDogsCombatAssets(): void {
   }
   for (let index = 1; index <= 5; index += 1) {
     preloadDogsImage(dogsEffectAsset(index));
+  }
+}
+
+async function preloadDogsSfxAssets(): Promise<void> {
+  const urls = new Set<string>();
+  for (const [key, url] of eutherDogsAssets) {
+    if (key.startsWith("audio.sfx.") && /\.(wav|ogg|mp3)(\?|#|$)/i.test(url)) {
+      urls.add(url);
+    }
+  }
+  const context = await ensureAudio();
+  if (!context) return;
+  for (const url of urls) {
+    if (dogsSfxCache.has(url)) continue;
+    try {
+      const response = await fetch(url);
+      const bytes = await response.arrayBuffer();
+      const buffer = await context.decodeAudioData(bytes.slice(0));
+      dogsSfxCache.set(url, buffer);
+    } catch {
+      // Individual missing/undecodable sounds should not block the playable warmup.
+    }
+    await sleep(0);
   }
 }
 
@@ -12610,9 +12658,12 @@ function resetDogsMode(): void {
 
 async function runDogsFrame(): Promise<void> {
   const started = performance.now();
+  const previousFrameNumber = dogsFrame?.frame ?? -1;
   try {
     dogsFrame = await runDogsCoreFrame();
-    lastDogsSnapshotAt = performance.now();
+    if (!dogsStream || dogsFrame.frame !== previousFrameNumber) {
+      lastDogsSnapshotAt = performance.now();
+    }
     dogsSnapshotMisses = 0;
   } catch (err) {
     dogsSnapshotMisses += 1;
@@ -12931,6 +12982,9 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
       stopDogsSnapshotStream();
       ui.transportMode = "DOGS SSE RESTART";
       startDogsSnapshotStream();
+    }
+    if (age > 90) {
+      return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
     }
     return dogsFrame;
   }
