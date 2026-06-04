@@ -13,8 +13,16 @@ import { settingsPanelMarkup } from "./components/SettingsPanel";
 import { shoppingListMarkup } from "./components/ShoppingList";
 import { LocalStore } from "./storage/LocalStore";
 import { applyTheme } from "./theme/ThemeProvider";
-import { AppSettings, ShoppingCategory, ShoppingItem, SyncState } from "./types";
-import { inferCategory, itemsToMarkdown, makeShoppingItem, normalizeCategory, sortItems } from "./shoppingMarkdown";
+import { AppSettings, ShoppingCategory, ShoppingItem, ShoppingNamedList, SyncState } from "./types";
+import {
+  cleanListTitle,
+  inferCategory,
+  listsToMarkdown,
+  makeShoppingItem,
+  makeShoppingList,
+  normalizeCategory,
+  sortItems,
+} from "./shoppingMarkdown";
 
 const store = new LocalStore();
 const root = document.querySelector<HTMLDivElement>("#app")!;
@@ -24,6 +32,8 @@ let documentState = store.loadDocument();
 let syncState: SyncState = settings.token ? (store.isDirty() ? "dirty" : "saved") : "login";
 let activeCategory: ShoppingCategory | "Alla" = "Alla";
 let settingsOpen = false;
+let activeListIndex = 0;
+let searchQuery = "";
 let syncTimer: number | null = null;
 let loginMessage = "";
 let deferredRemoteRenderTimer: number | null = null;
@@ -42,13 +52,18 @@ if (settings.token) {
 }
 window.addEventListener("online", () => scheduleSync(50));
 
-function render(): void {
+function render(focusSearch = false): void {
   root.innerHTML = settings.token ? appMarkup() : loginMarkup();
   bindCommonActions();
   if (settings.token) {
     bindListActions();
   } else {
     bindLoginActions();
+  }
+  if (focusSearch) {
+    const search = document.querySelector<HTMLInputElement>("#list-search");
+    search?.focus();
+    search?.setSelectionRange(search.value.length, search.value.length);
   }
 }
 
@@ -116,8 +131,10 @@ function restoreAddItemDraft(draft: AddItemDraft | null): void {
 }
 
 function appMarkup(): string {
-  const openCount = documentState.items.filter((item) => !item.checked).length;
-  const checkedCount = documentState.items.length - openCount;
+  activeListIndex = clampListIndex(activeListIndex);
+  const activeList = getActiveList();
+  const openCount = activeList.items.filter((item) => !item.checked).length;
+  const checkedCount = activeList.items.length - openCount;
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -134,6 +151,23 @@ function appMarkup(): string {
         </div>
       </header>
 
+      <section class="list-switcher" id="list-swipe-zone">
+        <button class="icon-button" id="list-prev" type="button" aria-label="Föregående lista">‹</button>
+        <label class="list-title-field">
+          <input id="list-title-input" type="text" value="${escapeHtml(activeList.title)}" aria-label="Listrubrik" ${documentState.canEdit ? "" : "disabled"} />
+          <span>${activeListIndex + 1} av ${documentState.lists.length} · ${activeList.items.length} rader</span>
+        </label>
+        <button class="icon-button" id="list-next" type="button" aria-label="Nästa lista">›</button>
+        <button class="icon-button" id="list-new" type="button" aria-label="Ny lista">+</button>
+      </section>
+
+      <section class="search-bar">
+        <input id="list-search" type="search" value="${escapeHtml(searchQuery)}" placeholder="Sök listor" aria-label="Sök listor" />
+        ${searchQuery ? `<button id="search-clear" type="button" aria-label="Rensa sök">×</button>` : ""}
+      </section>
+
+      ${searchResultsMarkup()}
+
       <nav class="category-tabs" aria-label="Categories">
         ${categoryTabsMarkup(activeCategory)}
       </nav>
@@ -144,12 +178,37 @@ function appMarkup(): string {
       </section>
 
       <section class="shopping-list" id="shopping-list">
-        ${shoppingListMarkup(documentState, activeCategory)}
+        ${shoppingListMarkup({ ...documentState, items: activeList.items }, activeCategory)}
       </section>
 
       ${addItemBarMarkup(activeCategory)}
       ${settingsPanelMarkup(settings, settingsOpen)}
     </main>
+`;
+}
+
+function searchResultsMarkup(): string {
+  const query = searchQuery.trim();
+  if (!query) {
+    return "";
+  }
+  const results = listSearchResults(query);
+  if (results.length === 0) {
+    return `<section class="search-results"><span>Inga träffar</span></section>`;
+  }
+  return `
+    <section class="search-results" aria-label="Sökresultat">
+      ${results
+        .map(
+          ({ list, index, matchCount }) => `
+            <button class="search-result" data-search-list="${index}" type="button">
+              <strong>${escapeHtml(list.title)}</strong>
+              <span>${matchCount} träff${matchCount === 1 ? "" : "ar"} · ${list.items.length} rader</span>
+            </button>
+          `,
+        )
+        .join("")}
+    </section>
   `;
 }
 
@@ -224,6 +283,34 @@ function bindLoginActions(): void {
 }
 
 function bindListActions(): void {
+  document.querySelector<HTMLButtonElement>("#list-prev")?.addEventListener("click", () => switchList(-1));
+  document.querySelector<HTMLButtonElement>("#list-next")?.addEventListener("click", () => switchList(1));
+  document.querySelector<HTMLButtonElement>("#list-new")?.addEventListener("click", () => addList());
+  const titleInput = document.querySelector<HTMLInputElement>("#list-title-input");
+  titleInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      titleInput.blur();
+    }
+  });
+  titleInput?.addEventListener("blur", () => updateActiveListTitle(titleInput.value));
+  const search = document.querySelector<HTMLInputElement>("#list-search");
+  search?.addEventListener("input", () => {
+    searchQuery = search.value;
+    render(true);
+  });
+  document.querySelector<HTMLButtonElement>("#search-clear")?.addEventListener("click", () => {
+    searchQuery = "";
+    render();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-search-list]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeListIndex = Number(button.dataset.searchList ?? activeListIndex);
+      activeCategory = "Alla";
+      searchQuery = "";
+      render();
+    });
+  });
+  bindSwipeActions();
   document.querySelectorAll<HTMLButtonElement>("[data-category-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       activeCategory = button.dataset.categoryTab as ShoppingCategory | "Alla";
@@ -265,18 +352,18 @@ function bindListActions(): void {
   });
   document.querySelectorAll<HTMLButtonElement>("[data-item-delete]").forEach((button) => {
     button.addEventListener("click", () => {
-      documentState = {
-        ...documentState,
-        items: documentState.items.filter((item) => item.id !== button.dataset.itemDelete),
-      };
+      updateActiveList((list) => ({
+        ...list,
+        items: list.items.filter((item) => item.id !== button.dataset.itemDelete),
+      }));
       commitLocalChange();
     });
   });
   document.querySelector<HTMLButtonElement>("#clear-checked")?.addEventListener("click", () => {
-    documentState = {
-      ...documentState,
-      items: documentState.items.filter((item) => !item.checked),
-    };
+    updateActiveList((list) => ({
+      ...list,
+      items: list.items.filter((item) => !item.checked),
+    }));
     commitLocalChange();
   });
 }
@@ -314,10 +401,10 @@ function addItem(text: string, categoryValue: string, nextCategoryValue = catego
     return;
   }
   const category = categoryValue === "auto" ? inferCategory(clean) : normalizeCategory(categoryValue);
-  documentState = {
-    ...documentState,
-    items: sortItems([...documentState.items, makeShoppingItem(clean, category)]),
-  };
+  updateActiveList((list) => ({
+    ...list,
+    items: sortItems([...list.items, makeShoppingItem(clean, category)]),
+  }));
   addItemDraft = { text: "", category: nextCategoryValue };
   addItemEditing = true;
   commitLocalChange();
@@ -326,18 +413,23 @@ function addItem(text: string, categoryValue: string, nextCategoryValue = catego
 }
 
 function updateItem(id: string, updater: (item: ShoppingItem) => ShoppingItem): void {
-  documentState = {
-    ...documentState,
-    items: sortItems(documentState.items.map((item) => (item.id === id ? updater(item) : item))),
-  };
+  updateActiveList((list) => ({
+    ...list,
+    items: sortItems(list.items.map((item) => (item.id === id ? updater(item) : item))),
+  }));
   commitLocalChange();
 }
 
 function commitLocalChange(): void {
   const now = new Date().toISOString();
+  const activeList = getActiveList();
   documentState = {
     ...documentState,
-    markdown: itemsToMarkdown(documentState.items),
+    lists: documentState.lists.map((list, index) =>
+      index === activeListIndex ? { ...list, updatedAt: now } : list,
+    ),
+    items: activeList.items,
+    markdown: listsToMarkdown(documentState.lists),
     updatedAt: now,
   };
   store.saveDocument(documentState);
@@ -357,6 +449,7 @@ async function syncFromStartup(): Promise<void> {
       return;
     }
     documentState = remote;
+    activeListIndex = clampListIndex(activeListIndex);
     store.saveDocument(documentState);
     store.setDirty(false);
     remoteChanged = true;
@@ -388,11 +481,14 @@ async function pushLocal(): Promise<void> {
   }
   setSyncState("syncing");
   try {
+    const localLists = documentState.lists;
     const remote = await new ShoppingApi(settings).saveList(documentState);
+    activeListIndex = clampListIndex(activeListIndex);
     documentState = {
       ...remote,
-      items: documentState.items,
-      markdown: itemsToMarkdown(documentState.items),
+      lists: localLists,
+      items: localLists[activeListIndex]?.items ?? [],
+      markdown: listsToMarkdown(localLists),
     };
     store.saveDocument(documentState);
     store.setDirty(false);
@@ -401,6 +497,110 @@ async function pushLocal(): Promise<void> {
     setSyncState(navigator.onLine ? "error" : "offline");
     scheduleSync(5000);
   }
+}
+
+function getActiveList(): ShoppingNamedList {
+  activeListIndex = clampListIndex(activeListIndex);
+  return documentState.lists[activeListIndex];
+}
+
+function clampListIndex(index: number): number {
+  const listCount = documentState.lists.length;
+  if (listCount === 0) {
+    documentState = {
+      ...documentState,
+      lists: [makeShoppingList("Hemmet", documentState.items)],
+    };
+    return 0;
+  }
+  return Math.max(0, Math.min(index, listCount - 1));
+}
+
+function updateActiveList(updater: (list: ShoppingNamedList) => ShoppingNamedList): void {
+  activeListIndex = clampListIndex(activeListIndex);
+  documentState = {
+    ...documentState,
+    lists: documentState.lists.map((list, index) => (index === activeListIndex ? updater(list) : list)),
+  };
+}
+
+function updateActiveListTitle(value: string): void {
+  const title = cleanListTitle(value);
+  if (title === getActiveList().title) {
+    return;
+  }
+  updateActiveList((list) => ({ ...list, title }));
+  commitLocalChange();
+}
+
+function addList(): void {
+  if (!documentState.canEdit) {
+    return;
+  }
+  const title = `Lista ${documentState.lists.length + 1}`;
+  documentState = {
+    ...documentState,
+    lists: [...documentState.lists, makeShoppingList(title)],
+  };
+  activeListIndex = documentState.lists.length - 1;
+  activeCategory = "Alla";
+  commitLocalChange();
+}
+
+function switchList(direction: -1 | 1): void {
+  const listCount = documentState.lists.length;
+  if (listCount < 2) {
+    return;
+  }
+  activeListIndex = (activeListIndex + direction + listCount) % listCount;
+  activeCategory = "Alla";
+  render();
+}
+
+function bindSwipeActions(): void {
+  const zone = document.querySelector<HTMLElement>("#shopping-list");
+  let startX = 0;
+  let startY = 0;
+  zone?.addEventListener(
+    "touchstart",
+    (event) => {
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+    },
+    { passive: true },
+  );
+  zone?.addEventListener(
+    "touchend",
+    (event) => {
+      const touch = event.changedTouches[0];
+      const deltaX = touch.clientX - startX;
+      const deltaY = touch.clientY - startY;
+      if (Math.abs(deltaX) < 70 || Math.abs(deltaY) > 60) {
+        return;
+      }
+      switchList(deltaX < 0 ? 1 : -1);
+    },
+    { passive: true },
+  );
+}
+
+function listSearchResults(query: string): Array<{ list: ShoppingNamedList; index: number; matchCount: number }> {
+  const normalizedQuery = normalizeSearch(query);
+  return documentState.lists
+    .map((list, index) => {
+      const titleMatch = normalizeSearch(list.title).includes(normalizedQuery) ? 1 : 0;
+      const itemMatches = list.items.filter((item) => normalizeSearch(item.text).includes(normalizedQuery)).length;
+      return { list, index, matchCount: titleMatch + itemMatches };
+    })
+    .filter((result) => result.matchCount > 0);
+}
+
+function normalizeSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function syncLabel(state: SyncState): string {

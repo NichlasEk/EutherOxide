@@ -1,5 +1,5 @@
 import { AppSettings, ShoppingListDocument, ThemeName } from "../types";
-import { defaultShoppingList } from "../shoppingMarkdown";
+import { defaultShoppingList, listsToMarkdown, makeShoppingList } from "../shoppingMarkdown";
 import { PUBLIC_SERVER_URL, cleanServerUrl } from "../api/ShoppingApi";
 
 const settingsKey = "eutherlist.settings.v1";
@@ -23,7 +23,17 @@ export class LocalStore {
   }
 
   loadDocument(): ShoppingListDocument {
-    return readJson<ShoppingListDocument>(documentKey, defaultShoppingList());
+    const document = readJson<ShoppingListDocument>(documentKey, defaultShoppingList());
+    if (document.lists?.length > 0) {
+      return document;
+    }
+    const lists = [makeShoppingList("Hemmet", document.items ?? [], document.updatedAt)];
+    return {
+      ...document,
+      lists,
+      items: lists[0].items,
+      markdown: listsToMarkdown(lists),
+    };
   }
 
   saveDocument(document: ShoppingListDocument): void {

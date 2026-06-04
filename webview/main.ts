@@ -6,7 +6,7 @@ import shaderToml from "./shaders.toml?raw";
 import "./styles.css";
 
 const controllerGuideUrl = new URL("./controller-bindings.svg", import.meta.url).href;
-const eutherDogsAssetModules = import.meta.glob("../assets/eutherdogs/**/*.{png,wav}", {
+const eutherDogsAssetModules = import.meta.glob("../assets/eutherdogs/**/*.{png,wav,ogg,mp3}", {
   eager: true,
   query: "?url",
   import: "default",
@@ -1146,6 +1146,10 @@ let dogsMapOpen = false;
 const dogsImageCache = new Map<string, HTMLImageElement>();
 const dogsImageLoadPromises = new Map<string, Promise<void>>();
 const dogsSfxCache = new Map<string, AudioBuffer>();
+const dogsMusicCache = new Map<string, AudioBuffer>();
+let dogsMusicKey: string | null = null;
+let dogsMusicSource: AudioBufferSourceNode | null = null;
+let dogsMusicGain: GainNode | null = null;
 let dogsPreloadedAssetMode: DogsAssetMode | null = null;
 let dogsPreloadProgress: { loaded: number; total: number; label: string } | null = null;
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
@@ -10292,6 +10296,15 @@ function dogsSfxAsset(sound: string | null | undefined): string | null {
   return sound ? dogsAsset("audio.sfx", sound) : null;
 }
 
+function dogsMusicAsset(track: string | null | undefined): string | null {
+  return track ? dogsAsset("audio.music", track) : null;
+}
+
+function dogsMissionMusicKey(mission: number | null | undefined): string {
+  const normalized = Math.min(10, Math.max(1, Math.trunc(Number(mission) || 1)));
+  return `mission_${String(normalized).padStart(2, "0")}`;
+}
+
 function dogsWeaponIconMarkup(weapon: string | null | undefined, label: string): string {
   const url = dogsWeaponAsset(weapon);
   return url
@@ -11214,6 +11227,82 @@ async function playDogsSfx(sound: string, gain = 0.55): Promise<void> {
     source.start();
   } catch {
     pushTrace(`EutherDogs SFX skipped: ${sound}`);
+  }
+}
+
+async function playDogsMusic(track: string, gain = 0.34): Promise<void> {
+  const url = dogsMusicAsset(track);
+  if (!url || dogsMusicKey === track) return;
+  try {
+    const context = await ensureAudio();
+    if (!context) return;
+    let buffer = dogsMusicCache.get(url);
+    if (!buffer) {
+      const response = await fetch(url);
+      const bytes = await response.arrayBuffer();
+      buffer = await context.decodeAudioData(bytes.slice(0));
+      dogsMusicCache.set(url, buffer);
+    }
+    stopDogsMusic(false);
+    const source = context.createBufferSource();
+    const trackGain = context.createGain();
+    source.buffer = buffer;
+    source.loop = true;
+    trackGain.gain.value = Math.max(0, Math.min(1, gain));
+    source.connect(trackGain);
+    trackGain.connect(audioGain ?? context.destination);
+    dogsMusicKey = track;
+    dogsMusicSource = source;
+    dogsMusicGain = trackGain;
+    activeAudioSources.add(source);
+    source.onended = () => {
+      activeAudioSources.delete(source);
+      if (dogsMusicSource === source) {
+        dogsMusicSource = null;
+        dogsMusicGain = null;
+        dogsMusicKey = null;
+      }
+      try {
+        trackGain.disconnect();
+      } catch {
+        // The track may already have been disconnected during an explicit music change.
+      }
+    };
+    source.start();
+  } catch {
+    pushTrace(`EutherDogs music skipped: ${track}`);
+  }
+}
+
+function playDogsMissionMusic(mission: number | null | undefined): void {
+  void playDogsMusic(dogsMissionMusicKey(mission), 0.34);
+}
+
+function stopDogsMusic(clearKey = true): void {
+  const source = dogsMusicSource;
+  const gain = dogsMusicGain;
+  dogsMusicSource = null;
+  dogsMusicGain = null;
+  if (clearKey) {
+    dogsMusicKey = null;
+  }
+  if (source) {
+    activeAudioSources.delete(source);
+    try {
+      source.stop();
+    } catch {
+      // Already stopped by the audio engine.
+    }
+    try {
+      source.disconnect();
+    } catch {
+      // Already disconnected.
+    }
+  }
+  try {
+    gain?.disconnect();
+  } catch {
+    // Already disconnected.
   }
 }
 
@@ -12188,6 +12277,7 @@ async function selectDogsStaff(staff: 1 | 2): Promise<void> {
     dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
     dogsPreviousAudioFrame = dogsFrame;
+    playDogsMissionMusic(dogsFrame.summary.mission);
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace(`EutherDogs P${playerPort} selected ${dogsCharacterName(selectedDogsCharacters[playerPort])}`);
@@ -12205,6 +12295,7 @@ async function selectDogsMission(mission: number): Promise<void> {
     dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
     dogsPreviousAudioFrame = dogsFrame;
+    playDogsMissionMusic(dogsFrame.summary.mission);
     drawDogsFrame(dogsFrame);
     showDogsMenu("briefing");
     pushTrace(`EutherDogs level ${selectedDogsMission} selected`);
@@ -12221,6 +12312,7 @@ async function retryDogsShift(): Promise<void> {
     dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
     dogsPreviousAudioFrame = dogsFrame;
+    playDogsMissionMusic(dogsFrame.summary.mission);
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace("EutherDogs shift retried");
@@ -12240,6 +12332,7 @@ async function startDogsNextMission(): Promise<void> {
     dogsLastExitReady = dogsExitReady(dogsFrame);
     dogsLastPortalHumFrame = -9999;
     dogsPreviousAudioFrame = dogsFrame;
+    playDogsMissionMusic(dogsFrame.summary.mission);
     drawDogsFrame(dogsFrame);
     showDogsMenu("store");
     pushTrace(`EutherDogs mission ${selectedDogsMission} ready`);
@@ -12361,6 +12454,7 @@ async function enterDogsMode(): Promise<void> {
   dogsLastExitReady = dogsExitReady(dogsFrame);
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = dogsFrame;
+  playDogsMissionMusic(dogsFrame.summary.mission);
   drawDogsFrame(dogsFrame);
   showDogsMenu("staff");
   renderUi();
@@ -12375,6 +12469,7 @@ function leaveDogsMode(): void {
     closeControls();
   }
   stopDogsSnapshotStream();
+  stopDogsMusic();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
@@ -12407,6 +12502,7 @@ function resetDogsMode(): void {
   void resetDogsCore()
     .then((frame) => {
       dogsFrame = frame;
+      playDogsMissionMusic(frame.summary.mission);
       drawDogsFrame(frame);
       renderUi();
     })
@@ -12454,6 +12550,7 @@ async function runDogsFrame(): Promise<void> {
   ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
   if (dogsFrame.summary.status !== "running") {
     queueDogsHighScore(dogsFrame);
+    void playDogsMusic(dogsFrame.summary.status === "won" ? "success" : "failure", 0.38);
     ui.playing = false;
     playToggle.textContent = "Play";
     stopDogsSnapshotStream();
@@ -13173,6 +13270,7 @@ async function unlockAudioFromSettings(): Promise<void> {
 }
 
 function resetScheduledAudio(): void {
+  stopDogsMusic();
   for (const source of activeAudioSources) {
     try {
       source.stop();

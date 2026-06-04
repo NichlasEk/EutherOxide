@@ -1,4 +1,4 @@
-import { markdownToItems, itemsToMarkdown } from "../shoppingMarkdown";
+import { listsToMarkdown, markdownToItems, markdownToLists } from "../shoppingMarkdown";
 import { AppSettings, ShoppingListDocument, ShoppingMember } from "../types";
 
 export const PUBLIC_SERVER_URL = "https://apothictech.se";
@@ -40,7 +40,7 @@ export class ShoppingApi {
   }
 
   async saveList(document: ShoppingListDocument): Promise<ShoppingListDocument> {
-    const markdown = itemsToMarkdown(document.items);
+    const markdown = listsToMarkdown(document.lists);
     const response = await this.fetch("/api/interaction/shopping-list", {
       method: "POST",
       body: JSON.stringify({ markdown }),
@@ -87,10 +87,12 @@ function responseToDocument(response: ShoppingListResponse): ShoppingListDocumen
   const updatedAt = response.updatedUnixMs
     ? new Date(response.updatedUnixMs).toISOString()
     : new Date().toISOString();
+  const lists = markdownToLists(response.markdown, updatedAt);
   return {
     name: response.name,
     sharedId: response.sharedId,
     markdown: response.markdown,
+    lists,
     items: markdownToItems(response.markdown, updatedAt),
     updatedAt,
     canEdit: response.canEdit ?? true,

@@ -1,4 +1,4 @@
-import { ShoppingCategory, ShoppingItem, shoppingCategories } from "./types";
+import { ShoppingCategory, ShoppingItem, ShoppingNamedList, shoppingCategories } from "./types";
 
 const categoryAliases = new Map<string, ShoppingCategory>([
   ["kyl", "Kyl"],
@@ -36,11 +36,13 @@ export function defaultShoppingList(): ShoppingListDocumentSeed {
     makeShoppingItem("Kaffe", "Skafferi", now),
     makeShoppingItem("Bananer", "Frukt & grönt", now),
   ];
+  const lists = [makeShoppingList("Hemmet", items, now)];
   return {
     name: "shopping-list.md",
     sharedId: "local",
+    lists,
     items,
-    markdown: itemsToMarkdown(items),
+    markdown: listsToMarkdown(lists),
     updatedAt: now,
     canEdit: true,
     canManage: true,
@@ -51,6 +53,7 @@ export function defaultShoppingList(): ShoppingListDocumentSeed {
 type ShoppingListDocumentSeed = {
   name: string;
   sharedId: string;
+  lists: ShoppingNamedList[];
   items: ShoppingItem[];
   markdown: string;
   updatedAt: string;
@@ -58,6 +61,16 @@ type ShoppingListDocumentSeed = {
   canManage: boolean;
   members: [];
 };
+
+export function makeShoppingList(title = "Ny lista", items: ShoppingItem[] = [], now = new Date().toISOString()): ShoppingNamedList {
+  return {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+    title: cleanListTitle(title),
+    items: sortItems(items),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 export function makeShoppingItem(text: string, category?: ShoppingCategory, now = new Date().toISOString()): ShoppingItem {
   return {
@@ -70,21 +83,51 @@ export function makeShoppingItem(text: string, category?: ShoppingCategory, now 
   };
 }
 
-export function markdownToItems(markdown: string, updatedAt = new Date().toISOString()): ShoppingItem[] {
-  const items: ShoppingItem[] = [];
+export function markdownToLists(markdown: string, updatedAt = new Date().toISOString()): ShoppingNamedList[] {
+  const lists: ShoppingNamedList[] = [];
+  let currentTitle = "Hemmet";
+  let currentItems: ShoppingItem[] = [];
+  let currentStarted = false;
   let category: ShoppingCategory = "Övrigt";
+
+  const flush = () => {
+    if (!currentStarted && currentItems.length === 0) {
+      return;
+    }
+    lists.push({
+      id: stableListId(currentTitle, lists.length),
+      title: cleanListTitle(currentTitle),
+      items: sortItems(currentItems),
+      createdAt: updatedAt,
+      updatedAt,
+    });
+    currentItems = [];
+  };
+
   markdown.split("\n").forEach((line, index) => {
+    const listHeading = line.match(/^#\s+(.+?)\s*$/);
+    if (listHeading) {
+      flush();
+      currentTitle = listHeading[1].trim();
+      currentStarted = true;
+      category = "Övrigt";
+      return;
+    }
+
     const heading = line.match(/^#{2,3}\s+(.+?)\s*$/);
     if (heading) {
+      currentStarted = true;
       category = normalizeCategory(heading[1]);
       return;
     }
+
     const item = line.match(/^\s*-\s+\[( |x|X)\]\s+(.+?)\s*$/);
     if (!item) {
       return;
     }
+    currentStarted = true;
     const text = item[2].trim();
-    items.push({
+    currentItems.push({
       id: stableItemId(category, text, index),
       text,
       category,
@@ -93,11 +136,26 @@ export function markdownToItems(markdown: string, updatedAt = new Date().toISOSt
       updatedAt,
     });
   });
-  return sortItems(items);
+  flush();
+
+  return lists.length > 0 ? lists : [makeShoppingList("Hemmet", [], updatedAt)];
 }
 
-export function itemsToMarkdown(items: ShoppingItem[]): string {
-  const lines = ["# Hemmet Shopping List", ""];
+export function markdownToItems(markdown: string, updatedAt = new Date().toISOString()): ShoppingItem[] {
+  return markdownToLists(markdown, updatedAt)[0]?.items ?? [];
+}
+
+export function listsToMarkdown(lists: ShoppingNamedList[]): string {
+  const cleanLists = lists.length > 0 ? lists : [makeShoppingList("Hemmet")];
+  return `${cleanLists.map((list) => listToMarkdown(list.title, list.items)).join("\n").trimEnd()}\n`;
+}
+
+export function itemsToMarkdown(items: ShoppingItem[], title = "Hemmet"): string {
+  return listToMarkdown(title, items);
+}
+
+function listToMarkdown(title: string, items: ShoppingItem[]): string {
+  const lines = [`# ${cleanListTitle(title)}`, ""];
   for (const category of orderedCategories(items)) {
     const group = sortItems(items.filter((item) => normalizeCategory(item.category ?? "Övrigt") === category));
     if (group.length === 0) {
@@ -110,6 +168,11 @@ export function itemsToMarkdown(items: ShoppingItem[]): string {
     lines.push("");
   }
   return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function cleanListTitle(value: string): string {
+  const clean = value.trim().replace(/\s+/g, " ");
+  return clean || "Namnlös lista";
 }
 
 export function sortItems(items: ShoppingItem[]): ShoppingItem[] {
@@ -170,6 +233,15 @@ function stableItemId(category: ShoppingCategory, text: string, index: number): 
     hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
   }
   return `remote-${hash.toString(36)}`;
+}
+
+function stableListId(title: string, index: number): string {
+  let hash = 0;
+  const value = `${title}|${index}`;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return `list-${hash.toString(36)}`;
 }
 
 function lookupKey(value: string): string {

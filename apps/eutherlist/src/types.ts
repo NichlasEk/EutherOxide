@@ -18,9 +18,18 @@ export type ShoppingItem = {
   updatedAt: string;
 };
 
+export type ShoppingNamedList = {
+  id: string;
+  title: string;
+  items: ShoppingItem[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ShoppingListDocument = {
   name: string;
   sharedId: string;
+  lists: ShoppingNamedList[];
   items: ShoppingItem[];
   markdown: string;
   updatedAt: string;
