@@ -378,6 +378,7 @@ type EutherBooksJob = {
   voice: string;
   chapter_indexes: number[];
   audio_files: string[];
+  total_audio_files?: number;
   error: string | null;
 };
 
@@ -6550,6 +6551,7 @@ function eutherBooksWindowMarkup(): string {
   const selectedBook = selectedEutherBook();
   const audioFiles = eutherBooksJob?.audio_files ?? [];
   const audioPath = audioFiles[eutherBooksAudioIndex] ?? null;
+  const progress = eutherBooksJobProgress();
   const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
   const chapterOptions = selectedEutherBookChapters.length
     ? selectedEutherBookChapters
@@ -6624,6 +6626,13 @@ function eutherBooksWindowMarkup(): string {
         <div class="eutherbooks-now-playing">
           <span>${escapeHtml(eutherBooksPlaybackLabel())}</span>
           <audio controls preload="metadata" src="${audioPath ? escapeHtml(eutherBooksAudioUrl(audioPath)) : ""}" ${audioPath ? "" : "disabled"}></audio>
+        </div>
+        <div class="eutherbooks-generation-progress" aria-label="${escapeHtml(progress.label)}">
+          <div>
+            <span>${escapeHtml(progress.label)}</span>
+            <strong>${progress.percent}%</strong>
+          </div>
+          <progress max="100" value="${progress.percent}"></progress>
         </div>
         <div class="eutherbooks-player-actions">
           <button data-eutherbooks-prev-audio type="button" ${eutherBooksAudioIndex > 0 ? "" : "disabled"}>Prev</button>
@@ -6783,6 +6792,21 @@ function eutherBooksPlaybackLabel(): string {
     return "Speech generation failed";
   }
   return "Speech generation running";
+}
+
+function eutherBooksJobProgress(): { done: number; total: number; percent: number; label: string } {
+  if (!eutherBooksJob) {
+    return { done: 0, total: 0, percent: 0, label: "Generation idle" };
+  }
+  const done = eutherBooksJob.audio_files.length;
+  const total = Math.max(eutherBooksJob.total_audio_files ?? done, done, eutherBooksJob.status === "done" ? done : 1);
+  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const label = eutherBooksJob.status === "done"
+    ? `Ready ${done}/${total}`
+    : eutherBooksJob.status === "failed"
+      ? `Failed ${done}/${total}`
+      : `Generating ${done}/${total}`;
+  return { done, total, percent, label };
 }
 
 function eutherBooksPlayerHint(): string {

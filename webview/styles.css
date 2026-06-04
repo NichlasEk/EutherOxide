@@ -4349,6 +4349,53 @@ h2 {
   min-width: 0;
 }
 
+.eutherbooks-generation-progress {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.56);
+}
+
+.eutherbooks-generation-progress > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #aac99c;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.eutherbooks-generation-progress strong {
+  color: #fff4c6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+}
+
+.eutherbooks-generation-progress progress {
+  width: 100%;
+  height: 9px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(170, 201, 156, 0.16);
+}
+
+.eutherbooks-generation-progress progress::-webkit-progress-bar {
+  background: rgba(170, 201, 156, 0.16);
+}
+
+.eutherbooks-generation-progress progress::-webkit-progress-value {
+  background: #ff6855;
+}
+
+.eutherbooks-generation-progress progress::-moz-progress-bar {
+  background: #ff6855;
+}
+
 .eutherbooks-player-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
