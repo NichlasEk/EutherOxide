@@ -140,6 +140,47 @@ type DogsBridgeInput = InputState & {
   inspectionAnswer?: "yes" | "no" | "other";
 };
 
+type CivetAction =
+  | "plantCoffee"
+  | "harvestFruit"
+  | "feedCivets"
+  | "collectBeans"
+  | "roastCoffee"
+  | "sellCoffee"
+  | "improveEnclosure"
+  | "showPaperwork"
+  | "inspectPaperwork"
+  | "inspectTasting"
+  | "inspectGoat";
+
+type CivetGameState = {
+  coffeePlants: number;
+  civets: number;
+  coffeeFruit: number;
+  civetFeed: number;
+  processedBeans: number;
+  roastedCoffee: number;
+  money: number;
+  suspicion: number;
+  civetHappiness: number;
+  reputation: number;
+  enclosureLevel: number;
+  paperworkLevel: number;
+  binturongHome: boolean;
+  goatPresent: boolean;
+  inspection: boolean;
+  rngSeed: number;
+  log: string[];
+};
+
+type CivetFrame = {
+  frame: number;
+  state: CivetGameState;
+  status: string;
+  coffeePipeline: number;
+  availableActions: CivetAction[];
+};
+
 type LobbyPlayer = {
   player: number;
   occupied: boolean;
@@ -291,7 +332,7 @@ type VideoChatResult = {
   signals: VideoChatSignal[];
 };
 
-type PlayMode = "megadrive" | "eutherdogs" | "eutherdoom" | "eutherduke";
+type PlayMode = "megadrive" | "eutherdogs" | "euthercivet" | "eutherdoom" | "eutherduke";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
 type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "books" | "friends" | "spaces" | "profile" | "settings";
 
@@ -379,7 +420,16 @@ type EutherBooksJob = {
   chapter_indexes: number[];
   audio_files: string[];
   total_audio_files?: number;
+  tts_options?: Record<string, number>;
   error: string | null;
+};
+
+type EutherBooksVoice = {
+  id: string;
+  label: string;
+  language: string;
+  backend: string;
+  path: string;
 };
 
 type EutheriumShopItem = {
@@ -1106,6 +1156,10 @@ let doomRendererStarted = false;
 let doomRendererController: { stop?: () => Promise<void>; setMouseSensitivity?: (value: number) => void } | null = null;
 let doomRuntimeScriptPromise: Promise<void> | null = null;
 let doomMouseSensitivity = readStoredDoomMouseSensitivity();
+let civetMode = false;
+let civetFrame: CivetFrame | null = null;
+let civetTickTimer: number | null = null;
+let civetTickInFlight = false;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
@@ -1127,10 +1181,16 @@ let eutherBooksLoaded = false;
 let eutherBooksLoading = false;
 let eutherBooksStatus = "Not loaded";
 let eutherBooks: EutherBook[] = [];
+let eutherBooksVoices: EutherBooksVoice[] = [];
 let selectedEutherBookId: string | null = null;
 let selectedEutherBookChapters: EutherBookChapter[] = [];
 let selectedEutherBookChaptersLoading = false;
 let selectedEutherBookChapterIndex = 0;
+let selectedEutherBooksVoice = "sv";
+let eutherBooksLengthScale = 1;
+let eutherBooksNoiseScale = 0.667;
+let eutherBooksNoiseW = 0.8;
+let eutherBooksSentenceSilence = 0.2;
 let eutherBooksJob: EutherBooksJob | null = null;
 let eutherBooksJobPollTimer: number | null = null;
 let eutherBooksAudioIndex = 0;
@@ -1311,6 +1371,13 @@ const playModeCards: Array<{
     kicker: "Night shift arcade",
     detail: "Staff, RX Store, briefing, scores and local play.",
     action: "Open EutherDogs",
+  },
+  {
+    mode: "euthercivet",
+    label: "EutherCivet",
+    kicker: "Coffee estate sim",
+    detail: "Civets, beans, paperwork, suspicion and inspections.",
+    action: "Open EutherCivet",
   },
   {
     mode: "eutherdoom",
@@ -1498,6 +1565,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="app-nav-grid">
             <button data-play-mode="megadrive" type="button">MegaDrive</button>
             <button data-play-mode="eutherdogs" type="button">EutherDogs</button>
+            <button data-play-mode="euthercivet" type="button">EutherCivet</button>
             <button data-play-mode="eutherdoom" type="button">EutherDoom</button>
             <button data-play-mode="eutherduke" type="button">EutherDuke</button>
           </div>
@@ -1549,6 +1617,17 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="dogs-asset-switch" aria-label="EutherDogs asset resolution">
           <button data-dogs-asset-mode="classic" type="button">Low</button>
           <button data-dogs-asset-mode="2x" type="button">2x</button>
+        </div>
+      </div>
+
+      <div class="rail-section civet-mode-section" id="civet-mode-section">
+        <div class="section-head">
+          <p class="section-label">EutherCivet</p>
+          <span id="euthercivet-status">Idle</span>
+        </div>
+        <div class="civet-rail-actions">
+          <button id="euthercivet-reset" class="primary-action" type="button">Reset Estate</button>
+          <button id="euthercivet-step" type="button">Tick</button>
         </div>
       </div>
 
@@ -1728,6 +1807,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <strong>EutherDuke runtime not installed</strong>
               <p>Expected external runtime at /home/nichlas/eutherduke-runtime with index.html, wasm/data files, and legal Duke game data.</p>
             </div>
+          </div>
+          <div id="euthercivet-renderer" class="euthercivet-renderer" aria-hidden="true">
+            <div class="euthercivet-world" id="euthercivet-world"></div>
+            <aside class="euthercivet-panel">
+              <div class="euthercivet-titleline">
+                <span>Estate Ledger</span>
+                <strong id="euthercivet-title">EutherCivet</strong>
+              </div>
+              <div id="euthercivet-bars" class="euthercivet-bars"></div>
+              <div id="euthercivet-stats" class="euthercivet-stats"></div>
+              <div id="euthercivet-actions" class="euthercivet-actions"></div>
+              <div id="euthercivet-log" class="euthercivet-log"></div>
+            </aside>
           </div>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
           <div id="eutherdogs-loading-overlay" class="eutherdogs-loading-overlay" hidden>
@@ -2042,6 +2134,14 @@ const eutherDoomRendererStatus = document.querySelector<HTMLDivElement>("#euther
 const eutherDukeRenderer = document.querySelector<HTMLDivElement>("#eutherduke-renderer")!;
 const eutherDukeFrame = document.querySelector<HTMLIFrameElement>("#eutherduke-frame")!;
 const eutherDukeRuntimePanel = document.querySelector<HTMLDivElement>("#eutherduke-runtime-panel")!;
+const eutherCivetRenderer = document.querySelector<HTMLDivElement>("#euthercivet-renderer")!;
+const eutherCivetWorld = document.querySelector<HTMLDivElement>("#euthercivet-world")!;
+const eutherCivetStatus = document.querySelector<HTMLElement>("#euthercivet-status")!;
+const eutherCivetTitle = document.querySelector<HTMLElement>("#euthercivet-title")!;
+const eutherCivetBars = document.querySelector<HTMLDivElement>("#euthercivet-bars")!;
+const eutherCivetStats = document.querySelector<HTMLDivElement>("#euthercivet-stats")!;
+const eutherCivetActions = document.querySelector<HTMLDivElement>("#euthercivet-actions")!;
+const eutherCivetLog = document.querySelector<HTMLDivElement>("#euthercivet-log")!;
 dogsCanvas = document.querySelector<HTMLCanvasElement>("#eutherdogs-canvas")!;
 dogsContext = dogsCanvas.getContext("2d", { alpha: false })!;
 bridgeVideo.addEventListener("loadedmetadata", syncBridgeVideoGeometry);
@@ -2162,6 +2262,9 @@ const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
 const eutherDogsToggle = document.querySelector<HTMLButtonElement>("#eutherdogs-toggle")!;
+const civetModeSection = document.querySelector<HTMLDivElement>("#civet-mode-section")!;
+const eutherCivetReset = document.querySelector<HTMLButtonElement>("#euthercivet-reset")!;
+const eutherCivetStep = document.querySelector<HTMLButtonElement>("#euthercivet-step")!;
 const doomDebugPanel = document.querySelector<HTMLDivElement>("#doom-debug-panel")!;
 const doomRefresh = document.querySelector<HTMLButtonElement>("#doom-refresh")!;
 const doomReplay = document.querySelector<HTMLButtonElement>("#doom-replay")!;
@@ -2279,6 +2382,11 @@ userMenuDropdown.addEventListener("click", (event) => {
 });
 
 reactionCorePage.addEventListener("click", (event) => {
+  const civetAction = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-civet-action]");
+  if (civetAction) {
+    void runCivetAction(civetAction.dataset.civetAction as CivetAction);
+    return;
+  }
   const lobbyAward = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-eutherium-lobby-award-submit]");
   if (lobbyAward) {
     void awardEutheriumFromLobby();
@@ -2383,6 +2491,19 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const bookSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-book-select]");
   if (bookSelect?.value) {
     void selectEutherBook(bookSelect.value);
+    return;
+  }
+  const voiceSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-voice]");
+  if (voiceSelect?.value) {
+    selectedEutherBooksVoice = voiceSelect.value;
+    eutherBooksJob = null;
+    eutherBooksAudioIndex = 0;
+    renderWorkspaceWindow();
+    return;
+  }
+  const optionInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-option]");
+  if (optionInput) {
+    setEutherBooksOption(optionInput.dataset.eutherbooksOption ?? "", Number(optionInput.value));
     return;
   }
   const chapterSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-chapter]");
@@ -2893,6 +3014,14 @@ playToggle.addEventListener("click", async () => {
   playToggle.textContent = ui.playing ? "Pause" : "Play";
   ui.status = ui.playing ? "RUNNING" : "PAUSED";
   renderUi();
+  if (civetMode) {
+    if (ui.playing) {
+      startCivetTicker();
+    } else {
+      stopCivetTicker();
+    }
+    return;
+  }
   if (dogsMode) {
     if (ui.playing) {
       startDogsSnapshotStream();
@@ -2927,6 +3056,13 @@ playToggle.addEventListener("click", async () => {
 });
 
 stepFrame.addEventListener("click", async () => {
+  if (civetMode) {
+    ui.playing = false;
+    playToggle.textContent = "Play";
+    stopCivetTicker();
+    await tickCivetOnce();
+    return;
+  }
   if (isTauri && ui.runtime === "tauri") {
     ui.playing = false;
     playToggle.textContent = "Play";
@@ -2941,6 +3077,10 @@ stepFrame.addEventListener("click", async () => {
 });
 
 resetCore.addEventListener("click", async () => {
+  if (civetMode) {
+    await resetCivetMode();
+    return;
+  }
   if (dogsMode) {
     resetDogsMode();
     return;
@@ -2989,6 +3129,17 @@ eutherDogsToggle.addEventListener("click", () => {
   } else {
     void enterDogsMode();
   }
+});
+
+eutherCivetReset.addEventListener("click", () => {
+  void resetCivetMode();
+});
+
+eutherCivetStep.addEventListener("click", () => {
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  stopCivetTicker();
+  void tickCivetOnce();
 });
 
 eutherDogsStaffOpen.addEventListener("click", () => {
@@ -4051,6 +4202,7 @@ function reactionLobbyHomeMarkup(): string {
         <div class="reaction-lobby-start-grid">
           <button data-reaction-home-action="start-megadrive" type="button">Start MegaDrive vessel</button>
           <button data-reaction-home-action="start-eutherdoom" type="button">Start EutherDoom vessel</button>
+          <button data-reaction-home-action="open-euthercivet" type="button">Open EutherCivet vessel</button>
           <button data-reaction-home-action="open-eutherduke" type="button">Open EutherDuke vessel</button>
         </div>
       </section>
@@ -4840,6 +4992,9 @@ function updateStartupModePreference(mode: "dogs" | "megadrive"): void {
 }
 
 async function loadRomPath(path: string): Promise<void> {
+  if (civetMode) {
+    leaveCivetMode();
+  }
   if (dogsMode) {
     leaveDogsMode();
   }
@@ -4865,6 +5020,9 @@ async function loadRomPath(path: string): Promise<void> {
 }
 
 async function loadFile(file: File): Promise<void> {
+  if (civetMode) {
+    leaveCivetMode();
+  }
   if (dogsMode) {
     leaveDogsMode();
   }
@@ -6162,6 +6320,11 @@ function appRouteFromToken(token: string | undefined): AppRoute | null {
     case "eutherdogs":
     case "play/eutherdogs":
       return "eutherdogs";
+    case "euthercivet":
+    case "civet":
+    case "play/euthercivet":
+    case "play/civet":
+      return "euthercivet";
     case "eutherdoom":
     case "utherdoom":
     case "play/eutherdoom":
@@ -6207,6 +6370,7 @@ function applyAppRoute(): void {
   document.body.classList.toggle("play-home-mode", !showingLobby && appRoute === "playHome");
   document.body.classList.toggle("play-mode-megadrive", !showingLobby && appRoute === "megadrive");
   document.body.classList.toggle("play-mode-eutherdogs", !showingLobby && appRoute === "eutherdogs");
+  document.body.classList.toggle("play-mode-euthercivet", !showingLobby && appRoute === "euthercivet");
   document.body.classList.toggle("play-mode-eutherdoom", !showingLobby && appRoute === "eutherdoom");
   document.body.classList.toggle("play-mode-eutherduke", !showingLobby && appRoute === "eutherduke");
 
@@ -6214,6 +6378,7 @@ function applyAppRoute(): void {
   reactionLobbyHome.hidden = showingLobby || appRoute !== "playHome";
   lobbySection.hidden = showingLobby || (appRoute !== "megadrive" && appRoute !== "eutherdoom");
   dogsModeSection.hidden = showingLobby || appRoute !== "eutherdogs";
+  civetModeSection.hidden = showingLobby || appRoute !== "euthercivet";
   megaDrivePanel.hidden = showingLobby || appRoute !== "megadrive";
   if (appRoute === "megadrive") {
     megaDrivePanel.open = true;
@@ -6248,6 +6413,11 @@ function applyAppRoute(): void {
   } else {
     stopEutherDukeRenderer();
   }
+  if (!showingLobby && appRoute === "euthercivet") {
+    void enterCivetMode();
+  } else if (civetMode) {
+    leaveCivetMode();
+  }
 }
 
 function currentPlayModeRoute(): PlayMode | null {
@@ -6255,7 +6425,7 @@ function currentPlayModeRoute(): PlayMode | null {
 }
 
 function isPlayMode(value: unknown): value is PlayMode {
-  return value === "megadrive" || value === "eutherdogs" || value === "eutherdoom" || value === "eutherduke";
+  return value === "megadrive" || value === "eutherdogs" || value === "euthercivet" || value === "eutherdoom" || value === "eutherduke";
 }
 
 function playModeLabel(mode: PlayMode | null): string {
@@ -6264,6 +6434,8 @@ function playModeLabel(mode: PlayMode | null): string {
       return "MegaDrive";
     case "eutherdogs":
       return "EutherDogs";
+    case "euthercivet":
+      return "EutherCivet";
     case "eutherdoom":
       return "EutherDoom";
     case "eutherduke":
@@ -6336,6 +6508,9 @@ async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise
       return;
     case "open-eutherdogs":
       await activatePlayMode("eutherdogs");
+      return;
+    case "open-euthercivet":
+      await activatePlayMode("euthercivet");
       return;
     case "open-eutherduke":
       await activatePlayMode("eutherduke");
@@ -6598,6 +6773,7 @@ function eutherBooksWindowMarkup(): string {
         )
         .join("")
     : `<option value="">No books</option>`;
+  const voiceOptions = eutherBooksVoiceOptions();
   const bookRows = eutherBooks.length
     ? eutherBooks
         .map(
@@ -6652,6 +6828,20 @@ function eutherBooksWindowMarkup(): string {
           </label>
           <button class="primary-action" data-eutherbooks-tts type="button" ${canGenerate ? "" : "disabled"}>Generate speech</button>
         </div>
+        <div class="eutherbooks-voice-control">
+          <label>
+            <span>Voice / model</span>
+            <select data-eutherbooks-voice>
+              ${voiceOptions}
+            </select>
+          </label>
+          <div class="eutherbooks-option-grid">
+            ${eutherBooksOptionSlider("Speed", "length_scale", eutherBooksLengthScale, 0.75, 1.35, 0.05, "Lower is faster")}
+            ${eutherBooksOptionSlider("Variation", "noise_scale", eutherBooksNoiseScale, 0.2, 1.0, 0.05, "Higher is looser")}
+            ${eutherBooksOptionSlider("Phonemes", "noise_w", eutherBooksNoiseW, 0.2, 1.2, 0.05, "Pronunciation variation")}
+            ${eutherBooksOptionSlider("Silence", "sentence_silence", eutherBooksSentenceSilence, 0, 0.8, 0.05, "Pause between sentences")}
+          </div>
+        </div>
         <div class="eutherbooks-now-playing">
           <span>${escapeHtml(eutherBooksPlaybackLabel())}</span>
           <audio controls preload="metadata" src="${audioPath ? escapeHtml(eutherBooksAudioUrl(audioPath)) : ""}" ${audioPath ? "" : "disabled"}></audio>
@@ -6675,6 +6865,43 @@ function eutherBooksWindowMarkup(): string {
   `;
 }
 
+function eutherBooksVoiceOptions(): string {
+  const voices = eutherBooksVoices.length
+    ? eutherBooksVoices
+    : [
+        { id: "sv", label: "Swedish default", language: "sv", backend: "piper", path: "" },
+        { id: "en", label: "English default", language: "en", backend: "piper", path: "" },
+      ];
+  return voices
+    .map(
+      (voice) =>
+        `<option value="${escapeHtml(voice.id)}" ${voice.id === selectedEutherBooksVoice ? "selected" : ""}>${escapeHtml(voice.label)}</option>`,
+    )
+    .join("");
+}
+
+function eutherBooksOptionSlider(
+  label: string,
+  key: string,
+  value: number,
+  min: number,
+  max: number,
+  step: number,
+  hint: string,
+): string {
+  return `
+    <label>
+      <span>${escapeHtml(label)} <strong>${formatEutherBooksOptionValue(value)}</strong></span>
+      <input data-eutherbooks-option="${escapeHtml(key)}" type="range" min="${min}" max="${max}" step="${step}" value="${value}">
+      <small>${escapeHtml(hint)}</small>
+    </label>
+  `;
+}
+
+function formatEutherBooksOptionValue(value: number): string {
+  return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 async function loadEutherBooks(force = false): Promise<void> {
   if ((eutherBooksLoaded && !force) || eutherBooksLoading) {
     return;
@@ -6683,6 +6910,9 @@ async function loadEutherBooks(force = false): Promise<void> {
   eutherBooksStatus = "Scanning";
   renderBooksWindowIfActive();
   try {
+    if (!eutherBooksVoices.length || force) {
+      await loadEutherBooksVoices();
+    }
     eutherBooks = await eutherBooksJson<EutherBook[]>("/books");
     eutherBooksLoaded = true;
     eutherBooksStatus = `${eutherBooks.length} ${eutherBooks.length === 1 ? "book" : "books"}`;
@@ -6702,6 +6932,17 @@ async function loadEutherBooks(force = false): Promise<void> {
   } finally {
     eutherBooksLoading = false;
     renderBooksWindowIfActive();
+  }
+}
+
+async function loadEutherBooksVoices(): Promise<void> {
+  try {
+    eutherBooksVoices = await eutherBooksJson<EutherBooksVoice[]>("/voices");
+    if (!eutherBooksVoices.some((voice) => voice.id === selectedEutherBooksVoice)) {
+      selectedEutherBooksVoice = eutherBooksVoices.find((voice) => voice.language.startsWith("sv"))?.id ?? eutherBooksVoices[0]?.id ?? "sv";
+    }
+  } catch (_err) {
+    eutherBooksVoices = [];
   }
 }
 
@@ -6748,8 +6989,12 @@ async function startEutherBooksTts(): Promise<void> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         language: "sv",
-        voice: "sv",
+        voice: selectedEutherBooksVoice,
         chapters: [selectedEutherBookChapterIndex],
+        length_scale: eutherBooksLengthScale,
+        noise_scale: eutherBooksNoiseScale,
+        noise_w: eutherBooksNoiseW,
+        sentence_silence: eutherBooksSentenceSilence,
       }),
     });
     eutherBooksStatus = eutherBooksJob.status;
@@ -6836,6 +7081,29 @@ function eutherBooksJobProgress(): { done: number; total: number; percent: numbe
       ? `Failed ${done}/${total}`
       : `Generating ${done}/${total}`;
   return { done, total, percent, label };
+}
+
+function setEutherBooksOption(key: string, value: number): void {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  switch (key) {
+    case "length_scale":
+      eutherBooksLengthScale = safeValue;
+      break;
+    case "noise_scale":
+      eutherBooksNoiseScale = safeValue;
+      break;
+    case "noise_w":
+      eutherBooksNoiseW = safeValue;
+      break;
+    case "sentence_silence":
+      eutherBooksSentenceSilence = safeValue;
+      break;
+    default:
+      return;
+  }
+  eutherBooksJob = null;
+  eutherBooksAudioIndex = 0;
+  renderBooksWindowIfActive();
 }
 
 function eutherBooksPlayerHint(): string {
@@ -7436,6 +7704,18 @@ function settingsWindowMarkup(): string {
 
 async function activatePlayMode(mode: PlayMode): Promise<void> {
   navigateApp(mode);
+  if (mode === "euthercivet") {
+    if (dogsMode) {
+      leaveDogsMode();
+    }
+    if (!civetMode) {
+      await enterCivetMode();
+    }
+    return;
+  }
+  if (civetMode) {
+    leaveCivetMode();
+  }
   if (mode === "eutherdogs") {
     if (!dogsMode) {
       await enterDogsMode();
@@ -8726,7 +9006,7 @@ function renderReactionLobbyHome(): void {
     : `
       <div class="reaction-lobby-empty">
         <strong>No active vessels</strong>
-        <span>Start a MegaDrive chamber, start EutherDoom, or open EutherDogs.</span>
+        <span>Start a MegaDrive chamber, start EutherDoom, or open EutherDogs/EutherCivet.</span>
       </div>
     `;
   renderEutheriumLobby();
@@ -13220,6 +13500,274 @@ function renderDogsAssetMode(): void {
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-pressed", selected ? "true" : "false");
   });
+}
+
+const civetActionLabels: Record<CivetAction, string> = {
+  plantCoffee: "Plant coffee",
+  harvestFruit: "Harvest fruit",
+  feedCivets: "Feed civets",
+  collectBeans: "Collect beans",
+  roastCoffee: "Roast coffee",
+  sellCoffee: "Sell coffee",
+  improveEnclosure: "Improve enclosure",
+  showPaperwork: "Show paperwork",
+  inspectPaperwork: "Show paperwork",
+  inspectTasting: "Offer tasting",
+  inspectGoat: "Blame the goat",
+};
+
+async function enterCivetMode(): Promise<void> {
+  if (civetMode) {
+    return;
+  }
+  if (dogsMode) {
+    leaveDogsMode();
+  }
+  civetMode = true;
+  resetScheduledAudio();
+  stopBridgeStream();
+  ui.playing = false;
+  Object.assign(ui, {
+    loaded: true,
+    runtime: isTauri ? ("tauri" as const) : ui.runtime === "bridge" ? ("bridge" as const) : ("web" as const),
+    title: "EutherCivet",
+    region: "ESTATE",
+    timing: "1HZ",
+    resetPc: 0,
+    width: 960,
+    height: 540,
+    cpuCycles: 0,
+    cpuSteps: 0,
+    frameMs: 1000,
+    transportMode: "CIVET CORE",
+    status: "CIVET WARMUP",
+    lastError: "",
+  });
+  playToggle.textContent = "Play";
+  document.body.classList.add("euthercivet-mode");
+  eutherCivetRenderer.setAttribute("aria-hidden", "false");
+  try {
+    civetFrame = await civetSnapshotCore();
+    renderCivetFrame(civetFrame);
+    ui.frame = civetFrame.frame;
+    ui.status = civetUiStatus(civetFrame);
+    pushTrace("EutherCivet Rust core started");
+  } catch (err) {
+    civetMode = false;
+    document.body.classList.remove("euthercivet-mode");
+    eutherCivetRenderer.setAttribute("aria-hidden", "true");
+    ui.loaded = false;
+    ui.status = "CIVET ERROR";
+    ui.lastError = err instanceof Error ? err.message : String(err);
+    pushTrace(`EutherCivet core failed: ${ui.lastError}`);
+  }
+  renderUi();
+}
+
+function leaveCivetMode(): void {
+  civetMode = false;
+  stopCivetTicker();
+  ui.playing = false;
+  ui.loaded = false;
+  ui.title = "No ROM";
+  ui.status = "IDLE";
+  playToggle.textContent = "Play";
+  document.body.classList.remove("euthercivet-mode");
+  eutherCivetRenderer.setAttribute("aria-hidden", "true");
+  drawSyntheticFrame();
+  renderUi();
+}
+
+async function resetCivetMode(): Promise<void> {
+  stopCivetTicker();
+  ui.playing = false;
+  playToggle.textContent = "Play";
+  try {
+    civetFrame = await resetCivetCore();
+    renderCivetFrame(civetFrame);
+    ui.frame = civetFrame.frame;
+    ui.status = civetUiStatus(civetFrame);
+  } catch (err) {
+    ui.status = "CIVET ERROR";
+    ui.lastError = err instanceof Error ? err.message : String(err);
+  }
+  renderUi();
+}
+
+function startCivetTicker(): void {
+  if (civetTickTimer !== null) {
+    return;
+  }
+  civetTickTimer = window.setInterval(() => {
+    void tickCivetOnce();
+  }, 1000);
+}
+
+function stopCivetTicker(): void {
+  if (civetTickTimer === null) {
+    return;
+  }
+  window.clearInterval(civetTickTimer);
+  civetTickTimer = null;
+}
+
+async function tickCivetOnce(): Promise<void> {
+  if (civetTickInFlight) {
+    return;
+  }
+  civetTickInFlight = true;
+  const started = performance.now();
+  try {
+    civetFrame = await tickCivetCore();
+    renderCivetFrame(civetFrame);
+    ui.frame = civetFrame.frame;
+    ui.cpuCycles = Math.round(civetFrame.state.suspicion);
+    ui.cpuSteps = Math.round(civetFrame.state.civetHappiness);
+    ui.transportMs = performance.now() - started;
+    ui.drawMs = 0;
+    ui.status = civetUiStatus(civetFrame);
+  } catch (err) {
+    ui.status = "CIVET HOLD";
+    ui.lastError = err instanceof Error ? err.message : String(err);
+  } finally {
+    civetTickInFlight = false;
+    renderUi();
+  }
+}
+
+async function runCivetAction(action: CivetAction): Promise<void> {
+  if (!(action in civetActionLabels)) {
+    return;
+  }
+  try {
+    civetFrame = await civetActionCore(action);
+    renderCivetFrame(civetFrame);
+    ui.frame = civetFrame.frame;
+    ui.status = civetUiStatus(civetFrame);
+    renderUi();
+  } catch (err) {
+    ui.status = "CIVET ACTION ERROR";
+    ui.lastError = err instanceof Error ? err.message : String(err);
+    renderUi();
+  }
+}
+
+async function civetSnapshotCore(): Promise<CivetFrame> {
+  if (isTauri) {
+    return await invoke<CivetFrame>("euthercivet_snapshot");
+  }
+  if (ui.runtime !== "bridge") {
+    await connectBridge(false);
+  }
+  if (ui.runtime === "bridge") {
+    return await bridgeJson<CivetFrame>("/euthercivet/snapshot");
+  }
+  throw new Error("starta web bridge eller Tauri for EutherCivet");
+}
+
+async function tickCivetCore(): Promise<CivetFrame> {
+  if (isTauri) {
+    return await invoke<CivetFrame>("tick_euthercivet");
+  }
+  return await bridgeJson<CivetFrame>("/euthercivet/tick", { method: "POST" });
+}
+
+async function resetCivetCore(): Promise<CivetFrame> {
+  if (isTauri) {
+    return await invoke<CivetFrame>("reset_euthercivet");
+  }
+  return await bridgeJson<CivetFrame>("/euthercivet/reset", { method: "POST" });
+}
+
+async function civetActionCore(action: CivetAction): Promise<CivetFrame> {
+  if (isTauri) {
+    return await invoke<CivetFrame>("run_euthercivet_action", { action });
+  }
+  return await bridgeJson<CivetFrame>("/euthercivet/action", {
+    method: "POST",
+    body: JSON.stringify(action),
+  });
+}
+
+function civetUiStatus(frame: CivetFrame): string {
+  return `CIVET ${frame.status.toUpperCase()}`;
+}
+
+function renderCivetFrame(frame: CivetFrame | null): void {
+  if (!frame) {
+    eutherCivetWorld.innerHTML = "";
+    eutherCivetStats.innerHTML = "<span>Waiting for estate ledger</span>";
+    eutherCivetActions.innerHTML = "";
+    eutherCivetLog.innerHTML = "";
+    return;
+  }
+  const state = frame.state;
+  eutherCivetTitle.textContent = state.inspection ? "Operation Bitter Bean" : "EutherCivet";
+  eutherCivetStatus.textContent = `${frame.status.toUpperCase()} F${frame.frame}`;
+  eutherCivetBars.innerHTML = [
+    civetBar("Suspicion", state.suspicion, "suspicion"),
+    civetBar("Happiness", state.civetHappiness, "happiness"),
+    civetBar("Pipeline", frame.coffeePipeline, "pipeline"),
+  ].join("");
+  eutherCivetStats.innerHTML = [
+    civetStat("Money", `$${state.money}`),
+    civetStat("Plants", state.coffeePlants.toString()),
+    civetStat("Civets", state.civets.toString()),
+    civetStat("Fruit", state.coffeeFruit.toFixed(0)),
+    civetStat("Feed", state.civetFeed.toFixed(0)),
+    civetStat("Beans", state.processedBeans.toFixed(1)),
+    civetStat("Roasted", state.roastedCoffee.toFixed(1)),
+    civetStat("Reputation", state.reputation.toString()),
+    civetStat("Paperwork", state.paperworkLevel.toString()),
+    civetStat("Enclosure", state.enclosureLevel.toString()),
+  ].join("");
+  eutherCivetActions.innerHTML = frame.availableActions
+    .map((action) => `<button data-civet-action="${action}" type="button">${civetActionLabels[action]}</button>`)
+    .join("");
+  eutherCivetLog.innerHTML = state.log.map((line) => `<span>${escapeHtml(line)}</span>`).join("");
+  eutherCivetWorld.innerHTML = civetWorldMarkup(state, frame.frame);
+}
+
+function civetBar(label: string, value: number, kind: string): string {
+  const percent = Math.max(0, Math.min(100, value));
+  return `
+    <div class="euthercivet-bar euthercivet-bar-${kind}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${Math.round(percent)}%</strong>
+      <i><b style="width: ${percent}%"></b></i>
+    </div>
+  `;
+}
+
+function civetStat(label: string, value: string): string {
+  return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function civetWorldMarkup(state: CivetGameState, frame: number): string {
+  const plantCount = Math.min(36, Math.max(0, Math.trunc(state.coffeePlants)));
+  const civetCount = Math.min(10, Math.max(0, Math.trunc(state.civets)));
+  const plants = Array.from({ length: plantCount }, (_, index) => {
+    const col = index % 12;
+    const row = Math.floor(index / 12);
+    return `<span class="civet-plant" style="left:${10 + col * 6.8}%;top:${45 + row * 9}%"></span>`;
+  }).join("");
+  const civets = Array.from({ length: civetCount }, (_, index) => {
+    const col = index % 5;
+    const row = Math.floor(index / 5);
+    return `<span class="civet-animal" style="left:${59 + col * 6.5}%;top:${57 + row * 10}%"></span>`;
+  }).join("");
+  const copterX = 58 + Math.sin(frame * 0.35) * 6;
+  const copterY = 18 + Math.cos(frame * 0.42) * 2;
+  return `
+    <div class="civet-sky"></div>
+    <div class="civet-field">${plants}</div>
+    <div class="civet-enclosure">${civets}<strong>CIVET ENCLOSURE</strong></div>
+    <div class="civet-roaster"><strong>ROASTED COFFEE</strong></div>
+    ${state.binturongHome ? `<span class="civet-binturong">binturong</span>` : ""}
+    ${state.goatPresent ? `<span class="civet-goat">goat?</span>` : ""}
+    <span class="civet-helicopter" style="left:${copterX}%;top:${copterY}%">police helicopter</span>
+    ${state.inspection ? `<div class="civet-inspection"><strong>Operation Bitter Bean</strong><span>Normal work paused</span></div>` : ""}
+  `;
 }
 
 async function enterDogsMode(): Promise<void> {

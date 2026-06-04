@@ -686,6 +686,7 @@ struct BridgeState {
     runner_active: Arc<Mutex<bool>>,
     shutdown: Arc<AtomicBool>,
     gamepads: Arc<Mutex<GamepadReader>>,
+    euthercivet: Arc<Mutex<euther_oxide::euthercivet::EutherCivetRuntime>>,
     eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
     eutherdogs_latest: Arc<Mutex<[Option<euther_oxide::eutherdogs::EutherDogsFrame>; 2]>>,
     eutherdogs_input_seq: Arc<Mutex<[u64; 2]>>,
@@ -1057,6 +1058,7 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         runner_active: Arc::new(Mutex::new(false)),
         shutdown: Arc::new(AtomicBool::new(false)),
         gamepads: Arc::new(Mutex::new(GamepadReader::new())),
+        euthercivet: Arc::new(Mutex::new(euther_oxide::euthercivet::EutherCivetRuntime::new())),
         eutherdogs: Arc::new(Mutex::new(
             euther_oxide::eutherdogs::EutherDogsRuntime::demo(),
         )),
@@ -2270,6 +2272,10 @@ fn host_route_permission(path: &str, method: &str) -> Option<HostPermission> {
         | ("GET", "/eutherdogs/snapshot")
         | ("GET", "/eutherdogs/stream")
         | ("POST", "/eutherdogs/purchase")
+        | ("GET", "/euthercivet/snapshot")
+        | ("POST", "/euthercivet/tick")
+        | ("POST", "/euthercivet/action")
+        | ("POST", "/euthercivet/reset")
         | ("POST", "/eutherdogs-highscores") => Some(HostPermission::Play),
         _ => None,
     }
@@ -4971,6 +4977,41 @@ fn handle_bridge_route_with_user(
                 .map_err(|err| invalid_request(format!("{err:?}")))?;
             drop(dogs);
             publish_eutherdogs_initial_frame(state, frame.clone())?;
+            send_json(stream, &frame)
+        }
+        ("GET", "/euthercivet/snapshot") => {
+            let frame = state
+                .euthercivet
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?
+                .snapshot();
+            send_json(stream, &frame)
+        }
+        ("POST", "/euthercivet/tick") => {
+            let frame = state
+                .euthercivet
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?
+                .tick();
+            send_json(stream, &frame)
+        }
+        ("POST", "/euthercivet/action") => {
+            let action: euther_oxide::euthercivet::EutherCivetAction =
+                serde_json::from_slice(&request.body)
+                    .map_err(|err| invalid_request(err.to_string()))?;
+            let frame = state
+                .euthercivet
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?
+                .action(action);
+            send_json(stream, &frame)
+        }
+        ("POST", "/euthercivet/reset") => {
+            let frame = state
+                .euthercivet
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?
+                .reset();
             send_json(stream, &frame)
         }
         ("GET", "/gamepads") => {

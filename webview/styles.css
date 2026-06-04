@@ -79,6 +79,14 @@ button:disabled {
   opacity: 0;
 }
 
+.euthercivet-mode #video,
+.euthercivet-mode #shader-video,
+.euthercivet-mode #bridge-video,
+.euthercivet-mode #eutherdogs-canvas {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .play-mode-eutherdoom #video,
 .play-mode-eutherdoom #shader-video,
 .play-mode-eutherdoom #bridge-video,
@@ -171,6 +179,283 @@ button:disabled {
 .play-mode-eutherduke .eutherduke-renderer {
   opacity: 1;
   pointer-events: auto;
+}
+
+.euthercivet-renderer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 36%);
+  overflow: hidden;
+  background: linear-gradient(180deg, #314a42 0%, #4d6037 42%, #2d2617 100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.euthercivet-mode .euthercivet-renderer,
+.play-mode-euthercivet .euthercivet-renderer {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.euthercivet-world {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.civet-sky,
+.civet-field,
+.civet-enclosure,
+.civet-roaster,
+.civet-inspection {
+  position: absolute;
+}
+
+.civet-sky {
+  inset: 0 0 58% 0;
+  background: linear-gradient(180deg, rgba(240, 203, 103, 0.42), rgba(121, 160, 111, 0.12));
+}
+
+.civet-field {
+  left: 3%;
+  right: 31%;
+  top: 36%;
+  bottom: 5%;
+  border-top: 2px solid rgba(235, 205, 122, 0.34);
+  background:
+    repeating-linear-gradient(0deg, rgba(27, 63, 32, 0.28) 0 10px, rgba(86, 65, 27, 0.22) 10px 22px),
+    linear-gradient(180deg, rgba(44, 89, 38, 0.78), rgba(80, 52, 24, 0.84));
+}
+
+.civet-plant {
+  position: absolute;
+  width: 18px;
+  height: 34px;
+  transform: translate(-50%, -50%);
+  border-radius: 12px 12px 4px 4px;
+  background: #177335;
+  box-shadow:
+    inset 6px 0 0 rgba(180, 222, 106, 0.22),
+    5px 5px 0 #b43327;
+}
+
+.civet-enclosure {
+  right: 5%;
+  bottom: 12%;
+  width: 31%;
+  height: 28%;
+  border: 5px solid #8d6b35;
+  background: rgba(65, 43, 24, 0.38);
+}
+
+.civet-enclosure strong,
+.civet-roaster strong,
+.civet-helicopter,
+.civet-binturong,
+.civet-goat {
+  position: absolute;
+  color: #ffe4a1;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.civet-enclosure strong {
+  left: 10px;
+  top: -26px;
+}
+
+.civet-animal {
+  position: absolute;
+  width: 36px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px 999px 10px 10px;
+  background: #4b3524;
+  box-shadow: 17px -3px 0 -7px #d3b77a;
+}
+
+.civet-roaster {
+  left: 9%;
+  top: 24%;
+  width: 130px;
+  height: 82px;
+  border-radius: 6px;
+  background:
+    linear-gradient(90deg, rgba(99, 59, 25, 0.92), rgba(184, 126, 49, 0.9)),
+    repeating-linear-gradient(0deg, transparent 0 12px, rgba(0, 0, 0, 0.2) 12px 14px);
+  box-shadow: 50px 12px 0 -8px rgba(122, 79, 31, 0.92);
+}
+
+.civet-roaster strong {
+  left: 10px;
+  top: 20px;
+  color: #2a1708;
+}
+
+.civet-binturong {
+  right: 18%;
+  bottom: 34%;
+  width: 86px;
+  height: 28px;
+  padding-top: 7px;
+  text-align: center;
+  border-radius: 999px;
+  background: #17120d;
+}
+
+.civet-goat {
+  left: 33%;
+  top: 31%;
+  width: 62px;
+  height: 36px;
+  padding-top: 10px;
+  color: #312211;
+  text-align: center;
+  border-radius: 40% 50% 42% 38%;
+  background: #eee2c7;
+}
+
+.civet-helicopter {
+  width: 138px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  padding-top: 8px;
+  text-align: center;
+  color: #ffd0be;
+  border-radius: 8px;
+  background: #191d22;
+  box-shadow:
+    0 -13px 0 -11px #d63e2c,
+    46px 0 0 -10px #15171c;
+}
+
+.civet-inspection {
+  inset: 8% 12%;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  border: 1px solid rgba(255, 210, 120, 0.48);
+  background: rgba(79, 8, 6, 0.88);
+  box-shadow: inset 0 0 70px rgba(255, 40, 20, 0.18);
+}
+
+.civet-inspection strong {
+  color: #ffe08a;
+  font-size: clamp(1.6rem, 4vw, 3.4rem);
+  line-height: 1;
+}
+
+.civet-inspection span {
+  color: #fff2cf;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.euthercivet-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  overflow: auto;
+  background: rgba(13, 12, 8, 0.9);
+  border-left: 1px solid rgba(245, 220, 150, 0.18);
+}
+
+.euthercivet-titleline span,
+.euthercivet-bar span,
+.euthercivet-stats span,
+.euthercivet-log span {
+  color: #cabf98;
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.euthercivet-titleline strong {
+  display: block;
+  color: #ffe186;
+  font-size: 1.55rem;
+  line-height: 1.05;
+}
+
+.euthercivet-bars,
+.euthercivet-stats,
+.euthercivet-actions,
+.euthercivet-log {
+  display: grid;
+  gap: 8px;
+}
+
+.euthercivet-bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 10px;
+}
+
+.euthercivet-bar i {
+  grid-column: 1 / -1;
+  height: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.38);
+}
+
+.euthercivet-bar b {
+  display: block;
+  height: 100%;
+  background: #d59a33;
+}
+
+.euthercivet-bar-suspicion b {
+  background: #e34d35;
+}
+
+.euthercivet-bar-happiness b {
+  background: #4fc36b;
+}
+
+.euthercivet-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.euthercivet-stats div {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(255, 232, 156, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.euthercivet-stats strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #fff3cd;
+}
+
+.euthercivet-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.euthercivet-actions button {
+  min-height: 38px;
+  padding: 8px;
+}
+
+.euthercivet-log {
+  padding-top: 4px;
+}
+
+.euthercivet-log span {
+  display: block;
+  padding: 6px 0;
+  color: #e6dcc0;
+  text-transform: none;
 }
 
 .eutherduke-frame {
@@ -2427,6 +2712,10 @@ h2 {
   border-color: rgba(39, 242, 255, 0.22);
 }
 
+.mode-card-euthercivet {
+  border-color: rgba(216, 169, 76, 0.24);
+}
+
 .mode-card-eutherdoom {
   border-color: rgba(255, 104, 85, 0.22);
 }
@@ -3099,6 +3388,10 @@ h2 {
 
 .reaction-mode-eutherdogs {
   border-color: rgba(39, 242, 255, 0.26);
+}
+
+.reaction-mode-euthercivet {
+  border-color: rgba(216, 169, 76, 0.28);
 }
 
 .reaction-mode-eutherdoom {
@@ -4316,6 +4609,7 @@ h2 {
 }
 
 .eutherbooks-book-select select,
+.eutherbooks-voice-control select,
 .eutherbooks-chapter-control select {
   width: 100%;
   min-height: 42px;
@@ -4325,6 +4619,60 @@ h2 {
   color: #eef8dd;
   font: inherit;
   font-size: 0.8rem;
+}
+
+.eutherbooks-voice-control {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.5);
+}
+
+.eutherbooks-voice-control label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.eutherbooks-voice-control label > span {
+  color: #9fbe91;
+  font-size: 0.64rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherbooks-option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.eutherbooks-option-grid label {
+  gap: 5px;
+}
+
+.eutherbooks-option-grid span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.eutherbooks-option-grid strong {
+  color: #fff4c6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.eutherbooks-option-grid input {
+  width: 100%;
+}
+
+.eutherbooks-option-grid small {
+  color: #aac99c;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .eutherbooks-chapter-control button,
@@ -5828,6 +6176,17 @@ h2 {
     width: 100%;
   }
 
+  .euthercivet-renderer {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(220px, 42%);
+  }
+
+  .euthercivet-panel {
+    border-top: 1px solid rgba(245, 220, 150, 0.18);
+    border-left: 0;
+    padding: 12px;
+  }
+
   .reaction-mode-grid,
   .reaction-lobby-start-grid,
   .reaction-lobby-tools,
@@ -6077,6 +6436,10 @@ h2 {
   }
 
   .eutherbooks-chapter-control {
+    grid-template-columns: 1fr;
+  }
+
+  .eutherbooks-option-grid {
     grid-template-columns: 1fr;
   }
 

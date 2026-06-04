@@ -1003,6 +1003,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "euther_civet_core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "euther_oxide"
 version = "0.1.0"
 dependencies = [
@@ -1010,6 +1017,7 @@ dependencies = [
  "bincode 2.0.1",
  "bytemuck",
  "bytes",
+ "euther_civet_core",
  "eutherdogs-core",
  "eutherdoom-server",
  "gilrs",
