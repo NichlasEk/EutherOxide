@@ -842,6 +842,33 @@ const eutherDogsCameraWorldHeight = 230;
 const eutherDogsRenderYScale = 4 / 3;
 const eutherDogsTopHudSafePx = 50;
 const eutherDogsBottomHudSafePx = 30;
+const eutherDogsTileFallbackColors: Record<string, string> = {
+  floor: "#dfe8dc",
+  sterile_floor: "#dfe8dc",
+  neon_floor: "#2ff7dc",
+  warning_floor: "#f7d852",
+  fan_floor: "#9fb2aa",
+  player_spawn_1: "#39f7c8",
+  player_spawn_2: "#ff5de1",
+  wall: "#263630",
+  door: "#374a42",
+  corrupt_med_cabinet: "#ff37c8",
+  hacked_vending_unit: "#65716b",
+  recall_crate: "#7f6b46",
+  shipping_box: "#8b7658",
+  service_elevator: "#f7d852",
+  prescription: "#39f7c8",
+  folder: "#60c5ff",
+  data_wafer: "#9c7dff",
+  circuit_board: "#39f767",
+  pill_sample: "#ffffff",
+  lab_coat_armor: "#cfefff",
+  hazard_sleeves: "#ffef7a",
+  pill_splitter: "#ff9bd9",
+  routine_directive: "#ffef7a",
+  scorch_mark: "#1b211e",
+  spilled_syrup: "#70ffe8",
+};
 const inputState: InputState = {
   up: false,
   down: false,
@@ -1201,6 +1228,7 @@ let dogsMusicKey: string | null = null;
 let dogsMusicSource: AudioBufferSourceNode | null = null;
 let dogsMusicGain: GainNode | null = null;
 let dogsDeferredImageRedraw = false;
+let dogsLastHudMarkup = "";
 let dogsPreloadedAssetMode: DogsAssetMode | null = null;
 let dogsPreloadedAudioKey: string | null = null;
 let dogsPreloadProgress: { loaded: number; total: number; label: string } | null = null;
@@ -2178,6 +2206,7 @@ const eutherDogsLoadingMeter = document.querySelector<HTMLDivElement>(".eutherdo
 const eutherDogsLoadingFill = document.querySelector<HTMLSpanElement>("#eutherdogs-loading-fill")!;
 const eutherDogsLoadingLabel = document.querySelector<HTMLElement>("#eutherdogs-loading-label")!;
 const eutherDogsLoadingDetail = document.querySelector<HTMLElement>("#eutherdogs-loading-detail")!;
+const eutherDogsHud = document.querySelector<HTMLDivElement>("#eutherdogs-hud")!;
 const eutherDogsInventoryPopup = document.querySelector<HTMLDivElement>("#eutherdogs-inventory-popup")!;
 const eutherDogsInventoryTitle = document.querySelector<HTMLElement>("#eutherdogs-inventory-title")!;
 const eutherDogsInventoryBody = document.querySelector<HTMLDivElement>("#eutherdogs-inventory-body")!;
@@ -10569,28 +10598,97 @@ function dogsTileImageFit(tile: string): "contain" | "cover" {
   return "contain";
 }
 
+function drawDogsVisibleTiles(
+  frame: DogsCoreFrame,
+  cameraX: number,
+  cameraY: number,
+  scale: number,
+  yScale: number,
+  firstTileX: number,
+  firstTileY: number,
+  lastTileX: number,
+  lastTileY: number,
+  exitReady: boolean,
+  visualFrame: number,
+): void {
+  const baseFloorAsset = dogsAsset("tiles.floor", "sterile_tile");
+  for (let y = firstTileY; y <= lastTileY; y += 1) {
+    for (let x = firstTileX; x <= lastTileX; x += 1) {
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
+      const tileY = Math.floor((y * frame.tileHeight - cameraY) * yScale * scale);
+      const tileW = Math.ceil(frame.tileWidth * scale);
+      const tileH = Math.ceil(frame.tileHeight * yScale * scale);
+      const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
+      drawDogsImage(baseFloorAsset, tileX, tileY, tileW, tileH, eutherDogsTileFallbackColors.floor, "cover");
+      if (tile === "spilled_syrup") {
+        drawDogsVentFan(tileX, tileY, tileW, tileH, visualFrame);
+      } else {
+        drawDogsImage(
+          asset,
+          tileX,
+          tileY,
+          tileW,
+          tileH,
+          eutherDogsTileFallbackColors[tile] ?? "#65716b",
+          dogsTileImageFit(tile),
+        );
+      }
+      if (tile === "service_elevator") {
+        drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, visualFrame);
+      }
+    }
+  }
+  dogsContext.fillStyle = "rgba(0, 0, 0, 0.32)";
+  for (let y = firstTileY; y <= lastTileY; y += 1) {
+    for (let x = firstTileX; x <= lastTileX; x += 1) {
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      if (!dogsWallTile(tile) || dogsWallTile(dogsTileAt(frame, x, y + 1))) continue;
+      const shadowX = Math.floor((x * frame.tileWidth - cameraX + 3) * scale);
+      const shadowY = Math.floor(((y + 1) * frame.tileHeight - cameraY - 3) * yScale * scale);
+      const shadowW = Math.ceil((frame.tileWidth - 4) * scale);
+      const shadowH = Math.max(2, Math.ceil(7 * scale));
+      dogsContext.fillRect(shadowX, shadowY, shadowW, shadowH);
+    }
+  }
+}
+
 function dogsQueueLeft(frame: DogsCoreFrame | null | undefined): number {
   if (!frame) return 0;
   if (frame.summary.bossActive) {
     dogsSawHostileQueue = true;
     return 1;
   }
-  const hostileActors = frame.characters.filter((actor) => actor.faction === "hostile_customer");
-  if (hostileActors.length > 0) {
+  let hostileTotal = 0;
+  let hostileAlive = 0;
+  for (const actor of frame.characters) {
+    if (actor.faction !== "hostile_customer") {
+      continue;
+    }
+    hostileTotal += 1;
+    if (actor.alive) {
+      hostileAlive += 1;
+    }
+  }
+  if (hostileTotal > 0) {
     dogsSawHostileQueue = true;
-    return hostileActors.filter((actor) => actor.alive).length;
+    return hostileAlive;
   }
   return dogsSawHostileQueue ? 0 : frame.summary.targetsLeft;
 }
 
-function dogsExitReady(frame: DogsCoreFrame): boolean {
+function dogsExitReadyForQueue(frame: DogsCoreFrame, queueLeft: number): boolean {
   return (
     frame.summary.status === "won" ||
     (frame.summary.status === "running" &&
-      dogsQueueLeft(frame) <= 0 &&
+      queueLeft <= 0 &&
       frame.summary.objectsLeft <= 0 &&
       frame.summary.kills >= frame.summary.minimumKills)
   );
+}
+
+function dogsExitReady(frame: DogsCoreFrame): boolean {
+  return dogsExitReadyForQueue(frame, dogsQueueLeft(frame));
 }
 
 function dogsHeroOnExit(frame: DogsCoreFrame): boolean {
@@ -10796,6 +10894,61 @@ function scheduleDogsImageRedraw(): void {
   });
 }
 
+function dogsImageForUrl(url: string): HTMLImageElement {
+  let image = dogsImageCache.get(url);
+  if (!image) {
+    image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    dogsImageCache.set(url, image);
+  }
+  if (image.onload !== scheduleDogsImageRedraw) {
+    image.onload = scheduleDogsImageRedraw;
+  }
+  return image;
+}
+
+function drawDogsImageOnContext(
+  context: CanvasRenderingContext2D,
+  url: string | null,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fallbackColor: string,
+  fit: "stretch" | "contain" | "cover" = "stretch",
+  fillBackground = false,
+): void {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  if (!url) {
+    context.fillStyle = fallbackColor;
+    context.fillRect(x, y, width, height);
+    return;
+  }
+  const image = dogsImageForUrl(url);
+  if (image.complete && image.naturalWidth > 0) {
+    if (fillBackground) {
+      context.fillStyle = fallbackColor;
+      context.fillRect(x, y, width, height);
+    }
+    if (fit === "stretch") {
+      context.drawImage(image, x, y, width, height);
+      return;
+    }
+    const sourceAspect = image.naturalWidth / image.naturalHeight;
+    const targetAspect = width / height;
+    const scaleByWidth = fit === "contain" ? sourceAspect > targetAspect : sourceAspect < targetAspect;
+    const drawW = scaleByWidth ? width : height * sourceAspect;
+    const drawH = scaleByWidth ? width / sourceAspect : height;
+    context.drawImage(image, x + (width - drawW) / 2, y + (height - drawH) / 2, drawW, drawH);
+  } else {
+    context.fillStyle = fallbackColor;
+    context.fillRect(x, y, width, height);
+  }
+}
+
 function drawDogsImage(
   url: string | null,
   x: number,
@@ -10806,38 +10959,7 @@ function drawDogsImage(
   fit: "stretch" | "contain" | "cover" = "stretch",
   fillBackground = false,
 ): void {
-  if (!url) {
-    dogsContext.fillStyle = fallbackColor;
-    dogsContext.fillRect(x, y, width, height);
-    return;
-  }
-  let image = dogsImageCache.get(url);
-  if (!image) {
-    image = new Image();
-    image.decoding = "async";
-    image.onload = scheduleDogsImageRedraw;
-    image.src = url;
-    dogsImageCache.set(url, image);
-  }
-  if (image.complete && image.naturalWidth > 0) {
-    if (fillBackground) {
-      dogsContext.fillStyle = fallbackColor;
-      dogsContext.fillRect(x, y, width, height);
-    }
-    if (fit === "stretch") {
-      dogsContext.drawImage(image, x, y, width, height);
-      return;
-    }
-    const sourceAspect = image.naturalWidth / image.naturalHeight;
-    const targetAspect = width / height;
-    const scaleByWidth = fit === "contain" ? sourceAspect > targetAspect : sourceAspect < targetAspect;
-    const drawW = scaleByWidth ? width : height * sourceAspect;
-    const drawH = scaleByWidth ? width / sourceAspect : height;
-    dogsContext.drawImage(image, x + (width - drawW) / 2, y + (height - drawH) / 2, drawW, drawH);
-  } else {
-    dogsContext.fillStyle = fallbackColor;
-    dogsContext.fillRect(x, y, width, height);
-  }
+  drawDogsImageOnContext(dogsContext, url, x, y, width, height, fallbackColor, fit, fillBackground);
 }
 
 function drawDogsImageFrame(
@@ -10856,14 +10978,7 @@ function drawDogsImageFrame(
     drawDogsImage(null, x, y, width, height, fallbackColor);
     return false;
   }
-  let image = dogsImageCache.get(url);
-  if (!image) {
-    image = new Image();
-    image.decoding = "async";
-    image.onload = scheduleDogsImageRedraw;
-    image.src = url;
-    dogsImageCache.set(url, image);
-  }
+  const image = dogsImageForUrl(url);
   if (image.complete && image.naturalWidth > 0) {
     dogsContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
     return true;
@@ -10878,6 +10993,7 @@ function preloadDogsImage(url: string | null): void {
   if (!url || dogsImageCache.has(url)) return;
   const image = new Image();
   image.decoding = "async";
+  image.onload = scheduleDogsImageRedraw;
   image.src = url;
   dogsImageCache.set(url, image);
 }
@@ -10898,7 +11014,10 @@ async function preloadDogsImageDecoded(url: string | null): Promise<void> {
   const image = cached ?? new Image();
   if (!cached) {
     image.decoding = "async";
+    image.onload = scheduleDogsImageRedraw;
     dogsImageCache.set(url, image);
+  } else {
+    image.onload = scheduleDogsImageRedraw;
   }
   const promise = new Promise<void>((resolve) => {
     if (image.complete) {
@@ -13207,22 +13326,26 @@ function resetDogsMode(): void {
 async function runDogsFrame(): Promise<void> {
   const started = performance.now();
   const previousFrameNumber = dogsFrame?.frame ?? -1;
+  let fetched = started;
   try {
     dogsFrame = await runDogsCoreFrame();
+    fetched = performance.now();
     if (!dogsStream || dogsFrame.frame !== previousFrameNumber) {
-      lastDogsSnapshotAt = performance.now();
+      lastDogsSnapshotAt = fetched;
     }
     dogsSnapshotMisses = 0;
   } catch (err) {
+    fetched = performance.now();
     dogsSnapshotMisses += 1;
     if (!dogsFrame) {
       throw err;
     }
+    const drawStarted = performance.now();
     drawDogsFrame(dogsFrame);
     const held = performance.now();
     ui.frame = dogsFrame.frame;
-    ui.transportMs = held - started;
-    ui.drawMs = 0;
+    ui.transportMs = fetched - started;
+    ui.drawMs = held - drawStarted;
     ui.transportMode = `DOGS HOLD ${dogsSnapshotMisses}`;
     ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
     return;
@@ -13232,14 +13355,15 @@ async function runDogsFrame(): Promise<void> {
     resolveDogsLocalExit(dogsFrame);
     lastDogsProcessedFrame = dogsFrame.frame;
   }
+  const drawStarted = performance.now();
   drawDogsFrame(dogsFrame);
   const done = performance.now();
   ui.frame = dogsFrame.frame;
   ui.cpuCycles = dogsFrame.characters.filter((actor) => actor.faction !== "player" && actor.alive).length;
   ui.cpuSteps = dogsFrame.bullets.length;
   ui.frameMs = 16.67;
-  ui.transportMs = 0;
-  ui.drawMs = done - started;
+  ui.transportMs = fetched - started;
+  ui.drawMs = done - drawStarted;
   ui.audioLeadMs = 0;
   ui.status = `DOGS ${dogsFrame.summary.status.toUpperCase()}`;
   if (dogsFrame.summary.status !== "running") {
@@ -13467,6 +13591,7 @@ function resetDogsRuntimeCaches(stopStream: boolean): void {
   dogsFireArmed = true;
   dogsLastLocalShotAt = 0;
   dogsLastLocalShotSound = null;
+  dogsLastHudMarkup = "";
   if (stopStream) {
     stopDogsSnapshotStream();
   }
@@ -13660,69 +13785,25 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
       : playerScreenY > safeBottom
         ? Math.max(0, Math.min(worldH - viewH, playerY - safeBottom / (scale * yScale)))
         : rawCameraY;
-  const colors: Record<string, string> = {
-    floor: "#dfe8dc",
-    sterile_floor: "#dfe8dc",
-    neon_floor: "#2ff7dc",
-    warning_floor: "#f7d852",
-    fan_floor: "#9fb2aa",
-    player_spawn_1: "#39f7c8",
-    player_spawn_2: "#ff5de1",
-    wall: "#263630",
-    door: "#374a42",
-    corrupt_med_cabinet: "#ff37c8",
-    hacked_vending_unit: "#65716b",
-    recall_crate: "#7f6b46",
-    shipping_box: "#8b7658",
-    service_elevator: "#f7d852",
-    prescription: "#39f7c8",
-    folder: "#60c5ff",
-    data_wafer: "#9c7dff",
-    circuit_board: "#39f767",
-    pill_sample: "#ffffff",
-    lab_coat_armor: "#cfefff",
-    hazard_sleeves: "#ffef7a",
-    pill_splitter: "#ff9bd9",
-    scorch_mark: "#1b211e",
-    spilled_syrup: "#70ffe8",
-  };
   const firstTileX = Math.max(0, Math.floor(cameraX / frame.tileWidth));
   const firstTileY = Math.max(0, Math.floor(cameraY / frame.tileHeight));
   const lastTileX = Math.min(frame.width - 1, Math.ceil((cameraX + viewW) / frame.tileWidth));
   const lastTileY = Math.min(frame.height - 1, Math.ceil((cameraY + viewH) / frame.tileHeight));
-  const exitReady = dogsExitReady(frame);
-  const baseFloorAsset = dogsAsset("tiles.floor", "sterile_tile");
-  for (let y = firstTileY; y <= lastTileY; y += 1) {
-    for (let x = firstTileX; x <= lastTileX; x += 1) {
-      const tile = frame.tiles[y * frame.width + x] ?? "floor";
-      const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
-      const tileY = Math.floor((y * frame.tileHeight - cameraY) * yScale * scale);
-      const tileW = Math.ceil(frame.tileWidth * scale);
-      const tileH = Math.ceil(frame.tileHeight * yScale * scale);
-      const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
-      drawDogsImage(baseFloorAsset, tileX, tileY, tileW, tileH, colors.floor, "cover");
-      if (tile === "spilled_syrup") {
-        drawDogsVentFan(tileX, tileY, tileW, tileH, visualFrame);
-      } else {
-        drawDogsImage(asset, tileX, tileY, tileW, tileH, colors[tile] ?? "#65716b", dogsTileImageFit(tile));
-      }
-      if (tile === "service_elevator") {
-        drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, visualFrame);
-      }
-    }
-  }
-  dogsContext.fillStyle = "rgba(0, 0, 0, 0.32)";
-  for (let y = firstTileY; y <= lastTileY; y += 1) {
-    for (let x = firstTileX; x <= lastTileX; x += 1) {
-      const tile = frame.tiles[y * frame.width + x] ?? "floor";
-      if (!dogsWallTile(tile) || dogsWallTile(dogsTileAt(frame, x, y + 1))) continue;
-      const shadowX = Math.floor((x * frame.tileWidth - cameraX + 3) * scale);
-      const shadowY = Math.floor(((y + 1) * frame.tileHeight - cameraY - 3) * yScale * scale);
-      const shadowW = Math.ceil((frame.tileWidth - 4) * scale);
-      const shadowH = Math.max(2, Math.ceil(7 * scale));
-      dogsContext.fillRect(shadowX, shadowY, shadowW, shadowH);
-    }
-  }
+  const queueLeft = dogsQueueLeft(frame);
+  const exitReady = dogsExitReadyForQueue(frame, queueLeft);
+  drawDogsVisibleTiles(
+    frame,
+    cameraX,
+    cameraY,
+    scale,
+    yScale,
+    firstTileX,
+    firstTileY,
+    lastTileX,
+    lastTileY,
+    exitReady,
+    visualFrame,
+  );
   const nextActorPositions = new Map<string, { x: number; y: number }>();
   const nextActorFacings = new Map<string, DogsActorFacing>();
   const localPlayerId = player?.faction === "player" ? player.id : null;
@@ -13802,27 +13883,28 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     drawDogsMapOverlay(frame, cameraX, cameraY, viewW, viewH);
   }
   drawDogsInspectionOverlay(frame, viewW, viewH);
-  const hud = document.querySelector<HTMLDivElement>("#eutherdogs-hud");
-  if (hud) {
-    const hero = dogsLocalPlayer(frame);
-    const ammo = hero?.ammo ?? -1;
-    const bossActive = Boolean(frame.summary.bossActive);
-    const bossArmor = Math.max(0, frame.summary.bossArmor ?? 0);
-    const bossMaxArmor = Math.max(1, frame.summary.bossMaxArmor ?? 1);
-    const bossPercent = Math.round(Math.min(100, (bossArmor / bossMaxArmor) * 100));
-    const bossName = escapeHtml(frame.summary.bossName ?? "NGR3");
-    const status = escapeHtml(frame.summary.status.toUpperCase());
-    const routineTotal = frame.summary.routineTotal ?? 0;
-    const routineText = routineTotal > 0
-      ? ` | RUTINE ${frame.summary.routineRead ?? 0}/${routineTotal} READ`
-      : "";
-    const inspectionText = (frame.summary.inspectionAnswers ?? 0) > 0 || (frame.summary.inspectionProtocol ?? 0) > 0
-      ? ` | INSPECT ${frame.summary.inspectionAnswers ?? 0}/10 | PROTOCOL ${frame.summary.inspectionProtocol ?? 0}`
-      : "";
-    hud.innerHTML = `
-      <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${dogsQueueLeft(frame)}</strong>${routineText}${inspectionText} | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
-      ${bossActive ? `<span class="eutherdogs-boss"><strong>BOSS:${bossName}</strong><span class="eutherdogs-boss-bar"><span style="width: ${bossPercent}%"></span></span></span>` : ""}
-    `;
+  const hero = dogsLocalPlayer(frame);
+  const ammo = hero?.ammo ?? -1;
+  const bossActive = Boolean(frame.summary.bossActive);
+  const bossArmor = Math.max(0, frame.summary.bossArmor ?? 0);
+  const bossMaxArmor = Math.max(1, frame.summary.bossMaxArmor ?? 1);
+  const bossPercent = Math.round(Math.min(100, (bossArmor / bossMaxArmor) * 100));
+  const bossName = escapeHtml(frame.summary.bossName ?? "NGR3");
+  const status = escapeHtml(frame.summary.status.toUpperCase());
+  const routineTotal = frame.summary.routineTotal ?? 0;
+  const routineText = routineTotal > 0
+    ? ` | RUTINE ${frame.summary.routineRead ?? 0}/${routineTotal} READ`
+    : "";
+  const inspectionText = (frame.summary.inspectionAnswers ?? 0) > 0 || (frame.summary.inspectionProtocol ?? 0) > 0
+    ? ` | INSPECT ${frame.summary.inspectionAnswers ?? 0}/10 | PROTOCOL ${frame.summary.inspectionProtocol ?? 0}`
+    : "";
+  const hudMarkup = `
+    <span class="eutherdogs-hud-main">COAT ${hero?.armor ?? 0} | CASH $${frame.summary.cash} | SCORE ${frame.summary.score} | RX ${frame.summary.objectsLeft} | QUEUE <strong class="eutherdogs-queue${bossActive ? " is-boss" : ""}">${queueLeft}</strong>${routineText}${inspectionText} | AMMO ${ammo < 0 ? "INF" : ammo} | ${status}</span>
+    ${bossActive ? `<span class="eutherdogs-boss"><strong>BOSS:${bossName}</strong><span class="eutherdogs-boss-bar"><span style="width: ${bossPercent}%"></span></span></span>` : ""}
+  `;
+  if (hudMarkup !== dogsLastHudMarkup) {
+    dogsLastHudMarkup = hudMarkup;
+    eutherDogsHud.innerHTML = hudMarkup;
   }
   updateDogsConsole(frame);
   if (dogsInventoryOpen) {
