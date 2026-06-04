@@ -999,6 +999,24 @@ struct HostTrophyRoomLayoutRequest {
     layout: HostTrophyRoomLayout,
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostUserPreferences {
+    audio_volume: f64,
+    mic_volume: f64,
+    doom_mouse_sensitivity: f64,
+}
+
+impl Default for HostUserPreferences {
+    fn default() -> Self {
+        Self {
+            audio_volume: 0.8,
+            mic_volume: 1.0,
+            doom_mouse_sensitivity: 2.2,
+        }
+    }
+}
+
 fn serve_web_bridge(emulator: Emulator, addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     let state = new_bridge_state(emulator);
@@ -1165,6 +1183,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             } else {
                 send_json(stream, &serde_json::json!({ "authenticated": false }))
             }
+        }
+        ("GET", "/api/user/preferences") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &read_host_user_preferences(&user)?)
+        }
+        ("POST", "/api/user/preferences") => {
+            let user = require_host_user(state, &request)?;
+            let preferences: HostUserPreferences = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            save_host_user_preferences(&user, preferences)?;
+            send_json(stream, &read_host_user_preferences(&user)?)
         }
         ("GET", "/api/lobby") => {
             require_host_user(state, &request)?;
@@ -7760,6 +7789,10 @@ fn host_trophy_room_layout_path(user: &str) -> PathBuf {
         .join("trophy-room.json")
 }
 
+fn host_user_settings_path(user: &str) -> PathBuf {
+    host_user_data_dir(user).join("settings.toml")
+}
+
 fn ensure_host_user_data_dir(user: &str) -> io::Result<PathBuf> {
     let dir = host_user_data_dir(user);
     fs::create_dir_all(&dir)?;
@@ -7936,8 +7969,64 @@ fn parse_toml_bool(contents: &str, key: &str) -> Option<bool> {
     })
 }
 
+fn parse_toml_f64(contents: &str, key: &str) -> Option<f64> {
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| value.trim().parse::<f64>().ok())?
+    })
+}
+
 fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
+    let mut preferences = HostUserPreferences::default();
+    let contents = match fs::read_to_string(host_user_settings_path(user)) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(preferences),
+        Err(err) => return Err(err),
+    };
+    if let Some(value) = parse_toml_f64(&contents, "audio_volume") {
+        preferences.audio_volume = clamp_unit_f64(value, preferences.audio_volume);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "mic_volume") {
+        preferences.mic_volume = clamp_f64(value, 0.0, 1.6, preferences.mic_volume);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "doom_mouse_sensitivity") {
+        preferences.doom_mouse_sensitivity =
+            clamp_f64(value, 0.6, 4.0, preferences.doom_mouse_sensitivity);
+    }
+    Ok(preferences)
+}
+
+fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> io::Result<()> {
+    let dir = ensure_host_user_data_dir(user)?;
+    let preferences = HostUserPreferences {
+        audio_volume: clamp_unit_f64(preferences.audio_volume, 0.8),
+        mic_volume: clamp_f64(preferences.mic_volume, 0.0, 1.6, 1.0),
+        doom_mouse_sensitivity: clamp_f64(preferences.doom_mouse_sensitivity, 0.6, 4.0, 2.2),
+    };
+    fs::write(
+        dir.join("settings.toml"),
+        format!(
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\n",
+            preferences.audio_volume, preferences.mic_volume, preferences.doom_mouse_sensitivity
+        ),
+    )
+}
+
+fn clamp_unit_f64(value: f64, fallback: f64) -> f64 {
+    clamp_f64(value, 0.0, 1.0, fallback)
+}
+
+fn clamp_f64(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
+    }
 }
 
 fn read_rom_dir_setting() -> io::Result<Option<String>> {

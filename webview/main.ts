@@ -250,6 +250,12 @@ type AuthStatus = {
   csrfToken?: string | null;
 };
 
+type UserPreferences = {
+  audioVolume: number;
+  micVolume: number;
+  doomMouseSensitivity: number;
+};
+
 type ChatMessage = {
   id: number;
   user: string;
@@ -1012,6 +1018,10 @@ let claimedLobbyPlayer: PlayerPort | null = null;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
+let userPreferencesLoadedFor: string | null = null;
+let userPreferencesLoadingFor: string | null = null;
+let applyingUserPreferences = false;
+let userPreferencesSaveTimer: number | null = null;
 let appRoute: AppRoute = "playHome";
 let activeWorkspaceWindow: WorkspaceWindow | null = null;
 let userMenuOpen = false;
@@ -5142,6 +5152,14 @@ async function refreshAuthStatus(): Promise<void> {
     selectedTrophyInventoryId = null;
     interactionUsersLoaded = false;
     interactionUsers = [];
+    userPreferencesLoadedFor = null;
+    userPreferencesLoadingFor = null;
+    if (hostUsername) {
+      void loadUserPreferences();
+    }
+  }
+  if (hostUsername && userPreferencesLoadedFor !== hostUsername) {
+    void loadUserPreferences();
   }
   renderUserMenu();
   renderInteractionUsers();
@@ -9881,6 +9899,79 @@ function readStoredDoomMouseSensitivity(): number {
   return Number.isFinite(stored) ? clampDoomMouseSensitivity(stored) : 2.2;
 }
 
+function currentUserPreferences(): UserPreferences {
+  return {
+    audioVolume,
+    micVolume,
+    doomMouseSensitivity,
+  };
+}
+
+async function loadUserPreferences(): Promise<void> {
+  if (
+    isTauri ||
+    !hostUsername ||
+    userPreferencesLoadedFor === hostUsername ||
+    userPreferencesLoadingFor === hostUsername
+  ) {
+    return;
+  }
+  const loadingFor = hostUsername;
+  userPreferencesLoadingFor = loadingFor;
+  try {
+    const preferences = await bridgeJson<UserPreferences>("/api/user/preferences", {}, 900);
+    if (hostUsername !== loadingFor) {
+      return;
+    }
+    applyingUserPreferences = true;
+    setAudioVolume(preferences.audioVolume, false);
+    setMicVolume(preferences.micVolume, false);
+    setDoomMouseSensitivity(preferences.doomMouseSensitivity, false);
+    applyingUserPreferences = false;
+    userPreferencesLoadedFor = loadingFor;
+    pushTrace(`Loaded settings for ${displayUserName(loadingFor)}`);
+  } catch (err) {
+    applyingUserPreferences = false;
+    pushTrace(`Server settings unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (userPreferencesLoadingFor === loadingFor) {
+      userPreferencesLoadingFor = null;
+    }
+  }
+}
+
+function scheduleUserPreferencesSave(): void {
+  if (isTauri || applyingUserPreferences || !hostUsername) {
+    return;
+  }
+  if (userPreferencesSaveTimer !== null) {
+    window.clearTimeout(userPreferencesSaveTimer);
+  }
+  userPreferencesSaveTimer = window.setTimeout(() => {
+    userPreferencesSaveTimer = null;
+    void saveUserPreferences();
+  }, 450);
+}
+
+async function saveUserPreferences(): Promise<void> {
+  if (isTauri || !hostUsername) {
+    return;
+  }
+  try {
+    await bridgeJson<UserPreferences>(
+      "/api/user/preferences",
+      {
+        method: "POST",
+        body: JSON.stringify(currentUserPreferences()),
+      },
+      1200,
+    );
+    userPreferencesLoadedFor = hostUsername;
+  } catch (err) {
+    pushTrace(`Settings save delayed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function parseEutherDogsManifest(toml: string, modules: Record<string, string>): Map<string, string> {
   const byRelativePath = new Map<string, string>();
   for (const [modulePath, url] of Object.entries(modules)) {
@@ -12989,21 +13080,27 @@ function renderPlayerPort(): void {
   });
 }
 
-function setAudioVolume(value: number): void {
+function setAudioVolume(value: number, persist = true): void {
   audioVolume = clampVolume(value);
   localStorage.setItem(volumeStorageKey, audioVolume.toString());
   updateVolumeUi();
   applyAudioVolume();
+  if (persist) {
+    scheduleUserPreferencesSave();
+  }
 }
 
-function setMicVolume(value: number): void {
+function setMicVolume(value: number, persist = true): void {
   micVolume = clampMicVolume(value);
   localStorage.setItem(micVolumeStorageKey, micVolume.toString());
   updateMicVolumeUi();
   applyVideoChatMicVolume();
+  if (persist) {
+    scheduleUserPreferencesSave();
+  }
 }
 
-function setDoomMouseSensitivity(value: number): void {
+function setDoomMouseSensitivity(value: number, persist = true): void {
   doomMouseSensitivity = clampDoomMouseSensitivity(value);
   localStorage.setItem(doomMouseSensitivityStorageKey, doomMouseSensitivity.toString());
   doomRendererController?.setMouseSensitivity?.(doomMouseSensitivity);
@@ -13012,6 +13109,9 @@ function setDoomMouseSensitivity(value: number): void {
     window.location.origin,
   );
   updateDoomMouseSensitivityUi();
+  if (persist) {
+    scheduleUserPreferencesSave();
+  }
 }
 
 function updateVolumeUi(): void {
