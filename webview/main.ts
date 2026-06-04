@@ -293,7 +293,7 @@ type VideoChatResult = {
 
 type PlayMode = "megadrive" | "eutherdogs" | "eutherdoom" | "eutherduke";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
-type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "friends" | "spaces" | "profile" | "settings";
+type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "books" | "friends" | "spaces" | "profile" | "settings";
 
 type InteractionFriend = {
   name: string;
@@ -352,6 +352,33 @@ type ShoppingListItem = {
 type ShoppingListCategoryGroup = {
   name: string;
   items: ShoppingListItem[];
+};
+
+type EutherBook = {
+  id: string;
+  title: string;
+  author: string | null;
+  format: string;
+  path: string;
+  size_bytes: number;
+  modified_at: number;
+};
+
+type EutherBookChapter = {
+  index: number;
+  title: string;
+  char_count: number;
+};
+
+type EutherBooksJob = {
+  id: string;
+  book_id: string;
+  status: "queued" | "running" | "done" | "failed" | string;
+  language: string;
+  voice: string;
+  chapter_indexes: number[];
+  audio_files: string[];
+  error: string | null;
 };
 
 type EutheriumShopItem = {
@@ -726,6 +753,11 @@ const bridgeBase =
   (hostedServerMode || (window.location.port && window.location.port !== "5173")
     ? window.location.origin
     : "http://127.0.0.1:32161");
+const eutherBooksBase = (
+  pageParams.get("books") ??
+  import.meta.env.VITE_EUTHERBOOKS_BASE ??
+  "http://127.0.0.1:8088"
+).replace(/\/$/, "");
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
 const dogsStaffOptions: DogsStaffOption[] = [
   {
@@ -1061,6 +1093,17 @@ let shoppingListCanEdit = true;
 let shoppingListCanManage = true;
 let shoppingListSharing = false;
 let shoppingListShareStatus = "Not shared";
+let eutherBooksLoaded = false;
+let eutherBooksLoading = false;
+let eutherBooksStatus = "Not loaded";
+let eutherBooks: EutherBook[] = [];
+let selectedEutherBookId: string | null = null;
+let selectedEutherBookChapters: EutherBookChapter[] = [];
+let selectedEutherBookChaptersLoading = false;
+let selectedEutherBookChapterIndex = 0;
+let eutherBooksJob: EutherBooksJob | null = null;
+let eutherBooksJobPollTimer: number | null = null;
+let eutherBooksAudioIndex = 0;
 let interactionUsers: InteractionFriend[] = [];
 let interactionUsersLoaded = false;
 let interactionUsersStatus = "Mock users";
@@ -1150,6 +1193,7 @@ const dogsMusicCache = new Map<string, AudioBuffer>();
 let dogsMusicKey: string | null = null;
 let dogsMusicSource: AudioBufferSourceNode | null = null;
 let dogsMusicGain: GainNode | null = null;
+let dogsDeferredImageRedraw = false;
 let dogsPreloadedAssetMode: DogsAssetMode | null = null;
 let dogsPreloadProgress: { loaded: number; total: number; label: string } | null = null;
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
@@ -1423,6 +1467,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <span>Social Tools</span>
           <div class="app-nav-grid">
             <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
+            <button data-workspace-window="books" type="button">Audiobooks</button>
             <button data-workspace-window="shopping" type="button">Shopping</button>
             <button data-workspace-window="interaction" type="button">Social Desk</button>
           </div>
@@ -1827,6 +1872,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
+      <button data-user-menu-action="audiobooks" type="button" role="menuitem">Audiobooks</button>
       <button data-user-menu-action="eutherium" type="button" role="menuitem">Eutherium</button>
       <button data-user-menu-action="get-list-app" type="button" role="menuitem">Get the list app</button>
       <button data-user-menu-action="admin" type="button" role="menuitem" hidden>Admin</button>
@@ -3909,6 +3955,7 @@ function reactionLobbyHomeMarkup(): string {
         <div class="reaction-social-grid">
           ${reactionSocialToolCard("Video Chat", videoChatStatusMessage, "Camera, watch, mute", "video-chat")}
           ${reactionSocialToolCard("Reaction Chat", "Live room chat", "Room feed", "chat-focus")}
+          ${reactionSocialToolCard("Audiobooks", eutherBooksStatus, "Ebooks as spoken audio", undefined, "books")}
           ${reactionSocialToolCard("Shopping List", "Shared markdown", "Synced Markdown", undefined, "shopping")}
           ${reactionSocialToolCard("Eutherium", "Ledger, shop, trophies", "Family rewards", undefined, "eutherium")}
           ${reactionSocialToolCard("Friends", "Online users", "Host users", undefined, "friends")}
@@ -3984,6 +4031,7 @@ function interactionLobbyPageMarkup(): string {
           ${quickActionCard("Add friend", "Send a request into the friend mesh", "friends")}
           ${quickActionCard("Create shared space", "Start a room for people and files", "spaces")}
           ${quickActionCard("Create shopping list", "Make a shared Markdown checklist", "shopping")}
+          ${quickActionCard("Open audiobooks", "Listen to local EutherBooks", "books")}
           ${quickActionCard("Open Eutherium", "Shop, inventory and trophy room", "eutherium")}
           ${quickActionCard("Start chat", "Open a direct line", "interaction")}
         </div>
@@ -6138,6 +6186,7 @@ function isWorkspaceWindow(value: unknown): value is WorkspaceWindow {
     value === "interaction" ||
     value === "shopping" ||
     value === "eutherium" ||
+    value === "books" ||
     value === "friends" ||
     value === "spaces" ||
     value === "profile" ||
@@ -6267,6 +6316,10 @@ function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
       return "Shopping List";
     case "eutherium":
       return "Eutherium";
+    case "books":
+      return "Audiobooks";
+    case "books":
+      return "Audiobooks";
     case "friends":
       return "Friends";
     case "spaces":
@@ -6292,6 +6345,8 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
     if (hostPermissions.canAwardEutherium) {
       void loadInteractionUsers();
     }
+  } else if (windowName === "books") {
+    void loadEutherBooks();
   } else if (windowName === "interaction" || windowName === "friends" || windowName === "spaces") {
     void loadInteractionUsers();
   }
@@ -6317,6 +6372,7 @@ function renderWorkspaceWindow(): void {
   shoppingListPanel.hidden = !showingShopping;
   workspaceWindowDynamic.hidden = showingShopping;
   workspaceWindowLayer.classList.toggle("is-shopping", showingShopping);
+  workspaceWindowLayer.classList.toggle("is-books", windowName === "books");
   workspaceWindowLayer.classList.toggle("is-social", !showingShopping);
   if (showingShopping) {
     renderShoppingListItems();
@@ -6337,8 +6393,18 @@ function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
       return profileWindowMarkup();
     case "settings":
       return settingsWindowMarkup();
+    case "books":
+      return `
+        <div class="interaction-panel">
+          <p class="section-label">Audiobooks</p>
+          <strong>EutherBooks</strong>
+          <span>${escapeHtml(eutherBooksStatus)}</span>
+        </div>
+      `;
     case "shopping":
       return "";
+    case "books":
+      return eutherBooksWindowMarkup();
     case "eutherium":
       return eutheriumWindowMarkup();
   }
@@ -7081,6 +7147,9 @@ async function handleUserMenuAction(action: string): Promise<void> {
       return;
     case "eutherium":
       openWorkspaceWindow("eutherium");
+      return;
+    case "audiobooks":
+      openWorkspaceWindow("books");
       return;
     case "get-list-app":
       window.location.href = "/downloads/eutherlist.apk";
@@ -10338,6 +10407,19 @@ function dogsCharacterName(character: DogsCharacterKey): string {
   return dogsStaffOptions.find((staff) => staff.character === character)?.name ?? "Night Tech";
 }
 
+function scheduleDogsImageRedraw(): void {
+  if (dogsDeferredImageRedraw || !dogsMode || !dogsFrame) {
+    return;
+  }
+  dogsDeferredImageRedraw = true;
+  window.requestAnimationFrame(() => {
+    dogsDeferredImageRedraw = false;
+    if (dogsMode && dogsFrame) {
+      drawDogsFrame(dogsFrame);
+    }
+  });
+}
+
 function drawDogsImage(
   url: string | null,
   x: number,
@@ -10356,9 +10438,8 @@ function drawDogsImage(
   let image = dogsImageCache.get(url);
   if (!image) {
     image = new Image();
-    image.onload = () => {
-      if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
-    };
+    image.decoding = "async";
+    image.onload = scheduleDogsImageRedraw;
     image.src = url;
     dogsImageCache.set(url, image);
   }
@@ -10402,9 +10483,8 @@ function drawDogsImageFrame(
   let image = dogsImageCache.get(url);
   if (!image) {
     image = new Image();
-    image.onload = () => {
-      if (dogsMode && dogsFrame) drawDogsFrame(dogsFrame);
-    };
+    image.decoding = "async";
+    image.onload = scheduleDogsImageRedraw;
     image.src = url;
     dogsImageCache.set(url, image);
   }
@@ -10421,6 +10501,7 @@ function drawDogsImageFrame(
 function preloadDogsImage(url: string | null): void {
   if (!url || dogsImageCache.has(url)) return;
   const image = new Image();
+  image.decoding = "async";
   image.src = url;
   dogsImageCache.set(url, image);
 }
@@ -10439,6 +10520,7 @@ async function preloadDogsImageDecoded(url: string | null): Promise<void> {
   }
   const image = cached ?? new Image();
   if (!cached) {
+    image.decoding = "async";
     dogsImageCache.set(url, image);
   }
   const promise = new Promise<void>((resolve) => {
@@ -10482,17 +10564,30 @@ function dogsPreloadImageUrls(): string[] {
 async function preloadDogsVisualAssets(force = false): Promise<void> {
   if (!force && dogsPreloadedAssetMode === dogsAssetMode) return;
   const urls = dogsPreloadImageUrls();
+  let loaded = 0;
   dogsPreloadProgress = { loaded: 0, total: urls.length, label: "Reading RX asset manifest" };
   renderDogsMenu();
-  for (let index = 0; index < urls.length; index += 1) {
-    dogsPreloadProgress = {
-      loaded: index,
-      total: urls.length,
-      label: "Decoding sprites and tiles",
-    };
-    renderDogsMenu();
-    await preloadDogsImageDecoded(urls[index]);
-  }
+  let nextIndex = 0;
+  const workerCount = Math.min(4, Math.max(1, urls.length));
+  const decodeWorker = async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= urls.length) {
+        return;
+      }
+      await preloadDogsImageDecoded(urls[index]);
+      loaded += 1;
+      dogsPreloadProgress = {
+        loaded,
+        total: urls.length,
+        label: "Decoding sprites and tiles",
+      };
+      renderDogsMenu();
+      await sleep(0);
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, () => decodeWorker()));
   dogsPreloadProgress = {
     loaded: urls.length,
     total: urls.length,
