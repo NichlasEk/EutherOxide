@@ -627,6 +627,70 @@ button:disabled {
   transition: width 120ms linear;
 }
 
+.eutherdogs-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(39, 242, 255, 0.12), transparent 34%),
+    rgba(0, 0, 0, 0.72);
+}
+
+.eutherdogs-loading-overlay[hidden] {
+  display: none;
+}
+
+.eutherdogs-loading-card {
+  display: grid;
+  gap: 10px;
+  width: min(520px, 86vw);
+  padding: 18px;
+  border: 1px solid rgba(255, 239, 110, 0.55);
+  background:
+    linear-gradient(180deg, rgba(6, 14, 20, 0.96), rgba(7, 8, 10, 0.96)),
+    repeating-linear-gradient(90deg, rgba(39, 242, 255, 0.08) 0 1px, transparent 1px 13px);
+  box-shadow:
+    inset 0 0 30px rgba(39, 242, 255, 0.12),
+    0 18px 48px rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+
+.eutherdogs-loading-card > span {
+  color: #b9fff4;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.eutherdogs-loading-card > strong {
+  color: #ffffff;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.eutherdogs-loading-card .eutherdogs-loading-meter {
+  height: 22px;
+}
+
+.eutherdogs-loading-card p,
+.eutherdogs-loading-card small {
+  margin: 0;
+}
+
+.eutherdogs-loading-card p {
+  color: #ffef6e;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.eutherdogs-loading-card small {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.75rem;
+}
+
 .eutherdogs-store-item {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) auto;

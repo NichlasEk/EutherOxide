@@ -824,6 +824,7 @@ const playerPortStorageKey = "eutheroxide-player-port";
 const doomMouseSensitivityStorageKey = "eutheroxide-eutherdoom-mouse-sensitivity";
 const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
 const dogsHighScoreLimit = 10;
+const dogsAudioPreloadTimeoutMs = 12000;
 let audioVolume = readStoredVolume();
 let micVolume = readStoredMicVolume();
 const localAudioTargetLeadSeconds = 0.055;
@@ -1200,6 +1201,7 @@ let dogsMusicSource: AudioBufferSourceNode | null = null;
 let dogsMusicGain: GainNode | null = null;
 let dogsDeferredImageRedraw = false;
 let dogsPreloadedAssetMode: DogsAssetMode | null = null;
+let dogsPreloadedAudioKey: string | null = null;
 let dogsPreloadProgress: { loaded: number; total: number; label: string } | null = null;
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
 let dogsRenderActorPositions = new Map<string, { x: number; y: number }>();
@@ -1232,6 +1234,8 @@ let lastDogsProcessedFrame = -1;
 let dogsInputSeq = 0;
 let dogsLastAckedInputSeq = 0;
 let dogsFireArmed = true;
+let dogsLastLocalShotAt = 0;
+let dogsLastLocalShotSound: string | null = null;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -1697,6 +1701,17 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
           </div>
           <canvas id="eutherdogs-canvas" width="320" height="224"></canvas>
+          <div id="eutherdogs-loading-overlay" class="eutherdogs-loading-overlay" hidden>
+            <div class="eutherdogs-loading-card">
+              <span id="eutherdogs-loading-kicker">RX Asset Warmup</span>
+              <strong id="eutherdogs-loading-percent">0%</strong>
+              <div class="eutherdogs-loading-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <span id="eutherdogs-loading-fill" style="width: 0%"></span>
+              </div>
+              <p id="eutherdogs-loading-label">Preparing the counter</p>
+              <small id="eutherdogs-loading-detail">0 / 0 assets cached</small>
+            </div>
+          </div>
           <div id="eutherdogs-hud" class="eutherdogs-hud" aria-live="polite"></div>
           <div id="eutherdogs-console" class="eutherdogs-console" aria-hidden="true">
             <div class="eutherdogs-console-top">
@@ -2156,6 +2171,12 @@ const eutherDogsMenuKicker = document.querySelector<HTMLElement>("#eutherdogs-me
 const eutherDogsMenuTitle = document.querySelector<HTMLElement>("#eutherdogs-menu-title")!;
 const eutherDogsMenuCash = document.querySelector<HTMLElement>("#eutherdogs-menu-cash")!;
 const eutherDogsMenuBody = document.querySelector<HTMLDivElement>("#eutherdogs-menu-body")!;
+const eutherDogsLoadingOverlay = document.querySelector<HTMLDivElement>("#eutherdogs-loading-overlay")!;
+const eutherDogsLoadingPercent = document.querySelector<HTMLElement>("#eutherdogs-loading-percent")!;
+const eutherDogsLoadingMeter = document.querySelector<HTMLDivElement>(".eutherdogs-loading-overlay .eutherdogs-loading-meter")!;
+const eutherDogsLoadingFill = document.querySelector<HTMLSpanElement>("#eutherdogs-loading-fill")!;
+const eutherDogsLoadingLabel = document.querySelector<HTMLElement>("#eutherdogs-loading-label")!;
+const eutherDogsLoadingDetail = document.querySelector<HTMLElement>("#eutherdogs-loading-detail")!;
 const eutherDogsInventoryPopup = document.querySelector<HTMLDivElement>("#eutherdogs-inventory-popup")!;
 const eutherDogsInventoryTitle = document.querySelector<HTMLElement>("#eutherdogs-inventory-title")!;
 const eutherDogsInventoryBody = document.querySelector<HTMLDivElement>("#eutherdogs-inventory-body")!;
@@ -10907,10 +10928,14 @@ function dogsPreloadImageUrls(): string[] {
 }
 
 async function preloadDogsVisualAssets(force = false): Promise<void> {
-  if (!force && dogsPreloadedAssetMode === dogsAssetMode) return;
+  const audioKey = dogsPreloadAudioKey(selectedDogsMission);
+  if (!force && dogsPreloadedAssetMode === dogsAssetMode && dogsPreloadedAudioKey === audioKey) return;
   const urls = dogsPreloadImageUrls();
+  const audioUrls = dogsPreloadAudioUrls(selectedDogsMission);
+  const total = urls.length + audioUrls.length;
   let loaded = 0;
-  dogsPreloadProgress = { loaded: 0, total: urls.length, label: "Reading RX asset manifest" };
+  dogsPreloadProgress = { loaded: 0, total, label: "Reading RX asset manifest" };
+  renderDogsPreloadOverlay();
   renderDogsMenu();
   let nextIndex = 0;
   const workerCount = Math.min(4, Math.max(1, urls.length));
@@ -10925,30 +10950,44 @@ async function preloadDogsVisualAssets(force = false): Promise<void> {
       loaded += 1;
       dogsPreloadProgress = {
         loaded,
-        total: urls.length,
+        total,
         label: "Decoding sprites and tiles",
       };
+      renderDogsPreloadOverlay();
       renderDogsMenu();
       await sleep(0);
     }
   };
   await Promise.all(Array.from({ length: workerCount }, () => decodeWorker()));
   dogsPreloadProgress = {
-    loaded: urls.length,
-    total: urls.length,
-    label: "Decoding combat audio",
+    loaded,
+    total,
+    label: "Decoding gameplay SFX",
   };
+  renderDogsPreloadOverlay();
   renderDogsMenu();
-  await preloadDogsSfxAssets();
+  await preloadDogsAudioAssets(audioUrls, (audioLoaded) => {
+    loaded = urls.length + audioLoaded;
+    dogsPreloadProgress = {
+      loaded,
+      total,
+      label: "Decoding gameplay SFX",
+    };
+    renderDogsPreloadOverlay();
+    renderDogsMenu();
+  });
   dogsPreloadProgress = {
-    loaded: urls.length,
-    total: urls.length,
+    loaded: total,
+    total,
     label: "Cache warm",
   };
+  renderDogsPreloadOverlay();
   renderDogsMenu();
   dogsPreloadedAssetMode = dogsAssetMode;
+  dogsPreloadedAudioKey = audioKey;
   window.setTimeout(() => {
     dogsPreloadProgress = null;
+    renderDogsPreloadOverlay();
     if (dogsMenuMode) {
       renderDogsMenu();
     }
@@ -10964,26 +11003,88 @@ function preloadDogsCombatAssets(): void {
   }
 }
 
-async function preloadDogsSfxAssets(): Promise<void> {
+function dogsPreloadAudioKey(mission: number | null | undefined): string {
+  return `${dogsAssetMode}:sfx:${dogsMissionMusicKey(mission)}`;
+}
+
+function dogsPreloadAudioUrls(mission: number | null | undefined = selectedDogsMission): string[] {
+  void mission;
   const urls = new Set<string>();
   for (const [key, url] of eutherDogsAssets) {
     if (key.startsWith("audio.sfx.") && /\.(wav|ogg|mp3)(\?|#|$)/i.test(url)) {
       urls.add(url);
     }
   }
+  return Array.from(urls);
+}
+
+async function preloadDogsAudioAssets(urls = dogsPreloadAudioUrls(), onProgress?: (loaded: number) => void): Promise<void> {
   const context = await ensureAudio();
   if (!context) return;
-  for (const url of urls) {
-    if (dogsSfxCache.has(url)) continue;
-    try {
-      const response = await fetch(url);
-      const bytes = await response.arrayBuffer();
-      const buffer = await context.decodeAudioData(bytes.slice(0));
-      dogsSfxCache.set(url, buffer);
-    } catch {
-      // Individual missing/undecodable sounds should not block the playable warmup.
+  let loaded = 0;
+  let nextIndex = 0;
+  const workerCount = Math.min(3, Math.max(1, urls.length));
+  const audioWorker = async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= urls.length) {
+        return;
+      }
+      const url = urls[index];
+      const cache = url.includes("/audio/music/") ? dogsMusicCache : dogsSfxCache;
+      if (!cache.has(url)) {
+        await loadDogsAudioBuffer(url, cache, dogsAudioPreloadTimeoutMs);
+      }
+      loaded += 1;
+      onProgress?.(loaded);
+      await sleep(0);
     }
-    await sleep(0);
+  };
+  await Promise.all(Array.from({ length: workerCount }, () => audioWorker()));
+}
+
+async function loadDogsAudioBuffer(url: string, cache: Map<string, AudioBuffer>, timeoutMs = 0): Promise<AudioBuffer | null> {
+  const cached = cache.get(url);
+  if (cached) return cached;
+  if (timeoutMs <= 0) {
+    return await loadDogsAudioBufferUnbounded(url, cache);
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await loadDogsAudioBufferUnbounded(url, cache, controller.signal);
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+    if (timedOut) {
+      pushTrace(`EutherDogs audio preload skipped ${url.split("/").pop() ?? "audio"}`);
+    }
+  }
+}
+
+async function loadDogsAudioBufferUnbounded(
+  url: string,
+  cache: Map<string, AudioBuffer>,
+  signal?: AbortSignal,
+): Promise<AudioBuffer | null> {
+  try {
+    const context = await ensureAudio();
+    if (!context) return null;
+    const response = await fetch(url, { signal });
+    const bytes = await response.arrayBuffer();
+    if (signal?.aborted) return null;
+    const buffer = await context.decodeAudioData(bytes.slice(0));
+    if (signal?.aborted) return null;
+    cache.set(url, buffer);
+    return buffer;
+  } catch {
+    return null;
   }
 }
 
@@ -11468,6 +11569,9 @@ function processDogsAudio(frame: DogsCoreFrame): void {
     } else if (event === "mpa_hum") {
       void playDogsMpaHum();
     } else {
+      if (dogsShouldSuppressServerShotSfx(event)) {
+        continue;
+      }
       void playDogsSfx(event, dogsGameplaySfxGain(event));
     }
   }
@@ -11489,13 +11593,32 @@ function processDogsAudio(frame: DogsCoreFrame): void {
   dogsPreviousAudioFrame = frame;
 }
 
+function dogsShouldSuppressServerShotSfx(sound: string): boolean {
+  if (!dogsLastLocalShotSound || sound !== dogsLastLocalShotSound) {
+    return false;
+  }
+  return performance.now() - dogsLastLocalShotAt < 140;
+}
+
+function playDogsLocalShotFeedback(): void {
+  const hero = dogsFrame ? dogsLocalPlayer(dogsFrame) : undefined;
+  const weaponSound = hero?.activeWeapon || "scanner_blaster";
+  dogsLastLocalShotAt = performance.now();
+  dogsLastLocalShotSound = weaponSound;
+  if (!playDogsCachedSfxNow(weaponSound, 0.9)) {
+    void loadDogsSfx(weaponSound);
+  }
+}
+
 function processDogsImmediateShotFeedback(frame: DogsCoreFrame, previous: DogsCoreFrame | null): void {
   if (!previous || frame.summary.shotsFired <= previous.summary.shotsFired) return;
   if (frame.bullets.length > previous.bullets.length) return;
   const hero = dogsLocalPlayer(frame);
   if (!hero) return;
   const weaponSound = hero.activeWeapon || "scanner_blaster";
-  void playDogsSfx(weaponSound, 0.9);
+  if (!dogsShouldSuppressServerShotSfx(weaponSound)) {
+    void playDogsSfx(weaponSound, 0.9);
+  }
   const [dx, dy] = dogsDirectionVector(hero.direction);
   dogsImpactEffects.push({
     id: `${frame.frame}:instant-shot:${frame.summary.shotsFired}`,
@@ -11714,28 +11837,44 @@ async function playDogsSfx(sound: string, gain = 0.55): Promise<void> {
     if (!url) return;
     const context = await ensureAudio();
     if (!context) return;
-    let buffer = dogsSfxCache.get(url);
+    const buffer = await loadDogsAudioBuffer(url, dogsSfxCache);
     if (!buffer) {
-      const response = await fetch(url);
-      const bytes = await response.arrayBuffer();
-      buffer = await context.decodeAudioData(bytes.slice(0));
-      dogsSfxCache.set(url, buffer);
+      return;
     }
-    const source = context.createBufferSource();
-    const sfxGain = context.createGain();
-    sfxGain.gain.value = Math.max(0, Math.min(1, gain));
-    source.buffer = buffer;
-    source.connect(sfxGain);
-    sfxGain.connect(audioGain ?? context.destination);
-    activeAudioSources.add(source);
-    source.onended = () => {
-      activeAudioSources.delete(source);
-      sfxGain.disconnect();
-    };
-    source.start();
+    startDogsBufferedSfx(context, buffer, gain);
   } catch {
     pushTrace(`EutherDogs SFX skipped: ${sound}`);
   }
+}
+
+function playDogsCachedSfxNow(sound: string, gain = 0.55): boolean {
+  const url = dogsSfxAsset(sound);
+  const buffer = url ? dogsSfxCache.get(url) : null;
+  if (!audioContext || !buffer) return false;
+  void audioContext.resume().catch(() => undefined);
+  startDogsBufferedSfx(audioContext, buffer, gain);
+  return true;
+}
+
+async function loadDogsSfx(sound: string): Promise<void> {
+  const url = dogsSfxAsset(sound);
+  if (!url || dogsSfxCache.has(url)) return;
+  await loadDogsAudioBuffer(url, dogsSfxCache);
+}
+
+function startDogsBufferedSfx(context: AudioContext, buffer: AudioBuffer, gain: number): void {
+  const source = context.createBufferSource();
+  const sfxGain = context.createGain();
+  sfxGain.gain.value = Math.max(0, Math.min(1, gain));
+  source.buffer = buffer;
+  source.connect(sfxGain);
+  sfxGain.connect(audioGain ?? context.destination);
+  activeAudioSources.add(source);
+  source.onended = () => {
+    activeAudioSources.delete(source);
+    sfxGain.disconnect();
+  };
+  source.start();
 }
 
 async function playDogsMusic(track: string, gain = 0.34): Promise<void> {
@@ -11744,12 +11883,9 @@ async function playDogsMusic(track: string, gain = 0.34): Promise<void> {
   try {
     const context = await ensureAudio();
     if (!context) return;
-    let buffer = dogsMusicCache.get(url);
+    const buffer = await loadDogsAudioBuffer(url, dogsMusicCache);
     if (!buffer) {
-      const response = await fetch(url);
-      const bytes = await response.arrayBuffer();
-      buffer = await context.decodeAudioData(bytes.slice(0));
-      dogsMusicCache.set(url, buffer);
+      return;
     }
     stopDogsMusic(false);
     const source = context.createBufferSource();
@@ -12556,6 +12692,26 @@ function renderDogsInventoryPopup(): void {
   eutherDogsInventoryBody.innerHTML = dogsInventoryMarkup(hero, storeItems, cash);
 }
 
+function dogsPreloadPercent(): number {
+  if (!dogsPreloadProgress) return 0;
+  const total = Math.max(1, dogsPreloadProgress.total);
+  return Math.min(100, Math.round((dogsPreloadProgress.loaded / total) * 100));
+}
+
+function renderDogsPreloadOverlay(): void {
+  if (!dogsPreloadProgress) {
+    eutherDogsLoadingOverlay.hidden = true;
+    return;
+  }
+  const percent = dogsPreloadPercent();
+  eutherDogsLoadingOverlay.hidden = false;
+  eutherDogsLoadingPercent.textContent = `${percent}%`;
+  eutherDogsLoadingMeter.setAttribute("aria-valuenow", String(percent));
+  eutherDogsLoadingFill.style.width = `${percent}%`;
+  eutherDogsLoadingLabel.textContent = dogsPreloadProgress.label;
+  eutherDogsLoadingDetail.textContent = `${dogsPreloadProgress.loaded} / ${dogsPreloadProgress.total} assets prepared`;
+}
+
 function hideDogsMenu(): void {
   dogsMenuMode = null;
   eutherDogsMenu.setAttribute("aria-hidden", "true");
@@ -12564,6 +12720,7 @@ function hideDogsMenu(): void {
 
 async function startDogsShift(): Promise<void> {
   await preloadDogsVisualAssets();
+  await ensureAudio();
   hideDogsMenu();
   hideDogsInventory();
   if (controlsOpen) {
@@ -12575,7 +12732,6 @@ async function startDogsShift(): Promise<void> {
   startDogsSnapshotStream();
   nextFrameDue = performance.now();
   renderUi();
-  void ensureAudio();
   void animationLoop();
 }
 
@@ -12587,8 +12743,7 @@ function renderDogsMenu(): void {
   const maxMission = dogsFrame?.summary.maxMission ?? 10;
   eutherDogsMenuCash.textContent = `$${cash}`;
   if (dogsPreloadProgress) {
-    const total = Math.max(1, dogsPreloadProgress.total);
-    const percent = Math.min(100, Math.round((dogsPreloadProgress.loaded / total) * 100));
+    const percent = dogsPreloadPercent();
     eutherDogsMenuKicker.textContent = "RX Asset Warmup";
     eutherDogsMenuTitle.textContent = "Preparing the counter";
     eutherDogsStartShift.textContent = `${percent}%`;
@@ -12600,7 +12755,7 @@ function renderDogsMenu(): void {
         </div>
         <strong>${percent}%</strong>
         <p>${escapeHtml(dogsPreloadProgress.label)}</p>
-        <small>${dogsPreloadProgress.loaded} / ${dogsPreloadProgress.total} visual assets cached</small>
+        <small>${dogsPreloadProgress.loaded} / ${dogsPreloadProgress.total} assets prepared</small>
       </div>
     `;
     return;
@@ -12904,7 +13059,9 @@ function setDogsAssetMode(mode: DogsAssetMode): void {
   dogsImageLoadPromises.clear();
   dogsSfxCache.clear();
   dogsPreloadedAssetMode = null;
+  dogsPreloadedAudioKey = null;
   dogsPreloadProgress = null;
+  renderDogsPreloadOverlay();
   applyEutherDogsCssAssets();
   preloadDogsCombatAssets();
   renderDogsAssetMode();
@@ -12927,8 +13084,10 @@ async function enterDogsMode(): Promise<void> {
   updateStartupModePreference("dogs");
   resetScheduledAudio();
   stopBridgeStream();
-  preloadDogsCombatAssets();
   try {
+    ui.status = "DOGS WARMUP";
+    renderUi();
+    await preloadDogsVisualAssets();
     dogsFrame = await startDogsCore();
     selectedDogsMission = dogsFrame.summary.mission || selectedDogsMission;
     await loadDogsHighScoresToml();
@@ -13282,6 +13441,8 @@ function resetDogsRuntimeCaches(stopStream: boolean): void {
   dogsInputSeq = 0;
   dogsLastAckedInputSeq = 0;
   dogsFireArmed = true;
+  dogsLastLocalShotAt = 0;
+  dogsLastLocalShotSound = null;
   if (stopStream) {
     stopDogsSnapshotStream();
   }
@@ -13372,6 +13533,7 @@ function dogsInputForFrame(includeSeq = false): DogsBridgeInput {
     input.b = false;
   } else {
     dogsFireArmed = false;
+    playDogsLocalShotFeedback();
   }
   if (includeSeq) {
     input.seq = dogsInputSeq;
@@ -13819,7 +13981,7 @@ async function ensureAudio(): Promise<AudioContext | null> {
     audioCursor = audioContext.currentTime;
   }
   if (audioContext.state === "suspended") {
-    await audioContext.resume();
+    void audioContext.resume().catch(() => undefined);
   }
   return audioContext;
 }
