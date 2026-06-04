@@ -41,6 +41,8 @@ const EUTHERDOGS_STATIC_REFRESH_FRAMES: u16 = 240;
 const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
 const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
 const DEFAULT_EUTHERLIST_APK_PATH: &str = "/home/nichlas/EutherList-release-signed.apk";
+const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
+static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static RESPONSE_CORS_ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -1121,6 +1123,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
     if request.method != "GET"
         && path != "/api/login"
         && path != "/api/app/login"
+        && path != "/api/eutherduke/log"
         && !app_token_request
         && !valid_csrf_token(state, &request)?
     {
@@ -1141,6 +1144,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             )
         }
         ("POST", "/api/logout") => host_logout(stream, state, &request),
+        ("POST", "/api/eutherduke/log") => host_eutherduke_log(stream, state, &request),
         ("GET", "/downloads/eutherlist.apk") => {
             require_host_user(state, &request)?;
             send_eutherlist_apk(stream)
@@ -1823,6 +1827,70 @@ fn host_logout(stream: &mut TcpStream, state: &HostState, request: &HttpRequest)
         b"",
         &[("Location", "/login"), ("Set-Cookie", &cookie)],
     )
+}
+
+fn host_eutherduke_log(
+    stream: &mut TcpStream,
+    state: &HostState,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let Some(user) = authenticated_user(state, request)? else {
+        append_eutherduke_browser_log(stream, "anonymous", "unauthenticated log request")?;
+        return send_error(stream, 401, "login required");
+    };
+    let message = host_eutherduke_log_message(request);
+    append_eutherduke_browser_log(stream, &user, &message)?;
+    send_json(stream, &serde_json::json!({ "ok": true, "logged": true }))
+}
+
+fn host_eutherduke_log_message(request: &HttpRequest) -> String {
+    let message = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&request.body) {
+        value
+            .get("message")
+            .and_then(|message| message.as_str())
+            .or_else(|| value.get("line").and_then(|message| message.as_str()))
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        String::from_utf8_lossy(&request.body).to_string()
+    };
+    message
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '\t' => ' ',
+            _ if ch.is_control() => ' ',
+            _ => ch,
+        })
+        .collect::<String>()
+}
+
+fn append_eutherduke_browser_log(stream: &TcpStream, user: &str, message: &str) -> io::Result<()> {
+    let remote_addr = stream
+        .peer_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let message = message.trim();
+    if message.is_empty() {
+        return Ok(());
+    }
+    let message = message.chars().take(2_000).collect::<String>();
+    let _log_guard = EUTHERDUKE_BROWSER_LOG_LOCK.lock().ok();
+    if let Some(parent) = Path::new(EUTHERDUKE_BROWSER_LOG_PATH).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(EUTHERDUKE_BROWSER_LOG_PATH)?;
+    writeln!(
+        file,
+        "unix_ms={} user={} ip={} {}",
+        unix_ms_now(),
+        user,
+        remote_addr,
+        message
+    )?;
+    Ok(())
 }
 
 fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {

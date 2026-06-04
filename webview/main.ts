@@ -1559,10 +1559,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
         <input id="mic-volume-slider" type="range" min="0" max="160" value="100" aria-label="mic volume" />
         <div class="volume-head doom-mouse-head">
-          <p class="section-label">Doom mouse</p>
+          <p class="section-label">Doom/Duke mouse</p>
           <strong id="doom-mouse-sensitivity-value">2.2x</strong>
         </div>
-        <input id="doom-mouse-sensitivity" type="range" min="0.6" max="4" step="0.1" value="2.2" aria-label="doom mouse sensitivity" />
+        <input id="doom-mouse-sensitivity" type="range" min="0.6" max="4" step="0.1" value="2.2" aria-label="doom and duke mouse sensitivity" />
       </div>
 
       <div class="rail-section">
@@ -5569,7 +5569,11 @@ async function startEutherDukeRenderer(): Promise<void> {
     }
     eutherDukeRuntimePanel.hidden = true;
     eutherDukeFrame.hidden = false;
-    const runtimeUrl = `/eutherduke-runtime/index.html?v=${Date.now()}`;
+    const runtimeParams = new URLSearchParams({
+      v: Date.now().toString(),
+      mouseSensitivity: doomMouseSensitivity.toFixed(1),
+    });
+    const runtimeUrl = `/eutherduke-runtime/index.html?${runtimeParams.toString()}`;
     eutherDukeFrame.src = runtimeUrl;
   } catch {
     eutherDukeFrame.removeAttribute("src");
@@ -13003,6 +13007,10 @@ function setDoomMouseSensitivity(value: number): void {
   doomMouseSensitivity = clampDoomMouseSensitivity(value);
   localStorage.setItem(doomMouseSensitivityStorageKey, doomMouseSensitivity.toString());
   doomRendererController?.setMouseSensitivity?.(doomMouseSensitivity);
+  eutherDukeFrame.contentWindow?.postMessage(
+    { type: "eutherduke:setMouseSensitivity", value: doomMouseSensitivity },
+    window.location.origin,
+  );
   updateDoomMouseSensitivityUi();
 }
 
