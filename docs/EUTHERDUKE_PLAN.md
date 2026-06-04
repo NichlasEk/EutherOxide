@@ -97,6 +97,16 @@ this repository. Reapply them when moving the runtime build to a new machine.
 - `source/build/src/baselayer.cpp`: make `engineFPSLimit()` return immediately under
   Emscripten and let the browser-yielding main loop provide pacing. The desktop limiter
   was the Hollywood Holocaust freeze point.
+- `source/duke3d/src/cmdline.cpp` and `cmdline.h`: add `-ep1`/`-ep2` as a local
+  EutherDuke-only wasm player selector for fake multiplayer proof-of-concepts.
+- `source/duke3d/src/game.cpp`: when fake multiplayer is active under Emscripten, set
+  `myconnectindex` and `screenpeek` from the `-epN` selector so one browser runtime can
+  be started as P1 or P2.
+- `source/duke3d/src/gameexec.cpp`: under Emscripten, `resetplayer` currently suppresses
+  the native reset/respawn path and returns to `MODE_GAME` without calling
+  `P_ResetMultiPlayer()` or `MODE_RESTART`.
+  Both browser death-path reset variants caused repeated wasm out-of-bounds failures.
+  This is a stability guard, not the final respawn implementation.
 - `source/duke3d/src/game.cpp`: temporary low-volume Emscripten loop/yield markers are
   used while isolating the level-start freeze. Avoid per-frame browser logging; it can
   overwhelm the runtime during level start.
@@ -108,20 +118,30 @@ Current runtime `index.html` choices:
 - keeps browser canvas scaled by CSS instead of asking EDuke32 for oversized window modes
 - writes `settings.cfg` with sound, music, ambience, speech, mouse input, and
   Doom/Duke mouse-sensitivity-derived EDuke32 mouse values
+- exposes a first DukeMatch proof-of-concept control surface:
+  local player P1 currently runs as the stable normal local controller, while P2 starts
+  EDuke32 with `-q2 -ep2`. Bot opponent adds `-a` only in the P2 experimental path.
+  The old EDuke32 `-a` behavior and fake multiplayer input routing are ambiguous with
+  the P1 local-input proof-of-concept and can steal the wrong side.
+- returns keyboard focus to the canvas after start and pointer-lock changes so P1/P2
+  selection controls do not keep keyboard input
+- exposes a small `Reload Duke` escape button in the runtime overlay so a broken wasm
+  session can be restarted without fighting pointer lock
 - posts browser/runtime diagnostics to `/api/eutherduke/log`, which EutherHost writes to
   `.euther-host/eutherduke-browser.log`
 
-## Current Freeze Analysis
+## Current Stability Notes
 
-The freeze happens after EDuke32 reaches `E1L1: HOLLYWOOD HOLOCAUST` and enters the
-native `while (1)` game loop. Audio was ruled out by forcing sound/music/speech/ambience
-off in the wasm runtime settings; the lock still occurred. The strongest current theory
-is Asyncify rewind instability at the first browser yield. The runtime now logs the first
-few loop entries plus `EUTHERDUKE YIELD before/after` and is built with a larger
-Asyncify stack. If the next browser run shows `YIELD after` and repeated loop entries,
-the yield path is alive and the remaining issue is timer/draw pacing. If `YIELD after`
-never appears, the permanent fix should replace the `while (1) + emscripten_sleep`
-model with a browser-owned `emscripten_set_main_loop_arg` wrapper.
+The original Hollywood Holocaust freeze was caused by EDuke32's desktop frame limiter
+blocking the browser path. `engineFPSLimit()` is now bypassed under Emscripten, while the
+main loop yields with `emscripten_sleep(16)`.
+
+The remaining known hard failure is the death/reset path. `MODE_RESTART` and soft
+`P_ResetMultiPlayer()` respawn attempts both produced repeated wasm `index out of bounds`
+errors after death. The current runtime therefore suppresses the native reset path to
+keep the browser session controllable. The permanent fix should isolate a safe
+browser-owned respawn/reload path instead of calling EDuke32's desktop reset machinery
+from CON `resetplayer`.
 
 ## Legal Data Boundary
 
