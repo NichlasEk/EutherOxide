@@ -1231,6 +1231,7 @@ let dogsStream: EventSource | null = null;
 let lastDogsProcessedFrame = -1;
 let dogsInputSeq = 0;
 let dogsLastAckedInputSeq = 0;
+let dogsFireArmed = true;
 let lastGamepadSnapshot: GamepadSnapshot = {
   available: false,
   error: null,
@@ -11473,6 +11474,7 @@ function processDogsAudio(frame: DogsCoreFrame): void {
   if (events.length === 0) {
     processDogsAudioFallback(frame, dogsPreviousAudioFrame);
   }
+  processDogsImmediateShotFeedback(frame, dogsPreviousAudioFrame);
   const exitReady = dogsExitReady(frame);
   if (exitReady && !dogsLastExitReady) {
     void playDogsSfx("portal_ready");
@@ -11485,6 +11487,47 @@ function processDogsAudio(frame: DogsCoreFrame): void {
   }
   dogsLastExitReady = exitReady;
   dogsPreviousAudioFrame = frame;
+}
+
+function processDogsImmediateShotFeedback(frame: DogsCoreFrame, previous: DogsCoreFrame | null): void {
+  if (!previous || frame.summary.shotsFired <= previous.summary.shotsFired) return;
+  if (frame.bullets.length > previous.bullets.length) return;
+  const hero = dogsLocalPlayer(frame);
+  if (!hero) return;
+  const weaponSound = hero.activeWeapon || "scanner_blaster";
+  void playDogsSfx(weaponSound, 0.9);
+  const [dx, dy] = dogsDirectionVector(hero.direction);
+  dogsImpactEffects.push({
+    id: `${frame.frame}:instant-shot:${frame.summary.shotsFired}`,
+    x: hero.x + frame.characterWidth / 2 + dx * frame.characterWidth * 0.9,
+    y: hero.y + frame.characterHeight / 2 + dy * frame.characterHeight * 0.9,
+    weapon: weaponSound,
+    ownerFaction: "player",
+    startFrame: frame.frame,
+  });
+}
+
+function dogsDirectionVector(direction: string): [number, number] {
+  switch (direction) {
+    case "up":
+      return [0, -1];
+    case "down":
+      return [0, 1];
+    case "left":
+      return [-1, 0];
+    case "right":
+      return [1, 0];
+    case "up_left":
+      return [-Math.SQRT1_2, -Math.SQRT1_2];
+    case "up_right":
+      return [Math.SQRT1_2, -Math.SQRT1_2];
+    case "down_left":
+      return [-Math.SQRT1_2, Math.SQRT1_2];
+    case "down_right":
+      return [Math.SQRT1_2, Math.SQRT1_2];
+    default:
+      return [0, 1];
+  }
 }
 
 function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame | null): void {
@@ -11506,10 +11549,6 @@ function processDogsAudioFallback(frame: DogsCoreFrame, previous: DogsCoreFrame 
   ) {
     triggerDogsExternalInspectionAlert(frame);
     void playDogsExternalInspectionSiren();
-  }
-  if (frame.bullets.length > previous.bullets.length) {
-    const hero = dogsLocalPlayer(frame);
-    void playDogsSfx(hero?.activeWeapon ?? "scanner_blaster", 0.9);
   }
   if (frame.summary.objectsCollected > previous.summary.objectsCollected || frame.summary.cash > previous.summary.cash) {
     void playDogsSfx("pickup_rx", 0.82);
@@ -13242,6 +13281,7 @@ function resetDogsRuntimeCaches(stopStream: boolean): void {
   lastDogsProcessedFrame = -1;
   dogsInputSeq = 0;
   dogsLastAckedInputSeq = 0;
+  dogsFireArmed = true;
   if (stopStream) {
     stopDogsSnapshotStream();
   }
@@ -13293,7 +13333,7 @@ async function resetDogsCore(): Promise<DogsCoreFrame> {
 }
 
 async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
-  const input = { ...inputState, player: playerPort, seq: dogsInputSeq };
+  const input = dogsInputForFrame(true);
   if (isTauri) {
     return await invoke<DogsCoreFrame>("run_eutherdogs_frame", { input });
   }
@@ -13322,9 +13362,26 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
 }
 
+function dogsInputForFrame(includeSeq = false): DogsBridgeInput {
+  const input: DogsBridgeInput = { ...inputState, player: playerPort };
+  const fireHeld = input.a || input.b;
+  if (!fireHeld) {
+    dogsFireArmed = true;
+  } else if (!dogsFireArmed) {
+    input.a = false;
+    input.b = false;
+  } else {
+    dogsFireArmed = false;
+  }
+  if (includeSeq) {
+    input.seq = dogsInputSeq;
+  }
+  return input;
+}
+
 async function syncDogsWeaponSlot(slot: number): Promise<void> {
   try {
-    await syncDogsBridgeInput({ ...inputState, player: playerPort, weaponSlot: slot });
+    await syncDogsBridgeInput({ ...dogsInputForFrame(), weaponSlot: slot });
     pushTrace(`EutherDogs weapon slot ${slot + 1}`);
   } catch (err) {
     dogsSnapshotMisses += 1;
@@ -13335,7 +13392,7 @@ async function syncDogsWeaponSlot(slot: number): Promise<void> {
 
 async function answerDogsInspection(answer: "yes" | "no" | "other"): Promise<void> {
   try {
-    await syncDogsBridgeInput({ ...inputState, player: playerPort, inspectionAnswer: answer });
+    await syncDogsBridgeInput({ ...dogsInputForFrame(), inspectionAnswer: answer });
     pushTrace(`Inspection answer ${answer.toUpperCase()}`);
   } catch (err) {
     dogsSnapshotMisses += 1;
@@ -14137,7 +14194,7 @@ async function syncInput(): Promise<void> {
   }
   lastInputJson = next;
   if (dogsMode) {
-    void syncDogsBridgeInput({ ...inputState, player: playerPort }).catch((err) => {
+    void syncDogsBridgeInput(dogsInputForFrame()).catch((err) => {
       dogsSnapshotMisses += 1;
       ui.transportMode = "DOGS INPUT HOLD";
       ui.lastError = err instanceof Error ? err.message : String(err);

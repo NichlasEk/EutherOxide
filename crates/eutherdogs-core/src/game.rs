@@ -580,6 +580,10 @@ impl Game {
         self.progress
     }
 
+    pub fn reset_cash(&mut self) {
+        self.progress.cash = 0;
+    }
+
     pub fn summary(&self) -> MissionSummary {
         MissionSummary {
             status: self.status,
@@ -631,7 +635,7 @@ impl Game {
             .as_deref()
             .map(|weapon| WeaponId::from_key(weapon).ok_or_else(|| PurchaseError::InvalidWeapon(weapon.to_string())))
             .transpose()?;
-        self.progress.cash -= price;
+        self.progress.cash = self.progress.cash.saturating_sub(price).max(0);
         let character = &mut self.characters[character_index];
         if item.armor > 0 {
             character.armor = character.armor.saturating_add(item.armor);
@@ -867,6 +871,7 @@ impl Game {
                     weapon.radius,
                     damage / 2,
                     bullet.owner_faction,
+                    bullet.owner,
                 );
             } else if bullet_hits_wall(&self.world, &bullet) {
                 let old_targets = self.world.stats().targets_left;
@@ -877,8 +882,15 @@ impl Game {
                 self.progress.targets_destroyed += old_targets - new_targets;
                 if old_targets > new_targets {
                     let destroyed = old_targets - new_targets;
-                    self.progress.score += self.rules.scoring.target_score * destroyed;
-                    self.progress.cash += self.rules.scoring.target_cash * destroyed;
+                    self.progress.score = self
+                        .progress
+                        .score
+                        .saturating_add(self.rules.scoring.target_score.saturating_mul(destroyed));
+                    self.progress.cash = self
+                        .progress
+                        .cash
+                        .saturating_add(self.rules.scoring.target_cash.saturating_mul(destroyed))
+                        .max(0);
                 }
                 self.apply_area_damage(
                     bullet.x,
@@ -886,6 +898,7 @@ impl Game {
                     weapon.radius,
                     weapon.power as i32 / 2,
                     bullet.owner_faction,
+                    bullet.owner,
                 );
                 self.audio_events.push(AudioEvent::Sfx(match hit_tile {
                     Some(tile) if tile.is_destructible() => AssetId::ImpactHeavy,
@@ -1260,8 +1273,15 @@ impl Game {
             hit.alive = false;
             self.progress.kills += i32::from(hit.faction == Faction::HostileCustomer);
             if hit.faction == Faction::HostileCustomer {
-                self.progress.score += self.rules.scoring.enemy_kill_score;
-                self.progress.cash += self.rules.scoring.enemy_kill_cash;
+                self.progress.score = self
+                    .progress
+                    .score
+                    .saturating_add(self.rules.scoring.enemy_kill_score);
+                self.progress.cash = self
+                    .progress
+                    .cash
+                    .saturating_add(self.rules.scoring.enemy_kill_cash)
+                    .max(0);
             }
             self.audio_events
                 .push(AudioEvent::Sfx(AssetId::CustomerDefeated));
@@ -1277,6 +1297,7 @@ impl Game {
         radius: i32,
         damage: i32,
         owner_faction: Faction,
+        owner_id: u32,
     ) {
         if radius <= 0 || damage <= 0 {
             return;
@@ -1287,8 +1308,10 @@ impl Game {
             .iter()
             .enumerate()
             .filter(|(_, character)| {
+                let self_splash =
+                    owner_faction == Faction::Player && character.faction == Faction::Player && character.id == owner_id;
                 character.alive
-                    && character.faction != owner_faction
+                    && (character.faction != owner_faction || self_splash)
                     && (character.x + crate::world::CHARACTER_WIDTH / 2 - x).abs() <= radius_px
                     && (character.y + crate::world::CHARACTER_HEIGHT / 2 - y).abs() <= radius_px
             })
@@ -1373,14 +1396,28 @@ impl Game {
                 }
                 _ => {
                     self.progress.objects_collected += 1;
-                    self.progress.score += self.rules.scoring.pickup_score;
-                    self.progress.cash += self.rules.scoring.pickup_cash;
+                    self.progress.score = self
+                        .progress
+                        .score
+                        .saturating_add(self.rules.scoring.pickup_score);
+                    self.progress.cash = self
+                        .progress
+                        .cash
+                        .saturating_add(self.rules.scoring.pickup_cash)
+                        .max(0);
                 }
             }
             if matches!(tile, Tile::Prescription | Tile::Folder | Tile::DataWafer) {
                 self.progress.objects_collected += 1;
-                self.progress.score += self.rules.scoring.pickup_score;
-                self.progress.cash += self.rules.scoring.pickup_cash;
+                self.progress.score = self
+                    .progress
+                    .score
+                    .saturating_add(self.rules.scoring.pickup_score);
+                self.progress.cash = self
+                    .progress
+                    .cash
+                    .saturating_add(self.rules.scoring.pickup_cash)
+                    .max(0);
             }
             self.audio_events.push(AudioEvent::Sfx(AssetId::PickupRx));
         }
@@ -1884,7 +1921,7 @@ impl Game {
         } else if self.mission_goals_satisfied() && self.players_on_exit() {
             let time_bonus = self.summary().time_remaining_ticks.unwrap_or(0) as i32;
             let divisor = self.rules.scoring.time_bonus_divisor.max(1);
-            self.progress.score += time_bonus / divisor;
+            self.progress.score = self.progress.score.saturating_add(time_bonus / divisor);
             self.status = MissionStatus::Won;
         }
     }
@@ -1927,8 +1964,8 @@ impl Game {
                 .map(|slot| slot.weapon)
                 .unwrap_or(WeaponId::ScannerBlaster);
             if player.score != 0 || player.cash != 0 {
-                self.progress.score += player.score;
-                self.progress.cash += player.cash;
+                self.progress.score = self.progress.score.saturating_add(player.score.max(0));
+                self.progress.cash = self.progress.cash.saturating_add(player.cash.max(0));
             }
         }
         Ok(())
@@ -2379,6 +2416,7 @@ mod tests {
         assets::AssetId,
         command::PlayerCommand,
         entity::Faction,
+        weapon::WeaponId,
         world::{MissionSpec, Tile, WorldParams, TILE_HEIGHT, TILE_WIDTH},
         AudioEvent,
     };
@@ -2388,6 +2426,31 @@ mod tests {
         let game = Game::new_mission(7, WorldParams::default(), MissionSpec::default());
         assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::Player));
         assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::HostileCustomer));
+    }
+
+    #[test]
+    fn explosive_player_weapon_can_splash_owner() {
+        let mut game = Game::new_mission(7, WorldParams::default(), MissionSpec::default());
+        let player_index = game
+            .characters()
+            .iter()
+            .position(|character| character.faction == Faction::Player)
+            .expect("mission has a player");
+        let player_id = game.characters[player_index].id;
+        let center_x = game.characters[player_index].x + crate::world::CHARACTER_WIDTH / 2;
+        let center_y = game.characters[player_index].y + crate::world::CHARACTER_HEIGHT / 2;
+        let initial_armor = game.characters[player_index].armor;
+
+        game.apply_area_damage(
+            center_x,
+            center_y,
+            WeaponId::RxCannon.data().radius,
+            12,
+            Faction::Player,
+            player_id,
+        );
+
+        assert!(game.characters[player_index].armor < initial_armor);
     }
 
     #[test]

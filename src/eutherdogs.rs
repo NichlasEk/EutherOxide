@@ -246,6 +246,14 @@ impl EutherDogsRuntime {
         Ok(())
     }
 
+    pub fn reset_money(&mut self) -> EutherDogsFrame {
+        self.game.reset_cash();
+        for player in self.config.player.values_mut() {
+            player.cash = 0;
+        }
+        self.snapshot()
+    }
+
     pub fn advance_mission(&mut self) -> Result<EutherDogsFrame, ConfigError> {
         self.persist_player_state();
         if self.mission < CAMPAIGN_MISSIONS {
@@ -308,11 +316,15 @@ impl EutherDogsRuntime {
             let continued_inputs: Vec<PlayerInput> = held_inputs
                 .into_iter()
                 .enumerate()
-                .map(|(player_index, input)| PlayerInput {
-                    player_index,
-                    command: self.input_command_for_player(player_index, input),
-                    weapon_slot: None,
-                    inspection_answer: None,
+                .map(|(player_index, mut input)| {
+                    input.a = false;
+                    input.b = false;
+                    PlayerInput {
+                        player_index,
+                        command: self.input_command_for_player(player_index, input),
+                        weapon_slot: None,
+                        inspection_answer: None,
+                    }
                 })
                 .collect();
             self.game.tick(
@@ -329,6 +341,8 @@ impl EutherDogsRuntime {
             .iter_mut()
             .zip(self.weapon_switch_cooldowns.iter_mut())
         {
+            input.a = false;
+            input.b = false;
             input.weapon_slot = None;
             input.inspection_answer = None;
             *cooldown = cooldown.saturating_sub(ticks);
@@ -434,8 +448,16 @@ impl EutherDogsRuntime {
             let Some(player) = self.config.player.get_mut(&player_key) else {
                 continue;
             };
-            player.cash = summary.progress.cash;
-            player.score = summary.progress.score;
+            player.cash = if player_index == 0 {
+                summary.progress.cash.max(0)
+            } else {
+                0
+            };
+            player.score = if player_index == 0 {
+                summary.progress.score.max(0)
+            } else {
+                0
+            };
             player.armor = character.armor.max(1);
             player.lives = character.lives.max(1);
             player.character = character
@@ -702,7 +724,7 @@ pub fn eutherdogs_frame(
             },
             elapsed_ticks: summary.progress.elapsed_ticks,
             score: summary.progress.score,
-            cash: summary.progress.cash,
+            cash: summary.progress.cash.max(0),
             kills: summary.progress.kills,
             targets_destroyed: summary.progress.targets_destroyed,
             objects_collected: summary.progress.objects_collected,
@@ -741,7 +763,7 @@ fn game_store_items(
     config: &EutherDogsConfig,
     player_index: usize,
 ) -> Vec<EutherDogsStoreItem> {
-    let cash = game.summary().progress.cash;
+    let cash = game.summary().progress.cash.max(0);
     let player = game
         .characters()
         .iter()
@@ -1119,6 +1141,21 @@ mod tests {
         assert_eq!(frame.summary.max_mission, 10);
         assert!(frame.summary.cash >= starting_cash);
         assert!(frame.summary.objects_left >= 10);
+    }
+
+    #[test]
+    fn runtime_consumes_fire_input_after_one_tick() {
+        let mut runtime = EutherDogsRuntime::demo();
+        runtime.set_input(EutherDogsInput {
+            a: true,
+            ..EutherDogsInput::default()
+        });
+
+        let first = runtime.tick_held_steps(1)[0].clone();
+        let second = runtime.tick_held_steps(1)[0].clone();
+
+        assert!(first.summary.shots_fired > 0);
+        assert_eq!(second.summary.shots_fired, first.summary.shots_fired);
     }
 
     #[test]

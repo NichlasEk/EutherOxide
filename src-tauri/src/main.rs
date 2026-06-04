@@ -573,6 +573,14 @@ fn reset_eutherdogs(
 }
 
 #[tauri::command]
+fn reset_eutherdogs_money(
+    state: State<'_, AppState>,
+) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
+    let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
+    Ok(dogs.reset_money())
+}
+
+#[tauri::command]
 fn run_eutherdogs_frame(
     state: State<'_, AppState>,
     input: euther_oxide::eutherdogs::EutherDogsInput,
@@ -1670,6 +1678,7 @@ fn main() {
             start_eutherdogs,
             advance_eutherdogs_mission,
             reset_eutherdogs,
+            reset_eutherdogs_money,
             run_eutherdogs_frame,
             purchase_eutherdogs_item,
             gamepad_snapshot,

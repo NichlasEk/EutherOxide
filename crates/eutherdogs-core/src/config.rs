@@ -115,7 +115,8 @@ pub enum ConfigError {
 
 impl EutherDogsConfig {
     pub fn from_toml_str(input: &str) -> Result<Self, ConfigError> {
-        let config = toml::from_str::<Self>(input).map_err(ConfigError::Toml)?;
+        let mut config = toml::from_str::<Self>(input).map_err(ConfigError::Toml)?;
+        config.normalize();
         config.validate()?;
         Ok(config)
     }
@@ -163,6 +164,15 @@ impl EutherDogsConfig {
             self.settings.highscore_limit.max(1),
             self.highscores.iter().cloned().map(HighScoreEntry::from),
         )
+    }
+
+    fn normalize(&mut self) {
+        for player in self.player.values_mut() {
+            player.cash = player.cash.max(0);
+        }
+        for score in &mut self.highscores {
+            score.cash = score.cash.max(0);
+        }
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -476,6 +486,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.player_config(1).unwrap().inspection_protocol, 1);
+    }
+
+    #[test]
+    fn clamps_negative_cash_values() {
+        let config = EutherDogsConfig::from_toml_str(
+            r#"
+            [player.1]
+            cash = -500
+
+            [[highscores]]
+            name = "BUG"
+            score = 10
+            cash = -1
+            mission = 1
+            kills = 0
+            targets_destroyed = 0
+            objects_collected = 0
+            elapsed_ticks = 1
+            completed = false
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.player_config(1).unwrap().cash, 0);
+        assert_eq!(config.high_score_table().entries()[0].cash, 0);
     }
 
     #[test]

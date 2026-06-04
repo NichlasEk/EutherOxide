@@ -2264,6 +2264,7 @@ fn host_route_permission(path: &str, method: &str) -> Option<HostPermission> {
         | ("POST", "/eutherdogs/start")
         | ("POST", "/eutherdogs/next")
         | ("POST", "/eutherdogs/reset")
+        | ("POST", "/eutherdogs/reset-money")
         | ("POST", "/eutherdogs/frame")
         | ("POST", "/eutherdogs/input")
         | ("GET", "/eutherdogs/snapshot")
@@ -4897,6 +4898,16 @@ fn handle_bridge_route_with_user(
             dogs.reset()
                 .map_err(|err| invalid_request(err.to_string()))?;
             let frame = dogs.snapshot();
+            drop(dogs);
+            publish_eutherdogs_initial_frame(state, frame.clone())?;
+            send_json(stream, &frame)
+        }
+        ("POST", "/eutherdogs/reset-money") => {
+            let mut dogs = state
+                .eutherdogs
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            let frame = dogs.reset_money();
             drop(dogs);
             publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
