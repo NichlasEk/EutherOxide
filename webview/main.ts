@@ -12843,13 +12843,7 @@ function stopDogsSnapshotStream(): void {
   dogsStream = null;
 }
 
-async function startDogsCore(): Promise<DogsCoreFrame> {
-  const start = {
-    staff: selectedDogsStaff,
-    mission: selectedDogsMission,
-    players: 2,
-    characters: [selectedDogsCharacters[1], selectedDogsCharacters[2]],
-  };
+function resetDogsRuntimeCaches(stopStream: boolean): void {
   dogsPreviousActorPositions = new Map();
   dogsRenderActorPositions = new Map();
   dogsLastRenderAt = performance.now();
@@ -12871,7 +12865,19 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
   lastDogsProcessedFrame = -1;
   dogsInputSeq = 0;
   dogsLastAckedInputSeq = 0;
-  stopDogsSnapshotStream();
+  if (stopStream) {
+    stopDogsSnapshotStream();
+  }
+}
+
+async function startDogsCore(): Promise<DogsCoreFrame> {
+  const start = {
+    staff: selectedDogsStaff,
+    mission: selectedDogsMission,
+    players: 2,
+    characters: [selectedDogsCharacters[1], selectedDogsCharacters[2]],
+  };
+  resetDogsRuntimeCaches(true);
   if (isTauri) {
     return await invoke<DogsCoreFrame>("start_eutherdogs", { start });
   }
@@ -12888,20 +12894,7 @@ async function startDogsCore(): Promise<DogsCoreFrame> {
 }
 
 async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
-  dogsPreviousActorPositions = new Map();
-  dogsRenderActorPositions = new Map();
-  dogsLastRenderAt = performance.now();
-  dogsActorFacings = new Map();
-  dogsLastExitReady = false;
-  dogsLastPortalHumFrame = -9999;
-  dogsPreviousAudioFrame = null;
-  dogsSawHostileQueue = false;
-  dogsTrackedBullets = new Map();
-  dogsImpactEffects = [];
-  dogsLastImpactFrameProcessed = -1;
-  dogsSubmittedHighscoreFrame = null;
-  dogsPendingHighscoreFrame = null;
-  dogsHighscoreSavedName = null;
+  resetDogsRuntimeCaches(true);
   if (isTauri) {
     return await invoke<DogsCoreFrame>("advance_eutherdogs_mission");
   }
@@ -12915,9 +12908,7 @@ async function nextDogsCoreMission(): Promise<DogsCoreFrame> {
 }
 
 async function resetDogsCore(): Promise<DogsCoreFrame> {
-  dogsTrackedBullets = new Map();
-  dogsImpactEffects = [];
-  dogsLastImpactFrameProcessed = -1;
+  resetDogsRuntimeCaches(true);
   if (isTauri) {
     return await invoke<DogsCoreFrame>("reset_eutherdogs");
   }
