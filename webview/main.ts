@@ -753,10 +753,11 @@ const bridgeBase =
   (hostedServerMode || (window.location.port && window.location.port !== "5173")
     ? window.location.origin
     : "http://127.0.0.1:32161");
+const defaultEutherBooksHost = localWebHost ? "127.0.0.1" : window.location.hostname;
 const eutherBooksBase = (
   pageParams.get("books") ??
   import.meta.env.VITE_EUTHERBOOKS_BASE ??
-  "http://127.0.0.1:8088"
+  (hostedServerMode ? "/eutherbooks" : `${window.location.protocol}//${defaultEutherBooksHost}:8088`)
 ).replace(/\/$/, "");
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
 const dogsStaffOptions: DogsStaffOption[] = [
@@ -2268,6 +2269,31 @@ workspaceWindowClose.addEventListener("click", () => {
 
 workspaceWindowDynamic.addEventListener("click", async (event) => {
   const target = event.target as HTMLElement;
+  const booksRefresh = target.closest<HTMLButtonElement>("[data-eutherbooks-refresh]");
+  if (booksRefresh) {
+    await loadEutherBooks(true);
+    return;
+  }
+  const booksBook = target.closest<HTMLButtonElement>("[data-eutherbooks-book]");
+  if (booksBook?.dataset.eutherbooksBook) {
+    await selectEutherBook(booksBook.dataset.eutherbooksBook);
+    return;
+  }
+  const booksTts = target.closest<HTMLButtonElement>("[data-eutherbooks-tts]");
+  if (booksTts) {
+    await startEutherBooksTts();
+    return;
+  }
+  const booksPrev = target.closest<HTMLButtonElement>("[data-eutherbooks-prev-audio]");
+  if (booksPrev) {
+    setEutherBooksAudioIndex(eutherBooksAudioIndex - 1);
+    return;
+  }
+  const booksNext = target.closest<HTMLButtonElement>("[data-eutherbooks-next-audio]");
+  if (booksNext) {
+    setEutherBooksAudioIndex(eutherBooksAudioIndex + 1);
+    return;
+  }
   const refresh = target.closest<HTMLButtonElement>("[data-eutherium-refresh]");
   if (refresh) {
     await loadEutherium(true);
@@ -2300,6 +2326,34 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     return;
   }
 });
+
+workspaceWindowDynamic.addEventListener("change", (event) => {
+  const bookSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-book-select]");
+  if (bookSelect?.value) {
+    void selectEutherBook(bookSelect.value);
+    return;
+  }
+  const chapterSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-chapter]");
+  if (!chapterSelect) {
+    return;
+  }
+  selectedEutherBookChapterIndex = Number(chapterSelect.value);
+  eutherBooksJob = null;
+  eutherBooksAudioIndex = 0;
+  renderWorkspaceWindow();
+});
+
+workspaceWindowDynamic.addEventListener(
+  "ended",
+  (event) => {
+    const audio = (event.target as HTMLElement).closest<HTMLAudioElement>("audio");
+    if (!audio || activeWorkspaceWindow !== "books") {
+      return;
+    }
+    setEutherBooksAudioIndex(eutherBooksAudioIndex + 1, true);
+  },
+  true,
+);
 
 workspaceWindowDynamic.addEventListener("pointerdown", (event) => {
   const target = event.target as HTMLElement;
@@ -6322,8 +6376,6 @@ function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
       return "Eutherium";
     case "books":
       return "Audiobooks";
-    case "books":
-      return "Audiobooks";
     case "friends":
       return "Friends";
     case "spaces":
@@ -6357,6 +6409,10 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
 }
 
 function closeWorkspaceWindow(): void {
+  if (eutherBooksJobPollTimer !== null) {
+    window.clearTimeout(eutherBooksJobPollTimer);
+    eutherBooksJobPollTimer = null;
+  }
   activeWorkspaceWindow = null;
   workspaceWindowLayer.hidden = true;
   document.body.classList.remove("workspace-window-open");
@@ -6397,14 +6453,6 @@ function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
       return profileWindowMarkup();
     case "settings":
       return settingsWindowMarkup();
-    case "books":
-      return `
-        <div class="interaction-panel">
-          <p class="section-label">Audiobooks</p>
-          <strong>EutherBooks</strong>
-          <span>${escapeHtml(eutherBooksStatus)}</span>
-        </div>
-      `;
     case "shopping":
       return "";
     case "books":
@@ -6474,6 +6522,284 @@ function eutheriumWindowMarkup(): string {
       </section>
     </div>
   `;
+}
+
+function eutherBooksWindowMarkup(): string {
+  const selectedBook = selectedEutherBook();
+  const audioFiles = eutherBooksJob?.audio_files ?? [];
+  const audioPath = audioFiles[eutherBooksAudioIndex] ?? null;
+  const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
+  const chapterOptions = selectedEutherBookChapters.length
+    ? selectedEutherBookChapters
+        .map(
+          (chapter) =>
+            `<option value="${chapter.index}" ${chapter.index === selectedEutherBookChapterIndex ? "selected" : ""}>${escapeHtml(chapter.title)} (${formatCompactNumber(chapter.char_count)} chars)</option>`,
+        )
+        .join("")
+    : `<option value="0">No chapters</option>`;
+  const bookOptions = eutherBooks.length
+    ? eutherBooks
+        .map(
+          (book) =>
+            `<option value="${escapeHtml(book.id)}" ${book.id === selectedEutherBookId ? "selected" : ""}>${escapeHtml(book.title)} / ${escapeHtml(book.format.toUpperCase())}</option>`,
+        )
+        .join("")
+    : `<option value="">No books</option>`;
+  const bookRows = eutherBooks.length
+    ? eutherBooks
+        .map(
+          (book) => `
+            <button class="eutherbooks-book-row ${book.id === selectedEutherBookId ? "is-selected" : ""}" data-eutherbooks-book="${escapeHtml(book.id)}" type="button">
+              <strong>${escapeHtml(book.title)}</strong>
+              <span>${escapeHtml(book.author ?? book.path)} / ${escapeHtml(book.format.toUpperCase())}</span>
+            </button>
+          `,
+        )
+        .join("")
+    : `<div class="eutherbooks-empty"><strong>No books indexed</strong><span>Drop .epub, .txt or .md files in the EutherBooks library directory.</span></div>`;
+
+  return `
+    <div class="eutherbooks-window">
+      <section class="interaction-panel eutherbooks-library-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">EutherBooks</p>
+            <strong>Local audiobook shelf</strong>
+          </div>
+          <button class="mini-action" data-eutherbooks-refresh type="button">Scan</button>
+        </div>
+        <div class="eutherbooks-status">
+          <span>${escapeHtml(eutherBooksStatus)}</span>
+          <strong>${escapeHtml(eutherBooksBase)}</strong>
+        </div>
+        <div class="eutherbooks-book-list">
+          ${bookRows}
+        </div>
+      </section>
+      <section class="interaction-panel eutherbooks-player-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Player</p>
+            <strong>${escapeHtml(selectedBook?.title ?? "No book selected")}</strong>
+          </div>
+          <span>${escapeHtml(eutherBooksJob?.status ?? "idle")}</span>
+        </div>
+        <label class="eutherbooks-book-select">
+          <span>Book</span>
+          <select data-eutherbooks-book-select ${eutherBooks.length ? "" : "disabled"}>
+            ${bookOptions}
+          </select>
+        </label>
+        <div class="eutherbooks-chapter-control">
+          <label>
+            <span>Chapter</span>
+            <select data-eutherbooks-chapter ${selectedEutherBookChaptersLoading || !selectedEutherBookChapters.length ? "disabled" : ""}>
+              ${chapterOptions}
+            </select>
+          </label>
+          <button class="primary-action" data-eutherbooks-tts type="button" ${canGenerate ? "" : "disabled"}>Generate speech</button>
+        </div>
+        <div class="eutherbooks-now-playing">
+          <span>${escapeHtml(eutherBooksPlaybackLabel())}</span>
+          <audio controls preload="metadata" src="${audioPath ? escapeHtml(eutherBooksAudioUrl(audioPath)) : ""}" ${audioPath ? "" : "disabled"}></audio>
+        </div>
+        <div class="eutherbooks-player-actions">
+          <button data-eutherbooks-prev-audio type="button" ${eutherBooksAudioIndex > 0 ? "" : "disabled"}>Prev</button>
+          <button data-eutherbooks-next-audio type="button" ${eutherBooksAudioIndex + 1 < audioFiles.length ? "" : "disabled"}>Next</button>
+        </div>
+        <div class="eutherbooks-job-note">
+          ${escapeHtml(eutherBooksJob?.error ?? eutherBooksPlayerHint())}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+async function loadEutherBooks(force = false): Promise<void> {
+  if ((eutherBooksLoaded && !force) || eutherBooksLoading) {
+    return;
+  }
+  eutherBooksLoading = true;
+  eutherBooksStatus = "Scanning";
+  renderBooksWindowIfActive();
+  try {
+    eutherBooks = await eutherBooksJson<EutherBook[]>("/books");
+    eutherBooksLoaded = true;
+    eutherBooksStatus = `${eutherBooks.length} ${eutherBooks.length === 1 ? "book" : "books"}`;
+    if (!selectedEutherBookId && eutherBooks[0]) {
+      selectedEutherBookId = eutherBooks[0].id;
+      await loadEutherBookChapters(selectedEutherBookId);
+    } else if (selectedEutherBookId && !eutherBooks.some((book) => book.id === selectedEutherBookId)) {
+      selectedEutherBookId = eutherBooks[0]?.id ?? null;
+      selectedEutherBookChapters = [];
+      if (selectedEutherBookId) {
+        await loadEutherBookChapters(selectedEutherBookId);
+      }
+    }
+  } catch (err) {
+    eutherBooksLoaded = false;
+    eutherBooksStatus = err instanceof Error ? "EutherBooks offline" : "Offline";
+  } finally {
+    eutherBooksLoading = false;
+    renderBooksWindowIfActive();
+  }
+}
+
+async function selectEutherBook(bookId: string): Promise<void> {
+  if (selectedEutherBookId === bookId && selectedEutherBookChapters.length) {
+    return;
+  }
+  selectedEutherBookId = bookId;
+  selectedEutherBookChapterIndex = 0;
+  eutherBooksJob = null;
+  eutherBooksAudioIndex = 0;
+  await loadEutherBookChapters(bookId);
+}
+
+async function loadEutherBookChapters(bookId: string): Promise<void> {
+  selectedEutherBookChaptersLoading = true;
+  eutherBooksStatus = "Loading chapters";
+  renderBooksWindowIfActive();
+  try {
+    selectedEutherBookChapters = await eutherBooksJson<EutherBookChapter[]>(`/books/${encodeURIComponent(bookId)}/chapters`);
+    selectedEutherBookChapterIndex = selectedEutherBookChapters[0]?.index ?? 0;
+    eutherBooksStatus = `${selectedEutherBookChapters.length} ${selectedEutherBookChapters.length === 1 ? "chapter" : "chapters"}`;
+  } catch (err) {
+    selectedEutherBookChapters = [];
+    eutherBooksStatus = err instanceof Error ? "Chapter load failed" : "Offline";
+  } finally {
+    selectedEutherBookChaptersLoading = false;
+    renderBooksWindowIfActive();
+  }
+}
+
+async function startEutherBooksTts(): Promise<void> {
+  const book = selectedEutherBook();
+  if (!book) {
+    return;
+  }
+  eutherBooksStatus = "Generating speech";
+  eutherBooksJob = null;
+  eutherBooksAudioIndex = 0;
+  renderBooksWindowIfActive();
+  try {
+    eutherBooksJob = await eutherBooksJson<EutherBooksJob>(`/books/${encodeURIComponent(book.id)}/tts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        language: "sv",
+        voice: "sv",
+        chapters: [selectedEutherBookChapterIndex],
+      }),
+    });
+    eutherBooksStatus = eutherBooksJob.status;
+    scheduleEutherBooksJobPoll();
+  } catch (err) {
+    eutherBooksStatus = err instanceof Error ? "TTS failed" : "Offline";
+  }
+  renderBooksWindowIfActive();
+}
+
+function scheduleEutherBooksJobPoll(): void {
+  if (eutherBooksJobPollTimer !== null) {
+    window.clearTimeout(eutherBooksJobPollTimer);
+  }
+  if (!eutherBooksJob || eutherBooksJob.status === "done" || eutherBooksJob.status === "failed") {
+    return;
+  }
+  eutherBooksJobPollTimer = window.setTimeout(() => {
+    eutherBooksJobPollTimer = null;
+    void refreshEutherBooksJob();
+  }, 1000);
+}
+
+async function refreshEutherBooksJob(): Promise<void> {
+  if (!eutherBooksJob) {
+    return;
+  }
+  try {
+    eutherBooksJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(eutherBooksJob.id)}`);
+    eutherBooksStatus = eutherBooksJob.status;
+    if (eutherBooksJob.status === "done" && eutherBooksJob.audio_files.length) {
+      eutherBooksAudioIndex = Math.min(eutherBooksAudioIndex, eutherBooksJob.audio_files.length - 1);
+    }
+    scheduleEutherBooksJobPoll();
+  } catch (err) {
+    eutherBooksStatus = err instanceof Error ? "Job poll failed" : "Offline";
+  }
+  renderBooksWindowIfActive();
+}
+
+async function eutherBooksJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (eutherBooksBase.startsWith("/") && init.method && init.method !== "GET" && hostCsrfToken) {
+    headers.set("X-CSRF-Token", hostCsrfToken);
+  }
+  const response = await fetch(`${eutherBooksBase}${path}`, { ...init, headers });
+  if (!response.ok) {
+    throw new Error(`EutherBooks ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+function selectedEutherBook(): EutherBook | null {
+  return eutherBooks.find((book) => book.id === selectedEutherBookId) ?? null;
+}
+
+function eutherBooksAudioUrl(path: string): string {
+  return `${eutherBooksBase}/audio/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function eutherBooksPlaybackLabel(): string {
+  if (!eutherBooksJob) {
+    return selectedEutherBookChapters.length ? "Generate a chapter to listen" : "Select a book";
+  }
+  if (eutherBooksJob.status === "done" && eutherBooksJob.audio_files.length) {
+    return `Part ${eutherBooksAudioIndex + 1} of ${eutherBooksJob.audio_files.length}`;
+  }
+  if (eutherBooksJob.status === "failed") {
+    return "Speech generation failed";
+  }
+  return "Speech generation running";
+}
+
+function eutherBooksPlayerHint(): string {
+  if (!eutherBooks.length) {
+    return "Start the EutherBooks service and add books to its library directory.";
+  }
+  if (!selectedEutherBookChapters.length) {
+    return selectedEutherBookChaptersLoading ? "Reading chapter list." : "No readable chapters found.";
+  }
+  return "Generate speech for the selected chapter, then use the player controls.";
+}
+
+function setEutherBooksAudioIndex(index: number, autoplay = false): void {
+  const audioFiles = eutherBooksJob?.audio_files ?? [];
+  if (!audioFiles.length) {
+    return;
+  }
+  const nextIndex = Math.max(0, Math.min(index, audioFiles.length - 1));
+  if (nextIndex === eutherBooksAudioIndex && !autoplay) {
+    return;
+  }
+  eutherBooksAudioIndex = nextIndex;
+  renderBooksWindowIfActive();
+  if (autoplay) {
+    window.setTimeout(() => {
+      const audio = workspaceWindowDynamic.querySelector<HTMLAudioElement>(".eutherbooks-now-playing audio");
+      void audio?.play();
+    }, 0);
+  }
+}
+
+function renderBooksWindowIfActive(): void {
+  if (activeWorkspaceWindow === "books") {
+    renderWorkspaceWindow();
+  }
+}
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function eutheriumAwardPanelMarkup(): string {

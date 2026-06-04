@@ -3887,6 +3887,10 @@ h2 {
   width: min(760px, 100%);
 }
 
+.workspace-window-layer.is-books .workspace-window {
+  width: min(980px, 100%);
+}
+
 .workspace-window-head {
   display: flex;
   align-items: center;
@@ -4117,6 +4121,174 @@ h2 {
 
 .interaction-shopping-panel {
   grid-row: span 3;
+}
+
+.eutherbooks-window {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(340px, 1.18fr);
+  gap: 12px;
+  min-width: 0;
+  align-items: start;
+}
+
+.eutherbooks-library-panel,
+.eutherbooks-player-panel {
+  min-height: 420px;
+}
+
+.eutherbooks-status,
+.eutherbooks-job-note,
+.eutherbooks-now-playing > span {
+  min-width: 0;
+  color: #aac99c;
+  font-size: 0.74rem;
+  font-weight: 900;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.eutherbooks-status {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid rgba(207, 240, 178, 0.1);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.58);
+}
+
+.eutherbooks-status strong {
+  color: #fff4c6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+}
+
+.eutherbooks-book-list {
+  display: grid;
+  gap: 8px;
+  max-height: 390px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.eutherbooks-book-row {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 10px;
+  text-align: left;
+}
+
+.eutherbooks-book-row strong {
+  min-width: 0;
+  color: #e8ffd2;
+  font-size: 0.88rem;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherbooks-book-row span {
+  min-width: 0;
+  color: #aac99c;
+  font-size: 0.72rem;
+  font-weight: 850;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherbooks-book-row.is-selected {
+  border-color: rgba(255, 104, 85, 0.66);
+  background: rgba(92, 39, 32, 0.74);
+}
+
+.eutherbooks-empty {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid rgba(207, 240, 178, 0.1);
+  border-radius: 8px;
+  background: rgba(5, 13, 10, 0.58);
+}
+
+.eutherbooks-empty strong {
+  color: #e8ffd2;
+}
+
+.eutherbooks-empty span {
+  color: #aac99c;
+  font-size: 0.76rem;
+  line-height: 1.3;
+}
+
+.eutherbooks-chapter-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.eutherbooks-book-select {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.eutherbooks-chapter-control label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.eutherbooks-book-select span,
+.eutherbooks-chapter-control label span {
+  color: #9fbe91;
+  font-size: 0.64rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherbooks-book-select select,
+.eutherbooks-chapter-control select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.8);
+  color: #eef8dd;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.eutherbooks-chapter-control button,
+.eutherbooks-player-actions button {
+  min-height: 42px;
+  padding: 0 12px;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.eutherbooks-now-playing {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.64);
+}
+
+.eutherbooks-now-playing audio {
+  width: 100%;
+  min-width: 0;
+}
+
+.eutherbooks-player-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .quick-action-grid,
@@ -5749,7 +5921,8 @@ h2 {
   }
 
   .workspace-window,
-  .workspace-window-layer.is-shopping .workspace-window {
+  .workspace-window-layer.is-shopping .workspace-window,
+  .workspace-window-layer.is-books .workspace-window {
     width: 100%;
     max-height: calc(100dvh - 82px);
     min-height: calc(100dvh - 82px);
@@ -5777,6 +5950,23 @@ h2 {
 
   .interaction-panel {
     padding: 12px;
+  }
+
+  .eutherbooks-window {
+    grid-template-columns: 1fr;
+  }
+
+  .eutherbooks-library-panel,
+  .eutherbooks-player-panel {
+    min-height: 0;
+  }
+
+  .eutherbooks-book-list {
+    max-height: 260px;
+  }
+
+  .eutherbooks-chapter-control {
+    grid-template-columns: 1fr;
   }
 
   .shopping-list-add-form {

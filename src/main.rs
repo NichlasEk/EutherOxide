@@ -1611,6 +1611,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     "/home/nichlas/eutherduke-runtime",
                 );
             }
+            if path == "/eutherbooks" || path.starts_with("/eutherbooks/") {
+                return proxy_eutherbooks_request(stream, &request);
+            }
             if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
                 return send_host_static(stream, path);
             }
@@ -4494,6 +4497,58 @@ fn send_eutherlist_apk(stream: &mut TcpStream) -> io::Result<()> {
             "attachment; filename=\"EutherList-release-signed.apk\"",
         )],
     )
+}
+
+fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if request.method != "GET" && request.method != "POST" {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_base = env::var("EUTHERBOOKS_UPSTREAM")
+        .unwrap_or_else(|_| "127.0.0.1:8088".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherBooks upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let upstream_path = eutherbooks_upstream_path(&request.path);
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, upstream_path, upstream_base
+    )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response)?;
+    if response.is_empty() {
+        return send_error(stream, 502, "EutherBooks upstream unavailable");
+    }
+    stream.write_all(&response)
+}
+
+fn eutherbooks_upstream_path(path: &str) -> String {
+    let stripped = path
+        .strip_prefix("/eutherbooks")
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/");
+    stripped.to_string()
 }
 
 fn resolve_host_static_path(path: &str) -> io::Result<PathBuf> {
