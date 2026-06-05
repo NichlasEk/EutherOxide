@@ -797,6 +797,7 @@ struct HostUser {
     name: String,
     password_hash: String,
     app_token: Option<String>,
+    app_lan_server_url: Option<String>,
     banned: bool,
     admin: bool,
     can_play: bool,
@@ -1155,11 +1156,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/app/login") => host_app_login(stream, state, &request),
         ("GET", "/api/app/status") => {
             let user = require_host_user_or_app(state, &request)?;
+            let lan_server_url = host_app_lan_server_url(state, &user)?;
             send_json(
                 stream,
                 &serde_json::json!({
                     "authenticated": true,
                     "user": user,
+                    "lanServerUrl": lan_server_url,
                 }),
             )
         }
@@ -1841,6 +1844,7 @@ fn host_app_login(
             "authenticated": true,
             "user": users[index].name,
             "token": token,
+            "lanServerUrl": users[index].app_lan_server_url.as_deref().unwrap_or(""),
         }),
     )
 }
@@ -1987,6 +1991,19 @@ fn authenticated_app_user(state: &HostState, request: &HttpRequest) -> io::Resul
                     .is_some_and(|known| known.as_bytes() == token.as_bytes())
         })
         .map(|user| user.name.clone()))
+}
+
+fn host_app_lan_server_url(state: &HostState, username: &str) -> io::Result<String> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(users
+        .iter()
+        .find(|user| user.name == username)
+        .and_then(|user| user.app_lan_server_url.as_deref())
+        .unwrap_or("")
+        .to_string())
 }
 
 fn host_app_token_path(path: &str) -> bool {
@@ -4073,6 +4090,7 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         name: username.to_string(),
         password_hash: hash_host_password(password)?,
         app_token: None,
+        app_lan_server_url: None,
         banned: false,
         admin: username == "nichlas",
         can_play: true,
@@ -7695,6 +7713,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut name = None;
     let mut password_hash = None;
     let mut app_token = None;
+    let mut app_lan_server_url = None;
     let mut banned = false;
     let mut admin = false;
     let mut can_play = true;
@@ -7712,6 +7731,9 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     app_token: app_token
                         .take()
                         .filter(|token: &String| !token.trim().is_empty()),
+                    app_lan_server_url: app_lan_server_url
+                        .take()
+                        .filter(|url: &String| !url.trim().is_empty()),
                     banned,
                     admin,
                     can_play,
@@ -7722,6 +7744,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                 });
             }
             app_token = None;
+            app_lan_server_url = None;
             banned = false;
             admin = false;
             can_play = true;
@@ -7740,6 +7763,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             password_hash = Some(value);
         } else if let Some(value) = parse_toml_assignment(line, "app_token") {
             app_token = Some(value);
+        } else if let Some(value) = parse_toml_assignment(line, "app_lan_server_url") {
+            app_lan_server_url = Some(value);
         } else if let Some(value) = parse_toml_bool_assignment(line, "banned") {
             banned = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "admin") {
@@ -7762,6 +7787,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             name,
             password_hash,
             app_token: app_token.filter(|token| !token.trim().is_empty()),
+            app_lan_server_url: app_lan_server_url.filter(|url| !url.trim().is_empty()),
             banned,
             admin,
             can_play,
@@ -7797,6 +7823,12 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
         ));
         if let Some(app_token) = &user.app_token {
             contents.push_str(&format!("app_token = \"{}\"\n", toml_escape(app_token)));
+        }
+        if let Some(app_lan_server_url) = &user.app_lan_server_url {
+            contents.push_str(&format!(
+                "app_lan_server_url = \"{}\"\n",
+                toml_escape(app_lan_server_url)
+            ));
         }
         contents.push_str(&format!("banned = {}\n", user.banned));
         contents.push_str(&format!("admin = {}\n", user.admin));

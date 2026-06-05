@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT/apps/eutherlist"
 APK_DIR="$APP_DIR/src-tauri/gen/android/app/build/outputs/apk/universal/release"
 APK_OUTPUT_ROOT="$APP_DIR/src-tauri/gen/android/app/build/outputs/apk"
+ANDROID_APP_GRADLE="$APP_DIR/src-tauri/gen/android/app/build.gradle.kts"
 ANDROID_TARGET="${EUTHERLIST_ANDROID_TARGET:-aarch64}"
 OUT_APK="${OUT_APK:-/home/nichlas/EutherList-release-signed.apk}"
 REPO_APK="${REPO_APK:-$ROOT/apps/eutherlist/releases/EutherList-release-signed.apk}"
@@ -30,6 +31,10 @@ fi
 if ! command -v apksigner >/dev/null 2>&1; then
   echo "[eutherlist-release-apk] apksigner not found on PATH" >&2
   exit 1
+fi
+
+if [[ -f "$ANDROID_APP_GRADLE" ]]; then
+  perl -0pi -e 's/manifestPlaceholders\["usesCleartextTraffic"\] = "false"/manifestPlaceholders["usesCleartextTraffic"] = "true"/' "$ANDROID_APP_GRADLE"
 fi
 
 echo "[eutherlist-release-apk] building unsigned APK"

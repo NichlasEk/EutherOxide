@@ -84,6 +84,7 @@ button {
 
 .brand-lockup span,
 .sync-pill,
+.sync-detail,
 .list-section-head span,
 .login-card p,
 .settings-user span {
@@ -94,6 +95,7 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .icon-button {
@@ -203,6 +205,14 @@ button {
   font-weight: 800;
 }
 
+.sync-status {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  min-width: 82px;
+  max-width: 136px;
+}
+
 .sync-pill {
   display: inline-grid;
   place-items: center;
@@ -214,6 +224,17 @@ button {
   background: var(--surface-soft);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.sync-detail {
+  width: 100%;
+  min-height: 14px;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  font-weight: 800;
 }
 
 .sync-pill.is-saved {

@@ -30,7 +30,27 @@ npm install
 npm run dev
 ```
 
-The app defaults to `https://apothictech.se`. Change server URL on the first login screen or later in settings.
+The app defaults to `https://apothictech.se`. Change the primary URL on the first login screen or later in settings.
+The LAN fallback can be typed manually, but the preferred setup is to send it from EutherHost per user:
+
+```toml
+[[user]]
+name = "joanna"
+app_lan_server_url = "192.168.32.186"
+```
+
+Bare LAN IPs are expanded by EutherList to `http://LAN-IP:32162`. A full URL still works when a different port or proxy is needed.
+
+For direct LAN fallback, EutherHost must listen on the LAN interface too:
+
+```bash
+../../scripts/host-lan-config.sh 192.168.32.186
+../../scripts/host-server.sh
+```
+
+Use the LAN IP in `app_lan_server_url` only after restarting `eutherhost.service` or `host-server.sh`.
+Without that restart, use the existing Caddy LAN fallback URL in `app_lan_server_url`.
+The script writes `.euther-host/config.toml`, keeps the existing users/token file untouched, binds the server to `0.0.0.0:32162`, and adds the LAN origin to `allowed_origins`.
 
 ## Android
 
@@ -59,6 +79,7 @@ app_token = "..."
 The phone should not store the password. It stores only:
 
 - server URL
+- LAN fallback server URL
 - username
 - app token
 - selected theme

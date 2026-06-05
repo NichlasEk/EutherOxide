@@ -46,6 +46,8 @@ export type ShoppingMember = {
 
 export type AppSettings = {
   serverUrl: string;
+  lanServerUrl: string;
+  activeServerUrl: string;
   username: string;
   token: string;
   theme: ThemeName;

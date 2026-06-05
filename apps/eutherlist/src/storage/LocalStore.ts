@@ -1,6 +1,11 @@
 import { AppSettings, ShoppingListDocument, ThemeName } from "../types";
 import { defaultShoppingList, listsToMarkdown, makeShoppingList } from "../shoppingMarkdown";
-import { PUBLIC_SERVER_URL, cleanServerUrl } from "../api/ShoppingApi";
+import {
+  PUBLIC_SERVER_URL,
+  cleanActiveServerUrl,
+  cleanLanServerUrl,
+  cleanServerUrl,
+} from "../api/ShoppingApi";
 
 const settingsKey = "eutherlist.settings.v1";
 const documentKey = "eutherlist.document.v1";
@@ -10,16 +15,23 @@ export class LocalStore {
   loadSettings(): AppSettings {
     const fallback: AppSettings = {
       serverUrl: PUBLIC_SERVER_URL,
+      lanServerUrl: "",
+      activeServerUrl: "",
       username: "",
       token: "",
       theme: "joanna-light",
     };
     const settings = { ...fallback, ...readJson<Partial<AppSettings>>(settingsKey, {}) };
-    return { ...settings, serverUrl: cleanServerUrl(settings.serverUrl) };
+    return {
+      ...settings,
+      serverUrl: cleanServerUrl(settings.serverUrl),
+      lanServerUrl: cleanLanServerUrl(settings.lanServerUrl),
+      activeServerUrl: cleanActiveServerUrl(settings),
+    };
   }
 
   saveSettings(settings: AppSettings): void {
-    localStorage.setItem(settingsKey, JSON.stringify(settings));
+    localStorage.setItem(settingsKey, JSON.stringify(cleanSettings(settings)));
   }
 
   loadDocument(): ShoppingListDocument {
@@ -63,6 +75,15 @@ export class LocalStore {
     this.saveSettings(settings);
     return settings;
   }
+}
+
+function cleanSettings(settings: AppSettings): AppSettings {
+  return {
+    ...settings,
+    serverUrl: cleanServerUrl(settings.serverUrl),
+    lanServerUrl: cleanLanServerUrl(settings.lanServerUrl),
+    activeServerUrl: cleanActiveServerUrl(settings),
+  };
 }
 
 function readJson<T>(key: string, fallback: T): T {

@@ -60,7 +60,7 @@ fn log_startup_diagnostics<R: tauri::Runtime>(app: &tauri::App<R>) {
     ensure_file(
         "config",
         &config_path,
-        br#"{"serverUrl":"https://apothictech.se","theme":"joanna-light"}"#,
+        br#"{"serverUrl":"https://apothictech.se","lanServerUrl":"","theme":"joanna-light"}"#,
     );
 
     let list_path = app_data_dir.join("shopping.md");

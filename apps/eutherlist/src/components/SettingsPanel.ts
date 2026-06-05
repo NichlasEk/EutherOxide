@@ -15,6 +15,10 @@ export function settingsPanelMarkup(settings: AppSettings, open: boolean): strin
           <input id="settings-server" type="url" value="${escapeHtml(settings.serverUrl)}" placeholder="https://apothictech.se" />
         </label>
         <label>
+          LAN fallback
+          <input id="settings-lan-server" type="text" inputmode="url" value="${escapeHtml(settings.lanServerUrl)}" placeholder="LAN-IP" />
+        </label>
+        <label>
           Theme
           <select id="settings-theme">
             ${themes.map((theme) => themeOption(theme.id, theme.label, settings.theme)).join("")}

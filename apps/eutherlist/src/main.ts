@@ -5,7 +5,13 @@ import "./themes/apothecary-dark.css";
 
 import iconDark from "./assets/eutherlist-icon-dark.svg";
 import iconLight from "./assets/eutherlist-icon-light.svg";
-import { ShoppingApi, cleanServerUrl } from "./api/ShoppingApi";
+import {
+  ShoppingApi,
+  cleanActiveServerUrl,
+  cleanLanServerUrl,
+  cleanOptionalServerUrl,
+  cleanServerUrl,
+} from "./api/ShoppingApi";
 import { addItemBarMarkup } from "./components/AddItemBar";
 import { categoryTabsMarkup } from "./components/CategoryTabs";
 import { escapeHtml } from "./components/ItemRow";
@@ -36,6 +42,7 @@ let activeListIndex = 0;
 let searchQuery = "";
 let syncTimer: number | null = null;
 let loginMessage = "";
+let lastSyncError = "";
 let deferredRemoteRenderTimer: number | null = null;
 let addItemEditing = false;
 let addItemDraft: AddItemDraft | null = null;
@@ -67,14 +74,36 @@ function render(focusSearch = false): void {
   }
 }
 
-function setSyncState(state: SyncState): void {
+function setSyncState(state: SyncState, error = ""): void {
   syncState = state;
+  lastSyncError = error;
+  renderSyncStatus();
+}
+
+function renderSyncStatus(): void {
   const pill = document.querySelector<HTMLSpanElement>(".sync-pill");
   if (!pill) {
     return;
   }
   pill.textContent = syncLabel(syncState);
   pill.className = `sync-pill is-${syncState}`;
+  const detail = document.querySelector<HTMLSpanElement>(".sync-detail");
+  if (detail) {
+    detail.textContent = syncDetail(syncState);
+  }
+  const status = document.querySelector<HTMLDivElement>(".sync-status");
+  if (status) {
+    status.title = syncTitle(syncState);
+  }
+}
+
+function rememberActiveServer(serverUrl: string): void {
+  const activeServerUrl = cleanOptionalServerUrl(serverUrl);
+  if (!activeServerUrl || activeServerUrl === settings.activeServerUrl) {
+    return;
+  }
+  settings = { ...settings, activeServerUrl };
+  store.saveSettings(settings);
 }
 
 function renderRemoteUpdate(): void {
@@ -146,7 +175,10 @@ function appMarkup(): string {
           </div>
         </div>
         <div class="top-actions">
-          <span class="sync-pill is-${syncState}">${syncLabel(syncState)}</span>
+          <div class="sync-status" title="${escapeHtml(syncTitle(syncState))}">
+            <span class="sync-pill is-${syncState}">${syncLabel(syncState)}</span>
+            <span class="sync-detail">${escapeHtml(syncDetail(syncState))}</span>
+          </div>
           <button id="settings-open" class="icon-button" type="button" aria-label="Settings">⚙</button>
         </div>
       </header>
@@ -225,6 +257,10 @@ function loginMarkup(): string {
             <input id="login-server" type="url" value="${escapeHtml(settings.serverUrl)}" placeholder="https://apothictech.se" required />
           </label>
           <label>
+            LAN fallback
+            <input id="login-lan-server" type="text" inputmode="url" value="${escapeHtml(settings.lanServerUrl)}" placeholder="LAN-IP" />
+          </label>
+          <label>
             User
             <input id="login-user" type="text" value="${escapeHtml(settings.username)}" autocomplete="username" required />
           </label>
@@ -255,12 +291,15 @@ function bindCommonActions(): void {
   });
   document.querySelector<HTMLButtonElement>("#settings-save")?.addEventListener("click", () => {
     const server = document.querySelector<HTMLInputElement>("#settings-server");
+    const lanServer = document.querySelector<HTMLInputElement>("#settings-lan-server");
     const theme = document.querySelector<HTMLSelectElement>("#settings-theme");
-    settings = {
+    const nextSettings = {
       ...settings,
       serverUrl: cleanServerUrl(server?.value ?? settings.serverUrl),
+      lanServerUrl: cleanLanServerUrl(lanServer?.value ?? settings.lanServerUrl),
       theme: (theme?.value ?? settings.theme) as AppSettings["theme"],
     };
+    settings = { ...nextSettings, activeServerUrl: cleanActiveServerUrl(nextSettings) };
     store.saveSettings(settings);
     applyTheme(settings.theme);
     settingsOpen = false;
@@ -370,16 +409,21 @@ function bindListActions(): void {
 
 async function login(): Promise<void> {
   const serverUrl = cleanServerUrl(document.querySelector<HTMLInputElement>("#login-server")?.value ?? settings.serverUrl);
+  const lanServerUrl = cleanLanServerUrl(
+    document.querySelector<HTMLInputElement>("#login-lan-server")?.value ?? settings.lanServerUrl,
+  );
   const username = document.querySelector<HTMLInputElement>("#login-user")?.value.trim() ?? "";
   const password = document.querySelector<HTMLInputElement>("#login-password")?.value ?? "";
   syncState = "syncing";
   loginMessage = "Connecting";
   render();
   try {
-    const result = await ShoppingApi.login(serverUrl, username, password);
+    const result = await ShoppingApi.login({ serverUrl, lanServerUrl }, username, password);
     settings = {
       ...settings,
       serverUrl,
+      lanServerUrl: cleanLanServerUrl(result.lanServerUrl ?? "") || lanServerUrl,
+      activeServerUrl: cleanLanServerUrl(result.lanServerUrl ?? "") || result.serverUrl,
       username: result.user,
       token: result.token,
     };
@@ -434,6 +478,7 @@ function commitLocalChange(): void {
   };
   store.saveDocument(documentState);
   store.setDirty(true);
+  lastSyncError = "";
   syncState = "dirty";
   render();
   scheduleSync(350);
@@ -443,7 +488,13 @@ async function syncFromStartup(): Promise<void> {
   setSyncState("syncing");
   let remoteChanged = false;
   try {
-    const remote = await new ShoppingApi(settings).loadList();
+    const api = new ShoppingApi(settings);
+    const status = await api.status();
+    rememberActiveServer(api.activeServerUrl);
+    applyServerLanUrl(status.lanServerUrl);
+    const listApi = new ShoppingApi(settings);
+    const remote = await listApi.loadList();
+    rememberActiveServer(listApi.activeServerUrl);
     if (store.isDirty()) {
       await pushLocal();
       return;
@@ -454,8 +505,9 @@ async function syncFromStartup(): Promise<void> {
     store.setDirty(false);
     remoteChanged = true;
     setSyncState("saved");
-  } catch {
-    setSyncState(navigator.onLine ? "error" : "offline");
+  } catch (error) {
+    setSyncState(navigator.onLine ? "error" : "offline", syncErrorMessage(error));
+    scheduleSync(5000);
   }
   if (remoteChanged) {
     renderRemoteUpdate();
@@ -471,7 +523,7 @@ function scheduleSync(delayMs: number): void {
   }
   syncTimer = window.setTimeout(() => {
     syncTimer = null;
-    void pushLocal();
+    void (store.isDirty() ? pushLocal() : syncFromStartup());
   }, delayMs);
 }
 
@@ -482,7 +534,9 @@ async function pushLocal(): Promise<void> {
   setSyncState("syncing");
   try {
     const localLists = documentState.lists;
-    const remote = await new ShoppingApi(settings).saveList(documentState);
+    const api = new ShoppingApi(settings);
+    const remote = await api.saveList(documentState);
+    rememberActiveServer(api.activeServerUrl);
     activeListIndex = clampListIndex(activeListIndex);
     documentState = {
       ...remote,
@@ -493,8 +547,8 @@ async function pushLocal(): Promise<void> {
     store.saveDocument(documentState);
     store.setDirty(false);
     setSyncState("saved");
-  } catch {
-    setSyncState(navigator.onLine ? "error" : "offline");
+  } catch (error) {
+    setSyncState(navigator.onLine ? "error" : "offline", syncErrorMessage(error));
     scheduleSync(5000);
   }
 }
@@ -612,10 +666,71 @@ function syncLabel(state: SyncState): string {
     case "syncing":
       return "Sync";
     case "saved":
-      return "Saved";
+      return "Active";
     case "dirty":
       return "Saving";
     case "error":
       return "Retry";
   }
+}
+
+function syncDetail(state: SyncState): string {
+  switch (state) {
+    case "offline":
+      return "No network";
+    case "login":
+      return "Login required";
+    case "syncing":
+      return settings.activeServerUrl ? `Checking ${serverLabel(settings.activeServerUrl)}` : "Checking server";
+    case "saved":
+      return settings.activeServerUrl ? `Synced via ${serverLabel(settings.activeServerUrl)}` : "Synced";
+    case "dirty":
+      return settings.activeServerUrl ? `Saving to ${serverLabel(settings.activeServerUrl)}` : "Saving";
+    case "error":
+      return settings.activeServerUrl ? `Retry via ${serverLabel(settings.activeServerUrl)}` : retryDetail();
+  }
+}
+
+function retryDetail(): string {
+  return settings.lanServerUrl ? "Trying primary + LAN" : "Trying primary";
+}
+
+function syncTitle(state: SyncState): string {
+  const parts = [syncDetail(state)];
+  if (settings.activeServerUrl) {
+    parts.push(settings.activeServerUrl);
+  }
+  if (state === "error" && lastSyncError) {
+    parts.push(lastSyncError);
+  }
+  return parts.join(" · ");
+}
+
+function serverLabel(serverUrl: string): string {
+  const cleanUrl = cleanServerUrl(serverUrl);
+  if (settings.lanServerUrl && cleanUrl === cleanLanServerUrl(settings.lanServerUrl)) {
+    return "LAN";
+  }
+  if (cleanUrl === cleanServerUrl(settings.serverUrl)) {
+    return "primary";
+  }
+  try {
+    return new URL(cleanUrl).host;
+  } catch {
+    return "server";
+  }
+}
+
+function syncErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Sync request failed";
+}
+
+function applyServerLanUrl(value: string | undefined): void {
+  const lanServerUrl = cleanLanServerUrl(value ?? "");
+  if (!lanServerUrl || lanServerUrl === settings.lanServerUrl) {
+    return;
+  }
+  const nextSettings = { ...settings, lanServerUrl, activeServerUrl: lanServerUrl };
+  settings = { ...nextSettings, activeServerUrl: cleanActiveServerUrl(nextSettings) };
+  store.saveSettings(settings);
 }
