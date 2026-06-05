@@ -22,7 +22,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[derive(Clone)]
 struct AppState {
     emulator: Arc<Mutex<Option<Emulator>>>,
-    euthercivet: Arc<Mutex<euther_oxide::euthercivet::EutherCivetRuntime>>,
     eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
     bridge_url: Arc<Mutex<String>>,
     native_surface_rect: Arc<Mutex<Option<NativeSurfaceRect>>>,
@@ -38,7 +37,6 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             emulator: Arc::default(),
-            euthercivet: Arc::new(Mutex::new(euther_oxide::euthercivet::EutherCivetRuntime::new())),
             eutherdogs: Arc::new(Mutex::new(euther_oxide::eutherdogs::EutherDogsRuntime::demo())),
             bridge_url: Arc::default(),
             native_surface_rect: Arc::default(),
@@ -598,39 +596,6 @@ fn purchase_eutherdogs_item(
 ) -> Result<euther_oxide::eutherdogs::EutherDogsFrame, String> {
     let mut dogs = state.eutherdogs.lock().map_err(|err| err.to_string())?;
     dogs.purchase(purchase).map_err(|err| format!("{err:?}"))
-}
-
-#[tauri::command]
-fn euthercivet_snapshot(
-    state: State<'_, AppState>,
-) -> Result<euther_oxide::euthercivet::EutherCivetFrame, String> {
-    let civet = state.euthercivet.lock().map_err(|err| err.to_string())?;
-    Ok(civet.snapshot())
-}
-
-#[tauri::command]
-fn tick_euthercivet(
-    state: State<'_, AppState>,
-) -> Result<euther_oxide::euthercivet::EutherCivetFrame, String> {
-    let mut civet = state.euthercivet.lock().map_err(|err| err.to_string())?;
-    Ok(civet.tick())
-}
-
-#[tauri::command]
-fn reset_euthercivet(
-    state: State<'_, AppState>,
-) -> Result<euther_oxide::euthercivet::EutherCivetFrame, String> {
-    let mut civet = state.euthercivet.lock().map_err(|err| err.to_string())?;
-    Ok(civet.reset())
-}
-
-#[tauri::command]
-fn run_euthercivet_action(
-    state: State<'_, AppState>,
-    action: euther_oxide::euthercivet::EutherCivetAction,
-) -> Result<euther_oxide::euthercivet::EutherCivetFrame, String> {
-    let mut civet = state.euthercivet.lock().map_err(|err| err.to_string())?;
-    Ok(civet.action(action))
 }
 
 #[tauri::command]
@@ -1716,10 +1681,6 @@ fn main() {
             reset_eutherdogs_money,
             run_eutherdogs_frame,
             purchase_eutherdogs_item,
-            euthercivet_snapshot,
-            tick_euthercivet,
-            reset_euthercivet,
-            run_euthercivet_action,
             gamepad_snapshot,
             read_shader_config_toml,
             save_shader_config_toml,

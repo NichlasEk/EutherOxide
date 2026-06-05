@@ -188,7 +188,7 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 36%);
   overflow: hidden;
-  background: linear-gradient(180deg, #314a42 0%, #4d6037 42%, #2d2617 100%);
+  background: #17100c;
   opacity: 0;
   pointer-events: none;
 }
@@ -199,55 +199,96 @@ button:disabled {
   pointer-events: auto;
 }
 
+.euthercivet-mode .euthercivet-renderer {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.euthercivet-mode .euthercivet-panel {
+  display: none;
+}
+
 .euthercivet-world {
   position: relative;
   min-width: 0;
   overflow: hidden;
+  background: #231b12;
+}
+
+.euthercivet-game-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #101d16;
+}
+
+.civet-scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: saturate(1.08) contrast(1.04);
+}
+
+.civet-asset-wash {
+  position: absolute;
+  inset: 0;
+  opacity: 0.08;
+  mix-blend-mode: soft-light;
+  background-size: 38%;
 }
 
 .civet-sky,
 .civet-field,
 .civet-enclosure,
 .civet-roaster,
-.civet-inspection {
+.civet-inspection,
+.civet-world-card {
   position: absolute;
 }
 
 .civet-sky {
   inset: 0 0 58% 0;
-  background: linear-gradient(180deg, rgba(240, 203, 103, 0.42), rgba(121, 160, 111, 0.12));
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 74% 12%, rgba(255, 227, 142, 0.18), transparent 22%),
+    linear-gradient(180deg, rgba(240, 203, 103, 0.12), rgba(121, 160, 111, 0));
 }
 
 .civet-field {
-  left: 3%;
-  right: 31%;
-  top: 36%;
-  bottom: 5%;
-  border-top: 2px solid rgba(235, 205, 122, 0.34);
-  background:
-    repeating-linear-gradient(0deg, rgba(27, 63, 32, 0.28) 0 10px, rgba(86, 65, 27, 0.22) 10px 22px),
-    linear-gradient(180deg, rgba(44, 89, 38, 0.78), rgba(80, 52, 24, 0.84));
+  left: 1%;
+  right: 35%;
+  top: 46%;
+  bottom: 2%;
+  pointer-events: none;
 }
 
 .civet-plant {
   position: absolute;
-  width: 18px;
-  height: 34px;
+  width: 16px;
+  height: 30px;
   transform: translate(-50%, -50%);
   border-radius: 12px 12px 4px 4px;
-  background: #177335;
+  background:
+    radial-gradient(circle at 70% 26%, #e34531 0 14%, transparent 15%),
+    linear-gradient(120deg, #52a844, #11642d);
   box-shadow:
-    inset 6px 0 0 rgba(180, 222, 106, 0.22),
-    5px 5px 0 #b43327;
+    0 10px 0 -7px rgba(30, 19, 10, 0.75),
+    inset 5px 0 0 rgba(211, 238, 119, 0.24);
 }
 
 .civet-enclosure {
-  right: 5%;
-  bottom: 12%;
-  width: 31%;
-  height: 28%;
-  border: 5px solid #8d6b35;
-  background: rgba(65, 43, 24, 0.38);
+  right: 4%;
+  bottom: 10%;
+  width: 36%;
+  height: 31%;
+  border: 4px solid rgba(188, 139, 67, 0.78);
+  background:
+    repeating-linear-gradient(90deg, rgba(96, 60, 30, 0.28) 0 8px, transparent 8px 30px),
+    rgba(54, 36, 22, 0.24);
+  box-shadow: inset 0 0 34px rgba(0, 0, 0, 0.24);
 }
 
 .civet-enclosure strong,
@@ -270,30 +311,54 @@ button:disabled {
 
 .civet-animal {
   position: absolute;
-  width: 36px;
-  height: 18px;
+  width: 44px;
+  height: 30px;
   transform: translate(-50%, -50%);
-  border-radius: 999px 999px 10px 10px;
-  background: #4b3524;
-  box-shadow: 17px -3px 0 -7px #d3b77a;
+  animation: civet-bob 2.4s ease-in-out infinite;
+}
+
+.civet-animal i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px 999px 12px 12px;
+  background-color: #4b3524;
+  background-size: 260px 260px;
+  background-position: 8% 12%;
+  box-shadow:
+    17px -4px 0 -8px #d3b77a,
+    25px -2px 0 -11px #17100b,
+    0 9px 0 -7px rgba(0, 0, 0, 0.58);
 }
 
 .civet-roaster {
-  left: 9%;
-  top: 24%;
-  width: 130px;
-  height: 82px;
+  left: 8%;
+  top: 21%;
+  width: 160px;
+  height: 96px;
   border-radius: 6px;
   background:
+    center / cover no-repeat,
     linear-gradient(90deg, rgba(99, 59, 25, 0.92), rgba(184, 126, 49, 0.9)),
     repeating-linear-gradient(0deg, transparent 0 12px, rgba(0, 0, 0, 0.2) 12px 14px);
-  box-shadow: 50px 12px 0 -8px rgba(122, 79, 31, 0.92);
+  box-shadow:
+    50px 12px 0 -8px rgba(122, 79, 31, 0.92),
+    0 18px 28px rgba(0, 0, 0, 0.22);
 }
 
 .civet-roaster strong {
   left: 10px;
   top: 20px;
   color: #2a1708;
+}
+
+.civet-roaster span {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  color: #281608;
+  font-size: 0.7rem;
+  font-weight: 900;
 }
 
 .civet-binturong {
@@ -320,17 +385,76 @@ button:disabled {
 }
 
 .civet-helicopter {
-  width: 138px;
-  height: 32px;
+  width: 148px;
+  height: 44px;
   transform: translate(-50%, -50%);
-  padding-top: 8px;
   text-align: center;
   color: #ffd0be;
-  border-radius: 8px;
+  animation: civet-helicopter-hover 1.8s ease-in-out infinite;
+}
+
+.civet-helicopter i {
+  position: absolute;
+  left: 18px;
+  top: 14px;
+  width: 90px;
+  height: 22px;
+  border-radius: 10px 14px 14px 10px;
   background: #191d22;
   box-shadow:
-    0 -13px 0 -11px #d63e2c,
-    46px 0 0 -10px #15171c;
+    47px 3px 0 -11px #15171c,
+    0 -15px 0 -12px #d63e2c,
+    34px -17px 0 -14px #d63e2c;
+}
+
+.civet-helicopter b {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.civet-world-card {
+  left: 4%;
+  z-index: 2;
+  max-width: min(380px, 52%);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 225, 145, 0.28);
+  background: rgba(23, 16, 10, 0.78);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+}
+
+.civet-world-card strong,
+.civet-world-card span {
+  display: block;
+}
+
+.civet-world-card strong {
+  color: #ffe186;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+
+.civet-world-card span {
+  margin-top: 3px;
+  color: #f1dfb9;
+  font-size: 0.74rem;
+}
+
+.civet-modifier {
+  top: 4%;
+}
+
+.civet-event {
+  top: 18%;
+  border-color: rgba(255, 103, 72, 0.44);
+}
+
+.civet-order {
+  top: 32%;
+  border-color: rgba(113, 220, 126, 0.34);
 }
 
 .civet-inspection {
@@ -364,7 +488,9 @@ button:disabled {
   gap: 12px;
   padding: 18px;
   overflow: auto;
-  background: rgba(13, 12, 8, 0.9);
+  background:
+    linear-gradient(180deg, rgba(30, 24, 16, 0.96), rgba(12, 11, 8, 0.94)),
+    #0d0c08;
   border-left: 1px solid rgba(245, 220, 150, 0.18);
 }
 
@@ -447,6 +573,11 @@ button:disabled {
   padding: 8px;
 }
 
+.euthercivet-actions button.is-selected {
+  color: #201407;
+  background: #ffe186;
+}
+
 .euthercivet-log {
   padding-top: 4px;
 }
@@ -456,6 +587,26 @@ button:disabled {
   padding: 6px 0;
   color: #e6dcc0;
   text-transform: none;
+}
+
+@keyframes civet-bob {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -3px;
+  }
+}
+
+@keyframes civet-helicopter-hover {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -5px;
+  }
 }
 
 .eutherduke-frame {

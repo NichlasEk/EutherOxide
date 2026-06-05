@@ -4,6 +4,7 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   clearScreen: false,
+  publicDir: "webview/public",
   server: {
     port: 5173,
     strictPort: true,
@@ -26,4 +27,3 @@ export default defineConfig({
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
   },
 });
-

@@ -686,7 +686,6 @@ struct BridgeState {
     runner_active: Arc<Mutex<bool>>,
     shutdown: Arc<AtomicBool>,
     gamepads: Arc<Mutex<GamepadReader>>,
-    euthercivet: Arc<Mutex<euther_oxide::euthercivet::EutherCivetRuntime>>,
     eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
     eutherdogs_latest: Arc<Mutex<[Option<euther_oxide::eutherdogs::EutherDogsFrame>; 2]>>,
     eutherdogs_input_seq: Arc<Mutex<[u64; 2]>>,
@@ -1059,7 +1058,6 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
         runner_active: Arc::new(Mutex::new(false)),
         shutdown: Arc::new(AtomicBool::new(false)),
         gamepads: Arc::new(Mutex::new(GamepadReader::new())),
-        euthercivet: Arc::new(Mutex::new(euther_oxide::euthercivet::EutherCivetRuntime::new())),
         eutherdogs: Arc::new(Mutex::new(
             euther_oxide::eutherdogs::EutherDogsRuntime::demo(),
         )),
@@ -1149,6 +1147,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && !valid_csrf_token(state, &request)?
     {
         return send_error(stream, 403, "csrf token required");
+    }
+    if request.method == "GET"
+        && (path.starts_with("/euthercivet-game/assets/")
+            || path.starts_with("/euthercivet-game/pkg/"))
+    {
+        return send_host_static(stream, path);
     }
     match (request.method.as_str(), path) {
         ("GET", "/login") => send_login_page(stream, None),
@@ -1619,7 +1623,11 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             if path == "/eutherbooks" || path.starts_with("/eutherbooks/") {
                 return proxy_eutherbooks_request(stream, &request);
             }
-            if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
+            if path == "/"
+                || path == "/index.html"
+                || path.starts_with("/assets/")
+                || path.starts_with("/euthercivet-game/")
+            {
                 return send_host_static(stream, path);
             }
             let instance_id = host_instance_id(&request.path)?;
@@ -2289,10 +2297,6 @@ fn host_route_permission(path: &str, method: &str) -> Option<HostPermission> {
         | ("GET", "/eutherdogs/snapshot")
         | ("GET", "/eutherdogs/stream")
         | ("POST", "/eutherdogs/purchase")
-        | ("GET", "/euthercivet/snapshot")
-        | ("POST", "/euthercivet/tick")
-        | ("POST", "/euthercivet/action")
-        | ("POST", "/euthercivet/reset")
         | ("POST", "/eutherdogs-highscores") => Some(HostPermission::Play),
         _ => None,
     }
@@ -4459,6 +4463,15 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
+        Some("wasm") => "application/wasm",
+        Some("json") => "application/json; charset=utf-8",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("ogg") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("ttf") => "font/ttf",
         _ => "application/octet-stream",
     };
     send_response(stream, 200, content_type, &bytes)
@@ -4528,8 +4541,8 @@ fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> i
     if request.method != "GET" && request.method != "POST" {
         return send_error(stream, 405, "method not allowed");
     }
-    let upstream_base = env::var("EUTHERBOOKS_UPSTREAM")
-        .unwrap_or_else(|_| "127.0.0.1:8088".to_string());
+    let upstream_base =
+        env::var("EUTHERBOOKS_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8088".to_string());
     let mut upstream = match TcpStream::connect(&upstream_base) {
         Ok(upstream) => upstream,
         Err(_) => return send_error(stream, 502, "EutherBooks upstream unavailable"),
@@ -4995,41 +5008,6 @@ fn handle_bridge_route_with_user(
                 .map_err(|err| invalid_request(format!("{err:?}")))?;
             drop(dogs);
             publish_eutherdogs_initial_frame(state, frame.clone())?;
-            send_json(stream, &frame)
-        }
-        ("GET", "/euthercivet/snapshot") => {
-            let frame = state
-                .euthercivet
-                .lock()
-                .map_err(|err| io::Error::other(err.to_string()))?
-                .snapshot();
-            send_json(stream, &frame)
-        }
-        ("POST", "/euthercivet/tick") => {
-            let frame = state
-                .euthercivet
-                .lock()
-                .map_err(|err| io::Error::other(err.to_string()))?
-                .tick();
-            send_json(stream, &frame)
-        }
-        ("POST", "/euthercivet/action") => {
-            let action: euther_oxide::euthercivet::EutherCivetAction =
-                serde_json::from_slice(&request.body)
-                    .map_err(|err| invalid_request(err.to_string()))?;
-            let frame = state
-                .euthercivet
-                .lock()
-                .map_err(|err| io::Error::other(err.to_string()))?
-                .action(action);
-            send_json(stream, &frame)
-        }
-        ("POST", "/euthercivet/reset") => {
-            let frame = state
-                .euthercivet
-                .lock()
-                .map_err(|err| io::Error::other(err.to_string()))?
-                .reset();
             send_json(stream, &frame)
         }
         ("GET", "/gamepads") => {

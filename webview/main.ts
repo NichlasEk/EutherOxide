@@ -11,6 +11,7 @@ const eutherDogsAssetModules = import.meta.glob("../assets/eutherdogs/**/*.{png,
   query: "?url",
   import: "default",
 }) as Record<string, string>;
+const eutherCivetGameUrl = "/euthercivet-game/index.html";
 const eutheriumIconModules = import.meta.glob("../assets/eutherium/icons/*.png", {
   eager: true,
   query: "?url",
@@ -138,47 +139,6 @@ type DogsBridgeInput = InputState & {
   seq?: number;
   weaponSlot?: number;
   inspectionAnswer?: "yes" | "no" | "other";
-};
-
-type CivetAction =
-  | "plantCoffee"
-  | "harvestFruit"
-  | "feedCivets"
-  | "collectBeans"
-  | "roastCoffee"
-  | "sellCoffee"
-  | "improveEnclosure"
-  | "showPaperwork"
-  | "inspectPaperwork"
-  | "inspectTasting"
-  | "inspectGoat";
-
-type CivetGameState = {
-  coffeePlants: number;
-  civets: number;
-  coffeeFruit: number;
-  civetFeed: number;
-  processedBeans: number;
-  roastedCoffee: number;
-  money: number;
-  suspicion: number;
-  civetHappiness: number;
-  reputation: number;
-  enclosureLevel: number;
-  paperworkLevel: number;
-  binturongHome: boolean;
-  goatPresent: boolean;
-  inspection: boolean;
-  rngSeed: number;
-  log: string[];
-};
-
-type CivetFrame = {
-  frame: number;
-  state: CivetGameState;
-  status: string;
-  coffeePipeline: number;
-  availableActions: CivetAction[];
 };
 
 type LobbyPlayer = {
@@ -1157,9 +1117,6 @@ let doomRendererController: { stop?: () => Promise<void>; setMouseSensitivity?: 
 let doomRuntimeScriptPromise: Promise<void> | null = null;
 let doomMouseSensitivity = readStoredDoomMouseSensitivity();
 let civetMode = false;
-let civetFrame: CivetFrame | null = null;
-let civetTickTimer: number | null = null;
-let civetTickInFlight = false;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
@@ -2382,11 +2339,6 @@ userMenuDropdown.addEventListener("click", (event) => {
 });
 
 reactionCorePage.addEventListener("click", (event) => {
-  const civetAction = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-civet-action]");
-  if (civetAction) {
-    void runCivetAction(civetAction.dataset.civetAction as CivetAction);
-    return;
-  }
   const lobbyAward = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-eutherium-lobby-award-submit]");
   if (lobbyAward) {
     void awardEutheriumFromLobby();
@@ -3015,11 +2967,8 @@ playToggle.addEventListener("click", async () => {
   ui.status = ui.playing ? "RUNNING" : "PAUSED";
   renderUi();
   if (civetMode) {
-    if (ui.playing) {
-      startCivetTicker();
-    } else {
-      stopCivetTicker();
-    }
+    ui.status = "CIVET BEVY";
+    renderUi();
     return;
   }
   if (dogsMode) {
@@ -3059,8 +3008,8 @@ stepFrame.addEventListener("click", async () => {
   if (civetMode) {
     ui.playing = false;
     playToggle.textContent = "Play";
-    stopCivetTicker();
-    await tickCivetOnce();
+    ui.status = "CIVET BEVY";
+    renderUi();
     return;
   }
   if (isTauri && ui.runtime === "tauri") {
@@ -3138,8 +3087,8 @@ eutherCivetReset.addEventListener("click", () => {
 eutherCivetStep.addEventListener("click", () => {
   ui.playing = false;
   playToggle.textContent = "Play";
-  stopCivetTicker();
-  void tickCivetOnce();
+  ui.status = "CIVET BEVY";
+  renderUi();
 });
 
 eutherDogsStaffOpen.addEventListener("click", () => {
@@ -5403,6 +5352,14 @@ async function bridgeJson<T>(
   timeoutMs = 0,
 ): Promise<T> {
   const response = await bridgeRequest(path, init, timeoutMs);
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    const body = await response.text();
+    if (body.includes("/api/login") || body.includes("<form")) {
+      throw new Error("login required");
+    }
+    throw new Error(`expected JSON from ${path}, got ${contentType || "unknown response"}`);
+  }
   return (await response.json()) as T;
 }
 
@@ -13502,19 +13459,33 @@ function renderDogsAssetMode(): void {
   });
 }
 
-const civetActionLabels: Record<CivetAction, string> = {
-  plantCoffee: "Plant coffee",
-  harvestFruit: "Harvest fruit",
-  feedCivets: "Feed civets",
-  collectBeans: "Collect beans",
-  roastCoffee: "Roast coffee",
-  sellCoffee: "Sell coffee",
-  improveEnclosure: "Improve enclosure",
-  showPaperwork: "Show paperwork",
-  inspectPaperwork: "Show paperwork",
-  inspectTasting: "Offer tasting",
-  inspectGoat: "Blame the goat",
-};
+async function ensureCivetHostSession(): Promise<void> {
+  if (isTauri || !hostedServerMode) {
+    return;
+  }
+  await refreshAuthStatus();
+  if (!hostUsername) {
+    throw new Error("login required");
+  }
+  if (!hostPermissions.canPlay) {
+    throw new Error("Play permission required");
+  }
+}
+
+function renderCivetBevyGame(reload = false): void {
+  const existing = eutherCivetWorld.querySelector<HTMLIFrameElement>(".euthercivet-game-frame");
+  if (existing && !reload) {
+    return;
+  }
+  const cacheKey = reload ? `?reload=${Date.now()}` : "";
+  eutherCivetWorld.innerHTML = `<iframe class="euthercivet-game-frame" title="EutherCivet" src="${eutherCivetGameUrl}${cacheKey}" allow="autoplay; fullscreen; gamepad" loading="eager"></iframe>`;
+  eutherCivetTitle.textContent = "EutherCivet";
+  eutherCivetStatus.textContent = "Bevy runtime";
+  eutherCivetBars.innerHTML = "";
+  eutherCivetStats.innerHTML = "";
+  eutherCivetActions.innerHTML = "";
+  eutherCivetLog.innerHTML = "";
+}
 
 async function enterCivetMode(): Promise<void> {
   if (civetMode) {
@@ -13526,47 +13497,48 @@ async function enterCivetMode(): Promise<void> {
   civetMode = true;
   resetScheduledAudio();
   stopBridgeStream();
-  ui.playing = false;
+  ui.playing = true;
   Object.assign(ui, {
     loaded: true,
     runtime: isTauri ? ("tauri" as const) : ui.runtime === "bridge" ? ("bridge" as const) : ("web" as const),
     title: "EutherCivet",
     region: "ESTATE",
-    timing: "1HZ",
+    timing: "BEVY",
     resetPc: 0,
     width: 960,
     height: 540,
     cpuCycles: 0,
     cpuSteps: 0,
-    frameMs: 1000,
-    transportMode: "CIVET CORE",
+    frameMs: 0,
+    transportMode: "CIVET BEVY",
     status: "CIVET WARMUP",
     lastError: "",
   });
-  playToggle.textContent = "Play";
+  playToggle.textContent = "Pause";
   document.body.classList.add("euthercivet-mode");
   eutherCivetRenderer.setAttribute("aria-hidden", "false");
   try {
-    civetFrame = await civetSnapshotCore();
-    renderCivetFrame(civetFrame);
-    ui.frame = civetFrame.frame;
-    ui.status = civetUiStatus(civetFrame);
-    pushTrace("EutherCivet Rust core started");
+    await ensureCivetHostSession();
+    renderCivetBevyGame();
+    ui.frame = 0;
+    ui.status = "CIVET BEVY";
+    pushTrace("EutherCivet Bevy runtime started");
   } catch (err) {
     civetMode = false;
     document.body.classList.remove("euthercivet-mode");
     eutherCivetRenderer.setAttribute("aria-hidden", "true");
     ui.loaded = false;
+    ui.playing = false;
+    playToggle.textContent = "Play";
     ui.status = "CIVET ERROR";
     ui.lastError = err instanceof Error ? err.message : String(err);
-    pushTrace(`EutherCivet core failed: ${ui.lastError}`);
+    pushTrace(`EutherCivet failed: ${ui.lastError}`);
   }
   renderUi();
 }
 
 function leaveCivetMode(): void {
   civetMode = false;
-  stopCivetTicker();
   ui.playing = false;
   ui.loaded = false;
   ui.title = "No ROM";
@@ -13574,200 +13546,18 @@ function leaveCivetMode(): void {
   playToggle.textContent = "Play";
   document.body.classList.remove("euthercivet-mode");
   eutherCivetRenderer.setAttribute("aria-hidden", "true");
+  eutherCivetWorld.innerHTML = "";
   drawSyntheticFrame();
   renderUi();
 }
 
 async function resetCivetMode(): Promise<void> {
-  stopCivetTicker();
-  ui.playing = false;
-  playToggle.textContent = "Play";
-  try {
-    civetFrame = await resetCivetCore();
-    renderCivetFrame(civetFrame);
-    ui.frame = civetFrame.frame;
-    ui.status = civetUiStatus(civetFrame);
-  } catch (err) {
-    ui.status = "CIVET ERROR";
-    ui.lastError = err instanceof Error ? err.message : String(err);
-  }
+  ui.playing = true;
+  playToggle.textContent = "Pause";
+  renderCivetBevyGame(true);
+  ui.frame = 0;
+  ui.status = "CIVET BEVY";
   renderUi();
-}
-
-function startCivetTicker(): void {
-  if (civetTickTimer !== null) {
-    return;
-  }
-  civetTickTimer = window.setInterval(() => {
-    void tickCivetOnce();
-  }, 1000);
-}
-
-function stopCivetTicker(): void {
-  if (civetTickTimer === null) {
-    return;
-  }
-  window.clearInterval(civetTickTimer);
-  civetTickTimer = null;
-}
-
-async function tickCivetOnce(): Promise<void> {
-  if (civetTickInFlight) {
-    return;
-  }
-  civetTickInFlight = true;
-  const started = performance.now();
-  try {
-    civetFrame = await tickCivetCore();
-    renderCivetFrame(civetFrame);
-    ui.frame = civetFrame.frame;
-    ui.cpuCycles = Math.round(civetFrame.state.suspicion);
-    ui.cpuSteps = Math.round(civetFrame.state.civetHappiness);
-    ui.transportMs = performance.now() - started;
-    ui.drawMs = 0;
-    ui.status = civetUiStatus(civetFrame);
-  } catch (err) {
-    ui.status = "CIVET HOLD";
-    ui.lastError = err instanceof Error ? err.message : String(err);
-  } finally {
-    civetTickInFlight = false;
-    renderUi();
-  }
-}
-
-async function runCivetAction(action: CivetAction): Promise<void> {
-  if (!(action in civetActionLabels)) {
-    return;
-  }
-  try {
-    civetFrame = await civetActionCore(action);
-    renderCivetFrame(civetFrame);
-    ui.frame = civetFrame.frame;
-    ui.status = civetUiStatus(civetFrame);
-    renderUi();
-  } catch (err) {
-    ui.status = "CIVET ACTION ERROR";
-    ui.lastError = err instanceof Error ? err.message : String(err);
-    renderUi();
-  }
-}
-
-async function civetSnapshotCore(): Promise<CivetFrame> {
-  if (isTauri) {
-    return await invoke<CivetFrame>("euthercivet_snapshot");
-  }
-  if (ui.runtime !== "bridge") {
-    await connectBridge(false);
-  }
-  if (ui.runtime === "bridge") {
-    return await bridgeJson<CivetFrame>("/euthercivet/snapshot");
-  }
-  throw new Error("starta web bridge eller Tauri for EutherCivet");
-}
-
-async function tickCivetCore(): Promise<CivetFrame> {
-  if (isTauri) {
-    return await invoke<CivetFrame>("tick_euthercivet");
-  }
-  return await bridgeJson<CivetFrame>("/euthercivet/tick", { method: "POST" });
-}
-
-async function resetCivetCore(): Promise<CivetFrame> {
-  if (isTauri) {
-    return await invoke<CivetFrame>("reset_euthercivet");
-  }
-  return await bridgeJson<CivetFrame>("/euthercivet/reset", { method: "POST" });
-}
-
-async function civetActionCore(action: CivetAction): Promise<CivetFrame> {
-  if (isTauri) {
-    return await invoke<CivetFrame>("run_euthercivet_action", { action });
-  }
-  return await bridgeJson<CivetFrame>("/euthercivet/action", {
-    method: "POST",
-    body: JSON.stringify(action),
-  });
-}
-
-function civetUiStatus(frame: CivetFrame): string {
-  return `CIVET ${frame.status.toUpperCase()}`;
-}
-
-function renderCivetFrame(frame: CivetFrame | null): void {
-  if (!frame) {
-    eutherCivetWorld.innerHTML = "";
-    eutherCivetStats.innerHTML = "<span>Waiting for estate ledger</span>";
-    eutherCivetActions.innerHTML = "";
-    eutherCivetLog.innerHTML = "";
-    return;
-  }
-  const state = frame.state;
-  eutherCivetTitle.textContent = state.inspection ? "Operation Bitter Bean" : "EutherCivet";
-  eutherCivetStatus.textContent = `${frame.status.toUpperCase()} F${frame.frame}`;
-  eutherCivetBars.innerHTML = [
-    civetBar("Suspicion", state.suspicion, "suspicion"),
-    civetBar("Happiness", state.civetHappiness, "happiness"),
-    civetBar("Pipeline", frame.coffeePipeline, "pipeline"),
-  ].join("");
-  eutherCivetStats.innerHTML = [
-    civetStat("Money", `$${state.money}`),
-    civetStat("Plants", state.coffeePlants.toString()),
-    civetStat("Civets", state.civets.toString()),
-    civetStat("Fruit", state.coffeeFruit.toFixed(0)),
-    civetStat("Feed", state.civetFeed.toFixed(0)),
-    civetStat("Beans", state.processedBeans.toFixed(1)),
-    civetStat("Roasted", state.roastedCoffee.toFixed(1)),
-    civetStat("Reputation", state.reputation.toString()),
-    civetStat("Paperwork", state.paperworkLevel.toString()),
-    civetStat("Enclosure", state.enclosureLevel.toString()),
-  ].join("");
-  eutherCivetActions.innerHTML = frame.availableActions
-    .map((action) => `<button data-civet-action="${action}" type="button">${civetActionLabels[action]}</button>`)
-    .join("");
-  eutherCivetLog.innerHTML = state.log.map((line) => `<span>${escapeHtml(line)}</span>`).join("");
-  eutherCivetWorld.innerHTML = civetWorldMarkup(state, frame.frame);
-}
-
-function civetBar(label: string, value: number, kind: string): string {
-  const percent = Math.max(0, Math.min(100, value));
-  return `
-    <div class="euthercivet-bar euthercivet-bar-${kind}">
-      <span>${escapeHtml(label)}</span>
-      <strong>${Math.round(percent)}%</strong>
-      <i><b style="width: ${percent}%"></b></i>
-    </div>
-  `;
-}
-
-function civetStat(label: string, value: string): string {
-  return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
-}
-
-function civetWorldMarkup(state: CivetGameState, frame: number): string {
-  const plantCount = Math.min(36, Math.max(0, Math.trunc(state.coffeePlants)));
-  const civetCount = Math.min(10, Math.max(0, Math.trunc(state.civets)));
-  const plants = Array.from({ length: plantCount }, (_, index) => {
-    const col = index % 12;
-    const row = Math.floor(index / 12);
-    return `<span class="civet-plant" style="left:${10 + col * 6.8}%;top:${45 + row * 9}%"></span>`;
-  }).join("");
-  const civets = Array.from({ length: civetCount }, (_, index) => {
-    const col = index % 5;
-    const row = Math.floor(index / 5);
-    return `<span class="civet-animal" style="left:${59 + col * 6.5}%;top:${57 + row * 10}%"></span>`;
-  }).join("");
-  const copterX = 58 + Math.sin(frame * 0.35) * 6;
-  const copterY = 18 + Math.cos(frame * 0.42) * 2;
-  return `
-    <div class="civet-sky"></div>
-    <div class="civet-field">${plants}</div>
-    <div class="civet-enclosure">${civets}<strong>CIVET ENCLOSURE</strong></div>
-    <div class="civet-roaster"><strong>ROASTED COFFEE</strong></div>
-    ${state.binturongHome ? `<span class="civet-binturong">binturong</span>` : ""}
-    ${state.goatPresent ? `<span class="civet-goat">goat?</span>` : ""}
-    <span class="civet-helicopter" style="left:${copterX}%;top:${copterY}%">police helicopter</span>
-    ${state.inspection ? `<div class="civet-inspection"><strong>Operation Bitter Bean</strong><span>Normal work paused</span></div>` : ""}
-  `;
 }
 
 async function enterDogsMode(): Promise<void> {

@@ -1412,20 +1412,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "euther_civet_core"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "euther_oxide"
 version = "0.1.0"
 dependencies = [
  "argon2",
  "bincode 2.0.1",
  "bytes",
- "euther_civet_core",
  "eutherdogs-core",
  "eutherdoom-server",
  "gilrs",

@@ -7,9 +7,10 @@
     "dev": "node scripts/write-build-info.mjs && vite",
     "dev:bridge": "bash scripts/dev-bridge.sh",
     "dev:bridge:release": "EUTHER_BRIDGE_RELEASE=1 bash scripts/dev-bridge.sh",
+    "build:euthercivet": "bash scripts/build-euthercivet-web.sh",
     "build:release": "bash scripts/build-release.sh",
     "build:all": "bash scripts/build-all.sh",
-    "build": "node scripts/write-build-info.mjs && tsc && vite build",
+    "build": "node scripts/write-build-info.mjs && npm run build:euthercivet && tsc && vite build",
     "preview": "vite preview",
     "tauri:run": "bash scripts/run-tauri-release.sh",
     "tauri": "tauri"
