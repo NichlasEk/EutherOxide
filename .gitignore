@@ -4,6 +4,7 @@
 /src-tauri/gen/
 /node_modules/
 /dist/
+/apps/euthersync/
 /tmp/
 .euther-bridge/
 .euther-host/

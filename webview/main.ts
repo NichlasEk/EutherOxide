@@ -150,7 +150,7 @@ type LobbyPlayer = {
 type LobbyInstance = {
   id: string;
   name: string;
-  kind?: "megadrive" | "eutherdoom";
+  kind?: "megadrive" | "eutheralert" | "eutherdoom";
   modeLabel?: string;
   loaded: boolean;
   title: string;
@@ -292,7 +292,7 @@ type VideoChatResult = {
   signals: VideoChatSignal[];
 };
 
-type PlayMode = "megadrive" | "eutherdogs" | "euthercivet" | "eutherdoom" | "eutherduke";
+type PlayMode = "megadrive" | "eutherdogs" | "euthercivet" | "eutheralert" | "eutherdoom" | "eutherduke";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
 type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "books" | "friends" | "spaces" | "profile" | "settings";
 
@@ -307,6 +307,89 @@ type InteractionFriend = {
 type InteractionUsersResult = {
   currentUser: string;
   users: InteractionFriend[];
+};
+
+type SocialChatUser = {
+  name: string;
+  displayName: string;
+  online: boolean;
+  status: "Online" | "Offline";
+  location: string;
+  special?: "codex";
+};
+
+type SocialChatConversationKind = "direct" | "group";
+
+type SocialChatMessagePreview = {
+  user: string;
+  text: string;
+  createdUnixMs: number;
+};
+
+type SocialChatAttachment = {
+  id: string;
+  name: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+};
+
+type SocialChatReaction = {
+  key: string;
+  users: string[];
+};
+
+type SocialChatConversation = {
+  id: string;
+  kind: SocialChatConversationKind;
+  title?: string | null;
+  participants: string[];
+  createdBy: string;
+  createdUnixMs: number;
+  updatedUnixMs: number;
+  lastMessage?: SocialChatMessagePreview | null;
+};
+
+type SocialChatMessage = {
+  id: number;
+  conversationId: string;
+  user: string;
+  text: string;
+  attachments?: SocialChatAttachment[];
+  reactions?: SocialChatReaction[];
+  createdUnixMs: number;
+};
+
+type SocialChatUsersResult = {
+  users: SocialChatUser[];
+};
+
+type SocialChatConversationsResult = {
+  conversations: SocialChatConversation[];
+};
+
+type SocialChatConversationResult = {
+  conversation: SocialChatConversation;
+};
+
+type SocialChatMessagesResult = {
+  conversation: SocialChatConversation;
+  messages: SocialChatMessage[];
+  hasOlder: boolean;
+};
+
+type SocialChatPostResult = {
+  conversation: SocialChatConversation;
+  message: SocialChatMessage;
+};
+
+type SocialChatAttachmentResult = {
+  attachment: SocialChatAttachment;
+};
+
+type SocialChatReactionResult = {
+  conversation: SocialChatConversation;
+  message: SocialChatMessage;
 };
 
 type InteractionSpace = {
@@ -1154,6 +1237,20 @@ let eutherBooksAudioIndex = 0;
 let interactionUsers: InteractionFriend[] = [];
 let interactionUsersLoaded = false;
 let interactionUsersStatus = "Mock users";
+let socialChatConversations: SocialChatConversation[] = [];
+let socialChatMessages: SocialChatMessage[] = [];
+let socialChatUsers: SocialChatUser[] = [];
+let socialChatSelectedConversationId: string | null = null;
+let socialChatSelectedUsers = new Set<string>();
+let socialChatSearchQuery = "";
+let socialChatStatus = "Not loaded";
+let socialChatLoading = false;
+let socialChatHasOlder = false;
+let socialChatPendingAttachments: SocialChatAttachment[] = [];
+let socialChatUploading = false;
+let socialChatSidebarCollapsed = window.matchMedia("(max-width: 640px)").matches;
+let socialChatEmojiPickerOpen = false;
+let socialChatThreadDetailsExpanded = false;
 let eutheriumLoaded = false;
 let eutheriumSaving = false;
 let eutheriumStatus = "Not loaded";
@@ -1308,6 +1405,18 @@ const interactionFutureModules: FutureModule[] = [
   { name: "Markdown Vaults", detail: "Obsidian-like spaces, synced through the host" },
   { name: "Video Rooms", detail: "Persistent room presets for chat and co-play" },
 ];
+const socialChatEmojis = [
+  { key: "thumbs-up", label: "Thumbs up", symbol: "👍" },
+  { key: "thumbs-down", label: "Thumbs down", symbol: "👎" },
+  { key: "chemist-happy", label: "Happy chemist", symbol: "🧪😄" },
+  { key: "chemist-laugh", label: "Lab laugh", symbol: "⚗️😂" },
+  { key: "chemist-thinking", label: "Thinking formula", symbol: "🧬🤔" },
+  { key: "chemist-shocked", label: "Beaker shock", symbol: "🧫😮" },
+  { key: "chemist-suspicious", label: "Suspicious sample", symbol: "🔬🧐" },
+  { key: "chemist-boom", label: "Tiny explosion", symbol: "💥🧪" },
+  { key: "family-chaos", label: "Family chaos", symbol: "🏠✨" },
+  { key: "apk-drop", label: "APK drop", symbol: "📦🤖" },
+];
 const playModeCards: Array<{
   mode: PlayMode;
   label: string;
@@ -1335,6 +1444,13 @@ const playModeCards: Array<{
     kicker: "Coffee estate sim",
     detail: "Civets, beans, paperwork, suspicion and inspections.",
     action: "Open EutherCivet",
+  },
+  {
+    mode: "eutheralert",
+    label: "EutherAlert",
+    kicker: "Red Alert vessel",
+    detail: "Command and Conquer: Red Alert runtime with shared P1/P2 slots.",
+    action: "Open EutherAlert",
   },
   {
     mode: "eutherdoom",
@@ -1523,6 +1639,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-play-mode="megadrive" type="button">MegaDrive</button>
             <button data-play-mode="eutherdogs" type="button">EutherDogs</button>
             <button data-play-mode="euthercivet" type="button">EutherCivet</button>
+            <button data-play-mode="eutheralert" type="button">EutherAlert</button>
             <button data-play-mode="eutherdoom" type="button">EutherDoom</button>
             <button data-play-mode="eutherduke" type="button">EutherDuke</button>
           </div>
@@ -1556,6 +1673,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="lobby-instances" id="lobby-instances"></div>
         <div class="lobby-actions">
           <button id="instance-start" type="button">Start MegaDrive</button>
+          <button id="alert-instance-start" type="button">Start EutherAlert</button>
           <button id="doom-instance-start" type="button">Start EutherDoom</button>
           <button id="instance-join" type="button">Join</button>
           <button id="claim-p1" type="button">Claim P1</button>
@@ -1765,6 +1883,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <p>Expected external runtime at /home/nichlas/eutherduke-runtime with index.html, wasm/data files, and legal Duke game data.</p>
             </div>
           </div>
+          <div id="eutheralert-renderer" class="eutheralert-renderer" aria-hidden="true">
+            <iframe id="eutheralert-frame" class="eutheralert-frame" title="EutherAlert runtime"></iframe>
+            <div id="eutheralert-runtime-panel" class="eutheralert-runtime-panel">
+              <span>Command and Conquer: Red Alert Vessel</span>
+              <strong>EutherAlert runtime not installed</strong>
+              <p>Expected external runtime at /home/nichlas/eutheralert-runtime with index.html and legally supplied Red Alert/OpenRA content.</p>
+            </div>
+          </div>
           <div id="euthercivet-renderer" class="euthercivet-renderer" aria-hidden="true">
             <div class="euthercivet-world" id="euthercivet-world"></div>
             <aside class="euthercivet-panel">
@@ -1969,6 +2095,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </button>
     <div id="user-menu-dropdown" class="user-menu-dropdown" role="menu" aria-label="user menu">
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
+      <button data-user-menu-action="get-sync-app" type="button" role="menuitem">Get the EutherSync app</button>
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
       <button data-user-menu-action="audiobooks" type="button" role="menuitem">Audiobooks</button>
@@ -2091,6 +2218,9 @@ const eutherDoomRendererStatus = document.querySelector<HTMLDivElement>("#euther
 const eutherDukeRenderer = document.querySelector<HTMLDivElement>("#eutherduke-renderer")!;
 const eutherDukeFrame = document.querySelector<HTMLIFrameElement>("#eutherduke-frame")!;
 const eutherDukeRuntimePanel = document.querySelector<HTMLDivElement>("#eutherduke-runtime-panel")!;
+const eutherAlertRenderer = document.querySelector<HTMLDivElement>("#eutheralert-renderer")!;
+const eutherAlertFrame = document.querySelector<HTMLIFrameElement>("#eutheralert-frame")!;
+const eutherAlertRuntimePanel = document.querySelector<HTMLDivElement>("#eutheralert-runtime-panel")!;
 const eutherCivetRenderer = document.querySelector<HTMLDivElement>("#euthercivet-renderer")!;
 const eutherCivetWorld = document.querySelector<HTMLDivElement>("#euthercivet-world")!;
 const eutherCivetStatus = document.querySelector<HTMLElement>("#euthercivet-status")!;
@@ -2192,6 +2322,7 @@ const lobbyHost = document.querySelector<HTMLElement>("#lobby-host")!;
 const lobbyInstances = document.querySelector<HTMLDivElement>("#lobby-instances")!;
 const adminOpen = document.querySelector<HTMLButtonElement>("#admin-open")!;
 const instanceStart = document.querySelector<HTMLButtonElement>("#instance-start")!;
+const alertInstanceStart = document.querySelector<HTMLButtonElement>("#alert-instance-start")!;
 const doomInstanceStart = document.querySelector<HTMLButtonElement>("#doom-instance-start")!;
 const instanceJoin = document.querySelector<HTMLButtonElement>("#instance-join")!;
 const claimP1 = document.querySelector<HTMLButtonElement>("#claim-p1")!;
@@ -2381,6 +2512,77 @@ workspaceWindowClose.addEventListener("click", () => {
 
 workspaceWindowDynamic.addEventListener("click", async (event) => {
   const target = event.target as HTMLElement;
+  const socialRefresh = target.closest<HTMLButtonElement>("[data-social-chat-refresh]");
+  if (socialRefresh) {
+    await loadSocialChatConversations(true);
+    return;
+  }
+  const socialSidebarToggle = target.closest<HTMLButtonElement>("[data-social-sidebar-toggle]");
+  if (socialSidebarToggle) {
+    socialChatSidebarCollapsed = !socialChatSidebarCollapsed;
+    renderActiveSocialChatWindow();
+    return;
+  }
+  const socialBackToList = target.closest<HTMLButtonElement>("[data-social-back-to-list]");
+  if (socialBackToList) {
+    socialChatSelectedConversationId = null;
+    socialChatMessages = [];
+    socialChatHasOlder = false;
+    socialChatSidebarCollapsed = false;
+    socialChatThreadDetailsExpanded = false;
+    renderActiveSocialChatWindow();
+    return;
+  }
+  const socialThreadDetails = target.closest<HTMLButtonElement>("[data-social-thread-details]");
+  if (socialThreadDetails) {
+    socialChatThreadDetailsExpanded = !socialChatThreadDetailsExpanded;
+    renderActiveSocialChatWindow();
+    return;
+  }
+  const socialConversation = target.closest<HTMLButtonElement>("[data-social-conversation]");
+  if (socialConversation?.dataset.socialConversation) {
+    await selectSocialChatConversation(socialConversation.dataset.socialConversation);
+    return;
+  }
+  const socialUser = target.closest<HTMLButtonElement>("[data-social-user]");
+  if (socialUser?.dataset.socialUser) {
+    toggleSocialChatUser(socialUser.dataset.socialUser);
+    return;
+  }
+  const socialCreate = target.closest<HTMLButtonElement>("[data-social-create-chat]");
+  if (socialCreate) {
+    await createSocialChatFromSelection();
+    return;
+  }
+  const socialLoadOlder = target.closest<HTMLButtonElement>("[data-social-load-older]");
+  if (socialLoadOlder) {
+    await loadOlderSocialChatMessages();
+    return;
+  }
+  const socialRemoveAttachment = target.closest<HTMLButtonElement>("[data-social-remove-attachment]");
+  if (socialRemoveAttachment?.dataset.socialRemoveAttachment) {
+    removeSocialChatPendingAttachment(socialRemoveAttachment.dataset.socialRemoveAttachment);
+    return;
+  }
+  const socialEmojiToggle = target.closest<HTMLButtonElement>("[data-social-emoji-toggle]");
+  if (socialEmojiToggle) {
+    socialChatEmojiPickerOpen = !socialChatEmojiPickerOpen;
+    renderActiveSocialChatWindow();
+    return;
+  }
+  const socialEmoji = target.closest<HTMLButtonElement>("[data-social-emoji]");
+  if (socialEmoji?.dataset.socialEmoji) {
+    insertSocialChatEmoji(socialEmoji.dataset.socialEmoji);
+    return;
+  }
+  const socialReactionButton = target.closest<HTMLButtonElement>("[data-social-reaction-key]");
+  if (socialReactionButton?.dataset.socialReactionKey && socialReactionButton.dataset.socialReactionMessage) {
+    void toggleSocialMessageReaction(
+      Number(socialReactionButton.dataset.socialReactionMessage),
+      socialReactionButton.dataset.socialReactionKey,
+    );
+    return;
+  }
   const booksRefresh = target.closest<HTMLButtonElement>("[data-eutherbooks-refresh]");
   if (booksRefresh) {
     await loadEutherBooks(true);
@@ -2440,6 +2642,18 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
 });
 
 workspaceWindowDynamic.addEventListener("change", (event) => {
+  const socialImageInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-social-image-input]");
+  if (socialImageInput?.files?.length) {
+    void uploadSocialChatFiles([...socialImageInput.files]);
+    socialImageInput.value = "";
+    return;
+  }
+  const socialReactionSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-social-reaction-select]");
+  if (socialReactionSelect?.dataset.socialReactionSelect && socialReactionSelect.value) {
+    void toggleSocialMessageReaction(Number(socialReactionSelect.dataset.socialReactionSelect), socialReactionSelect.value);
+    socialReactionSelect.value = "";
+    return;
+  }
   const bookSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-book-select]");
   if (bookSelect?.value) {
     void selectEutherBook(bookSelect.value);
@@ -2466,6 +2680,36 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   eutherBooksJob = null;
   eutherBooksAudioIndex = 0;
   renderWorkspaceWindow();
+});
+
+workspaceWindowDynamic.addEventListener("submit", (event) => {
+  const form = (event.target as HTMLElement).closest<HTMLFormElement>("[data-social-chat-form]");
+  if (!form) {
+    return;
+  }
+  event.preventDefault();
+  void sendSocialChatMessage();
+});
+
+workspaceWindowDynamic.addEventListener("input", (event) => {
+  const search = (event.target as HTMLElement).closest<HTMLInputElement>("[data-social-user-search]");
+  if (!search) {
+    return;
+  }
+  socialChatSearchQuery = search.value;
+  void searchSocialChatUsers();
+});
+
+workspaceWindowDynamic.addEventListener("paste", (event) => {
+  if (activeWorkspaceWindow !== "interaction") {
+    return;
+  }
+  const files = [...(event.clipboardData?.files ?? [])].filter((file) => file.type.startsWith("image/"));
+  if (files.length === 0) {
+    return;
+  }
+  event.preventDefault();
+  void uploadSocialChatFiles(files);
 });
 
 workspaceWindowDynamic.addEventListener(
@@ -2644,6 +2888,10 @@ lobbyInstances.addEventListener("click", async (event) => {
 
 instanceStart.addEventListener("click", async () => {
   await startLobbyInstance("megadrive");
+});
+
+alertInstanceStart.addEventListener("click", async () => {
+  await startLobbyInstance("eutheralert");
 });
 
 doomInstanceStart.addEventListener("click", async () => {
@@ -4150,6 +4398,7 @@ function reactionLobbyHomeMarkup(): string {
         </div>
         <div class="reaction-lobby-start-grid">
           <button data-reaction-home-action="start-megadrive" type="button">Start MegaDrive vessel</button>
+          <button data-reaction-home-action="start-eutheralert" type="button">Start EutherAlert vessel</button>
           <button data-reaction-home-action="start-eutherdoom" type="button">Start EutherDoom vessel</button>
           <button data-reaction-home-action="open-euthercivet" type="button">Open EutherCivet vessel</button>
           <button data-reaction-home-action="open-eutherduke" type="button">Open EutherDuke vessel</button>
@@ -5450,8 +5699,11 @@ async function refreshAuthStatus(): Promise<void> {
 async function selectLobbyInstance(instanceId: string): Promise<void> {
   if (instanceId === activeLobbyInstanceId) {
     renderLobby();
-    if (activeLobbyInstance()?.kind === "eutherdoom") {
+    const kind = activeLobbyInstance()?.kind;
+    if (kind === "eutherdoom") {
       await refreshDoomStatus();
+    } else if (kind === "eutheralert") {
+      await startEutherAlertRenderer();
     } else {
       await connectBridge(false);
     }
@@ -5467,14 +5719,17 @@ async function selectLobbyInstance(instanceId: string): Promise<void> {
   stopBridgeStream();
   await releaseLobbySlot(false, previousInstanceId);
   renderLobby();
-  if (activeLobbyInstance()?.kind === "eutherdoom") {
+  const kind = activeLobbyInstance()?.kind;
+  if (kind === "eutherdoom") {
     await refreshDoomStatus();
+  } else if (kind === "eutheralert") {
+    await startEutherAlertRenderer();
   } else {
     await connectBridge(false);
   }
 }
 
-async function startLobbyInstance(kind: "megadrive" | "eutherdoom" = "megadrive"): Promise<void> {
+async function startLobbyInstance(kind: "megadrive" | "eutheralert" | "eutherdoom" = "megadrive"): Promise<void> {
   navigateApp(kind);
   await leaveVideoChat(true, activeLobbyInstanceId);
   const result = await bridgeJson<LobbyStartResult>(
@@ -5486,11 +5741,20 @@ async function startLobbyInstance(kind: "megadrive" | "eutherdoom" = "megadrive"
   activeLobbyInstanceId = result.id;
   lobbyRole = "spectator";
   claimedLobbyPlayer = null;
-  pushTrace(kind === "eutherdoom" ? "New Doom server primed" : "New host instance primed");
+  pushTrace(
+    kind === "eutherdoom"
+      ? "New Doom server primed"
+      : kind === "eutheralert"
+        ? "New EutherAlert vessel primed"
+        : "New host instance primed",
+  );
   renderLobby();
   await joinLobbyInstance(1);
   if (kind === "eutherdoom") {
     await refreshDoomStatus();
+  }
+  if (kind === "eutheralert") {
+    await startEutherAlertRenderer();
   }
   if (kind === "megadrive") {
     await connectBridge(false);
@@ -5519,6 +5783,8 @@ async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<vo
   renderLobby();
   if (activeLobbyInstance()?.kind === "eutherdoom") {
     await refreshDoomStatus();
+  } else if (activeLobbyInstance()?.kind === "eutheralert") {
+    await startEutherAlertRenderer();
   }
 }
 
@@ -5529,6 +5795,9 @@ async function spectateActiveLobbyInstance(): Promise<void> {
   stopBridgeStream();
   await releaseLobbySlot(false);
   renderLobby();
+  if (activeLobbyInstance()?.kind === "eutheralert") {
+    await startEutherAlertRenderer();
+  }
 }
 
 async function ensureHostedLobbyInstance(): Promise<void> {
@@ -5880,6 +6149,36 @@ async function startEutherDukeRenderer(): Promise<void> {
 function stopEutherDukeRenderer(): void {
   eutherDukeRenderer.setAttribute("aria-hidden", "true");
   eutherDukeFrame.hidden = true;
+}
+
+async function startEutherAlertRenderer(): Promise<void> {
+  eutherAlertRenderer.setAttribute("aria-hidden", "false");
+  eutherAlertRuntimePanel.hidden = false;
+  eutherAlertFrame.hidden = true;
+  try {
+    const response = await fetch("/eutheralert-runtime/index.html", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("EutherAlert runtime not installed");
+    }
+    eutherAlertRuntimePanel.hidden = true;
+    eutherAlertFrame.hidden = false;
+    const runtimeParams = new URLSearchParams({
+      v: Date.now().toString(),
+      instance: activeLobbyInstanceId,
+      player: claimedLobbyPlayer?.toString() ?? "",
+      role: lobbyRole,
+    });
+    eutherAlertFrame.src = `/eutheralert-runtime/index.html?${runtimeParams.toString()}`;
+  } catch {
+    eutherAlertFrame.removeAttribute("src");
+    eutherAlertFrame.hidden = true;
+    eutherAlertRuntimePanel.hidden = false;
+  }
+}
+
+function stopEutherAlertRenderer(): void {
+  eutherAlertRenderer.setAttribute("aria-hidden", "true");
+  eutherAlertFrame.hidden = true;
 }
 
 async function setDoomReady(ready: boolean): Promise<void> {
@@ -6282,6 +6581,15 @@ function appRouteFromToken(token: string | undefined): AppRoute | null {
     case "play/euthercivet":
     case "play/civet":
       return "euthercivet";
+    case "eutheralert":
+    case "alert":
+    case "redalert":
+    case "ra":
+    case "play/eutheralert":
+    case "play/alert":
+    case "play/redalert":
+    case "play/ra":
+      return "eutheralert";
     case "eutherdoom":
     case "utherdoom":
     case "play/eutherdoom":
@@ -6328,12 +6636,14 @@ function applyAppRoute(): void {
   document.body.classList.toggle("play-mode-megadrive", !showingLobby && appRoute === "megadrive");
   document.body.classList.toggle("play-mode-eutherdogs", !showingLobby && appRoute === "eutherdogs");
   document.body.classList.toggle("play-mode-euthercivet", !showingLobby && appRoute === "euthercivet");
+  document.body.classList.toggle("play-mode-eutheralert", !showingLobby && appRoute === "eutheralert");
   document.body.classList.toggle("play-mode-eutherdoom", !showingLobby && appRoute === "eutherdoom");
   document.body.classList.toggle("play-mode-eutherduke", !showingLobby && appRoute === "eutherduke");
 
   playHomePanel.hidden = showingLobby || appRoute !== "playHome";
   reactionLobbyHome.hidden = showingLobby || appRoute !== "playHome";
-  lobbySection.hidden = showingLobby || (appRoute !== "megadrive" && appRoute !== "eutherdoom");
+  lobbySection.hidden =
+    showingLobby || (appRoute !== "megadrive" && appRoute !== "eutheralert" && appRoute !== "eutherdoom");
   dogsModeSection.hidden = showingLobby || appRoute !== "eutherdogs";
   civetModeSection.hidden = showingLobby || appRoute !== "euthercivet";
   megaDrivePanel.hidden = showingLobby || appRoute !== "megadrive";
@@ -6370,6 +6680,11 @@ function applyAppRoute(): void {
   } else {
     stopEutherDukeRenderer();
   }
+  if (!showingLobby && appRoute === "eutheralert") {
+    void startEutherAlertRenderer();
+  } else {
+    stopEutherAlertRenderer();
+  }
   if (!showingLobby && appRoute === "euthercivet") {
     void enterCivetMode();
   } else if (civetMode) {
@@ -6382,7 +6697,14 @@ function currentPlayModeRoute(): PlayMode | null {
 }
 
 function isPlayMode(value: unknown): value is PlayMode {
-  return value === "megadrive" || value === "eutherdogs" || value === "euthercivet" || value === "eutherdoom" || value === "eutherduke";
+  return (
+    value === "megadrive" ||
+    value === "eutherdogs" ||
+    value === "euthercivet" ||
+    value === "eutheralert" ||
+    value === "eutherdoom" ||
+    value === "eutherduke"
+  );
 }
 
 function playModeLabel(mode: PlayMode | null): string {
@@ -6393,6 +6715,8 @@ function playModeLabel(mode: PlayMode | null): string {
       return "EutherDogs";
     case "euthercivet":
       return "EutherCivet";
+    case "eutheralert":
+      return "EutherAlert";
     case "eutherdoom":
       return "EutherDoom";
     case "eutherduke":
@@ -6459,6 +6783,9 @@ async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise
       return;
     case "start-megadrive":
       await startLobbyInstance("megadrive");
+      return;
+    case "start-eutheralert":
+      await startLobbyInstance("eutheralert");
       return;
     case "start-eutherdoom":
       await startLobbyInstance("eutherdoom");
@@ -6587,7 +6914,11 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
     }
   } else if (windowName === "books") {
     void loadEutherBooks();
-  } else if (windowName === "interaction" || windowName === "friends" || windowName === "spaces") {
+  } else if (windowName === "interaction") {
+    void loadInteractionUsers();
+    void loadSocialChatConversations();
+    void searchSocialChatUsers();
+  } else if (windowName === "friends" || windowName === "spaces") {
     void loadInteractionUsers();
   }
 }
@@ -6618,6 +6949,7 @@ function renderWorkspaceWindow(): void {
   workspaceWindowLayer.classList.toggle("is-shopping", showingShopping);
   workspaceWindowLayer.classList.toggle("is-books", windowName === "books");
   workspaceWindowLayer.classList.toggle("is-social", !showingShopping);
+  workspaceWindowLayer.classList.toggle("is-social-chat", windowName === "interaction");
   if (showingShopping) {
     renderShoppingListItems();
     return;
@@ -7543,13 +7875,49 @@ function isEutheriumAdminResult(value: unknown): value is EutheriumAdminResult {
 function interactionDeskWindowMarkup(): string {
   const friends = visibleInteractionFriends();
   const onlineCount = friends.filter((friend) => friend.status === "Online").length;
+  const hasActiveSocialChat = Boolean(socialChatSelectedConversation());
   return `
-    <div class="workspace-window-grid">
-      <button class="workspace-tool-card" data-workspace-window="shopping" type="button">
-        <span>Shared markdown</span>
-        <strong>Shopping List</strong>
-        <small>Open the synced house list in its own editing window.</small>
-      </button>
+    <div class="social-chat-shell ${socialChatSidebarCollapsed ? "is-sidebar-collapsed" : ""} ${hasActiveSocialChat ? "has-active-chat" : ""}">
+      <aside class="social-chat-sidebar">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Social Chat</p>
+            <strong>${socialChatConversations.length} conversations</strong>
+          </div>
+          <div class="social-sidebar-actions">
+            <button data-social-sidebar-toggle class="mini-action" type="button">${socialChatSidebarCollapsed ? "Open" : "Hide"}</button>
+            <button data-social-chat-refresh class="mini-action" type="button">Sync</button>
+          </div>
+        </div>
+        <div class="social-conversation-list">
+          ${socialChatConversationListMarkup()}
+        </div>
+        <div class="social-new-chat">
+          <div class="section-head">
+            <p class="section-label">New Chat</p>
+            <span>${socialChatUsers.length} users</span>
+          </div>
+          <input
+            data-social-user-search
+            type="search"
+            value="${escapeHtml(socialChatSearchQuery)}"
+            placeholder="Search all users"
+            aria-label="search users"
+            autocomplete="off"
+          />
+          <div class="social-user-results">
+            ${socialChatUserResultsMarkup()}
+          </div>
+          <button data-social-create-chat type="button" ${socialChatSelectedUsers.size === 0 ? "disabled" : ""}>
+            Start ${socialChatSelectedUsers.size > 1 ? "group chat" : "private chat"}
+          </button>
+        </div>
+      </aside>
+      <section class="social-chat-thread">
+        ${socialChatThreadMarkup()}
+      </section>
+    </div>
+    <div class="workspace-window-grid social-chat-tool-grid">
       <button class="workspace-tool-card" data-workspace-window="friends" type="button">
         <span>${onlineCount} online</span>
         <strong>Friends</strong>
@@ -7560,15 +7928,218 @@ function interactionDeskWindowMarkup(): string {
         <strong>Shared Spaces</strong>
         <small>Homes, projects, notes and future vaults.</small>
       </button>
+      <button class="workspace-tool-card" data-workspace-window="shopping" type="button">
+        <span>Shared markdown</span>
+        <strong>Shopping List</strong>
+        <small>Open the synced house list in its own editing window.</small>
+      </button>
     </div>
-    <div class="workspace-window-section">
-      <div class="section-head">
-        <p class="section-label">Invites</p>
-        <span>${interactionInvites.length} pending</span>
+  `;
+}
+
+function socialChatConversationListMarkup(): string {
+  if (socialChatLoading && socialChatConversations.length === 0) {
+    return `<span class="workspace-empty">Loading conversations</span>`;
+  }
+  if (socialChatConversations.length === 0) {
+    return `<span class="workspace-empty">No social chats yet</span>`;
+  }
+  return socialChatConversations
+    .map((conversation) => {
+      const selected = conversation.id === socialChatSelectedConversationId;
+      const preview = conversation.lastMessage
+        ? `${displayUserName(conversation.lastMessage.user)}: ${conversation.lastMessage.text}`
+        : "No messages yet";
+      return `
+        <button
+          class="social-conversation-row ${selected ? "is-selected" : ""}"
+          data-social-conversation="${escapeHtml(conversation.id)}"
+          type="button"
+        >
+          <strong>${escapeHtml(socialChatConversationTitle(conversation))}</strong>
+          <span>${escapeHtml(preview)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function socialChatUserResultsMarkup(): string {
+  if (socialChatUsers.length === 0) {
+    return `<span class="workspace-empty">${socialChatSearchQuery.trim() ? "No users found" : "Search all host users"}</span>`;
+  }
+  return socialChatUsers
+    .map((user) => {
+      const selected = socialChatSelectedUsers.has(user.name);
+      const status = user.special === "codex" ? user.location : user.online ? user.location : "Offline";
+      return `
+        <button class="social-user-row ${selected ? "is-selected" : ""} ${user.special === "codex" ? "is-special" : ""}" data-social-user="${escapeHtml(user.name)}" type="button">
+          <span class="user-presence-dot ${user.online ? "" : "is-offline"}"></span>
+          <strong>${escapeHtml(user.displayName || displayUserName(user.name))}</strong>
+          <small>${escapeHtml(status)}</small>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function socialChatThreadMarkup(): string {
+  const conversation = socialChatSelectedConversation();
+  if (!conversation) {
+    return `
+      <div class="social-chat-empty">
+        <p class="section-label">Thread</p>
+        <strong>Select or start a chat</strong>
+        <span>${escapeHtml(socialChatStatus)}</span>
       </div>
-      <div class="workspace-list">
-        ${interactionInvites.map((invite) => `<div class="invite-row"><strong>${escapeHtml(invite.kind)}</strong><span>${escapeHtml(invite.text)}</span></div>`).join("")}
+    `;
+  }
+  const codexInbox = conversation.participants.includes("codex");
+  return `
+    <div class="social-thread-head ${socialChatThreadDetailsExpanded ? "is-expanded" : ""}">
+      <div>
+        <p class="section-label">${conversation.kind === "group" ? "Group Chat" : "Private Chat"}</p>
+        <strong>${escapeHtml(socialChatConversationTitle(conversation))}</strong>
+        <div class="social-thread-extra">
+          <span>${conversation.participants.map((participant) => escapeHtml(displayUserName(participant))).join(", ")}</span>
+          ${codexInbox ? `<small>Files sent here are copied to .euther-host/codex-inbox for the next Codex session.</small>` : ""}
+        </div>
       </div>
+      <div class="social-thread-controls">
+        <button data-social-thread-details class="mini-action" type="button">${socialChatThreadDetailsExpanded ? "Less" : "Info"}</button>
+        <button data-social-back-to-list class="mini-action" type="button">Chats</button>
+        <em>${escapeHtml(socialChatStatus)}</em>
+      </div>
+    </div>
+    <div class="social-message-list">
+      ${socialChatHasOlder ? `<button data-social-load-older class="mini-action" type="button">Older</button>` : ""}
+      ${
+        socialChatMessages.length
+          ? socialChatMessages.map((message) => socialChatMessageMarkup(message)).join("")
+          : `<span class="workspace-empty">No messages yet</span>`
+      }
+    </div>
+    <form class="social-chat-form" data-social-chat-form>
+      ${socialChatPendingAttachmentsMarkup()}
+      <textarea name="text" maxlength="2000" placeholder="Message ${escapeHtml(socialChatConversationTitle(conversation))}" aria-label="social chat message"></textarea>
+      ${socialChatEmojiPickerMarkup()}
+      <div class="social-chat-form-actions">
+        <label class="mini-action">
+          File
+          <input data-social-image-input type="file" accept="image/png,image/jpeg,image/gif,image/webp,.apk,.zip,.iso,.pdf,.txt,.md,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx" multiple hidden />
+        </label>
+        <button data-social-emoji-toggle class="mini-action" type="button">Lab</button>
+        <span>${socialChatUploading ? "Uploading file" : "Paste images or attach files"}</span>
+        <button type="submit" ${socialChatUploading ? "disabled" : ""}>Send</button>
+      </div>
+    </form>
+  `;
+}
+
+function socialChatMessageMarkup(message: SocialChatMessage): string {
+  const mine = message.user === hostUsername;
+  return `
+    <div class="social-message ${mine ? "is-mine" : ""}">
+      <strong>${escapeHtml(mine ? "You" : displayUserName(message.user))}</strong>
+      ${message.text ? `<p>${escapeHtml(message.text)}</p>` : ""}
+      ${socialChatAttachmentsMarkup(message.attachments ?? [])}
+      ${socialChatReactionsMarkup(message)}
+      <span>${escapeHtml(formatClockTime(message.createdUnixMs))}</span>
+    </div>
+  `;
+}
+
+function socialChatAttachmentsMarkup(attachments: SocialChatAttachment[]): string {
+  if (attachments.length === 0) {
+    return "";
+  }
+  return `
+    <div class="social-attachment-grid">
+      ${attachments
+        .map(
+          (attachment) =>
+            isSocialChatImageAttachment(attachment)
+              ? `
+                <a href="${escapeHtml(bridgeUrl(attachment.url))}" target="_blank" rel="noreferrer">
+                  <img src="${escapeHtml(bridgeUrl(attachment.url))}" alt="${escapeHtml(attachment.name)}" loading="lazy" />
+                </a>
+              `
+              : `
+                <a class="social-file-attachment" href="${escapeHtml(bridgeUrl(attachment.url))}" target="_blank" rel="noreferrer" download="${escapeHtml(attachment.name)}">
+                  <strong>${escapeHtml(socialChatFileIcon(attachment))}</strong>
+                  <span>${escapeHtml(attachment.name)}</span>
+                  <small>${escapeHtml(formatBytes(attachment.sizeBytes))}</small>
+                </a>
+              `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function socialChatReactionsMarkup(message: SocialChatMessage): string {
+  const reactions = message.reactions ?? [];
+  return `
+    <div class="social-reaction-row">
+      ${reactions
+        .map((reaction) => {
+          const emoji = socialChatEmojiForKey(reaction.key);
+          const mine = hostUsername ? reaction.users.includes(hostUsername) : false;
+          return `
+            <button
+              class="social-reaction-chip ${mine ? "is-mine" : ""}"
+              data-social-reaction-message="${message.id}"
+              data-social-reaction-key="${escapeHtml(reaction.key)}"
+              type="button"
+            >${escapeHtml(emoji.symbol)} ${reaction.users.length}</button>
+          `;
+        })
+        .join("")}
+      <select data-social-reaction-select="${message.id}" aria-label="react to message">
+        <option value="">React</option>
+        ${socialChatEmojis.map((emoji) => `<option value="${escapeHtml(emoji.key)}">${escapeHtml(emoji.symbol)} ${escapeHtml(emoji.label)}</option>`).join("")}
+      </select>
+    </div>
+  `;
+}
+
+function socialChatEmojiPickerMarkup(): string {
+  if (!socialChatEmojiPickerOpen) {
+    return "";
+  }
+  return `
+    <div class="social-emoji-picker">
+      ${socialChatEmojis
+        .filter((emoji) => !emoji.key.startsWith("thumbs-"))
+        .map(
+          (emoji) => `
+            <button data-social-emoji="${escapeHtml(emoji.key)}" type="button">
+              <strong>${escapeHtml(emoji.symbol)}</strong>
+              <span>${escapeHtml(emoji.label)}</span>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function socialChatPendingAttachmentsMarkup(): string {
+  if (socialChatPendingAttachments.length === 0) {
+    return "";
+  }
+  return `
+    <div class="social-pending-attachments">
+      ${socialChatPendingAttachments
+        .map(
+          (attachment) => `
+            <div class="social-pending-attachment">
+              <img src="${escapeHtml(bridgeUrl(attachment.url))}" alt="${escapeHtml(attachment.name)}" />
+              <button data-social-remove-attachment="${escapeHtml(attachment.id)}" type="button" aria-label="remove image">Remove</button>
+            </div>
+          `,
+        )
+        .join("")}
     </div>
   `;
 }
@@ -7690,6 +8261,11 @@ async function activatePlayMode(mode: PlayMode): Promise<void> {
     return;
   }
 
+  if (mode === "eutheralert") {
+    await selectFirstLobbyInstanceForKind("eutheralert");
+    return;
+  }
+
   if (mode === "eutherduke") {
     return;
   }
@@ -7708,6 +8284,19 @@ async function selectFirstLobbyInstanceForKind(kind: NonNullable<LobbyInstance["
 
 function lobbyInstanceKind(instance: LobbyInstance): NonNullable<LobbyInstance["kind"]> {
   return instance.kind ?? "megadrive";
+}
+
+function lobbyKindLabel(kind: NonNullable<LobbyInstance["kind"]> | null): string {
+  switch (kind) {
+    case "megadrive":
+      return "MegaDrive";
+    case "eutheralert":
+      return "EutherAlert";
+    case "eutherdoom":
+      return "EutherDoom";
+    default:
+      return "Reaction";
+  }
 }
 
 function setUserMenuOpen(open: boolean): void {
@@ -7767,7 +8356,363 @@ function displayUserName(username: string): string {
   if (!username) {
     return "Nichlas";
   }
+  if (username === "codex") {
+    return "Codex Developer";
+  }
   return username.charAt(0).toUpperCase() + username.slice(1);
+}
+
+function socialChatSelectedConversation(): SocialChatConversation | null {
+  return socialChatConversations.find((conversation) => conversation.id === socialChatSelectedConversationId) ?? null;
+}
+
+function socialChatConversationTitle(conversation: SocialChatConversation): string {
+  if (conversation.title?.trim()) {
+    return conversation.title.trim();
+  }
+  const others = conversation.participants.filter((participant) => participant !== hostUsername);
+  if (conversation.kind === "direct") {
+    return displayUserName(others[0] ?? conversation.participants[0] ?? "Chat");
+  }
+  return others.length > 0
+    ? others.map(displayUserName).join(", ")
+    : conversation.participants.map(displayUserName).join(", ");
+}
+
+function formatClockTime(unixMs: number): string {
+  if (!Number.isFinite(unixMs) || unixMs <= 0) {
+    return "";
+  }
+  return new Date(unixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadSocialChatConversations(force = false): Promise<void> {
+  if (!hostUsername) {
+    socialChatStatus = "Login required";
+    renderActiveSocialChatWindow();
+    return;
+  }
+  if (socialChatLoading && !force) {
+    return;
+  }
+  socialChatLoading = true;
+  socialChatStatus = "Loading";
+  renderActiveSocialChatWindow();
+  try {
+    const result = await bridgeJson<SocialChatConversationsResult>("/api/social/conversations", {}, 1200);
+    socialChatConversations = result.conversations;
+    if (
+      socialChatSelectedConversationId &&
+      !socialChatConversations.some((conversation) => conversation.id === socialChatSelectedConversationId)
+    ) {
+      socialChatSelectedConversationId = null;
+      socialChatMessages = [];
+    }
+    socialChatStatus = "Synced";
+  } catch (err) {
+    socialChatStatus = err instanceof Error ? err.message : "Social chat offline";
+  } finally {
+    socialChatLoading = false;
+  }
+  renderActiveSocialChatWindow();
+}
+
+async function searchSocialChatUsers(): Promise<void> {
+  if (!hostUsername) {
+    socialChatUsers = [];
+    renderActiveSocialChatWindow();
+    return;
+  }
+  try {
+    const query = encodeURIComponent(socialChatSearchQuery.trim());
+    const result = await bridgeJson<SocialChatUsersResult>(`/api/social/users?query=${query}`, {}, 900);
+    socialChatUsers = result.users;
+  } catch {
+    socialChatUsers = [];
+  }
+  renderActiveSocialChatWindow();
+}
+
+function toggleSocialChatUser(user: string): void {
+  if (socialChatSelectedUsers.has(user)) {
+    socialChatSelectedUsers.delete(user);
+  } else {
+    socialChatSelectedUsers.add(user);
+  }
+  renderActiveSocialChatWindow();
+}
+
+async function createSocialChatFromSelection(): Promise<void> {
+  const participants = [...socialChatSelectedUsers];
+  if (participants.length === 0) {
+    return;
+  }
+  socialChatStatus = "Creating chat";
+  renderActiveSocialChatWindow();
+  try {
+    const result = await bridgeJson<SocialChatConversationResult>(
+      "/api/social/conversations",
+      {
+        method: "POST",
+        body: JSON.stringify({ participants }),
+      },
+      1200,
+    );
+    upsertSocialChatConversation(result.conversation);
+    socialChatSelectedUsers = new Set();
+    socialChatSelectedConversationId = result.conversation.id;
+    await loadSocialChatMessages(result.conversation.id);
+  } catch (err) {
+    socialChatStatus = err instanceof Error ? err.message : "Could not create chat";
+    renderActiveSocialChatWindow();
+  }
+}
+
+async function selectSocialChatConversation(conversationId: string): Promise<void> {
+  socialChatSelectedConversationId = conversationId;
+  socialChatMessages = [];
+  socialChatHasOlder = false;
+  socialChatThreadDetailsExpanded = false;
+  await loadSocialChatMessages(conversationId);
+}
+
+async function loadSocialChatMessages(conversationId: string, beforeId?: number): Promise<void> {
+  socialChatStatus = "Loading messages";
+  renderActiveSocialChatWindow();
+  try {
+    const params = new URLSearchParams({ limit: "80" });
+    if (beforeId !== undefined) {
+      params.set("before", String(beforeId));
+    }
+    const result = await bridgeJson<SocialChatMessagesResult>(
+      `/api/social/conversations/${encodeURIComponent(conversationId)}/messages?${params}`,
+      {},
+      1200,
+    );
+    upsertSocialChatConversation(result.conversation);
+    socialChatMessages = beforeId === undefined ? result.messages : [...result.messages, ...socialChatMessages];
+    socialChatHasOlder = result.hasOlder;
+    socialChatStatus = "Synced";
+  } catch (err) {
+    socialChatStatus = err instanceof Error ? err.message : "Could not load messages";
+  }
+  renderActiveSocialChatWindow();
+}
+
+async function loadOlderSocialChatMessages(): Promise<void> {
+  const first = socialChatMessages[0];
+  if (!socialChatSelectedConversationId || !first) {
+    return;
+  }
+  await loadSocialChatMessages(socialChatSelectedConversationId, first.id);
+}
+
+async function sendSocialChatMessage(): Promise<void> {
+  if (!socialChatSelectedConversationId) {
+    return;
+  }
+  const textarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+  const text = textarea?.value.trim() ?? "";
+  if (!text && socialChatPendingAttachments.length === 0) {
+    return;
+  }
+  try {
+    const result = await bridgeJson<SocialChatPostResult>(
+      `/api/social/conversations/${encodeURIComponent(socialChatSelectedConversationId)}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          text,
+          attachments: socialChatPendingAttachments.map((attachment) => attachment.id),
+        }),
+      },
+      1200,
+    );
+    upsertSocialChatConversation(result.conversation);
+    socialChatMessages = [...socialChatMessages, result.message];
+    socialChatPendingAttachments = [];
+    socialChatStatus = "Sent";
+    if (textarea) {
+      textarea.value = "";
+    }
+  } catch (err) {
+    socialChatStatus = err instanceof Error ? err.message : "Could not send";
+  }
+  renderActiveSocialChatWindow();
+}
+
+async function toggleSocialMessageReaction(messageId: number, key: string): Promise<void> {
+  if (!socialChatSelectedConversationId || !key) {
+    return;
+  }
+  try {
+    const result = await bridgeJson<SocialChatReactionResult>(
+      `/api/social/conversations/${encodeURIComponent(socialChatSelectedConversationId)}/messages/${messageId}/reactions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ key }),
+      },
+      1200,
+    );
+    upsertSocialChatConversation(result.conversation);
+    socialChatMessages = socialChatMessages.map((message) =>
+      message.id === result.message.id ? result.message : message,
+    );
+    socialChatStatus = "Reacted";
+  } catch (err) {
+    socialChatStatus = err instanceof Error ? err.message : "Could not react";
+  }
+  renderActiveSocialChatWindow();
+}
+
+async function uploadSocialChatFiles(files: File[]): Promise<void> {
+  const uploadFiles = files
+    .slice(0, Math.max(0, 6 - socialChatPendingAttachments.length));
+  if (uploadFiles.length === 0) {
+    return;
+  }
+  socialChatUploading = true;
+  socialChatStatus = "Uploading file";
+  renderActiveSocialChatWindow();
+  try {
+    for (const file of uploadFiles) {
+      const contentType = file.type || contentTypeFromFileName(file.name);
+      const params = new URLSearchParams({
+        name: file.name || "file",
+        contentType,
+      });
+      const result = await bridgeJson<SocialChatAttachmentResult>(
+        `/api/social/attachments/raw?${params}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": contentType },
+          body: file,
+        },
+        0,
+      );
+      socialChatPendingAttachments = [...socialChatPendingAttachments, result.attachment];
+    }
+    socialChatStatus = "File ready";
+  } catch (err) {
+    socialChatStatus = err instanceof Error ? err.message : "File upload failed";
+  } finally {
+    socialChatUploading = false;
+  }
+  renderActiveSocialChatWindow();
+}
+
+function insertSocialChatEmoji(key: string): void {
+  const emoji = socialChatEmojiForKey(key);
+  const textarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+  if (!textarea) {
+    return;
+  }
+  const token = `${emoji.symbol} `;
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  textarea.value = `${textarea.value.slice(0, start)}${token}${textarea.value.slice(end)}`;
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(start + token.length, start + token.length);
+}
+
+function removeSocialChatPendingAttachment(attachmentId: string): void {
+  socialChatPendingAttachments = socialChatPendingAttachments.filter((attachment) => attachment.id !== attachmentId);
+  renderActiveSocialChatWindow();
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = String(reader.result ?? "");
+      resolve(result.includes(",") ? result.split(",", 2)[1] : result);
+    });
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read image")));
+    reader.readAsDataURL(file);
+  });
+}
+
+function socialChatEmojiForKey(key: string): { key: string; label: string; symbol: string } {
+  return socialChatEmojis.find((emoji) => emoji.key === key) ?? { key, label: key, symbol: "?" };
+}
+
+function isSocialChatImageAttachment(attachment: SocialChatAttachment): boolean {
+  return attachment.contentType.startsWith("image/");
+}
+
+function socialChatFileIcon(attachment: SocialChatAttachment): string {
+  const name = attachment.name.toLowerCase();
+  if (name.endsWith(".apk")) {
+    return "APK";
+  }
+  if (name.endsWith(".iso")) {
+    return "ISO";
+  }
+  if (name.endsWith(".zip")) {
+    return "ZIP";
+  }
+  if (name.endsWith(".pdf")) {
+    return "PDF";
+  }
+  return "FILE";
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function contentTypeFromFileName(name: string): string {
+  const extension = name.split(".").pop()?.toLowerCase() ?? "";
+  switch (extension) {
+    case "apk":
+      return "application/vnd.android.package-archive";
+    case "zip":
+      return "application/zip";
+    case "iso":
+      return "application/x-iso9660-image";
+    case "pdf":
+      return "application/pdf";
+    case "md":
+      return "text/markdown";
+    case "json":
+      return "application/json";
+    case "txt":
+      return "text/plain";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function upsertSocialChatConversation(conversation: SocialChatConversation): void {
+  socialChatConversations = [
+    conversation,
+    ...socialChatConversations.filter((entry) => entry.id !== conversation.id),
+  ].sort((a, b) => b.updatedUnixMs - a.updatedUnixMs);
+}
+
+function renderActiveSocialChatWindow(): void {
+  if (activeWorkspaceWindow === "interaction") {
+    const restoreSearchFocus = document.activeElement instanceof HTMLElement
+      && document.activeElement.matches("[data-social-user-search]");
+    renderWorkspaceWindow();
+    if (restoreSearchFocus) {
+      const search = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-social-user-search]");
+      if (search) {
+        search.focus({ preventScroll: true });
+        search.setSelectionRange(search.value.length, search.value.length);
+      }
+    }
+  }
 }
 
 async function handleUserMenuAction(action: string): Promise<void> {
@@ -7794,7 +8739,10 @@ async function handleUserMenuAction(action: string): Promise<void> {
       openWorkspaceWindow("books");
       return;
     case "get-list-app":
-      window.location.href = "/downloads/eutherlist.apk";
+      window.location.href = "/downloads/EutherList-release-signed.apk";
+      return;
+    case "get-sync-app":
+      window.location.href = "/downloads/EutherSync-release-signed.apk";
       return;
     case "friends":
       openWorkspaceWindow("friends");
@@ -8897,10 +9845,14 @@ function renderLobby(): void {
   const instance =
     routeKind && activeInstance && lobbyInstanceKind(activeInstance) !== routeKind ? undefined : activeInstance;
   if (!instance) {
-    const modeLabel = routeKind === "eutherdoom" ? "EutherDoom" : "MegaDrive";
+    const modeLabel = lobbyKindLabel(routeKind);
     lobbyTitle.textContent = `No ${modeLabel} vessel`;
     lobbyMeta.textContent =
-      routeKind === "eutherdoom" ? "Start EutherDoom to create a lockstep relay" : "Start MegaDrive to create a host room";
+      routeKind === "eutherdoom"
+        ? "Start EutherDoom to create a lockstep relay"
+        : routeKind === "eutheralert"
+          ? "Start EutherAlert to create a Red Alert vessel"
+          : "Start MegaDrive to create a host room";
     lobbyHost.textContent = "Host: open";
     renderLobbyInstances();
     instanceJoin.disabled = true;
@@ -8911,6 +9863,7 @@ function renderLobby(): void {
     kickP2.disabled = true;
     closeInstance.disabled = true;
     spectateInstance.classList.remove("is-selected");
+    alertInstanceStart.disabled = false;
     renderDoomPanel();
     renderReactionLobbyHome();
     return;
@@ -8921,11 +9874,12 @@ function renderLobby(): void {
     .join(" ");
   lobbyTitle.textContent = instance.name;
   lobbyMeta.textContent =
-    `${instance.modeLabel ?? "MegaDrive"} | ${instance.loaded ? instance.title : "No ROM"} | ${occupied} | ${instance.spectators} spec`;
+    `${instance.modeLabel ?? lobbyKindLabel(lobbyInstanceKind(instance))} | ${instance.loaded ? instance.title : "No ROM"} | ${occupied} | ${instance.spectators} spec`;
   lobbyHost.textContent = `Host: ${instance.host ?? "open"}`;
   instanceJoin.textContent =
     lobbyRole === "spectator" || claimedLobbyPlayer === null ? "Join Auto" : `Joined P${claimedLobbyPlayer}`;
   instanceStart.disabled = false;
+  alertInstanceStart.disabled = false;
   doomInstanceStart.disabled = false;
   releaseSlot.disabled = claimedLobbyPlayer === null && !ownsCurrentSlot();
   claimP1.disabled = claimedLobbyPlayer !== null || Boolean(instance.players.find((player) => player.player === 1)?.occupied);
@@ -8963,7 +9917,7 @@ function renderReactionLobbyHome(): void {
     : `
       <div class="reaction-lobby-empty">
         <strong>No active vessels</strong>
-        <span>Start a MegaDrive chamber, start EutherDoom, or open EutherDogs/EutherCivet.</span>
+        <span>Start a MegaDrive chamber, EutherAlert, EutherDoom, or open EutherDogs/EutherCivet.</span>
       </div>
     `;
   renderEutheriumLobby();
@@ -8983,13 +9937,15 @@ function renderReactionLobbyToolStatus(): void {
 
 function reactionLobbyVesselCard(instance: LobbyInstance): string {
   const kind = lobbyInstanceKind(instance);
-  const modeLabel = instance.modeLabel ?? (kind === "eutherdoom" ? "EutherDoom" : "MegaDrive");
+  const modeLabel = instance.modeLabel ?? lobbyKindLabel(kind);
   const playerCount = instance.players.filter((player) => player.occupied).length;
   const title =
     instance.loaded
       ? instance.title
       : kind === "eutherdoom"
         ? "Lockstep relay ready"
+        : kind === "eutheralert"
+          ? "Red Alert vessel ready"
         : "No ROM loaded";
   const p1 = instance.players.find((player) => player.player === 1);
   const p2 = instance.players.find((player) => player.player === 2);
@@ -9042,6 +9998,9 @@ function currentLobbyRouteKind(): NonNullable<LobbyInstance["kind"]> | null {
   if (appRoute === "megadrive") {
     return "megadrive";
   }
+  if (appRoute === "eutheralert") {
+    return "eutheralert";
+  }
   if (appRoute === "eutherdoom") {
     return "eutherdoom";
   }
@@ -9064,7 +10023,7 @@ function renderLobbyInstances(): void {
       `,
     )
     .join("")
-    : `<div class="lobby-empty"><strong>No ${routeKind === "eutherdoom" ? "EutherDoom" : "MegaDrive"} rooms</strong><span>Start one from this mode.</span></div>`;
+    : `<div class="lobby-empty"><strong>No ${lobbyKindLabel(routeKind)} rooms</strong><span>Start one from this mode.</span></div>`;
 }
 
 function renderDoomPanel(): void {
@@ -13404,10 +14363,7 @@ function readStoredMobileMode(): boolean {
   if (stored === "1") {
     return true;
   }
-  if (stored === "0") {
-    return false;
-  }
-  return window.matchMedia("(max-width: 760px)").matches;
+  return false;
 }
 
 function readStoredDogsAssetMode(): DogsAssetMode {

@@ -69,5 +69,7 @@ cp "$SIGNED_APK" "$OUT_APK"
 mkdir -p "$(dirname "$REPO_APK")"
 cp "$SIGNED_APK" "$REPO_APK"
 
+apksigner verify "$OUT_APK"
+
 echo "[eutherlist-release-apk] ready: $OUT_APK"
 echo "[eutherlist-release-apk] repo copy: $REPO_APK"

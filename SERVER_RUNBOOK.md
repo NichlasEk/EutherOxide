@@ -65,6 +65,51 @@ Create the ROM directory:
 mkdir -p /home/nichlas/roms
 ```
 
+### 2b. Android Download APKs
+
+The EutherHost UI exposes Android downloads under `/downloads/*.apk`.
+Build both fronted Android APKs after app/frontend changes that should ship to
+phones:
+
+```sh
+cd /home/nichlas/EutherOxide
+npm run android:release-apks
+```
+
+Or build one APK at a time:
+
+```sh
+npm run android:eutherlist
+npm run android:euthersync
+```
+
+Default outputs:
+
+```text
+/home/nichlas/EutherList-release-signed.apk
+/home/nichlas/EutherOxide/apps/eutherlist/releases/EutherList-release-signed.apk
+/home/nichlas/EutherSync-release-signed.apk
+/home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk
+```
+
+The download route `/downloads/EutherList-release-signed.apk` uses
+`EUTHERLIST_APK_PATH` when set, otherwise
+`/home/nichlas/EutherList-release-signed.apk`, otherwise the repo release copy.
+The shorter aliases `/downloads/eutherlist.apk` and `/downloads/EutherList.apk`
+are also accepted.
+
+The download route `/downloads/EutherSync-release-signed.apk` uses
+`EUTHERSYNC_APK_PATH` when set, otherwise
+`/home/nichlas/EutherSync-release-signed.apk`, otherwise the repo release copy.
+The shorter aliases `/downloads/euthersync.apk` and `/downloads/EutherSync.apk`
+are also accepted.
+
+To build the EutherSync wrapper against another endpoint:
+
+```sh
+EUTHERSYNC_ANDROID_URL=https://photos.example.com npm run android:euthersync
+```
+
 ### 3. EutherHost Config
 
 Create `/home/nichlas/EutherOxide/.euther-host/config.toml`:

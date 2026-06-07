@@ -35,12 +35,21 @@ const HOST_PLAYER_LEASE_TIMEOUT: Duration = Duration::from_secs(8);
 const HOST_VIDEO_CHAT_PARTICIPANT_TIMEOUT_MS: u64 = 12_000;
 const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
 const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
+const HOST_SOCIAL_ATTACHMENT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
+const HOST_CODEX_USER: &str = "codex";
+const HOST_CODEX_DISPLAY_NAME: &str = "Codex Developer";
 const EUTHERDOGS_SERVER_PUBLISH_HZ: f64 = 60.0;
 const EUTHERDOGS_TICKS_PER_PUBLISH: u8 = 1;
 const EUTHERDOGS_STATIC_REFRESH_FRAMES: u16 = 240;
 const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
 const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
 const DEFAULT_EUTHERLIST_APK_PATH: &str = "/home/nichlas/EutherList-release-signed.apk";
+const DEFAULT_EUTHERLIST_REPO_APK_PATH: &str =
+    "/home/nichlas/EutherOxide/apps/eutherlist/releases/EutherList-release-signed.apk";
+const DEFAULT_EUTHERSYNC_APK_PATH: &str = "/home/nichlas/EutherSync-release-signed.apk";
+const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
+    "/home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk";
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -670,6 +679,7 @@ struct HttpRequest {
     path: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    content_length: usize,
 }
 
 #[derive(Clone)]
@@ -760,6 +770,7 @@ struct HostInstance {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HostInstanceKind {
     MegaDrive,
+    EutherAlert,
     EutherDoom,
 }
 
@@ -767,6 +778,7 @@ impl HostInstanceKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::MegaDrive => "megadrive",
+            Self::EutherAlert => "eutheralert",
             Self::EutherDoom => "eutherdoom",
         }
     }
@@ -774,6 +786,7 @@ impl HostInstanceKind {
     fn label(self) -> &'static str {
         match self {
             Self::MegaDrive => "MegaDrive",
+            Self::EutherAlert => "EutherAlert",
             Self::EutherDoom => "EutherDoom",
         }
     }
@@ -847,6 +860,94 @@ struct HostChatMessage {
     user: String,
     message: String,
     created_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialConversation {
+    id: String,
+    kind: HostSocialConversationKind,
+    title: Option<String>,
+    participants: Vec<String>,
+    created_by: String,
+    created_unix_ms: u64,
+    updated_unix_ms: u64,
+    last_message: Option<HostSocialMessagePreview>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum HostSocialConversationKind {
+    Direct,
+    Group,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialMessagePreview {
+    user: String,
+    text: String,
+    created_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialMessage {
+    id: u64,
+    conversation_id: String,
+    user: String,
+    text: String,
+    #[serde(default)]
+    attachments: Vec<HostSocialAttachment>,
+    #[serde(default)]
+    reactions: Vec<HostSocialReaction>,
+    created_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialAttachment {
+    id: String,
+    name: String,
+    content_type: String,
+    size_bytes: usize,
+    url: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialReaction {
+    key: String,
+    users: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialConversationCreate {
+    participants: Vec<String>,
+    title: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialMessageCreate {
+    text: String,
+    #[serde(default)]
+    attachments: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialAttachmentUpload {
+    name: String,
+    content_type: String,
+    data_base64: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSocialReactionUpdate {
+    key: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -1076,6 +1177,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         let canonical = validate_rom_root(rom_dir)?;
         write_rom_dir_setting(&canonical)?;
     }
+    write_host_codex_inbox_readme()?;
     let users = Arc::new(Mutex::new(load_host_users()?));
     let chat_messages = load_host_chat_messages()?;
     let next_chat_id = chat_messages
@@ -1172,9 +1274,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/logout") => host_logout(stream, state, &request),
         ("POST", "/api/eutherduke/log") => host_eutherduke_log(stream, state, &request),
-        ("GET", "/downloads/eutherlist.apk") => {
+        ("GET", path) if is_eutherlist_apk_download_path(path) => {
             require_host_user(state, &request)?;
             send_eutherlist_apk(stream)
+        }
+        ("GET", path) if is_euthersync_apk_download_path(path) => {
+            require_host_user(state, &request)?;
+            send_euthersync_apk(stream)
         }
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
@@ -1362,6 +1468,81 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let message = form_value(&form, "message").unwrap_or_default();
             post_host_chat_message(state, &user, &message)?;
             send_json(stream, &host_chat_list(state)?)
+        }
+        ("GET", "/api/social/users") => {
+            let user = require_host_user(state, &request)?;
+            let query = query_string_value(&request.path, "query")?.unwrap_or_default();
+            send_json(stream, &host_social_user_search(state, &user, &query)?)
+        }
+        ("GET", "/api/social/conversations") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &host_social_conversation_list(&user)?)
+        }
+        ("POST", "/api/social/conversations") => {
+            let user = require_host_user(state, &request)?;
+            let create: HostSocialConversationCreate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(
+                stream,
+                &host_social_create_conversation(state, &user, create)?,
+            )
+        }
+        ("POST", "/api/social/attachments/raw") => {
+            let user = require_host_user(state, &request)?;
+            let result = host_social_upload_raw_attachment(stream, &request, &user)?;
+            send_json(stream, &result)
+        }
+        ("POST", "/api/social/attachments") => {
+            let user = require_host_user(state, &request)?;
+            let upload: HostSocialAttachmentUpload = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &host_social_upload_attachment(&user, upload)?)
+        }
+        ("GET", path) if path.starts_with("/api/social/attachments/") => {
+            require_host_user(state, &request)?;
+            let attachment_id = host_social_attachment_id_from_path(path)?;
+            send_host_social_attachment(stream, &attachment_id)
+        }
+        ("GET", path)
+            if path.starts_with("/api/social/conversations/") && path.ends_with("/messages") =>
+        {
+            let user = require_host_user(state, &request)?;
+            let conversation_id = host_social_conversation_id_from_messages_path(path)?;
+            let before_id = query_string_value(&request.path, "before")?
+                .and_then(|value| value.parse::<u64>().ok());
+            let limit = query_string_value(&request.path, "limit")?
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(80);
+            send_json(
+                stream,
+                &host_social_message_list(&user, &conversation_id, before_id, limit)?,
+            )
+        }
+        ("POST", path)
+            if path.starts_with("/api/social/conversations/") && path.ends_with("/messages") =>
+        {
+            let user = require_host_user(state, &request)?;
+            let conversation_id = host_social_conversation_id_from_messages_path(path)?;
+            let create: HostSocialMessageCreate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(
+                stream,
+                &host_social_post_message(&user, &conversation_id, create)?,
+            )
+        }
+        ("POST", path)
+            if path.starts_with("/api/social/conversations/")
+                && path.contains("/messages/")
+                && path.ends_with("/reactions") =>
+        {
+            let user = require_host_user(state, &request)?;
+            let (conversation_id, message_id) = host_social_reaction_path_parts(path)?;
+            let update: HostSocialReactionUpdate = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(
+                stream,
+                &host_social_toggle_reaction(&user, &conversation_id, message_id, update)?,
+            )
         }
         ("GET", "/api/interaction/users") => {
             let user = require_host_user_or_app(state, &request)?;
@@ -1618,6 +1799,15 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     "/eutherduke-runtime/",
                     "EUTHERDUKE_RUNTIME_PATH",
                     "/home/nichlas/eutherduke-runtime",
+                );
+            }
+            if path.starts_with("/eutheralert-runtime/") {
+                return send_external_runtime_static(
+                    stream,
+                    path,
+                    "/eutheralert-runtime/",
+                    "EUTHERALERT_RUNTIME_PATH",
+                    "/home/nichlas/eutheralert-runtime",
                 );
             }
             if path == "/eutherbooks" || path.starts_with("/eutherbooks/") {
@@ -2139,6 +2329,9 @@ fn host_instance_id(path: &str) -> io::Result<String> {
 fn host_instance_kind(path: &str) -> io::Result<HostInstanceKind> {
     match query_string_value(path, "kind")?.as_deref() {
         None | Some("") | Some("megadrive") => Ok(HostInstanceKind::MegaDrive),
+        Some("eutheralert") | Some("alert") | Some("redalert") | Some("ra") => {
+            Ok(HostInstanceKind::EutherAlert)
+        }
         Some("eutherdoom") | Some("doom") => Ok(HostInstanceKind::EutherDoom),
         Some(_) => Err(invalid_request("unknown instance kind")),
     }
@@ -2155,6 +2348,7 @@ fn create_host_instance(
         .map_err(|err| io::Error::other(err.to_string()))?;
     let prefix = match kind {
         HostInstanceKind::MegaDrive => "vessel",
+        HostInstanceKind::EutherAlert => "alert",
         HostInstanceKind::EutherDoom => "doom",
     };
     let id = format!("{prefix}-{}", *next);
@@ -2165,6 +2359,7 @@ fn create_host_instance(
         .unwrap_or(id.as_str());
     let name = match kind {
         HostInstanceKind::MegaDrive => format!("Reaction Vessel {ordinal}"),
+        HostInstanceKind::EutherAlert => format!("EutherAlert Vessel {ordinal}"),
         HostInstanceKind::EutherDoom => format!("EutherDoom Server {ordinal}"),
     };
     let mut instances = state
@@ -2335,6 +2530,11 @@ fn host_lobby_status(state: &HostState) -> io::Result<serde_json::Value> {
                 let status = bridge_status(&emulator);
                 (status.loaded, status.title, status.frame)
             }
+            HostInstanceKind::EutherAlert => (
+                true,
+                "Command and Conquer: Red Alert runtime".to_string(),
+                0,
+            ),
             HostInstanceKind::EutherDoom => {
                 let doom = instance
                     .doom
@@ -2427,6 +2627,690 @@ fn post_host_chat_message(state: &HostState, user: &str, message: &str) -> io::R
         messages.drain(0..excess);
     }
     Ok(())
+}
+
+fn host_social_user_search(
+    state: &HostState,
+    current_user: &str,
+    query: &str,
+) -> io::Result<serde_json::Value> {
+    let needle = query.trim().to_lowercase();
+    let online_users = active_host_session_users(state)?;
+    let activity_labels = host_user_activity_labels(state)?;
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut payload = users
+        .iter()
+        .filter(|user| !user.banned && user.name != current_user)
+        .filter(|user| needle.is_empty() || user.name.to_lowercase().contains(&needle))
+        .map(|user| {
+            let online = online_users.contains(&user.name);
+            serde_json::json!({
+                "name": user.name,
+                "displayName": host_display_user_name(&user.name),
+                "online": online,
+                "status": if online { "Online" } else { "Offline" },
+                "location": if online {
+                    activity_labels
+                        .get(&user.name)
+                        .cloned()
+                        .unwrap_or_else(|| "Online on host".to_string())
+                } else {
+                    "Offline".to_string()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    if current_user != HOST_CODEX_USER
+        && (needle.is_empty()
+            || HOST_CODEX_USER.contains(&needle)
+            || HOST_CODEX_DISPLAY_NAME.to_lowercase().contains(&needle))
+    {
+        payload.push(serde_json::json!({
+            "name": HOST_CODEX_USER,
+            "displayName": HOST_CODEX_DISPLAY_NAME,
+            "online": false,
+            "status": "Offline",
+            "location": "Developer inbox - files land in .euther-host/codex-inbox",
+            "special": "codex",
+        }));
+    }
+    payload.sort_by_key(|user| {
+        user.get("displayName")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_lowercase()
+    });
+    payload.truncate(24);
+    Ok(serde_json::json!({ "users": payload }))
+}
+
+fn host_social_conversation_list(user: &str) -> io::Result<serde_json::Value> {
+    let mut conversations = read_host_social_conversations()?
+        .into_iter()
+        .filter(|conversation| conversation.participants.iter().any(|entry| entry == user))
+        .collect::<Vec<_>>();
+    conversations.sort_by(|a, b| b.updated_unix_ms.cmp(&a.updated_unix_ms));
+    Ok(serde_json::json!({ "conversations": conversations }))
+}
+
+fn host_social_create_conversation(
+    state: &HostState,
+    current_user: &str,
+    create: HostSocialConversationCreate,
+) -> io::Result<serde_json::Value> {
+    let mut participants = create.participants;
+    participants.push(current_user.to_string());
+    participants = normalized_host_social_participants(participants);
+    if participants.len() < 2 {
+        return Err(invalid_request("choose at least one other user"));
+    }
+    validate_host_social_participants(state, &participants)?;
+
+    let now = unix_ms_now();
+    let kind = if participants.len() == 2 {
+        HostSocialConversationKind::Direct
+    } else {
+        HostSocialConversationKind::Group
+    };
+    let mut conversations = read_host_social_conversations()?;
+    if kind == HostSocialConversationKind::Direct {
+        if let Some(existing) = conversations
+            .iter()
+            .find(|conversation| {
+                conversation.kind == HostSocialConversationKind::Direct
+                    && conversation.participants == participants
+            })
+            .cloned()
+        {
+            return Ok(serde_json::json!({ "conversation": existing }));
+        }
+    }
+
+    let id = match kind {
+        HostSocialConversationKind::Direct => {
+            format!(
+                "dm-{}",
+                participants
+                    .iter()
+                    .map(|user| host_social_slug(user))
+                    .collect::<Vec<_>>()
+                    .join("-")
+            )
+        }
+        HostSocialConversationKind::Group => {
+            format!(
+                "group-{}-{:016x}",
+                now,
+                host_social_hash(&format!("{}:{:?}", current_user, participants))
+            )
+        }
+    };
+    let title = create
+        .title
+        .map(|title| title.trim().chars().take(80).collect::<String>())
+        .filter(|title| !title.is_empty());
+    let conversation = HostSocialConversation {
+        id,
+        kind,
+        title,
+        participants,
+        created_by: current_user.to_string(),
+        created_unix_ms: now,
+        updated_unix_ms: now,
+        last_message: None,
+    };
+    conversations.push(conversation.clone());
+    write_host_social_conversations(&conversations)?;
+    Ok(serde_json::json!({ "conversation": conversation }))
+}
+
+fn host_social_message_list(
+    user: &str,
+    conversation_id: &str,
+    before_id: Option<u64>,
+    limit: usize,
+) -> io::Result<serde_json::Value> {
+    let conversation = host_social_conversation_for_user(user, conversation_id)?;
+    let mut messages = read_host_social_messages(conversation_id)?;
+    if let Some(before_id) = before_id {
+        messages.retain(|message| message.id < before_id);
+    }
+    let limit = limit.clamp(1, 160);
+    if messages.len() > limit {
+        let keep_from = messages.len() - limit;
+        messages.drain(0..keep_from);
+    }
+    let has_older = messages.first().map(|first| first.id > 1).unwrap_or(false);
+    Ok(serde_json::json!({
+        "conversation": conversation,
+        "messages": messages,
+        "hasOlder": has_older,
+    }))
+}
+
+fn host_social_post_message(
+    user: &str,
+    conversation_id: &str,
+    create: HostSocialMessageCreate,
+) -> io::Result<serde_json::Value> {
+    let text = create.text.trim();
+    let attachment_ids = create.attachments;
+    if text.is_empty() && attachment_ids.is_empty() {
+        return Err(invalid_request("message is empty"));
+    }
+    let text = text.chars().take(2000).collect::<String>();
+    let attachments = host_social_attachments_from_ids(&attachment_ids)?;
+    let mut conversations = read_host_social_conversations()?;
+    let conversation = conversations
+        .iter_mut()
+        .find(|conversation| conversation.id == conversation_id)
+        .ok_or_else(|| invalid_request("conversation not found"))?;
+    if !conversation.participants.iter().any(|entry| entry == user) {
+        return Err(invalid_request("conversation not found"));
+    }
+
+    let messages = read_host_social_messages(conversation_id)?;
+    let next_id = messages.last().map(|message| message.id + 1).unwrap_or(1);
+    let now = unix_ms_now();
+    let message = HostSocialMessage {
+        id: next_id,
+        conversation_id: conversation_id.to_string(),
+        user: user.to_string(),
+        text,
+        attachments,
+        reactions: Vec::new(),
+        created_unix_ms: now,
+    };
+    append_host_social_message(&message)?;
+    conversation.updated_unix_ms = now;
+    conversation.last_message = Some(HostSocialMessagePreview {
+        user: user.to_string(),
+        text: if message.text.is_empty() && !message.attachments.is_empty() {
+            let images = message
+                .attachments
+                .iter()
+                .filter(|attachment| attachment.content_type.starts_with("image/"))
+                .count();
+            if images == message.attachments.len() {
+                format!("sent {} image", message.attachments.len())
+            } else {
+                format!("sent {} file", message.attachments.len())
+            }
+        } else {
+            message.text.clone()
+        },
+        created_unix_ms: now,
+    });
+    let conversation = conversation.clone();
+    write_host_social_conversations(&conversations)?;
+    mirror_host_social_message_to_codex_inbox(&conversation, &message)?;
+    Ok(serde_json::json!({
+        "conversation": conversation,
+        "message": message,
+    }))
+}
+
+fn mirror_host_social_message_to_codex_inbox(
+    conversation: &HostSocialConversation,
+    message: &HostSocialMessage,
+) -> io::Result<()> {
+    if !conversation
+        .participants
+        .iter()
+        .any(|participant| participant == HOST_CODEX_USER)
+    {
+        return Ok(());
+    }
+    ensure_host_codex_inbox_dir()?;
+    write_host_codex_inbox_readme()?;
+
+    let entry_name = format!(
+        "{}-{}-m{:06}",
+        message.created_unix_ms,
+        host_social_slug(&conversation.id),
+        message.id
+    );
+    let entry_dir = host_codex_inbox_dir().join(entry_name);
+    fs::create_dir_all(&entry_dir)?;
+
+    let mut copied_attachments = Vec::new();
+    for (index, attachment) in message.attachments.iter().enumerate() {
+        let (_, file_name) = read_host_social_attachment_record(&attachment.id)?;
+        let source_path = host_social_attachment_file_path(&file_name)?;
+        let inbox_file_name = format!(
+            "{:02}-{}",
+            index + 1,
+            clean_host_codex_inbox_file_name(&attachment.name)
+        );
+        let destination_path = entry_dir.join(&inbox_file_name);
+        fs::copy(&source_path, &destination_path)?;
+        copied_attachments.push(serde_json::json!({
+            "id": attachment.id,
+            "name": attachment.name,
+            "contentType": attachment.content_type,
+            "sizeBytes": attachment.size_bytes,
+            "chatUrl": attachment.url,
+            "localFile": destination_path.to_string_lossy(),
+        }));
+    }
+
+    let metadata = serde_json::json!({
+        "conversationId": conversation.id,
+        "conversationKind": conversation.kind,
+        "participants": conversation.participants,
+        "messageId": message.id,
+        "sender": message.user,
+        "text": message.text,
+        "createdUnixMs": message.created_unix_ms,
+        "attachments": copied_attachments,
+    });
+    let metadata_bytes =
+        serde_json::to_vec_pretty(&metadata).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(entry_dir.join("message.json"), metadata_bytes)?;
+    fs::write(
+        entry_dir.join("note.md"),
+        host_codex_inbox_note_markdown(conversation, message, &metadata),
+    )?;
+
+    let mut index_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(host_codex_inbox_dir().join("index.jsonl"))?;
+    serde_json::to_writer(&mut index_file, &metadata)
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    index_file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn host_social_toggle_reaction(
+    user: &str,
+    conversation_id: &str,
+    message_id: u64,
+    update: HostSocialReactionUpdate,
+) -> io::Result<serde_json::Value> {
+    let conversation = host_social_conversation_for_user(user, conversation_id)?;
+    let key = validate_host_social_reaction_key(&update.key)?;
+    let mut messages = read_host_social_messages(conversation_id)?;
+    let message = messages
+        .iter_mut()
+        .find(|message| message.id == message_id)
+        .ok_or_else(|| invalid_request("message not found"))?;
+    if let Some(reaction) = message
+        .reactions
+        .iter_mut()
+        .find(|reaction| reaction.key == key)
+    {
+        if reaction.users.iter().any(|entry| entry == user) {
+            reaction.users.retain(|entry| entry != user);
+        } else {
+            reaction.users.push(user.to_string());
+            reaction.users.sort();
+        }
+    } else {
+        message.reactions.push(HostSocialReaction {
+            key,
+            users: vec![user.to_string()],
+        });
+    }
+    message
+        .reactions
+        .retain(|reaction| !reaction.users.is_empty());
+    message.reactions.sort_by(|a, b| a.key.cmp(&b.key));
+    let message = message.clone();
+    write_host_social_messages(conversation_id, &messages)?;
+    Ok(serde_json::json!({
+        "conversation": conversation,
+        "message": message,
+    }))
+}
+
+fn host_social_upload_attachment(
+    _user: &str,
+    upload: HostSocialAttachmentUpload,
+) -> io::Result<serde_json::Value> {
+    let (content_type, is_image) =
+        validate_host_social_attachment_content_type(&upload.content_type, &upload.name)?;
+    let bytes = decode_base64(upload.data_base64.trim())?;
+    let max_bytes = if is_image {
+        HOST_SOCIAL_ATTACHMENT_MAX_BYTES
+    } else {
+        HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES
+    };
+    if bytes.is_empty() || bytes.len() > max_bytes {
+        return Err(invalid_request("file is too large"));
+    }
+    if is_image {
+        validate_host_social_attachment_magic(&content_type, &bytes)?;
+    }
+    let now = unix_ms_now();
+    let extension = host_social_attachment_extension(&content_type, &upload.name);
+    let id = format!("att-{}-{:016x}", now, random_u64()?);
+    let file_name = format!("{id}.{extension}");
+    ensure_host_social_attachments_dir()?;
+    fs::write(host_social_attachment_file_path(&file_name)?, &bytes)?;
+    let attachment = HostSocialAttachment {
+        id: id.clone(),
+        name: clean_host_social_attachment_name(&upload.name),
+        content_type,
+        size_bytes: bytes.len(),
+        url: format!("/api/social/attachments/{id}"),
+    };
+    write_host_social_attachment_manifest(&attachment, &file_name)?;
+    Ok(serde_json::json!({ "attachment": attachment }))
+}
+
+fn host_social_upload_raw_attachment(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    _user: &str,
+) -> io::Result<serde_json::Value> {
+    let name = query_string_value(&request.path, "name")?.unwrap_or_else(|| "file".to_string());
+    let requested_content_type = query_string_value(&request.path, "contentType")?
+        .or_else(|| header_value(request, "content-type").map(str::to_string))
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let (content_type, is_image) =
+        validate_host_social_attachment_content_type(&requested_content_type, &name)?;
+    let max_bytes = if is_image {
+        HOST_SOCIAL_ATTACHMENT_MAX_BYTES
+    } else {
+        HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES
+    };
+    if request.content_length == 0 || request.content_length > max_bytes {
+        return Err(invalid_request("file is too large"));
+    }
+
+    let now = unix_ms_now();
+    let extension = host_social_attachment_extension(&content_type, &name);
+    let id = format!("att-{}-{:016x}", now, random_u64()?);
+    let file_name = format!("{id}.{extension}");
+    let temp_file_name = format!("{file_name}.tmp");
+    ensure_host_social_attachments_dir()?;
+    let final_path = host_social_attachment_file_path(&file_name)?;
+    let temp_path = host_social_attachment_file_path(&temp_file_name)?;
+
+    stream.set_read_timeout(None)?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)?;
+    let mut remaining = request.content_length;
+    let initial = &request.body[..request.body.len().min(remaining)];
+    let mut head = initial.iter().copied().take(16).collect::<Vec<_>>();
+    file.write_all(initial)?;
+    remaining -= initial.len();
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let to_read = buffer.len().min(remaining);
+        let read = stream.read(&mut buffer[..to_read])?;
+        if read == 0 {
+            let _ = fs::remove_file(&temp_path);
+            return Err(invalid_request("incomplete file upload"));
+        }
+        if head.len() < 16 {
+            let take = (16 - head.len()).min(read);
+            head.extend_from_slice(&buffer[..take]);
+        }
+        file.write_all(&buffer[..read])?;
+        remaining -= read;
+    }
+    file.flush()?;
+    if is_image {
+        validate_host_social_attachment_magic(&content_type, &head)?;
+    }
+    fs::rename(&temp_path, &final_path)?;
+    let attachment = HostSocialAttachment {
+        id: id.clone(),
+        name: clean_host_social_attachment_name(&name),
+        content_type,
+        size_bytes: request.content_length,
+        url: format!("/api/social/attachments/{id}"),
+    };
+    write_host_social_attachment_manifest(&attachment, &file_name)?;
+    Ok(serde_json::json!({ "attachment": attachment }))
+}
+
+fn host_social_attachments_from_ids(ids: &[String]) -> io::Result<Vec<HostSocialAttachment>> {
+    if ids.len() > 6 {
+        return Err(invalid_request("too many images"));
+    }
+    ids.iter()
+        .map(|id| read_host_social_attachment_manifest(id))
+        .collect()
+}
+
+fn send_host_social_attachment(stream: &mut TcpStream, attachment_id: &str) -> io::Result<()> {
+    let (attachment, file_name) = read_host_social_attachment_record(attachment_id)?;
+    let path = host_social_attachment_file_path(&file_name)?;
+    let bytes = fs::read(path)?;
+    send_response(stream, 200, &attachment.content_type, &bytes)
+}
+
+fn validate_host_social_attachment_content_type(
+    content_type: &str,
+    name: &str,
+) -> io::Result<(String, bool)> {
+    let content_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let normalized = match content_type.as_str() {
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
+            return Ok((content_type, true));
+        }
+        "application/vnd.android.package-archive" => "application/vnd.android.package-archive",
+        "application/zip" | "application/x-zip-compressed" => "application/zip",
+        "application/x-iso9660-image" => "application/x-iso9660-image",
+        "application/pdf" => "application/pdf",
+        "text/plain" => "text/plain; charset=utf-8",
+        "text/markdown" => "text/markdown; charset=utf-8",
+        "application/json" => "application/json; charset=utf-8",
+        "application/octet-stream" if extension == "apk" => {
+            "application/vnd.android.package-archive"
+        }
+        "application/octet-stream" if extension == "zip" => "application/zip",
+        "application/octet-stream" if extension == "iso" => "application/x-iso9660-image",
+        "application/octet-stream" if extension == "pdf" => "application/pdf",
+        "application/octet-stream" if matches!(extension.as_str(), "txt" | "md" | "json") => {
+            "text/plain; charset=utf-8"
+        }
+        _ => match extension.as_str() {
+            "apk" => "application/vnd.android.package-archive",
+            "zip" => "application/zip",
+            "iso" => "application/x-iso9660-image",
+            "pdf" => "application/pdf",
+            "txt" => "text/plain; charset=utf-8",
+            "md" => "text/markdown; charset=utf-8",
+            "json" => "application/json; charset=utf-8",
+            "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" => "application/octet-stream",
+            _ => return Err(invalid_request("unsupported file type")),
+        },
+    };
+    Ok((normalized.to_string(), false))
+}
+
+fn validate_host_social_attachment_magic(content_type: &str, bytes: &[u8]) -> io::Result<()> {
+    let valid = match content_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid_request("image bytes do not match content type"))
+    }
+}
+
+fn validate_host_social_reaction_key(key: &str) -> io::Result<String> {
+    let key = key.trim();
+    if key.is_empty()
+        || key.len() > 40
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid_request("invalid reaction"));
+    }
+    Ok(key.to_string())
+}
+
+fn host_social_attachment_extension(content_type: &str, name: &str) -> String {
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_lowercase())
+        .filter(|extension| {
+            extension.len() <= 12 && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        });
+    match content_type {
+        "image/png" => "png".to_string(),
+        "image/jpeg" => "jpg".to_string(),
+        "image/gif" => "gif".to_string(),
+        "image/webp" => "webp".to_string(),
+        "application/vnd.android.package-archive" => "apk".to_string(),
+        "application/zip" => "zip".to_string(),
+        "application/x-iso9660-image" => "iso".to_string(),
+        "application/pdf" => "pdf".to_string(),
+        _ => extension.unwrap_or_else(|| "bin".to_string()),
+    }
+}
+
+fn clean_host_codex_inbox_file_name(name: &str) -> String {
+    let mut output = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while output.contains("..") {
+        output = output.replace("..", ".");
+    }
+    output = output.trim_matches(&['.', '_', '-'][..]).to_string();
+    if output.is_empty() {
+        output = "attachment.bin".to_string();
+    }
+    output.chars().take(96).collect()
+}
+
+fn write_host_codex_inbox_readme() -> io::Result<()> {
+    ensure_host_codex_inbox_dir()?;
+    fs::write(
+        host_codex_inbox_dir().join("README.md"),
+        format!(
+            r#"# Codex Inbox
+
+This directory receives files and images sent to `{}` in the Euther social chat.
+
+How to use it:
+
+1. Read this file when starting work in `/home/nichlas/EutherOxide`.
+2. Inspect newest entries first: `ls -lt .euther-host/codex-inbox`.
+3. Each message has its own folder with:
+   - `message.json` for structured metadata.
+   - `note.md` for a readable summary.
+   - copied attachment files named `01-*`, `02-*`, etc.
+4. `index.jsonl` is an append-only log of received messages.
+
+Notes:
+
+- The normal social chat history remains in `.euther-host/social-chat`.
+- Large files may be intentionally shared here, including APKs and ISOs.
+- Treat received files as user-supplied input. Inspect names/types before running anything.
+"#,
+            HOST_CODEX_DISPLAY_NAME
+        ),
+    )
+}
+
+fn host_codex_inbox_note_markdown(
+    conversation: &HostSocialConversation,
+    message: &HostSocialMessage,
+    metadata: &serde_json::Value,
+) -> String {
+    let attachments = metadata
+        .get("attachments")
+        .and_then(|value| value.as_array())
+        .map(|attachments| {
+            if attachments.is_empty() {
+                "- No attachments".to_string()
+            } else {
+                attachments
+                    .iter()
+                    .map(|attachment| {
+                        let name = attachment
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("attachment");
+                        let local_file = attachment
+                            .get("localFile")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        let content_type = attachment
+                            .get("contentType")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("application/octet-stream");
+                        format!("- `{}` ({}) -> `{}`", name, content_type, local_file)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        })
+        .unwrap_or_else(|| "- No attachments".to_string());
+    format!(
+        "# Social Chat Message for Codex\n\n- Conversation: `{}`\n- Sender: `{}`\n- Participants: `{}`\n- Message id: `{}`\n- Created unix ms: `{}`\n\n## Text\n\n{}\n\n## Attachments\n\n{}\n",
+        conversation.id,
+        message.user,
+        conversation.participants.join(", "),
+        message.id,
+        message.created_unix_ms,
+        if message.text.trim().is_empty() {
+            "_No text._".to_string()
+        } else {
+            message.text.clone()
+        },
+        attachments
+    )
+}
+
+fn clean_host_social_attachment_name(name: &str) -> String {
+    let mut output = name
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(120)
+        .collect::<String>();
+    if output.trim().is_empty() {
+        output = "image".to_string();
+    }
+    output
+}
+
+fn host_social_conversation_for_user(
+    user: &str,
+    conversation_id: &str,
+) -> io::Result<HostSocialConversation> {
+    read_host_social_conversations()?
+        .into_iter()
+        .find(|conversation| {
+            conversation.id == conversation_id
+                && conversation.participants.iter().any(|entry| entry == user)
+        })
+        .ok_or_else(|| invalid_request("conversation not found"))
 }
 
 fn host_interaction_user_list(
@@ -3563,7 +4447,7 @@ fn join_host_lobby_instance(
 ) -> io::Result<serde_json::Value> {
     let instance = host_instance_snapshot(state, instance_id)?;
     match instance.kind {
-        HostInstanceKind::MegaDrive => {
+        HostInstanceKind::MegaDrive | HostInstanceKind::EutherAlert => {
             join_lobby_instance(&instance.bridge, client_id, user, requested)
         }
         HostInstanceKind::EutherDoom => {
@@ -3709,7 +4593,10 @@ fn release_host_lobby_player(
 ) -> io::Result<()> {
     let instance = host_instance_snapshot(state, instance_id)?;
     release_lobby_player(&instance.bridge, player_index)?;
-    if instance.kind == HostInstanceKind::MegaDrive {
+    if matches!(
+        instance.kind,
+        HostInstanceKind::MegaDrive | HostInstanceKind::EutherAlert
+    ) {
         clear_bridge_input(&instance.bridge, player_index)?;
     } else if let Some(doom) = &instance.doom {
         if let Some(player_id) = eutherdoom_server::PlayerId::from_index(player_index) {
@@ -4517,23 +5404,81 @@ fn send_external_runtime_static(
 fn send_eutherlist_apk(stream: &mut TcpStream) -> io::Result<()> {
     let apk_path = env::var("EUTHERLIST_APK_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERLIST_APK_PATH));
+        .unwrap_or_else(|_| {
+            let home_apk = PathBuf::from(DEFAULT_EUTHERLIST_APK_PATH);
+            if home_apk.is_file() {
+                home_apk
+            } else {
+                PathBuf::from(DEFAULT_EUTHERLIST_REPO_APK_PATH)
+            }
+        });
+    send_android_apk(
+        stream,
+        &apk_path,
+        "EutherList-release-signed.apk",
+        "EutherList APK is not available",
+    )
+}
+
+fn is_eutherlist_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherlist.apk"
+            | "/downloads/EutherList.apk"
+            | "/downloads/EutherList-release-signed.apk"
+            | "/downloads/eutherlist-release-signed.apk"
+    )
+}
+
+fn send_euthersync_apk(stream: &mut TcpStream) -> io::Result<()> {
+    let apk_path = env::var("EUTHERSYNC_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home_apk = PathBuf::from(DEFAULT_EUTHERSYNC_APK_PATH);
+            if home_apk.is_file() {
+                home_apk
+            } else {
+                PathBuf::from(DEFAULT_EUTHERSYNC_REPO_APK_PATH)
+            }
+        });
+    send_android_apk(
+        stream,
+        &apk_path,
+        "EutherSync-release-signed.apk",
+        "EutherSync APK is not available",
+    )
+}
+
+fn is_euthersync_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/euthersync.apk"
+            | "/downloads/EutherSync.apk"
+            | "/downloads/EutherSync-release-signed.apk"
+            | "/downloads/euthersync-release-signed.apk"
+    )
+}
+
+fn send_android_apk(
+    stream: &mut TcpStream,
+    apk_path: &Path,
+    download_filename: &str,
+    missing_message: &str,
+) -> io::Result<()> {
     let bytes = match fs::read(&apk_path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return send_error(stream, 404, "EutherList APK is not available");
+            return send_error(stream, 404, missing_message);
         }
         Err(err) => return Err(err),
     };
+    let disposition = format!("attachment; filename=\"{download_filename}\"");
     send_response_with_headers(
         stream,
         200,
         "application/vnd.android.package-archive",
         &bytes,
-        &[(
-            "Content-Disposition",
-            "attachment; filename=\"EutherList-release-signed.apk\"",
-        )],
+        &[("Content-Disposition", disposition.as_str())],
     )
 }
 
@@ -5805,12 +6750,16 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
         }
     }
 
-    while data.len() < header_end + content_length {
-        let read = stream.read(&mut buffer)?;
-        if read == 0 {
-            break;
+    let raw_social_attachment_upload =
+        method == "POST" && path.split('?').next() == Some("/api/social/attachments/raw");
+    if !raw_social_attachment_upload {
+        while data.len() < header_end + content_length {
+            let read = stream.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            data.extend_from_slice(&buffer[..read]);
         }
-        data.extend_from_slice(&buffer[..read]);
     }
 
     Ok(HttpRequest {
@@ -5818,6 +6767,7 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
         path,
         headers: request_headers,
         body: data[header_end..header_end + content_length.min(data.len() - header_end)].to_vec(),
+        content_length,
     })
 }
 
@@ -7854,6 +8804,248 @@ fn append_host_chat_message(message: &HostChatMessage) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
+fn read_host_social_conversations() -> io::Result<Vec<HostSocialConversation>> {
+    ensure_host_social_dir()?;
+    let path = host_social_conversations_path();
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    serde_json::from_str(&contents).map_err(|err| io::Error::other(err.to_string()))
+}
+
+fn write_host_social_conversations(conversations: &[HostSocialConversation]) -> io::Result<()> {
+    ensure_host_social_dir()?;
+    let contents = serde_json::to_string_pretty(conversations)
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(host_social_conversations_path(), contents)
+}
+
+fn read_host_social_attachment_manifest(id: &str) -> io::Result<HostSocialAttachment> {
+    let (attachment, _) = read_host_social_attachment_record(id)?;
+    Ok(attachment)
+}
+
+fn read_host_social_attachment_record(id: &str) -> io::Result<(HostSocialAttachment, String)> {
+    validate_host_social_attachment_id(id)?;
+    let contents = fs::read_to_string(host_social_attachment_manifest_path(id)?)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| io::Error::other(err.to_string()))?;
+    let attachment: HostSocialAttachment = serde_json::from_value(
+        value
+            .get("attachment")
+            .cloned()
+            .ok_or_else(|| invalid_request("invalid attachment manifest"))?,
+    )
+    .map_err(|err| io::Error::other(err.to_string()))?;
+    let file_name = value
+        .get("fileName")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| invalid_request("invalid attachment manifest"))?
+        .to_string();
+    validate_host_social_attachment_file_name(&file_name)?;
+    Ok((attachment, file_name))
+}
+
+fn write_host_social_attachment_manifest(
+    attachment: &HostSocialAttachment,
+    file_name: &str,
+) -> io::Result<()> {
+    validate_host_social_attachment_id(&attachment.id)?;
+    validate_host_social_attachment_file_name(file_name)?;
+    ensure_host_social_attachments_dir()?;
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "attachment": attachment,
+        "fileName": file_name,
+    }))
+    .map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(
+        host_social_attachment_manifest_path(&attachment.id)?,
+        contents,
+    )
+}
+
+fn read_host_social_messages(conversation_id: &str) -> io::Result<Vec<HostSocialMessage>> {
+    validate_host_social_conversation_id(conversation_id)?;
+    ensure_host_social_messages_dir()?;
+    let path = host_social_messages_path(conversation_id)?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    Ok(contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<HostSocialMessage>(line).ok())
+        .collect())
+}
+
+fn append_host_social_message(message: &HostSocialMessage) -> io::Result<()> {
+    validate_host_social_conversation_id(&message.conversation_id)?;
+    ensure_host_social_messages_dir()?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(host_social_messages_path(&message.conversation_id)?)?;
+    serde_json::to_writer(&mut file, message).map_err(|err| io::Error::other(err.to_string()))?;
+    file.write_all(b"\n")
+}
+
+fn write_host_social_messages(
+    conversation_id: &str,
+    messages: &[HostSocialMessage],
+) -> io::Result<()> {
+    validate_host_social_conversation_id(conversation_id)?;
+    ensure_host_social_messages_dir()?;
+    let mut contents = Vec::new();
+    for message in messages {
+        serde_json::to_writer(&mut contents, message)
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        contents.push(b'\n');
+    }
+    fs::write(host_social_messages_path(conversation_id)?, contents)
+}
+
+fn normalized_host_social_participants(participants: Vec<String>) -> Vec<String> {
+    let mut participants = participants
+        .into_iter()
+        .map(|participant| participant.trim().to_string())
+        .filter(|participant| !participant.is_empty())
+        .collect::<Vec<_>>();
+    participants.sort_by_key(|participant| participant.to_lowercase());
+    participants.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    participants
+}
+
+fn validate_host_social_participants(state: &HostState, participants: &[String]) -> io::Result<()> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for participant in participants {
+        if participant == HOST_CODEX_USER {
+            continue;
+        }
+        if !users
+            .iter()
+            .any(|user| user.name == *participant && !user.banned)
+        {
+            return Err(invalid_request(format!("unknown user: {participant}")));
+        }
+    }
+    Ok(())
+}
+
+fn host_social_conversation_id_from_messages_path(path: &str) -> io::Result<String> {
+    let id = path
+        .strip_prefix("/api/social/conversations/")
+        .and_then(|value| value.strip_suffix("/messages"))
+        .ok_or_else(|| invalid_request("invalid social chat path"))?;
+    let id = percent_decode(id)?;
+    validate_host_social_conversation_id(&id)?;
+    Ok(id)
+}
+
+fn host_social_reaction_path_parts(path: &str) -> io::Result<(String, u64)> {
+    let rest = path
+        .strip_prefix("/api/social/conversations/")
+        .ok_or_else(|| invalid_request("invalid reaction path"))?;
+    let (conversation_id, rest) = rest
+        .split_once("/messages/")
+        .ok_or_else(|| invalid_request("invalid reaction path"))?;
+    let message_id = rest
+        .strip_suffix("/reactions")
+        .ok_or_else(|| invalid_request("invalid reaction path"))?
+        .parse::<u64>()
+        .map_err(|_| invalid_request("invalid message id"))?;
+    let conversation_id = percent_decode(conversation_id)?;
+    validate_host_social_conversation_id(&conversation_id)?;
+    Ok((conversation_id, message_id))
+}
+
+fn host_social_attachment_id_from_path(path: &str) -> io::Result<String> {
+    let id = path
+        .strip_prefix("/api/social/attachments/")
+        .ok_or_else(|| invalid_request("invalid attachment path"))?;
+    let id = percent_decode(id)?;
+    validate_host_social_attachment_id(&id)?;
+    Ok(id)
+}
+
+fn validate_host_social_conversation_id(conversation_id: &str) -> io::Result<()> {
+    if conversation_id.is_empty()
+        || conversation_id.len() > 160
+        || !conversation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid_request("invalid conversation id"));
+    }
+    Ok(())
+}
+
+fn validate_host_social_attachment_id(id: &str) -> io::Result<()> {
+    if id.is_empty()
+        || id.len() > 120
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid_request("invalid attachment id"));
+    }
+    Ok(())
+}
+
+fn validate_host_social_attachment_file_name(file_name: &str) -> io::Result<()> {
+    if file_name.is_empty()
+        || file_name.len() > 160
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains("..")
+    {
+        return Err(invalid_request("invalid attachment file"));
+    }
+    Ok(())
+}
+
+fn host_social_slug(value: &str) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            output.push((byte as char).to_ascii_lowercase());
+        } else if !output.ends_with('-') {
+            output.push('-');
+        }
+    }
+    let output = output.trim_matches('-').to_string();
+    if output.is_empty() {
+        "user".to_string()
+    } else {
+        output
+    }
+}
+
+fn host_social_hash(value: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn random_u64() -> io::Result<u64> {
+    let mut bytes = [0u8; 8];
+    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn host_display_user_name(username: &str) -> String {
+    let mut chars = username.chars();
+    let Some(first) = chars.next() else {
+        return "User".to_string();
+    };
+    format!("{}{}", first.to_uppercase(), chars.collect::<String>())
+}
+
 fn append_host_audit_event(event: &HostAuditEvent<'_>) -> io::Result<()> {
     ensure_host_dir()?;
     let mut file = OpenOptions::new()
@@ -7882,6 +9074,57 @@ fn host_users_path() -> PathBuf {
 
 fn host_chat_path() -> PathBuf {
     host_dir().join("chat.log")
+}
+
+fn host_social_dir() -> PathBuf {
+    host_dir().join("social-chat")
+}
+
+fn host_social_messages_dir() -> PathBuf {
+    host_social_dir().join("messages")
+}
+
+fn host_social_attachments_dir() -> PathBuf {
+    host_social_dir().join("attachments")
+}
+
+fn host_codex_inbox_dir() -> PathBuf {
+    host_dir().join("codex-inbox")
+}
+
+fn ensure_host_social_dir() -> io::Result<()> {
+    fs::create_dir_all(host_social_dir())
+}
+
+fn ensure_host_social_messages_dir() -> io::Result<()> {
+    fs::create_dir_all(host_social_messages_dir())
+}
+
+fn ensure_host_social_attachments_dir() -> io::Result<()> {
+    fs::create_dir_all(host_social_attachments_dir())
+}
+
+fn ensure_host_codex_inbox_dir() -> io::Result<()> {
+    fs::create_dir_all(host_codex_inbox_dir())
+}
+
+fn host_social_conversations_path() -> PathBuf {
+    host_social_dir().join("conversations.json")
+}
+
+fn host_social_messages_path(conversation_id: &str) -> io::Result<PathBuf> {
+    validate_host_social_conversation_id(conversation_id)?;
+    Ok(host_social_messages_dir().join(format!("{conversation_id}.jsonl")))
+}
+
+fn host_social_attachment_manifest_path(id: &str) -> io::Result<PathBuf> {
+    validate_host_social_attachment_id(id)?;
+    Ok(host_social_attachments_dir().join(format!("{id}.json")))
+}
+
+fn host_social_attachment_file_path(file_name: &str) -> io::Result<PathBuf> {
+    validate_host_social_attachment_file_name(file_name)?;
+    Ok(host_social_attachments_dir().join(file_name))
 }
 
 fn host_audit_path() -> PathBuf {
@@ -8493,6 +9736,44 @@ fn percent_decode(value: &str) -> io::Result<String> {
         }
     }
     String::from_utf8(output).map_err(|_| invalid_request("query value must be UTF-8"))
+}
+
+fn decode_base64(value: &str) -> io::Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(value.len() * 3 / 4);
+    let mut quartet = [0u8; 4];
+    let mut quartet_len = 0;
+    let mut padding = 0;
+    for byte in value.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        let decoded = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                0
+            }
+            _ => return Err(invalid_request("invalid base64 data")),
+        };
+        quartet[quartet_len] = decoded;
+        quartet_len += 1;
+        if quartet_len == 4 {
+            output.push((quartet[0] << 2) | (quartet[1] >> 4));
+            if padding < 2 {
+                output.push((quartet[1] << 4) | (quartet[2] >> 2));
+            }
+            if padding < 1 {
+                output.push((quartet[2] << 6) | quartet[3]);
+            }
+            quartet_len = 0;
+            padding = 0;
+        }
+    }
+    if quartet_len != 0 {
+        return Err(invalid_request("invalid base64 length"));
+    }
+    Ok(output)
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
