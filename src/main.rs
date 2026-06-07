@@ -837,6 +837,8 @@ struct HostUser {
     can_upload_roms: bool,
     can_manage_library: bool,
     can_award_eutherium: bool,
+    euthersync_media_backup: Option<bool>,
+    euthersync_feed_post: Option<bool>,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -5014,6 +5016,8 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         can_upload_roms: false,
         can_manage_library: false,
         can_award_eutherium: false,
+        euthersync_media_backup: Some(false),
+        euthersync_feed_post: Some(true),
     });
     save_host_users(&users)
 }
@@ -8674,6 +8678,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut can_upload_roms = false;
     let mut can_manage_library = false;
     let mut can_award_eutherium = false;
+    let mut euthersync_media_backup = None;
+    let mut euthersync_feed_post = None;
     for line in contents.lines().map(str::trim) {
         if line.starts_with("[[user]]") {
             if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
@@ -8694,6 +8700,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_upload_roms,
                     can_manage_library,
                     can_award_eutherium,
+                    euthersync_media_backup,
+                    euthersync_feed_post,
                 });
             }
             app_token = None;
@@ -8705,6 +8713,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_upload_roms = false;
             can_manage_library = false;
             can_award_eutherium = false;
+            euthersync_media_backup = None;
+            euthersync_feed_post = None;
             continue;
         }
         if line.starts_with('#') || line.is_empty() {
@@ -8732,6 +8742,10 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_manage_library = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "can_award_eutherium") {
             can_award_eutherium = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "euthersync_media_backup") {
+            euthersync_media_backup = Some(value);
+        } else if let Some(value) = parse_toml_bool_assignment(line, "euthersync_feed_post") {
+            euthersync_feed_post = Some(value);
         }
     }
     if let (Some(name), Some(password_hash)) = (name.take(), password_hash.take()) {
@@ -8748,6 +8762,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_upload_roms,
             can_manage_library,
             can_award_eutherium,
+            euthersync_media_backup,
+            euthersync_feed_post,
         });
     }
     if users.is_empty() {
@@ -8796,6 +8812,18 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
             "can_award_eutherium = {}\n",
             user.can_award_eutherium
         ));
+        if let Some(euthersync_media_backup) = user.euthersync_media_backup {
+            contents.push_str(&format!(
+                "euthersync_media_backup = {}\n",
+                euthersync_media_backup
+            ));
+        }
+        if let Some(euthersync_feed_post) = user.euthersync_feed_post {
+            contents.push_str(&format!(
+                "euthersync_feed_post = {}\n",
+                euthersync_feed_post
+            ));
+        }
     }
     fs::write(host_users_path(), contents)
 }
