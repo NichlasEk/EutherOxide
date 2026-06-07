@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.view.ViewGroup;
+import android.webkit.JavascriptInterface;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -26,9 +27,13 @@ import android.widget.TextView;
 import androidx.core.content.FileProvider;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -37,11 +42,15 @@ import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 42;
+    private static final int CAMERA_CAPTURE_REQUEST = 43;
 
     private WebView webView;
     private TextView statusView;
     private ValueCallback<Uri[]> fileCallback;
     private Uri cameraOutputUri;
+    private File cameraOutputFile;
+    private String pendingCameraUploadPath;
+    private String pendingCameraBaseUrl;
     private final List<String> candidateUrls = new ArrayList<>();
     private int selectedUrlIndex = 0;
 
@@ -108,6 +117,7 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             settings.setAlgorithmicDarkeningAllowed(false);
         }
+        webView.addJavascriptInterface(new CameraBridge(), "EutherSyncCamera");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -205,6 +215,7 @@ public class MainActivity extends Activity {
         }
         try {
             File imageFile = createCameraImageFile();
+            cameraOutputFile = imageFile;
             cameraOutputUri = FileProvider.getUriForFile(
                 this,
                 BuildConfig.APPLICATION_ID + ".fileprovider",
@@ -226,6 +237,26 @@ public class MainActivity extends Activity {
             directory = getCacheDir();
         }
         return File.createTempFile("euthersync_" + stamp + "_", ".jpg", directory);
+    }
+
+    private class CameraBridge {
+        @JavascriptInterface
+        public void captureFeedPhoto(String uploadPath) {
+            runOnUiThread(() -> {
+                pendingCameraUploadPath = uploadPath;
+                pendingCameraBaseUrl = webView.getUrl();
+                Intent intent = createCameraIntent();
+                if (intent == null) {
+                    dispatchCameraError("Camera is not available.");
+                    return;
+                }
+                try {
+                    startActivityForResult(intent, CAMERA_CAPTURE_REQUEST);
+                } catch (ActivityNotFoundException error) {
+                    dispatchCameraError("Camera is not available.");
+                }
+            });
+        }
     }
 
     private void loadSelectedUrl() {
@@ -305,6 +336,9 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != FILE_CHOOSER_REQUEST || fileCallback == null) {
+            if (requestCode == CAMERA_CAPTURE_REQUEST) {
+                handleBridgeCameraResult(resultCode);
+            }
             return;
         }
 
@@ -314,6 +348,95 @@ public class MainActivity extends Activity {
         fileCallback.onReceiveValue(result);
         fileCallback = null;
         cameraOutputUri = null;
+    }
+
+    private void handleBridgeCameraResult(int resultCode) {
+        if (resultCode != RESULT_OK || cameraOutputFile == null || pendingCameraUploadPath == null) {
+            dispatchCameraError("Camera cancelled.");
+            clearBridgeCameraState();
+            return;
+        }
+        File uploadFile = cameraOutputFile;
+        String uploadPath = pendingCameraUploadPath;
+        String baseUrl = pendingCameraBaseUrl;
+        new Thread(() -> uploadCameraPhoto(uploadFile, baseUrl, uploadPath)).start();
+    }
+
+    private void uploadCameraPhoto(File file, String baseUrl, String uploadPath) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(new URL(baseUrl), uploadPath);
+            String sha256 = sha256(file);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(30000);
+            connection.setDoOutput(true);
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "image/jpeg");
+            connection.setRequestProperty("X-SHA256", sha256);
+            String cookie = CookieManager.getInstance().getCookie(url.toString());
+            if (cookie != null && !cookie.isEmpty()) {
+                connection.setRequestProperty("Cookie", cookie);
+            }
+            try (OutputStream out = connection.getOutputStream(); FileInputStream in = new FileInputStream(file)) {
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                }
+            }
+            int status = connection.getResponseCode();
+            if (status >= 200 && status < 300) {
+                dispatchCameraPosted();
+            } else {
+                dispatchCameraError("Camera upload failed.");
+            }
+        } catch (Exception error) {
+            dispatchCameraError("Camera upload failed.");
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+            clearBridgeCameraState();
+        }
+    }
+
+    private String sha256(File file) throws IOException, NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        StringBuilder hex = new StringBuilder();
+        for (byte value : digest.digest()) {
+            hex.append(String.format(Locale.US, "%02x", value));
+        }
+        return hex.toString();
+    }
+
+    private void dispatchCameraPosted() {
+        runOnUiThread(() -> webView.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('euthersync-camera-posted'))",
+            null
+        ));
+    }
+
+    private void dispatchCameraError(String message) {
+        String escaped = message.replace("\\", "\\\\").replace("'", "\\'");
+        runOnUiThread(() -> webView.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('euthersync-camera-error',{detail:{message:'" + escaped + "'}}))",
+            null
+        ));
+    }
+
+    private void clearBridgeCameraState() {
+        pendingCameraUploadPath = null;
+        pendingCameraBaseUrl = null;
+        cameraOutputUri = null;
+        cameraOutputFile = null;
     }
 
     @Override
