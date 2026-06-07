@@ -13,10 +13,11 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        val eutherSyncUrl = providers.gradleProperty("eutherSyncUrl")
-            .orElse("http://eutheroxide.local:3000")
+        val eutherSyncUrls = providers.gradleProperty("eutherSyncUrls")
+            .orElse(providers.gradleProperty("eutherSyncUrl"))
+            .orElse("http://192.168.32.186:3000,https://apothictech.se/euthersync/")
             .get()
-        buildConfigField("String", "EUTHERSYNC_URL", "\"${eutherSyncUrl}\"")
+        buildConfigField("String", "EUTHERSYNC_URLS", "\"${eutherSyncUrls}\"")
     }
 
     buildTypes {

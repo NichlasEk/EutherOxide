@@ -12,7 +12,7 @@ Environment=EUTHERSYNC_HOST=0.0.0.0
 Environment=EUTHERSYNC_PORT=3000
 Environment=EUTHERSYNC_STORAGE=/home/nichlas/euthersync-storage
 Environment=EUTHERSYNC_LOCAL_URL=http://192.168.32.186:3000
-Environment=EUTHERSYNC_PUBLIC_URL=http://192.168.32.186:3000
+Environment=EUTHERSYNC_PUBLIC_URL=https://apothictech.se/euthersync
 ExecStart=/usr/bin/node server/index.js
 Restart=on-failure
 RestartSec=3

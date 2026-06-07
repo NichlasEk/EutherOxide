@@ -11,31 +11,69 @@ import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 42;
 
     private WebView webView;
+    private TextView statusView;
     private ValueCallback<Uri[]> fileCallback;
+    private final List<String> candidateUrls = new ArrayList<>();
+    private int selectedUrlIndex = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        parseCandidateUrls();
+
+        FrameLayout root = new FrameLayout(this);
         webView = new WebView(this);
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        webView.setLayoutParams(new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ));
         webView.setBackgroundColor(Color.rgb(16, 24, 32));
-        setContentView(webView);
+
+        statusView = new TextView(this);
+        statusView.setLayoutParams(new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        statusView.setTextColor(Color.WHITE);
+        statusView.setBackgroundColor(Color.rgb(16, 24, 32));
+        statusView.setPadding(28, 28, 28, 28);
+        statusView.setText("Connecting to EutherSync...");
+
+        root.addView(webView);
+        root.addView(statusView);
+        setContentView(root);
 
         configureWebView();
-        webView.loadUrl(BuildConfig.EUTHERSYNC_URL);
+        loadSelectedUrl();
+    }
+
+    private void parseCandidateUrls() {
+        for (String rawUrl : BuildConfig.EUTHERSYNC_URLS.split(",")) {
+            String url = rawUrl.trim();
+            if (!url.isEmpty()) {
+                candidateUrls.add(url);
+            }
+        }
+        if (candidateUrls.isEmpty()) {
+            candidateUrls.add("https://apothictech.se/euthersync/");
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -53,6 +91,32 @@ public class MainActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                statusView.setVisibility(android.view.View.GONE);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request.isForMainFrame()) {
+                    loadNextUrlOrShowError();
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(
+                WebView view,
+                WebResourceRequest request,
+                WebResourceResponse errorResponse
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse);
+                if (request.isForMainFrame() && errorResponse.getStatusCode() >= 500) {
+                    loadNextUrlOrShowError();
+                }
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -92,6 +156,26 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
+    }
+
+    private void loadSelectedUrl() {
+        String url = candidateUrls.get(selectedUrlIndex);
+        statusView.setVisibility(android.view.View.VISIBLE);
+        statusView.setText("Connecting to EutherSync...\n" + url);
+        webView.loadUrl(url);
+    }
+
+    private void loadNextUrlOrShowError() {
+        if (selectedUrlIndex + 1 < candidateUrls.size()) {
+            selectedUrlIndex += 1;
+            loadSelectedUrl();
+            return;
+        }
+        statusView.setVisibility(android.view.View.VISIBLE);
+        statusView.setText(
+            "EutherSync is unreachable.\n\nTried:\n" +
+                String.join("\n", candidateUrls)
+        );
     }
 
     @Override

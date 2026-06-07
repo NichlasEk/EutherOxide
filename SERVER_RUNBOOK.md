@@ -110,11 +110,30 @@ To build the EutherSync wrapper against another endpoint:
 EUTHERSYNC_ANDROID_URL=https://photos.example.com npm run android:euthersync
 ```
 
-The default EutherSync Android endpoint is `http://192.168.32.186:3000`.
+The default EutherSync Android endpoints are tried in this order:
+
+```text
+http://192.168.32.186:3000
+https://apothictech.se/euthersync/
+```
+
 Keep `euthersync.service` enabled so the WebView wrapper has a live backend:
 
 ```sh
 sudo systemctl enable --now euthersync.service
+```
+
+Caddy fronts the public path by stripping `/euthersync` and proxying to the
+Node service:
+
+```caddyfile
+handle_path /euthersync* {
+	reverse_proxy 127.0.0.1:3000
+}
+
+handle {
+	reverse_proxy 127.0.0.1:32162
+}
 ```
 
 ### 3. EutherHost Config

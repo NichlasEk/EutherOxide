@@ -6,7 +6,7 @@ APP_DIR="$ROOT/apps/euthersync-android"
 APK_OUTPUT_ROOT="$APP_DIR/app/build/outputs/apk"
 OUT_APK="${OUT_APK:-/home/nichlas/EutherSync-release-signed.apk}"
 REPO_APK="${REPO_APK:-$ROOT/apps/euthersync/releases/EutherSync-release-signed.apk}"
-EUTHERSYNC_ANDROID_URL="${EUTHERSYNC_ANDROID_URL:-http://192.168.32.186:3000}"
+EUTHERSYNC_ANDROID_URLS="${EUTHERSYNC_ANDROID_URLS:-${EUTHERSYNC_ANDROID_URL:-http://192.168.32.186:3000,https://apothictech.se/euthersync/}}"
 
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -31,9 +31,9 @@ if ! command -v apksigner >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[euthersync-release-apk] building unsigned APK for $EUTHERSYNC_ANDROID_URL"
+echo "[euthersync-release-apk] building unsigned APK for $EUTHERSYNC_ANDROID_URLS"
 cd "$APP_DIR"
-./gradlew assembleRelease -PeutherSyncUrl="$EUTHERSYNC_ANDROID_URL"
+./gradlew assembleRelease -PeutherSyncUrls="$EUTHERSYNC_ANDROID_URLS"
 
 UNSIGNED_APK="$(
   find "$APK_OUTPUT_ROOT" -type f -name '*release-unsigned.apk' -printf '%T@ %p\n' \
