@@ -3,6 +3,7 @@ package com.nichlasek.euthersync;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
@@ -210,9 +211,6 @@ public class MainActivity extends Activity {
 
     private Intent createCameraIntent() {
         Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        if (intent.resolveActivity(getPackageManager()) == null) {
-            return null;
-        }
         try {
             File imageFile = createCameraImageFile();
             cameraOutputFile = imageFile;
@@ -222,6 +220,7 @@ public class MainActivity extends Activity {
                 imageFile
             );
             intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraOutputUri);
+            intent.setClipData(ClipData.newUri(getContentResolver(), "EutherSync camera photo", cameraOutputUri));
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             return intent;
         } catch (IOException error) {
