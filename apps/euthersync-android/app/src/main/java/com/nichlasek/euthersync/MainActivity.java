@@ -8,6 +8,8 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
@@ -21,10 +23,17 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import androidx.core.content.FileProvider;
+
+import java.io.File;
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 42;
@@ -32,6 +41,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private TextView statusView;
     private ValueCallback<Uri[]> fileCallback;
+    private Uri cameraOutputUri;
     private final List<String> candidateUrls = new ArrayList<>();
     private int selectedUrlIndex = 0;
 
@@ -154,8 +164,16 @@ public class MainActivity extends Activity {
                 }
                 fileCallback = filePathCallback;
 
-                Intent intent = fileChooserParams.createIntent();
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                Intent intent = fileChooserParams.isCaptureEnabled() && acceptsImages(fileChooserParams)
+                    ? createCameraIntent()
+                    : fileChooserParams.createIntent();
+                if (intent == null) {
+                    fileCallback = null;
+                    return false;
+                }
+                if (!fileChooserParams.isCaptureEnabled()) {
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                }
                 try {
                     startActivityForResult(intent, FILE_CHOOSER_REQUEST);
                 } catch (ActivityNotFoundException error) {
@@ -165,6 +183,49 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
+    }
+
+    private boolean acceptsImages(WebChromeClient.FileChooserParams fileChooserParams) {
+        String[] acceptTypes = fileChooserParams.getAcceptTypes();
+        if (acceptTypes == null || acceptTypes.length == 0) {
+            return true;
+        }
+        for (String acceptType : acceptTypes) {
+            if (acceptType == null || acceptType.isEmpty() || acceptType.startsWith("image/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Intent createCameraIntent() {
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        if (intent.resolveActivity(getPackageManager()) == null) {
+            return null;
+        }
+        try {
+            File imageFile = createCameraImageFile();
+            cameraOutputUri = FileProvider.getUriForFile(
+                this,
+                BuildConfig.APPLICATION_ID + ".fileprovider",
+                imageFile
+            );
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraOutputUri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            return intent;
+        } catch (IOException error) {
+            cameraOutputUri = null;
+            return null;
+        }
+    }
+
+    private File createCameraImageFile() throws IOException {
+        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        File directory = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        if (directory == null) {
+            directory = getCacheDir();
+        }
+        return File.createTempFile("euthersync_" + stamp + "_", ".jpg", directory);
     }
 
     private void loadSelectedUrl() {
@@ -247,9 +308,12 @@ public class MainActivity extends Activity {
             return;
         }
 
-        Uri[] result = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+        Uri[] result = resultCode == RESULT_OK && cameraOutputUri != null
+            ? new Uri[] { cameraOutputUri }
+            : WebChromeClient.FileChooserParams.parseResult(resultCode, data);
         fileCallback.onReceiveValue(result);
         fileCallback = null;
+        cameraOutputUri = null;
     }
 
     @Override
