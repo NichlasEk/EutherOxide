@@ -1,0 +1,25 @@
+[Unit]
+Description=EutherSync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nichlas
+WorkingDirectory=/home/nichlas/EutherOxide/apps/euthersync
+Environment=NODE_ENV=production
+Environment=EUTHERSYNC_HOST=0.0.0.0
+Environment=EUTHERSYNC_PORT=3000
+Environment=EUTHERSYNC_STORAGE=/home/nichlas/euthersync-storage
+Environment=EUTHERSYNC_LOCAL_URL=http://192.168.32.186:3000
+Environment=EUTHERSYNC_PUBLIC_URL=http://192.168.32.186:3000
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/nichlas/euthersync-storage
+
+[Install]
+WantedBy=multi-user.target

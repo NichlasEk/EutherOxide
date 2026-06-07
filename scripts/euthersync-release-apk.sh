@@ -6,7 +6,7 @@ APP_DIR="$ROOT/apps/euthersync-android"
 APK_OUTPUT_ROOT="$APP_DIR/app/build/outputs/apk"
 OUT_APK="${OUT_APK:-/home/nichlas/EutherSync-release-signed.apk}"
 REPO_APK="${REPO_APK:-$ROOT/apps/euthersync/releases/EutherSync-release-signed.apk}"
-EUTHERSYNC_ANDROID_URL="${EUTHERSYNC_ANDROID_URL:-http://eutheroxide.local:3000}"
+EUTHERSYNC_ANDROID_URL="${EUTHERSYNC_ANDROID_URL:-http://192.168.32.186:3000}"
 
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"

@@ -110,6 +110,13 @@ To build the EutherSync wrapper against another endpoint:
 EUTHERSYNC_ANDROID_URL=https://photos.example.com npm run android:euthersync
 ```
 
+The default EutherSync Android endpoint is `http://192.168.32.186:3000`.
+Keep `euthersync.service` enabled so the WebView wrapper has a live backend:
+
+```sh
+sudo systemctl enable --now euthersync.service
+```
+
 ### 3. EutherHost Config
 
 Create `/home/nichlas/EutherOxide/.euther-host/config.toml`:
