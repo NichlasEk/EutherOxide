@@ -20,6 +20,8 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -61,7 +63,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         configureWebView();
-        loadSelectedUrl();
+        selectReachableUrl();
     }
 
     private void parseCandidateUrls() {
@@ -165,12 +167,65 @@ public class MainActivity extends Activity {
         webView.loadUrl(url);
     }
 
+    private void selectReachableUrl() {
+        statusView.setVisibility(android.view.View.VISIBLE);
+        statusView.setText("Finding the best EutherSync route...");
+        new Thread(() -> {
+            for (int index = selectedUrlIndex; index < candidateUrls.size(); index += 1) {
+                String url = candidateUrls.get(index);
+                showStatus("Checking EutherSync route...\n" + url);
+                if (isHealthy(url)) {
+                    selectedUrlIndex = index;
+                    runOnUiThread(this::loadSelectedUrl);
+                    return;
+                }
+            }
+            runOnUiThread(this::showUnreachable);
+        }).start();
+    }
+
+    private void showStatus(String message) {
+        runOnUiThread(() -> {
+            statusView.setVisibility(android.view.View.VISIBLE);
+            statusView.setText(message);
+        });
+    }
+
+    private boolean isHealthy(String baseUrl) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(healthUrl(baseUrl));
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(1500);
+            connection.setReadTimeout(1500);
+            connection.setUseCaches(false);
+            connection.setRequestMethod("GET");
+            int status = connection.getResponseCode();
+            return status >= 200 && status < 400;
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private String healthUrl(String baseUrl) {
+        String trimmed = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        return trimmed + "/health";
+    }
+
     private void loadNextUrlOrShowError() {
         if (selectedUrlIndex + 1 < candidateUrls.size()) {
             selectedUrlIndex += 1;
-            loadSelectedUrl();
+            selectReachableUrl();
             return;
         }
+        showUnreachable();
+    }
+
+    private void showUnreachable() {
         statusView.setVisibility(android.view.View.VISIBLE);
         statusView.setText(
             "EutherSync is unreachable.\n\nTried:\n" +
