@@ -75,6 +75,7 @@ fn run() -> io::Result<()> {
     let mut web_bridge_addr = "127.0.0.1:32161".to_string();
     let mut host_server = false;
     let mut host_hash_password: Option<String> = None;
+    let mut host_verify_password: Option<String> = None;
     let mut eutherdogs_demo = false;
     let mut eutherdogs_config: Option<PathBuf> = None;
     let mut perf = false;
@@ -165,6 +166,15 @@ fn run() -> io::Result<()> {
                 };
                 host_hash_password = Some(value);
             }
+            "--host-verify-password" => {
+                let Some(value) = args.next() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--host-verify-password needs a password hash value",
+                    ));
+                };
+                host_verify_password = Some(value);
+            }
             "--perf" => {
                 perf = true;
             }
@@ -191,6 +201,16 @@ fn run() -> io::Result<()> {
 
     if let Some(password) = host_hash_password {
         println!("{}", hash_host_password(&password)?);
+        return Ok(());
+    }
+
+    if let Some(hash) = host_verify_password {
+        let mut password = String::new();
+        io::stdin().read_to_string(&mut password)?;
+        while password.ends_with(['\n', '\r']) {
+            password.pop();
+        }
+        println!("{}", verify_password(&password, &hash));
         return Ok(());
     }
 
@@ -334,7 +354,7 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--web-bridge-addr HOST:PORT] [--host-server] [--host-hash-password PASSWORD] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--web-bridge-addr HOST:PORT] [--host-server] [--host-hash-password PASSWORD] [--host-verify-password HASH] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
     );
 }
 

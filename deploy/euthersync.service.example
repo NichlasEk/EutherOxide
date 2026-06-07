@@ -13,12 +13,15 @@ Environment=EUTHERSYNC_PORT=3000
 Environment=EUTHERSYNC_STORAGE=/home/nichlas/euthersync-storage
 Environment=EUTHERSYNC_LOCAL_URL=http://192.168.32.186:3000
 Environment=EUTHERSYNC_PUBLIC_URL=https://apothictech.se/euthersync
+Environment=EUTHERSYNC_HOST_USERS=/home/nichlas/EutherOxide/.euther-host/users.toml
+Environment=EUTHERSYNC_HOST_VERIFY_BIN=/home/nichlas/EutherOxide/target/release/euther-oxide
 ExecStart=/usr/bin/node server/index.js
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+ReadOnlyPaths=/home/nichlas/EutherOxide/.euther-host/users.toml /home/nichlas/EutherOxide/target/release/euther-oxide
 ReadWritePaths=/home/nichlas/euthersync-storage
 
 [Install]
