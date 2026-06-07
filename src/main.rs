@@ -1121,12 +1121,15 @@ struct HostTrophyRoomLayoutRequest {
     layout: HostTrophyRoomLayout,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 struct HostUserPreferences {
     audio_volume: f64,
     mic_volume: f64,
     doom_mouse_sensitivity: f64,
+    theme: String,
+    skin: String,
 }
 
 impl Default for HostUserPreferences {
@@ -1135,6 +1138,8 @@ impl Default for HostUserPreferences {
             audio_volume: 0.8,
             mic_volume: 1.0,
             doom_mouse_sensitivity: 2.2,
+            theme: "dark".to_string(),
+            skin: "classic".to_string(),
         }
     }
 }
@@ -9378,6 +9383,12 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
         preferences.doom_mouse_sensitivity =
             clamp_f64(value, 0.6, 4.0, preferences.doom_mouse_sensitivity);
     }
+    if let Some(value) = parse_toml_string(&contents, "theme") {
+        preferences.theme = clean_host_user_theme(&value);
+    }
+    if let Some(value) = parse_toml_string(&contents, "skin") {
+        preferences.skin = clean_host_user_skin(&value);
+    }
     Ok(preferences)
 }
 
@@ -9387,14 +9398,34 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         audio_volume: clamp_unit_f64(preferences.audio_volume, 0.8),
         mic_volume: clamp_f64(preferences.mic_volume, 0.0, 1.6, 1.0),
         doom_mouse_sensitivity: clamp_f64(preferences.doom_mouse_sensitivity, 0.6, 4.0, 2.2),
+        theme: clean_host_user_theme(&preferences.theme),
+        skin: clean_host_user_skin(&preferences.skin),
     };
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\n",
-            preferences.audio_volume, preferences.mic_volume, preferences.doom_mouse_sensitivity
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\n",
+            preferences.audio_volume,
+            preferences.mic_volume,
+            preferences.doom_mouse_sensitivity,
+            toml_escape(&preferences.theme),
+            toml_escape(&preferences.skin)
         ),
     )
+}
+
+fn clean_host_user_theme(value: &str) -> String {
+    match value {
+        "light" | "dark" | "royal-apothic" => value.to_string(),
+        _ => "dark".to_string(),
+    }
+}
+
+fn clean_host_user_skin(value: &str) -> String {
+    match value {
+        "classic" | "glass" | "arcade" | "custom" => value.to_string(),
+        _ => "classic".to_string(),
+    }
 }
 
 fn clamp_unit_f64(value: f64, fallback: f64) -> f64 {

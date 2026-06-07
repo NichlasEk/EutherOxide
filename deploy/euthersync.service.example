@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ReadOnlyPaths=/home/nichlas/EutherOxide/.euther-host/users.toml /home/nichlas/EutherOxide/target/release/euther-oxide
-ReadWritePaths=/home/nichlas/euthersync-storage
+ReadWritePaths=/home/nichlas/euthersync-storage /home/nichlas/EutherOxide/.euther-host/user-data
 
 [Install]
 WantedBy=multi-user.target

@@ -255,7 +255,12 @@ type UserPreferences = {
   audioVolume: number;
   micVolume: number;
   doomMouseSensitivity: number;
+  theme?: UserTheme;
+  skin?: UserSkin;
 };
+
+type UserTheme = "dark" | "light" | "royal-apothic";
+type UserSkin = "classic" | "glass" | "arcade" | "custom";
 
 type ChatMessage = {
   id: number;
@@ -916,11 +921,16 @@ const dogsCharactersStorageKey = "eutheroxide-eutherdogs-characters";
 const bridgeClientStorageKey = "eutheroxide-bridge-client-id";
 const playerPortStorageKey = "eutheroxide-player-port";
 const doomMouseSensitivityStorageKey = "eutheroxide-eutherdoom-mouse-sensitivity";
+const userThemeStorageKey = "eutheroxide-user-theme";
+const userSkinStorageKey = "eutheroxide-user-skin";
+const customSkinCssStorageKey = "eutheroxide-custom-skin-css";
 const dogsHighScoresStorageKey = "eutheroxide-eutherdogs-highscores";
 const dogsHighScoreLimit = 10;
 const dogsAudioPreloadTimeoutMs = 12000;
 let audioVolume = readStoredVolume();
 let micVolume = readStoredMicVolume();
+let userTheme: UserTheme = readStoredUserTheme();
+let userSkin: UserSkin = readStoredUserSkin();
 const localAudioTargetLeadSeconds = 0.055;
 const localAudioMinimumLeadSeconds = 0.018;
 const localAudioMaximumLeadSeconds = 0.16;
@@ -1251,6 +1261,10 @@ let socialChatUploading = false;
 let socialChatSidebarCollapsed = window.matchMedia("(max-width: 640px)").matches;
 let socialChatEmojiPickerOpen = false;
 let socialChatThreadDetailsExpanded = false;
+let socialChatRefreshInFlight = false;
+let socialChatLastRefreshAt = 0;
+let socialChatPullStartY: number | null = null;
+let socialChatPullTriggered = false;
 let eutheriumLoaded = false;
 let eutheriumSaving = false;
 let eutheriumStatus = "Not loaded";
@@ -2089,10 +2103,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </section>
   </div>
   <div class="user-menu" id="user-menu">
-    <button id="user-menu-toggle" class="user-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false">
-      <span class="user-presence-dot"></span>
-      <strong id="user-menu-name">Nichlas</strong>
-    </button>
+    <div class="user-menu-cluster">
+      <button id="user-menu-toggle" class="user-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+        <span class="user-presence-dot"></span>
+        <strong id="user-menu-name">Nichlas</strong>
+      </button>
+      <button id="user-settings-toggle" class="user-settings-toggle" type="button" aria-label="Open user settings" title="User settings">&#9881;</button>
+    </div>
     <div id="user-menu-dropdown" class="user-menu-dropdown" role="menu" aria-label="user menu">
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
       <button data-user-menu-action="get-sync-app" type="button" role="menuitem">Get the EutherSync app</button>
@@ -2239,6 +2256,7 @@ const reactionCorePage = document.querySelector<HTMLElement>("#reaction-core-pag
 const interactionLobbyPage = document.querySelector<HTMLElement>("#interaction-lobby-page")!;
 const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
 const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
+const userSettingsToggle = document.querySelector<HTMLButtonElement>("#user-settings-toggle")!;
 const userMenuName = document.querySelector<HTMLElement>("#user-menu-name")!;
 const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-dropdown")!;
 const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu-action="admin"]')!;
@@ -2431,6 +2449,7 @@ const playerPortButtons = Array.from(
 
 volumeSlider.value = Math.round(audioVolume * 100).toString();
 micVolumeSlider.value = Math.round(micVolume * 100).toString();
+applyUserAppearance();
 applyEutherDogsCssAssets();
 initializeShaderControls();
 void loadShaderConfigFile();
@@ -2459,6 +2478,12 @@ micVolumeSlider.addEventListener("input", () => {
 userMenuToggle.addEventListener("click", (event) => {
   event.stopPropagation();
   setUserMenuOpen(!userMenuOpen);
+});
+
+userSettingsToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setUserMenuOpen(false);
+  openWorkspaceWindow("settings");
 });
 
 userMenuDropdown.addEventListener("click", (event) => {
@@ -2514,7 +2539,25 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   const target = event.target as HTMLElement;
   const socialRefresh = target.closest<HTMLButtonElement>("[data-social-chat-refresh]");
   if (socialRefresh) {
-    await loadSocialChatConversations(true);
+    await refreshActiveSocialChat("button", 0);
+    return;
+  }
+  const settingsTheme = target.closest<HTMLButtonElement>("[data-settings-theme]");
+  if (settingsTheme?.dataset.settingsTheme) {
+    setUserTheme(normalizeUserTheme(settingsTheme.dataset.settingsTheme));
+    renderWorkspaceWindow();
+    return;
+  }
+  const settingsSkin = target.closest<HTMLButtonElement>("[data-settings-skin]");
+  if (settingsSkin?.dataset.settingsSkin) {
+    setUserSkin(normalizeUserSkin(settingsSkin.dataset.settingsSkin));
+    renderWorkspaceWindow();
+    return;
+  }
+  const settingsClearSkin = target.closest<HTMLButtonElement>("[data-settings-clear-custom-skin]");
+  if (settingsClearSkin) {
+    clearCustomUserSkin();
+    renderWorkspaceWindow();
     return;
   }
   const socialSidebarToggle = target.closest<HTMLButtonElement>("[data-social-sidebar-toggle]");
@@ -2648,6 +2691,18 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
     socialImageInput.value = "";
     return;
   }
+  const socialCameraInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-social-camera-input]");
+  if (socialCameraInput?.files?.length) {
+    void postSocialChatCameraFiles([...socialCameraInput.files]);
+    socialCameraInput.value = "";
+    return;
+  }
+  const customSkinInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-settings-custom-skin-input]");
+  if (customSkinInput?.files?.length) {
+    void loadCustomUserSkin(customSkinInput.files[0]);
+    customSkinInput.value = "";
+    return;
+  }
   const socialReactionSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-social-reaction-select]");
   if (socialReactionSelect?.dataset.socialReactionSelect && socialReactionSelect.value) {
     void toggleSocialMessageReaction(Number(socialReactionSelect.dataset.socialReactionSelect), socialReactionSelect.value);
@@ -2712,6 +2767,14 @@ workspaceWindowDynamic.addEventListener("paste", (event) => {
   void uploadSocialChatFiles(files);
 });
 
+workspaceWindowDynamic.addEventListener("scroll", (event) => {
+  const messageList = (event.target as HTMLElement).closest<HTMLDivElement>(".social-message-list");
+  if (!messageList || activeWorkspaceWindow !== "interaction" || messageList.scrollTop > 0) {
+    return;
+  }
+  void refreshActiveSocialChat("top-scroll", 1800);
+}, true);
+
 workspaceWindowDynamic.addEventListener(
   "ended",
   (event) => {
@@ -2726,6 +2789,11 @@ workspaceWindowDynamic.addEventListener(
 
 workspaceWindowDynamic.addEventListener("pointerdown", (event) => {
   const target = event.target as HTMLElement;
+  const messageList = target.closest<HTMLDivElement>(".social-message-list");
+  if (messageList && activeWorkspaceWindow === "interaction" && messageList.scrollTop <= 0) {
+    socialChatPullStartY = event.clientY;
+    socialChatPullTriggered = false;
+  }
   const trophy = target.closest<HTMLButtonElement>("[data-trophy-select]");
   if (!trophy) {
     return;
@@ -2734,15 +2802,38 @@ workspaceWindowDynamic.addEventListener("pointerdown", (event) => {
 });
 
 workspaceWindowDynamic.addEventListener("pointermove", (event) => {
+  if (
+    socialChatPullStartY !== null
+    && !socialChatPullTriggered
+    && activeWorkspaceWindow === "interaction"
+    && event.clientY - socialChatPullStartY > 58
+  ) {
+    socialChatPullTriggered = true;
+    void refreshActiveSocialChat("pull-top", 1200);
+  }
   updateTrophyDrag(event);
 });
 
 workspaceWindowDynamic.addEventListener("pointerup", (event) => {
+  socialChatPullStartY = null;
+  socialChatPullTriggered = false;
   void finishTrophyDrag(event);
 });
 
 workspaceWindowDynamic.addEventListener("pointercancel", () => {
+  socialChatPullStartY = null;
+  socialChatPullTriggered = false;
   trophyDrag = null;
+});
+
+window.addEventListener("focus", () => {
+  void refreshActiveSocialChat("focus", 2500);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    void refreshActiveSocialChat("visible", 2500);
+  }
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {
@@ -6916,7 +7007,7 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
     void loadEutherBooks();
   } else if (windowName === "interaction") {
     void loadInteractionUsers();
-    void loadSocialChatConversations();
+    void refreshActiveSocialChat("open", 0);
     void searchSocialChatUsers();
   } else if (windowName === "friends" || windowName === "spaces") {
     void loadInteractionUsers();
@@ -8028,6 +8119,10 @@ function socialChatThreadMarkup(): string {
           File
           <input data-social-image-input type="file" accept="image/png,image/jpeg,image/gif,image/webp,.apk,.zip,.iso,.pdf,.txt,.md,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx" multiple hidden />
         </label>
+        <label class="mini-action social-camera-action" title="Camera" aria-label="Open camera and post photo">
+          <span aria-hidden="true">&#128247;</span>
+          <input data-social-camera-input type="file" accept="image/*" capture="environment" hidden />
+        </label>
         <button data-social-emoji-toggle class="mini-action" type="button">Lab</button>
         <span>${socialChatUploading ? "Uploading file" : "Paste images or attach files"}</span>
         <button type="submit" ${socialChatUploading ? "disabled" : ""}>Send</button>
@@ -8206,6 +8301,39 @@ function settingsWindowMarkup(): string {
         <p class="section-label">Settings</p>
         <span>Always available</span>
       </div>
+      <div class="settings-appearance-panel">
+        <div class="settings-panel-head">
+          <div>
+            <p class="section-label">Appearance</p>
+            <strong>User Theme</strong>
+          </div>
+          <span>${escapeHtml(userThemeLabel(userTheme))}</span>
+        </div>
+        <div class="settings-option-grid" role="group" aria-label="theme">
+          ${userThemeButton("light", "Light", "Bright cockpit for travel and daylight.")}
+          ${userThemeButton("dark", "Dark", "Low-glare default workspace.")}
+          ${userThemeButton("royal-apothic", "Royal Apothic", "Gold, violet and apothecary glass.")}
+        </div>
+        <div class="settings-panel-head">
+          <div>
+            <p class="section-label">Skins</p>
+            <strong>Surface Style</strong>
+          </div>
+          <span>${escapeHtml(userSkinLabel(userSkin))}</span>
+        </div>
+        <div class="settings-option-grid" role="group" aria-label="skin">
+          ${userSkinButton("classic", "Classic", "Clean Euther panels.")}
+          ${userSkinButton("glass", "Glass", "Sharper translucent surfaces.")}
+          ${userSkinButton("arcade", "Arcade", "Chunkier cabinet controls.")}
+        </div>
+        <div class="settings-skin-loader">
+          <label class="mini-action">
+            Load Skin
+            <input data-settings-custom-skin-input type="file" accept="text/css,.css" hidden />
+          </label>
+          <button data-settings-clear-custom-skin class="mini-action" type="button" ${userSkin !== "custom" ? "disabled" : ""}>Clear Skin</button>
+        </div>
+      </div>
       <div class="settings-audio-panel">
         <div class="volume-head">
           <p class="section-label">Sound</p>
@@ -8228,6 +8356,48 @@ function settingsWindowMarkup(): string {
       </div>
     </div>
   `;
+}
+
+function userThemeButton(theme: UserTheme, label: string, detail: string): string {
+  return `
+    <button class="settings-option-card ${userTheme === theme ? "is-selected" : ""}" data-settings-theme="${theme}" type="button">
+      <span>${escapeHtml(label)}</span>
+      <small>${escapeHtml(detail)}</small>
+    </button>
+  `;
+}
+
+function userSkinButton(skin: Exclude<UserSkin, "custom">, label: string, detail: string): string {
+  return `
+    <button class="settings-option-card ${userSkin === skin ? "is-selected" : ""}" data-settings-skin="${skin}" type="button">
+      <span>${escapeHtml(label)}</span>
+      <small>${escapeHtml(detail)}</small>
+    </button>
+  `;
+}
+
+function userThemeLabel(theme: UserTheme): string {
+  switch (theme) {
+    case "light":
+      return "Light";
+    case "royal-apothic":
+      return "Royal Apothic";
+    default:
+      return "Dark";
+  }
+}
+
+function userSkinLabel(skin: UserSkin): string {
+  switch (skin) {
+    case "glass":
+      return "Glass";
+    case "arcade":
+      return "Arcade";
+    case "custom":
+      return "Custom";
+    default:
+      return "Classic";
+  }
 }
 
 async function activatePlayMode(mode: PlayMode): Promise<void> {
@@ -8308,6 +8478,7 @@ function setUserMenuOpen(open: boolean): void {
 function renderUserMenu(): void {
   userMenuName.textContent = displayUserName(hostUsername ?? "Nichlas");
   userMenuToggle.classList.toggle("is-selected", activeWorkspaceWindow !== null || appRoute === "interactionLobby");
+  userSettingsToggle.classList.toggle("is-selected", activeWorkspaceWindow === "settings");
   userMenuAdmin.hidden = !hostIsAdmin;
 }
 
@@ -8499,6 +8670,58 @@ async function loadSocialChatMessages(conversationId: string, beforeId?: number)
   renderActiveSocialChatWindow();
 }
 
+async function refreshActiveSocialChat(_reason: string, minIntervalMs = 1500): Promise<void> {
+  if (activeWorkspaceWindow !== "interaction" || !hostUsername || socialChatRefreshInFlight) {
+    return;
+  }
+  const now = Date.now();
+  if (minIntervalMs > 0 && now - socialChatLastRefreshAt < minIntervalMs) {
+    return;
+  }
+  socialChatLastRefreshAt = now;
+  socialChatRefreshInFlight = true;
+  const selectedBeforeRefresh = socialChatSelectedConversationId;
+  const messageList = workspaceWindowDynamic.querySelector<HTMLDivElement>(".social-message-list");
+  const previousScrollTop = messageList?.scrollTop ?? 0;
+  const previousScrollHeight = messageList?.scrollHeight ?? 0;
+  const draftTextarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+  const draftText = draftTextarea?.value ?? "";
+  const restoreTextareaFocus = draftTextarea !== null && document.activeElement === draftTextarea;
+  const shouldStickToBottom = messageList
+    ? messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 32
+    : true;
+  try {
+    await loadSocialChatConversations(true);
+    const selectedAfterRefresh = socialChatSelectedConversationId ?? selectedBeforeRefresh;
+    if (selectedAfterRefresh) {
+      await loadSocialChatMessages(selectedAfterRefresh);
+    }
+    if (shouldStickToBottom) {
+      const refreshedList = workspaceWindowDynamic.querySelector<HTMLDivElement>(".social-message-list");
+      if (refreshedList) {
+        refreshedList.scrollTop = refreshedList.scrollHeight;
+      }
+    } else {
+      const refreshedList = workspaceWindowDynamic.querySelector<HTMLDivElement>(".social-message-list");
+      if (refreshedList) {
+        refreshedList.scrollTop = previousScrollTop + Math.max(0, refreshedList.scrollHeight - previousScrollHeight);
+      }
+    }
+    const refreshedTextarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+    if (refreshedTextarea && draftText) {
+      refreshedTextarea.value = draftText;
+      if (restoreTextareaFocus) {
+        refreshedTextarea.focus({ preventScroll: true });
+        refreshedTextarea.setSelectionRange(draftText.length, draftText.length);
+      }
+    }
+  } catch {
+    // The underlying loaders set user-visible status.
+  } finally {
+    socialChatRefreshInFlight = false;
+  }
+}
+
 async function loadOlderSocialChatMessages(): Promise<void> {
   const first = socialChatMessages[0];
   if (!socialChatSelectedConversationId || !first) {
@@ -8575,23 +8798,8 @@ async function uploadSocialChatFiles(files: File[]): Promise<void> {
   socialChatStatus = "Uploading file";
   renderActiveSocialChatWindow();
   try {
-    for (const file of uploadFiles) {
-      const contentType = file.type || contentTypeFromFileName(file.name);
-      const params = new URLSearchParams({
-        name: file.name || "file",
-        contentType,
-      });
-      const result = await bridgeJson<SocialChatAttachmentResult>(
-        `/api/social/attachments/raw?${params}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": contentType },
-          body: file,
-        },
-        0,
-      );
-      socialChatPendingAttachments = [...socialChatPendingAttachments, result.attachment];
-    }
+    const attachments = await uploadSocialChatAttachments(uploadFiles);
+    socialChatPendingAttachments = [...socialChatPendingAttachments, ...attachments];
     socialChatStatus = "File ready";
   } catch (err) {
     socialChatStatus = err instanceof Error ? err.message : "File upload failed";
@@ -8599,6 +8807,76 @@ async function uploadSocialChatFiles(files: File[]): Promise<void> {
     socialChatUploading = false;
   }
   renderActiveSocialChatWindow();
+}
+
+async function postSocialChatCameraFiles(files: File[]): Promise<void> {
+  if (!socialChatSelectedConversationId || files.length === 0) {
+    return;
+  }
+  const cameraFiles = files.filter((file) => file.type.startsWith("image/") || isImageFileName(file.name)).slice(0, 1);
+  if (cameraFiles.length === 0) {
+    socialChatStatus = "Camera needs an image";
+    renderActiveSocialChatWindow();
+    return;
+  }
+  const textarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+  const text = textarea?.value.trim() ?? "";
+  socialChatUploading = true;
+  socialChatStatus = "Posting photo";
+  renderActiveSocialChatWindow();
+  let attachments: SocialChatAttachment[] = [];
+  try {
+    attachments = await uploadSocialChatAttachments(cameraFiles, "photo.jpg");
+    const result = await bridgeJson<SocialChatPostResult>(
+      `/api/social/conversations/${encodeURIComponent(socialChatSelectedConversationId)}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          text,
+          attachments: attachments.map((attachment) => attachment.id),
+        }),
+      },
+      1200,
+    );
+    upsertSocialChatConversation(result.conversation);
+    socialChatMessages = [...socialChatMessages, result.message];
+    socialChatStatus = "Photo posted";
+    if (textarea) {
+      textarea.value = "";
+    }
+  } catch (err) {
+    if (attachments.length > 0) {
+      socialChatPendingAttachments = [...socialChatPendingAttachments, ...attachments];
+      socialChatStatus = err instanceof Error ? `${err.message}; photo saved` : "Photo saved";
+    } else {
+      socialChatStatus = err instanceof Error ? err.message : "Photo post failed";
+    }
+  } finally {
+    socialChatUploading = false;
+  }
+  renderActiveSocialChatWindow();
+}
+
+async function uploadSocialChatAttachments(files: File[], fallbackName = "file"): Promise<SocialChatAttachment[]> {
+  const attachments: SocialChatAttachment[] = [];
+  for (const file of files) {
+    const contentType = file.type || contentTypeFromFileName(file.name || fallbackName);
+    const params = new URLSearchParams({
+      name: file.name || fallbackName,
+      contentType,
+    });
+    const result = await bridgeJson<SocialChatAttachmentResult>(
+      `/api/social/attachments/raw?${params}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: file,
+      },
+      0,
+    );
+    attachments.push(result.attachment);
+  }
+  return attachments;
 }
 
 function insertSocialChatEmoji(key: string): void {
@@ -8640,6 +8918,10 @@ function isSocialChatImageAttachment(attachment: SocialChatAttachment): boolean 
   return attachment.contentType.startsWith("image/");
 }
 
+function isImageFileName(name: string): boolean {
+  return /\.(png|jpe?g|gif|webp|heic|heif)$/i.test(name);
+}
+
 function socialChatFileIcon(attachment: SocialChatAttachment): string {
   const name = attachment.name.toLowerCase();
   if (name.endsWith(".apk")) {
@@ -8674,6 +8956,15 @@ function formatBytes(bytes: number): string {
 function contentTypeFromFileName(name: string): string {
   const extension = name.split(".").pop()?.toLowerCase() ?? "";
   switch (extension) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
     case "apk":
       return "application/vnd.android.package-archive";
     case "zip":
@@ -11561,6 +11852,22 @@ function readStoredMicVolume(): number {
   return Number.isFinite(stored) ? clampMicVolume(stored) : 1;
 }
 
+function readStoredUserTheme(): UserTheme {
+  return normalizeUserTheme(localStorage.getItem(userThemeStorageKey) ?? "dark");
+}
+
+function readStoredUserSkin(): UserSkin {
+  return normalizeUserSkin(localStorage.getItem(userSkinStorageKey) ?? "classic");
+}
+
+function normalizeUserTheme(value: string): UserTheme {
+  return value === "light" || value === "royal-apothic" ? value : "dark";
+}
+
+function normalizeUserSkin(value: string): UserSkin {
+  return value === "glass" || value === "arcade" || value === "custom" ? value : "classic";
+}
+
 function clampDoomMouseSensitivity(value: number): number {
   if (!Number.isFinite(value)) {
     return 2.2;
@@ -11578,6 +11885,8 @@ function currentUserPreferences(): UserPreferences {
     audioVolume,
     micVolume,
     doomMouseSensitivity,
+    theme: userTheme,
+    skin: userSkin,
   };
 }
 
@@ -11601,6 +11910,8 @@ async function loadUserPreferences(): Promise<void> {
     setAudioVolume(preferences.audioVolume, false);
     setMicVolume(preferences.micVolume, false);
     setDoomMouseSensitivity(preferences.doomMouseSensitivity, false);
+    setUserTheme(normalizeUserTheme(preferences.theme ?? userTheme), false);
+    setUserSkin(normalizeUserSkin(preferences.skin ?? userSkin), false);
     applyingUserPreferences = false;
     userPreferencesLoadedFor = loadingFor;
     pushTrace(`Loaded settings for ${displayUserName(loadingFor)}`);
@@ -15294,6 +15605,63 @@ function setDoomMouseSensitivity(value: number, persist = true): void {
   if (persist) {
     scheduleUserPreferencesSave();
   }
+}
+
+function setUserTheme(theme: UserTheme, persist = true): void {
+  userTheme = theme;
+  localStorage.setItem(userThemeStorageKey, userTheme);
+  applyUserAppearance();
+  if (persist) {
+    scheduleUserPreferencesSave();
+  }
+}
+
+function setUserSkin(skin: UserSkin, persist = true): void {
+  userSkin = skin;
+  localStorage.setItem(userSkinStorageKey, userSkin);
+  applyUserAppearance();
+  if (persist) {
+    scheduleUserPreferencesSave();
+  }
+}
+
+function applyUserAppearance(): void {
+  document.body.dataset.userTheme = userTheme;
+  document.body.dataset.userSkin = userSkin;
+  document.documentElement.style.colorScheme = userTheme === "light" ? "light" : "dark";
+  applyCustomUserSkin();
+}
+
+function applyCustomUserSkin(): void {
+  const styleId = "custom-user-skin";
+  let style = document.querySelector<HTMLStyleElement>(`#${styleId}`);
+  if (userSkin !== "custom") {
+    style?.remove();
+    return;
+  }
+  const css = localStorage.getItem(customSkinCssStorageKey) ?? "";
+  if (!css.trim()) {
+    style?.remove();
+    return;
+  }
+  if (!style) {
+    style = document.createElement("style");
+    style.id = styleId;
+    document.head.appendChild(style);
+  }
+  style.textContent = css;
+}
+
+async function loadCustomUserSkin(file: File): Promise<void> {
+  const css = await file.text();
+  localStorage.setItem(customSkinCssStorageKey, css);
+  setUserSkin("custom");
+  renderWorkspaceWindow();
+}
+
+function clearCustomUserSkin(): void {
+  localStorage.removeItem(customSkinCssStorageKey);
+  setUserSkin("classic");
 }
 
 function updateVolumeUi(): void {
