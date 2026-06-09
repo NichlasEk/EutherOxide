@@ -5634,6 +5634,31 @@ h2 {
   min-width: 0;
 }
 
+.eutherbooks-audio-readiness {
+  border: 1px solid rgba(207, 240, 178, 0.14);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #dbeec3;
+  background: rgba(207, 240, 178, 0.07);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.eutherbooks-audio-readiness.is-ready {
+  color: #cfff9b;
+  border-color: rgba(171, 255, 114, 0.26);
+}
+
+.eutherbooks-audio-readiness.is-loading {
+  color: #ffe2a6;
+  border-color: rgba(255, 205, 118, 0.22);
+}
+
+.eutherbooks-audio-readiness.is-error {
+  color: #ffb4a8;
+  border-color: rgba(255, 123, 98, 0.32);
+}
+
 .eutherbooks-smart-controls,
 .eutherbooks-bookmark-panel > div {
   display: grid;

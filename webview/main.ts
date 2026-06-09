@@ -1272,6 +1272,10 @@ let eutherBooksPendingAutoplayJobId: string | null = null;
 let eutherBooksPrefetchJobs: EutherBooksJob[] = [];
 let eutherBooksPrefetchPollTimer: number | null = null;
 let eutherBooksPlayerStatus = "";
+let eutherBooksPendingPlaybackPath: string | null = null;
+let eutherBooksPendingPlaybackStartTime = 0;
+const eutherBooksPlayableAudioPaths = new Set<string>();
+const eutherBooksAudioLoadErrors = new Map<string, string>();
 let interactionUsers: InteractionFriend[] = [];
 let interactionUsersLoaded = false;
 let interactionUsersStatus = "Mock users";
@@ -2804,6 +2808,8 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   eutherBooksJob = null;
   eutherBooksAudioIndex = 0;
   eutherBooksPendingAutoplayJobId = null;
+  eutherBooksPendingPlaybackPath = null;
+  eutherBooksPendingPlaybackStartTime = 0;
   eutherBooksPrefetchJobs = [];
   clearEutherBooksPrefetchPoll();
   eutherBooksPlayerStatus = "";
@@ -2885,13 +2891,49 @@ workspaceWindowDynamic.addEventListener(
 );
 
 workspaceWindowDynamic.addEventListener(
+  "canplay",
+  (event) => {
+    const audio = (event.target as HTMLElement).closest<HTMLAudioElement>("audio");
+    if (!audio || activeWorkspaceWindow !== "books") {
+      return;
+    }
+    const audioPath = audio.dataset.eutherbooksAudioPath;
+    if (!audioPath) {
+      return;
+    }
+    eutherBooksPlayableAudioPaths.add(audioPath);
+    eutherBooksAudioLoadErrors.delete(audioPath);
+    if (eutherBooksPendingPlaybackPath === audioPath) {
+      eutherBooksPendingPlaybackPath = null;
+      const startTime = eutherBooksPendingPlaybackStartTime;
+      eutherBooksPendingPlaybackStartTime = 0;
+      eutherBooksPlayerStatus = "Audio ready";
+      playEutherBooksAudioSoon(startTime);
+      return;
+    }
+    renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
+  },
+  true,
+);
+
+workspaceWindowDynamic.addEventListener(
   "error",
   (event) => {
     const audio = (event.target as HTMLElement).closest<HTMLAudioElement>("audio");
     if (!audio || activeWorkspaceWindow !== "books") {
       return;
     }
-    eutherBooksPlayerStatus = eutherBooksAudioErrorMessage(audio.error);
+    const message = eutherBooksAudioErrorMessage(audio.error);
+    const audioPath = audio.dataset.eutherbooksAudioPath;
+    if (audioPath) {
+      eutherBooksAudioLoadErrors.set(audioPath, message);
+      eutherBooksPlayableAudioPaths.delete(audioPath);
+      if (eutherBooksPendingPlaybackPath === audioPath) {
+        eutherBooksPendingPlaybackPath = null;
+        eutherBooksPendingPlaybackStartTime = 0;
+      }
+    }
+    eutherBooksPlayerStatus = message;
     renderBooksWindowIfActive();
   },
   true,
@@ -7247,6 +7289,20 @@ function eutherBooksWindowMarkup(): string {
   const selectedBook = selectedEutherBook();
   const audioFiles = eutherBooksJob?.audio_files ?? [];
   const audioPath = audioFiles[eutherBooksAudioIndex] ?? null;
+  const audioReady = audioPath ? eutherBooksPlayableAudioPaths.has(audioPath) : false;
+  const audioLoadError = audioPath ? eutherBooksAudioLoadErrors.get(audioPath) : undefined;
+  const audioPendingPlayback = Boolean(audioPath && eutherBooksPendingPlaybackPath === audioPath);
+  const showAudioControls = audioReady || audioPendingPlayback;
+  const audioReadinessLabel = audioPath
+    ? audioReady
+      ? "Ready to play"
+      : audioPendingPlayback
+        ? "Waiting for generated audio to finish loading"
+        : audioLoadError
+        ? audioLoadError
+        : "Checking generated audio"
+    : "No audio selected";
+  const audioStatusClass = audioReady ? "is-ready" : audioLoadError ? "is-error" : "is-loading";
   const progress = eutherBooksJobProgress();
   const processStatus = eutherBooksProcessStatus();
   const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
@@ -7361,7 +7417,8 @@ function eutherBooksWindowMarkup(): string {
               ${audioOptions}
             </select>
           </label>
-          <audio controls preload="metadata" src="${audioPath ? escapeHtml(eutherBooksAudioUrl(audioPath)) : ""}" ${audioPath ? "" : "disabled"}></audio>
+          <div class="eutherbooks-audio-readiness ${audioStatusClass}">${escapeHtml(audioReadinessLabel)}</div>
+          <audio ${showAudioControls ? "controls" : ""} preload="auto" data-eutherbooks-audio-path="${audioPath ? escapeHtml(audioPath) : ""}" src="${audioPath ? escapeHtml(eutherBooksAudioUrl(audioPath)) : ""}" ${audioPath ? "" : "disabled"}></audio>
         </div>
         <div class="eutherbooks-bookmark-panel">
           <span>${escapeHtml(bookmarkLabel)}</span>
@@ -7624,6 +7681,8 @@ async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex
   eutherBooksTtsSubmitting = true;
   eutherBooksJob = null;
   eutherBooksAudioIndex = 0;
+  eutherBooksPendingPlaybackPath = null;
+  eutherBooksPendingPlaybackStartTime = 0;
   eutherBooksPlayerStatus = "";
   renderBooksWindowIfActive();
   try {
@@ -7693,9 +7752,9 @@ async function refreshEutherBooksJob(): Promise<void> {
       }
       if (eutherBooksPendingAutoplayJobId === eutherBooksJob.id) {
         eutherBooksPendingAutoplayJobId = null;
-        eutherBooksPlayerStatus = "Next chapter ready";
+        eutherBooksPlayerStatus = "Checking generated audio";
         renderBooksWindowIfActive();
-        playEutherBooksAudioSoon(0);
+        playEutherBooksAudioWhenReady(0);
         return;
       }
       void ensureEutherBooksNextChapterPrefetched();
@@ -7921,7 +7980,7 @@ async function resumeEutherBooksBookmark(): Promise<void> {
   eutherBooksAudioIndex = Math.max(0, job.audio_files.indexOf(bookmark.audio_path));
   eutherBooksPlayerStatus = `Resuming ${formatDuration(bookmark.current_time)}`;
   renderBooksWindowIfActive();
-  playEutherBooksAudioSoon(bookmark.current_time);
+  playEutherBooksAudioWhenReady(bookmark.current_time);
 }
 
 async function handleEutherBooksAudioEnded(): Promise<void> {
@@ -7976,10 +8035,10 @@ function switchToEutherBooksPrefetchJob(job: EutherBooksJob, autoplay: boolean):
   eutherBooksPendingAutoplayJobId = null;
   eutherBooksPrefetchJobs = eutherBooksPrefetchJobs.filter((candidate) => candidate.id !== job.id);
   clearEutherBooksPrefetchPoll();
-  eutherBooksPlayerStatus = "Next chapter ready";
+  eutherBooksPlayerStatus = "Checking generated audio";
   renderBooksWindowIfActive();
   if (autoplay) {
-    playEutherBooksAudioSoon(0);
+    playEutherBooksAudioWhenReady(0);
   }
   void ensureEutherBooksNextChapterPrefetched();
 }
@@ -8078,6 +8137,8 @@ function setEutherBooksOption(key: string, value: number): void {
   }
   eutherBooksJob = null;
   eutherBooksAudioIndex = 0;
+  eutherBooksPendingPlaybackPath = null;
+  eutherBooksPendingPlaybackStartTime = 0;
   eutherBooksPrefetchJobs = [];
   clearEutherBooksPrefetchPoll();
   localStorage.setItem(`eutherbooks-${key}`, String(safeValue));
@@ -8145,8 +8206,45 @@ function setEutherBooksAudioIndex(index: number, autoplay = false): void {
   eutherBooksAudioIndex = nextIndex;
   renderBooksWindowIfActive();
   if (autoplay) {
-    playEutherBooksAudioSoon(0);
+    playEutherBooksAudioWhenReady(0);
   }
+}
+
+function playEutherBooksAudioWhenReady(startTime = 0): void {
+  const audioPath = eutherBooksJob?.audio_files[eutherBooksAudioIndex];
+  if (!audioPath) {
+    eutherBooksPlayerStatus = "No generated audio is selected";
+    renderBooksWindowIfActive();
+    return;
+  }
+  if (eutherBooksPlayableAudioPaths.has(audioPath)) {
+    playEutherBooksAudioSoon(startTime);
+    return;
+  }
+  if (eutherBooksAudioLoadErrors.has(audioPath)) {
+    eutherBooksPlayerStatus = eutherBooksAudioLoadErrors.get(audioPath) ?? "Audio is not playable yet";
+    renderBooksWindowIfActive();
+    return;
+  }
+  eutherBooksPendingPlaybackPath = audioPath;
+  eutherBooksPendingPlaybackStartTime = Math.max(0, startTime);
+  eutherBooksPlayerStatus = "Waiting for generated audio to finish loading";
+  renderBooksWindowIfActive();
+  window.setTimeout(() => {
+    const audio = currentEutherBooksAudio();
+    if (!audio || audio.dataset.eutherbooksAudioPath !== audioPath) {
+      return;
+    }
+    if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      eutherBooksPlayableAudioPaths.add(audioPath);
+      eutherBooksPendingPlaybackPath = null;
+      const pendingStartTime = eutherBooksPendingPlaybackStartTime;
+      eutherBooksPendingPlaybackStartTime = 0;
+      playEutherBooksAudioSoon(pendingStartTime);
+      return;
+    }
+    audio.load();
+  }, 0);
 }
 
 function playEutherBooksAudioSoon(startTime = 0): void {
