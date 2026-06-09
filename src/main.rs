@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -37,6 +37,7 @@ const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
 const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
 const HOST_SOCIAL_ATTACHMENT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
+const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
 const HOST_CODEX_USER: &str = "codex";
 const HOST_CODEX_DISPLAY_NAME: &str = "Codex Developer";
 const EUTHERDOGS_SERVER_PUBLISH_HZ: f64 = 60.0;
@@ -774,6 +775,17 @@ struct HostState {
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
     next_chat_id: Arc<Mutex<u64>>,
     video_chat_rooms: Arc<Mutex<Vec<HostVideoChatRoom>>>,
+    active_requests: Arc<AtomicUsize>,
+}
+
+struct HostRequestGuard {
+    active_requests: Arc<AtomicUsize>,
+}
+
+impl Drop for HostRequestGuard {
+    fn drop(&mut self) {
+        self.active_requests.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone)]
@@ -1244,6 +1256,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
         video_chat_rooms: Arc::new(Mutex::new(Vec::new())),
+        active_requests: Arc::new(AtomicUsize::new(0)),
     };
     println!(
         "EutherHost reaction chamber listening on http://{}",
@@ -1252,8 +1265,13 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
+                let Some(guard) = try_acquire_host_request(&state.active_requests) else {
+                    let _ = send_error(&mut stream, 503, "server busy");
+                    continue;
+                };
                 let state = state.clone();
                 thread::spawn(move || {
+                    let _guard = guard;
                     if let Err(err) = handle_host_request(&mut stream, &state) {
                         let _ = send_error(&mut stream, 500, &err.to_string());
                     }
@@ -1263,6 +1281,17 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn try_acquire_host_request(active_requests: &Arc<AtomicUsize>) -> Option<HostRequestGuard> {
+    active_requests
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+            (active < HOST_MAX_ACTIVE_REQUESTS).then_some(active + 1)
+        })
+        .ok()?;
+    Some(HostRequestGuard {
+        active_requests: Arc::clone(active_requests),
+    })
 }
 
 fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<()> {
