@@ -2884,6 +2884,19 @@ workspaceWindowDynamic.addEventListener(
   true,
 );
 
+workspaceWindowDynamic.addEventListener(
+  "error",
+  (event) => {
+    const audio = (event.target as HTMLElement).closest<HTMLAudioElement>("audio");
+    if (!audio || activeWorkspaceWindow !== "books") {
+      return;
+    }
+    eutherBooksPlayerStatus = eutherBooksAudioErrorMessage(audio.error);
+    renderBooksWindowIfActive();
+  },
+  true,
+);
+
 workspaceWindowDynamic.addEventListener("pointerdown", (event) => {
   const target = event.target as HTMLElement;
   const messageList = target.closest<HTMLDivElement>(".social-message-list");
@@ -7471,6 +7484,21 @@ function eutherBooksFriendlyError(error: string): string {
   return error.length > 220 ? `${error.slice(0, 220)}...` : error;
 }
 
+function eutherBooksAudioErrorMessage(error: MediaError | null): string {
+  switch (error?.code) {
+    case MediaError.MEDIA_ERR_ABORTED:
+      return "Playback was interrupted.";
+    case MediaError.MEDIA_ERR_NETWORK:
+      return "Audio could not be loaded from EutherBooks.";
+    case MediaError.MEDIA_ERR_DECODE:
+      return "Audio file could not be decoded.";
+    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return "Audio source is not supported.";
+    default:
+      return "Playback failed.";
+  }
+}
+
 function normalizeSelectedEutherBooksVoice(): void {
   if (!eutherBooksVoices.length || eutherBooksVoices.some((voice) => voice.id === selectedEutherBooksVoice)) {
     return;
@@ -7727,7 +7755,7 @@ async function refreshEutherBooksPrefetchJobs(): Promise<void> {
   } catch (_err) {
     eutherBooksPlayerStatus = "Next chapter prefetch failed";
   }
-  renderBooksWindowIfActive();
+  renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
 }
 
 async function ensureEutherBooksNextChapterPrefetched(): Promise<void> {
@@ -7760,7 +7788,7 @@ async function ensureEutherBooksNextChapterPrefetched(): Promise<void> {
   } catch (_err) {
     eutherBooksPlayerStatus = "Next chapter prefetch failed";
   }
-  renderBooksWindowIfActive();
+  renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
 }
 
 function eutherBooksPrefetchMatches(bookId: string, chapterIndex: number, job: EutherBooksJob): boolean {
@@ -7838,6 +7866,11 @@ function eutherBooksBookmarkLabel(bookmark: EutherBooksBookmark): string {
 
 function currentEutherBooksAudio(): HTMLAudioElement | null {
   return workspaceWindowDynamic.querySelector<HTMLAudioElement>(".eutherbooks-now-playing audio");
+}
+
+function isEutherBooksAudioPlaying(): boolean {
+  const audio = currentEutherBooksAudio();
+  return Boolean(audio && !audio.paused && !audio.ended);
 }
 
 function saveEutherBooksBookmark(reason: "pause" | "manual" | "auto"): void {
@@ -8132,13 +8165,22 @@ function playEutherBooksAudioSoon(startTime = 0): void {
         audio.addEventListener("loadedmetadata", applyStartTime, { once: true });
       }
     }
-    void audio.play();
+    audio.play().catch((err) => {
+      eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
+      renderBooksWindowIfActive();
+    });
   }, 0);
 }
 
 function renderBooksWindowIfActive(): void {
   if (activeWorkspaceWindow === "books") {
     renderWorkspaceWindow();
+  }
+}
+
+function renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying(): void {
+  if (!isEutherBooksAudioPlaying()) {
+    renderBooksWindowIfActive();
   }
 }
 
