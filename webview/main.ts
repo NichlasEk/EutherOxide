@@ -7607,7 +7607,7 @@ async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex
     eutherBooksJob = await createEutherBooksTtsJob(book.id, chapterIndex);
     eutherBooksStatus = eutherBooksJob.status;
     eutherBooksPendingAutoplayJobId = autoplayWhenReady ? eutherBooksJob.id : null;
-    scheduleEutherBooksJobPoll();
+    scheduleEutherBooksJobPoll(250);
     void ensureEutherBooksNextChapterPrefetched();
   } catch (err) {
     eutherBooksStatus = err instanceof Error ? "TTS failed" : "Offline";
@@ -7636,7 +7636,7 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
   });
 }
 
-function scheduleEutherBooksJobPoll(): void {
+function scheduleEutherBooksJobPoll(delayMs = 1000): void {
   if (eutherBooksJobPollTimer !== null) {
     window.clearTimeout(eutherBooksJobPollTimer);
   }
@@ -7646,7 +7646,7 @@ function scheduleEutherBooksJobPoll(): void {
   eutherBooksJobPollTimer = window.setTimeout(() => {
     eutherBooksJobPollTimer = null;
     void refreshEutherBooksJob();
-  }, 1000);
+  }, delayMs);
 }
 
 async function refreshEutherBooksJob(): Promise<void> {
@@ -7678,6 +7678,10 @@ async function refreshEutherBooksJob(): Promise<void> {
     scheduleEutherBooksJobPoll();
   } catch (err) {
     eutherBooksStatus = err instanceof Error ? "Job poll failed" : "Offline";
+    eutherBooksPlayerStatus = "Still waiting for EutherBooks to report progress";
+    if (eutherBooksJob.status !== "done" && eutherBooksJob.status !== "failed") {
+      scheduleEutherBooksJobPoll(1500);
+    }
   }
   renderBooksWindowIfActive();
 }
@@ -7734,7 +7738,7 @@ async function ensureEutherBooksNextChapterPrefetched(): Promise<void> {
     return;
   }
   const book = selectedEutherBook();
-  const upcomingChapters = upcomingEutherBookChapters(2);
+  const upcomingChapters = upcomingEutherBookChapters(1);
   if (!book || !upcomingChapters.length) {
     return;
   }
