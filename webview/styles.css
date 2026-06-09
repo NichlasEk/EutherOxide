@@ -5634,6 +5634,45 @@ h2 {
   min-width: 0;
 }
 
+.eutherbooks-smart-controls,
+.eutherbooks-bookmark-panel > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.eutherbooks-smart-controls button,
+.eutherbooks-bookmark-panel button {
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.eutherbooks-smart-controls button.is-selected {
+  border-color: rgba(255, 104, 85, 0.66);
+  background: rgba(92, 39, 32, 0.74);
+  color: #fff4c6;
+}
+
+.eutherbooks-bookmark-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.5);
+}
+
+.eutherbooks-bookmark-panel > span {
+  min-width: 0;
+  color: #aac99c;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .eutherbooks-generation-progress {
   display: grid;
   gap: 6px;
