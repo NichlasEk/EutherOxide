@@ -5666,12 +5666,40 @@ h2 {
   gap: 8px;
 }
 
+.eutherbooks-sleep-timer {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.eutherbooks-sleep-timer span {
+  overflow: hidden;
+  color: #aac99c;
+  font-size: 0.64rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .eutherbooks-smart-controls button,
+.eutherbooks-sleep-timer select,
 .eutherbooks-bookmark-panel button {
   min-height: 36px;
   padding: 0 10px;
   font-size: 0.72rem;
   font-weight: 900;
+}
+
+.eutherbooks-sleep-timer select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.72);
+  color: #fff4c6;
+  font: inherit;
+  font-size: 0.72rem;
 }
 
 .eutherbooks-smart-controls button.is-selected {
