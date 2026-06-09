@@ -5417,6 +5417,13 @@ h2 {
   background: rgba(3, 9, 7, 0.58);
 }
 
+.eutherbooks-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .eutherbooks-status strong {
   color: #fff4c6;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -5594,6 +5601,32 @@ h2 {
   border: 1px solid rgba(207, 240, 178, 0.12);
   border-radius: 8px;
   background: rgba(3, 9, 7, 0.64);
+}
+
+.eutherbooks-audio-select {
+  display: grid;
+  gap: 5px;
+}
+
+.eutherbooks-audio-select span {
+  color: #aac99c;
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.eutherbooks-audio-select select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(3, 9, 7, 0.72);
+  color: #fff4c6;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 850;
 }
 
 .eutherbooks-now-playing audio {
@@ -7623,6 +7656,17 @@ h2 {
     overflow: hidden;
   }
 
+  .workspace-window-layer.is-books .workspace-window-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workspace-window-layer.is-books .workspace-window-dynamic,
+  .workspace-window-layer.is-books .interaction-panel {
+    overflow: visible;
+  }
+
   .workspace-window-section,
   .interaction-panel,
   .interaction-list-rows,
@@ -7662,6 +7706,7 @@ h2 {
 
   .eutherbooks-window {
     grid-template-columns: 1fr;
+    padding-bottom: 18px;
   }
 
   .eutherbooks-library-panel,
@@ -7670,7 +7715,7 @@ h2 {
   }
 
   .eutherbooks-book-list {
-    max-height: 260px;
+    max-height: min(34dvh, 260px);
   }
 
   .eutherbooks-chapter-control {

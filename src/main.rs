@@ -1132,6 +1132,11 @@ struct HostUserPreferences {
     doom_mouse_sensitivity: f64,
     theme: String,
     skin: String,
+    eutherbooks_voice: String,
+    eutherbooks_length_scale: f64,
+    eutherbooks_noise_scale: f64,
+    eutherbooks_noise_w: f64,
+    eutherbooks_sentence_silence: f64,
 }
 
 impl Default for HostUserPreferences {
@@ -1142,6 +1147,11 @@ impl Default for HostUserPreferences {
             doom_mouse_sensitivity: 2.2,
             theme: "dark".to_string(),
             skin: "classic".to_string(),
+            eutherbooks_voice: "sv".to_string(),
+            eutherbooks_length_scale: 1.0,
+            eutherbooks_noise_scale: 0.667,
+            eutherbooks_noise_w: 0.8,
+            eutherbooks_sentence_silence: 0.2,
         }
     }
 }
@@ -1838,6 +1848,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 );
             }
             if path == "/eutherbooks" || path.starts_with("/eutherbooks/") {
+                if eutherbooks_route_requires_manage_library(path, &request.method) {
+                    if let Err(err) =
+                        require_host_permission(state, &user, HostPermission::ManageLibrary)
+                    {
+                        return send_error(stream, 403, &err.to_string());
+                    }
+                }
                 return proxy_eutherbooks_request(stream, &request);
             }
             if path == "/"
@@ -2526,6 +2543,10 @@ fn host_route_permission(path: &str, method: &str) -> Option<HostPermission> {
 
 fn host_route_requires_writable_library(path: &str, method: &str) -> bool {
     matches!((method, path), ("POST", "/load") | ("POST", "/rom-dir"))
+}
+
+fn eutherbooks_route_requires_manage_library(path: &str, method: &str) -> bool {
+    method == "POST" && path == "/eutherbooks/books/upload"
 }
 
 fn host_route_requires_origin_check(path: &str) -> bool {
@@ -9417,6 +9438,25 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_string(&contents, "skin") {
         preferences.skin = clean_host_user_skin(&value);
     }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_voice") {
+        preferences.eutherbooks_voice = clean_eutherbooks_voice(&value);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_length_scale") {
+        preferences.eutherbooks_length_scale =
+            clamp_f64(value, 0.75, 1.35, preferences.eutherbooks_length_scale);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_noise_scale") {
+        preferences.eutherbooks_noise_scale =
+            clamp_f64(value, 0.2, 1.0, preferences.eutherbooks_noise_scale);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_noise_w") {
+        preferences.eutherbooks_noise_w =
+            clamp_f64(value, 0.2, 1.2, preferences.eutherbooks_noise_w);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_sentence_silence") {
+        preferences.eutherbooks_sentence_silence =
+            clamp_f64(value, 0.0, 0.8, preferences.eutherbooks_sentence_silence);
+    }
     Ok(preferences)
 }
 
@@ -9428,18 +9468,49 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         doom_mouse_sensitivity: clamp_f64(preferences.doom_mouse_sensitivity, 0.6, 4.0, 2.2),
         theme: clean_host_user_theme(&preferences.theme),
         skin: clean_host_user_skin(&preferences.skin),
+        eutherbooks_voice: clean_eutherbooks_voice(&preferences.eutherbooks_voice),
+        eutherbooks_length_scale: clamp_f64(preferences.eutherbooks_length_scale, 0.75, 1.35, 1.0),
+        eutherbooks_noise_scale: clamp_f64(preferences.eutherbooks_noise_scale, 0.2, 1.0, 0.667),
+        eutherbooks_noise_w: clamp_f64(preferences.eutherbooks_noise_w, 0.2, 1.2, 0.8),
+        eutherbooks_sentence_silence: clamp_f64(
+            preferences.eutherbooks_sentence_silence,
+            0.0,
+            0.8,
+            0.2,
+        ),
     };
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
             toml_escape(&preferences.theme),
-            toml_escape(&preferences.skin)
+            toml_escape(&preferences.skin),
+            toml_escape(&preferences.eutherbooks_voice),
+            preferences.eutherbooks_length_scale,
+            preferences.eutherbooks_noise_scale,
+            preferences.eutherbooks_noise_w,
+            preferences.eutherbooks_sentence_silence
         ),
     )
+}
+
+fn clean_eutherbooks_voice(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 160 {
+        return "sv".to_string();
+    }
+    let cleaned = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':'))
+        .collect::<String>();
+    if cleaned.is_empty() {
+        "sv".to_string()
+    } else {
+        cleaned
+    }
 }
 
 fn clean_host_user_theme(value: &str) -> String {

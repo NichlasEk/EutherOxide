@@ -257,6 +257,11 @@ type UserPreferences = {
   doomMouseSensitivity: number;
   theme?: UserTheme;
   skin?: UserSkin;
+  eutherbooksVoice?: string;
+  eutherbooksLengthScale?: number;
+  eutherbooksNoiseScale?: number;
+  eutherbooksNoiseW?: number;
+  eutherbooksSentenceSilence?: number;
 };
 
 type UserTheme = "dark" | "light" | "royal-apothic";
@@ -469,6 +474,7 @@ type EutherBooksJob = {
   audio_files: string[];
   total_audio_files?: number;
   tts_options?: Record<string, number>;
+  queue_remainder?: boolean;
   error: string | null;
 };
 
@@ -1236,11 +1242,11 @@ let selectedEutherBookId: string | null = null;
 let selectedEutherBookChapters: EutherBookChapter[] = [];
 let selectedEutherBookChaptersLoading = false;
 let selectedEutherBookChapterIndex = 0;
-let selectedEutherBooksVoice = "sv";
-let eutherBooksLengthScale = 1;
-let eutherBooksNoiseScale = 0.667;
-let eutherBooksNoiseW = 0.8;
-let eutherBooksSentenceSilence = 0.2;
+let selectedEutherBooksVoice = localStorage.getItem("eutherbooks-voice") ?? "sv";
+let eutherBooksLengthScale = storedEutherBooksNumber("length_scale", 1);
+let eutherBooksNoiseScale = storedEutherBooksNumber("noise_scale", 0.667);
+let eutherBooksNoiseW = storedEutherBooksNumber("noise_w", 0.8);
+let eutherBooksSentenceSilence = storedEutherBooksNumber("sentence_silence", 0.2);
 let eutherBooksJob: EutherBooksJob | null = null;
 let eutherBooksJobPollTimer: number | null = null;
 let eutherBooksAudioIndex = 0;
@@ -2631,6 +2637,11 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await loadEutherBooks(true);
     return;
   }
+  const booksUpload = target.closest<HTMLButtonElement>("[data-eutherbooks-upload]");
+  if (booksUpload) {
+    workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-eutherbooks-upload-input]")?.click();
+    return;
+  }
   const booksBook = target.closest<HTMLButtonElement>("[data-eutherbooks-book]");
   if (booksBook?.dataset.eutherbooksBook) {
     await selectEutherBook(booksBook.dataset.eutherbooksBook);
@@ -2709,6 +2720,12 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
     socialReactionSelect.value = "";
     return;
   }
+  const booksUploadInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-upload-input]");
+  if (booksUploadInput?.files?.length) {
+    void uploadEutherBooksFiles([...booksUploadInput.files]);
+    booksUploadInput.value = "";
+    return;
+  }
   const bookSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-book-select]");
   if (bookSelect?.value) {
     void selectEutherBook(bookSelect.value);
@@ -2717,9 +2734,16 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const voiceSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-voice]");
   if (voiceSelect?.value) {
     selectedEutherBooksVoice = voiceSelect.value;
+    localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
     eutherBooksJob = null;
     eutherBooksAudioIndex = 0;
+    scheduleUserPreferencesSave();
     renderWorkspaceWindow();
+    return;
+  }
+  const audioSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-audio-select]");
+  if (audioSelect) {
+    setEutherBooksAudioIndex(Number(audioSelect.value), true);
     return;
   }
   const optionInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-option]");
@@ -7137,6 +7161,14 @@ function eutherBooksWindowMarkup(): string {
   const audioPath = audioFiles[eutherBooksAudioIndex] ?? null;
   const progress = eutherBooksJobProgress();
   const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
+  const audioOptions = audioFiles.length
+    ? audioFiles
+        .map((file, index) => {
+          const label = eutherBooksAudioPartLabel(file, index);
+          return `<option value="${index}" ${index === eutherBooksAudioIndex ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        })
+        .join("")
+    : `<option value="">No generated audio</option>`;
   const chapterOptions = selectedEutherBookChapters.length
     ? selectedEutherBookChapters
         .map(
@@ -7165,7 +7197,7 @@ function eutherBooksWindowMarkup(): string {
           `,
         )
         .join("")
-    : `<div class="eutherbooks-empty"><strong>No books indexed</strong><span>Drop .epub, .txt or .md files in the EutherBooks library directory.</span></div>`;
+    : `<div class="eutherbooks-empty"><strong>No books indexed</strong><span>Drop .epub, .pdf, .txt or .md files in the EutherBooks library directory.</span></div>`;
 
   return `
     <div class="eutherbooks-window">
@@ -7175,8 +7207,12 @@ function eutherBooksWindowMarkup(): string {
             <p class="section-label">EutherBooks</p>
             <strong>Local audiobook shelf</strong>
           </div>
-          <button class="mini-action" data-eutherbooks-refresh type="button">Scan</button>
+          <div class="eutherbooks-head-actions">
+            ${canHostManageLibrary() ? `<button class="mini-action" data-eutherbooks-upload type="button">Upload</button>` : ""}
+            <button class="mini-action" data-eutherbooks-refresh type="button">Scan</button>
+          </div>
         </div>
+        <input data-eutherbooks-upload-input type="file" accept=".txt,.md,.epub,.pdf,text/plain,text/markdown,application/epub+zip,application/pdf" multiple hidden>
         <div class="eutherbooks-status">
           <span>${escapeHtml(eutherBooksStatus)}</span>
           <strong>${escapeHtml(eutherBooksBase)}</strong>
@@ -7224,6 +7260,12 @@ function eutherBooksWindowMarkup(): string {
         </div>
         <div class="eutherbooks-now-playing">
           <span>${escapeHtml(eutherBooksPlaybackLabel())}</span>
+          <label class="eutherbooks-audio-select">
+            <span>Generated part</span>
+            <select data-eutherbooks-audio-select ${audioFiles.length ? "" : "disabled"}>
+              ${audioOptions}
+            </select>
+          </label>
           <audio controls preload="metadata" src="${audioPath ? escapeHtml(eutherBooksAudioUrl(audioPath)) : ""}" ${audioPath ? "" : "disabled"}></audio>
         </div>
         <div class="eutherbooks-generation-progress" aria-label="${escapeHtml(progress.label)}">
@@ -7315,6 +7357,34 @@ async function loadEutherBooks(force = false): Promise<void> {
   }
 }
 
+async function uploadEutherBooksFiles(files: File[]): Promise<void> {
+  if (!files.length || !canHostManageLibrary()) {
+    return;
+  }
+  const allowed = new Set([".txt", ".md", ".epub", ".pdf"]);
+  eutherBooksStatus = `Uploading ${files.length} ${files.length === 1 ? "book" : "books"}`;
+  renderBooksWindowIfActive();
+  try {
+    for (const file of files) {
+      const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+      if (!allowed.has(extension)) {
+        throw new Error(`Unsupported file: ${file.name}`);
+      }
+      await eutherBooksJson<EutherBook>(`/books/upload?name=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "content-type": file.type || "application/octet-stream" },
+        body: file,
+      });
+    }
+    eutherBooksLoaded = false;
+    eutherBooksStatus = "Upload complete";
+    await loadEutherBooks(true);
+  } catch (err) {
+    eutherBooksStatus = err instanceof Error ? err.message : "Upload failed";
+    renderBooksWindowIfActive();
+  }
+}
+
 async function loadEutherBooksVoices(): Promise<void> {
   try {
     eutherBooksVoices = await eutherBooksJson<EutherBooksVoice[]>("/voices");
@@ -7375,6 +7445,7 @@ async function startEutherBooksTts(): Promise<void> {
         noise_scale: eutherBooksNoiseScale,
         noise_w: eutherBooksNoiseW,
         sentence_silence: eutherBooksSentenceSilence,
+        queue_remainder: false,
       }),
     });
     eutherBooksStatus = eutherBooksJob.status;
@@ -7403,10 +7474,15 @@ async function refreshEutherBooksJob(): Promise<void> {
     return;
   }
   try {
+    const previousAudioCount = eutherBooksJob.audio_files.length;
     eutherBooksJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(eutherBooksJob.id)}`);
     eutherBooksStatus = eutherBooksJob.status;
-    if (eutherBooksJob.status === "done" && eutherBooksJob.audio_files.length) {
-      eutherBooksAudioIndex = Math.min(eutherBooksAudioIndex, eutherBooksJob.audio_files.length - 1);
+    if (eutherBooksJob.audio_files.length) {
+      if (previousAudioCount === 0) {
+        eutherBooksAudioIndex = 0;
+      } else {
+        eutherBooksAudioIndex = Math.min(eutherBooksAudioIndex, eutherBooksJob.audio_files.length - 1);
+      }
     }
     scheduleEutherBooksJobPoll();
   } catch (err) {
@@ -7435,15 +7511,30 @@ function eutherBooksAudioUrl(path: string): string {
   return `${eutherBooksBase}/audio/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+function eutherBooksAudioPartLabel(path: string, index: number): string {
+  const match = path.match(/\/(\d{4})-(\d{3})\.wav$/);
+  if (!match) {
+    return `Part ${index + 1}`;
+  }
+  return `Page ${Number(match[1]) + 1}, part ${Number(match[2]) + 1}`;
+}
+
 function eutherBooksPlaybackLabel(): string {
   if (!eutherBooksJob) {
     return selectedEutherBookChapters.length ? "Generate a chapter to listen" : "Select a book";
   }
-  if (eutherBooksJob.status === "done" && eutherBooksJob.audio_files.length) {
-    return `Part ${eutherBooksAudioIndex + 1} of ${eutherBooksJob.audio_files.length}`;
+  if (eutherBooksJob.audio_files.length) {
+    const total = Math.max(eutherBooksJob.total_audio_files ?? 0, eutherBooksJob.audio_files.length);
+    if (eutherBooksJob.status === "done") {
+      return `Complete: ${eutherBooksAudioIndex + 1}/${eutherBooksJob.audio_files.length}`;
+    }
+    return `Playable now: ${eutherBooksAudioIndex + 1}/${eutherBooksJob.audio_files.length} generated, ${total} queued`;
   }
   if (eutherBooksJob.status === "failed") {
     return "Speech generation failed";
+  }
+  if (eutherBooksJob.status === "queued") {
+    return "Speech generation queued";
   }
   return "Speech generation running";
 }
@@ -7459,12 +7550,14 @@ function eutherBooksJobProgress(): { done: number; total: number; percent: numbe
     ? `Ready ${done}/${total}`
     : eutherBooksJob.status === "failed"
       ? `Failed ${done}/${total}`
-      : `Generating ${done}/${total}`;
+      : eutherBooksJob.status === "queued"
+        ? `Queued ${done}/${total}`
+        : `Generating ${done}/${total}`;
   return { done, total, percent, label };
 }
 
 function setEutherBooksOption(key: string, value: number): void {
-  const safeValue = Number.isFinite(value) ? value : 0;
+  const safeValue = clampEutherBooksOption(key, value);
   switch (key) {
     case "length_scale":
       eutherBooksLengthScale = safeValue;
@@ -7483,7 +7576,47 @@ function setEutherBooksOption(key: string, value: number): void {
   }
   eutherBooksJob = null;
   eutherBooksAudioIndex = 0;
+  localStorage.setItem(`eutherbooks-${key}`, String(safeValue));
+  scheduleUserPreferencesSave();
   renderBooksWindowIfActive();
+}
+
+function storedEutherBooksNumber(key: string, fallback: number): number {
+  const value = Number(localStorage.getItem(`eutherbooks-${key}`));
+  return Number.isFinite(value) ? clampEutherBooksOption(key, value) : fallback;
+}
+
+function clampEutherBooksOption(key: string, value: number): number {
+  if (!Number.isFinite(value)) {
+    return eutherBooksOptionFallback(key);
+  }
+  switch (key) {
+    case "length_scale":
+      return Math.min(Math.max(value, 0.75), 1.35);
+    case "noise_scale":
+      return Math.min(Math.max(value, 0.2), 1);
+    case "noise_w":
+      return Math.min(Math.max(value, 0.2), 1.2);
+    case "sentence_silence":
+      return Math.min(Math.max(value, 0), 0.8);
+    default:
+      return value;
+  }
+}
+
+function eutherBooksOptionFallback(key: string): number {
+  switch (key) {
+    case "length_scale":
+      return 1;
+    case "noise_scale":
+      return 0.667;
+    case "noise_w":
+      return 0.8;
+    case "sentence_silence":
+      return 0.2;
+    default:
+      return 0;
+  }
 }
 
 function eutherBooksPlayerHint(): string {
@@ -11887,6 +12020,11 @@ function currentUserPreferences(): UserPreferences {
     doomMouseSensitivity,
     theme: userTheme,
     skin: userSkin,
+    eutherbooksVoice: selectedEutherBooksVoice,
+    eutherbooksLengthScale: eutherBooksLengthScale,
+    eutherbooksNoiseScale: eutherBooksNoiseScale,
+    eutherbooksNoiseW: eutherBooksNoiseW,
+    eutherbooksSentenceSilence: eutherBooksSentenceSilence,
   };
 }
 
@@ -11912,6 +12050,7 @@ async function loadUserPreferences(): Promise<void> {
     setDoomMouseSensitivity(preferences.doomMouseSensitivity, false);
     setUserTheme(normalizeUserTheme(preferences.theme ?? userTheme), false);
     setUserSkin(normalizeUserSkin(preferences.skin ?? userSkin), false);
+    applyEutherBooksUserPreferences(preferences);
     applyingUserPreferences = false;
     userPreferencesLoadedFor = loadingFor;
     pushTrace(`Loaded settings for ${displayUserName(loadingFor)}`);
@@ -11923,6 +12062,37 @@ async function loadUserPreferences(): Promise<void> {
       userPreferencesLoadingFor = null;
     }
   }
+}
+
+function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
+  const voice = preferences.eutherbooksVoice?.trim();
+  if (voice) {
+    selectedEutherBooksVoice = voice;
+    localStorage.setItem("eutherbooks-voice", voice);
+  }
+  eutherBooksLengthScale = applyEutherBooksNumberPreference(
+    "length_scale",
+    preferences.eutherbooksLengthScale,
+    eutherBooksLengthScale,
+  );
+  eutherBooksNoiseScale = applyEutherBooksNumberPreference(
+    "noise_scale",
+    preferences.eutherbooksNoiseScale,
+    eutherBooksNoiseScale,
+  );
+  eutherBooksNoiseW = applyEutherBooksNumberPreference("noise_w", preferences.eutherbooksNoiseW, eutherBooksNoiseW);
+  eutherBooksSentenceSilence = applyEutherBooksNumberPreference(
+    "sentence_silence",
+    preferences.eutherbooksSentenceSilence,
+    eutherBooksSentenceSilence,
+  );
+  renderBooksWindowIfActive();
+}
+
+function applyEutherBooksNumberPreference(key: string, value: number | undefined, fallback: number): number {
+  const safeValue = value === undefined ? fallback : clampEutherBooksOption(key, value);
+  localStorage.setItem(`eutherbooks-${key}`, String(safeValue));
+  return safeValue;
 }
 
 function scheduleUserPreferencesSave(): void {
