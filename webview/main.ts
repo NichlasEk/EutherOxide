@@ -475,6 +475,11 @@ type EutherBooksJob = {
   total_audio_files?: number;
   tts_options?: Record<string, number>;
   queue_remainder?: boolean;
+  progress_label?: string;
+  progress_detail?: string;
+  current_chapter_index?: number | null;
+  current_chunk_index?: number;
+  total_chunks?: number;
   error: string | null;
 };
 
@@ -7230,6 +7235,7 @@ function eutherBooksWindowMarkup(): string {
   const audioFiles = eutherBooksJob?.audio_files ?? [];
   const audioPath = audioFiles[eutherBooksAudioIndex] ?? null;
   const progress = eutherBooksJobProgress();
+  const processStatus = eutherBooksProcessStatus();
   const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
   const bookmark = selectedBook ? eutherBooksBookmarkFor(selectedBook.id) : null;
   const bookmarkLabel = bookmark ? eutherBooksBookmarkLabel(bookmark) : "No bookmark";
@@ -7357,13 +7363,14 @@ function eutherBooksWindowMarkup(): string {
             <strong>${progress.percent}%</strong>
           </div>
           <progress max="100" value="${progress.percent}"></progress>
+          ${processStatus ? `<small>${escapeHtml(processStatus)}</small>` : ""}
         </div>
         <div class="eutherbooks-player-actions">
           <button data-eutherbooks-prev-audio type="button" ${eutherBooksAudioIndex > 0 ? "" : "disabled"}>Prev</button>
           <button data-eutherbooks-next-audio type="button" ${eutherBooksAudioIndex + 1 < audioFiles.length ? "" : "disabled"}>Next</button>
         </div>
         <div class="eutherbooks-job-note">
-          ${escapeHtml((eutherBooksJob?.error ?? eutherBooksPlayerStatus) || eutherBooksPlayerHint())}
+          ${escapeHtml(eutherBooksVisibleJobNote())}
         </div>
       </section>
     </div>
@@ -7408,6 +7415,9 @@ function formatEutherBooksOptionValue(value: number): string {
 }
 
 function eutherBooksPlayerHeaderStatus(): string {
+  if (eutherBooksJob?.progress_label) {
+    return eutherBooksJob.progress_label;
+  }
   if (eutherBooksJob?.status) {
     return eutherBooksJob.status;
   }
@@ -7418,6 +7428,47 @@ function eutherBooksPlayerHeaderStatus(): string {
     return eutherBooksStatus;
   }
   return "idle";
+}
+
+function eutherBooksProcessStatus(): string {
+  const job = eutherBooksJob;
+  if (!job) {
+    return "";
+  }
+  const detail = job.progress_detail?.trim();
+  if (detail) {
+    return detail;
+  }
+  const label = job.progress_label?.trim();
+  if (label) {
+    return label;
+  }
+  if (job.status === "running" && job.audio_files.length) {
+    const total = Math.max(job.total_audio_files ?? 0, job.total_chunks ?? 0, job.audio_files.length);
+    return `${job.audio_files.length}/${total} audio files are playable.`;
+  }
+  return "";
+}
+
+function eutherBooksVisibleJobNote(): string {
+  const error = eutherBooksJob?.error?.trim();
+  if (error) {
+    return eutherBooksFriendlyError(error);
+  }
+  return eutherBooksPlayerStatus || eutherBooksProcessStatus() || eutherBooksPlayerHint();
+}
+
+function eutherBooksFriendlyError(error: string): string {
+  if (error.includes("SIGTERM") || error.includes("Interrupted by service restart")) {
+    return "Generation was interrupted. Start the chapter again to continue.";
+  }
+  if (error.includes("tesseract")) {
+    return "PDF OCR stopped while reading the page. Try the chapter again, or use a text/EPUB source if this PDF keeps failing.";
+  }
+  if (error.includes("Piper model file does not exist")) {
+    return error;
+  }
+  return error.length > 220 ? `${error.slice(0, 220)}...` : error;
 }
 
 function normalizeSelectedEutherBooksVoice(): void {
@@ -7950,16 +8001,23 @@ function eutherBooksJobProgress(): { done: number; total: number; percent: numbe
   if (!eutherBooksJob) {
     return { done: 0, total: 0, percent: 0, label: "Generation idle" };
   }
-  const done = eutherBooksJob.audio_files.length;
-  const total = Math.max(eutherBooksJob.total_audio_files ?? done, done, eutherBooksJob.status === "done" ? done : 1);
+  const done = Math.max(eutherBooksJob.audio_files.length, eutherBooksJob.current_chunk_index ?? 0);
+  const total = Math.max(
+    eutherBooksJob.total_chunks ?? 0,
+    eutherBooksJob.total_audio_files ?? 0,
+    eutherBooksJob.audio_files.length,
+    eutherBooksJob.status === "done" ? done : 1,
+  );
   const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-  const label = eutherBooksJob.status === "done"
-    ? `Ready ${done}/${total}`
-    : eutherBooksJob.status === "failed"
-      ? `Failed ${done}/${total}`
-      : eutherBooksJob.status === "queued"
-        ? `Queued ${done}/${total}`
-        : `Generating ${done}/${total}`;
+  const labelPrefix = eutherBooksJob.progress_label?.trim()
+    || (eutherBooksJob.status === "done"
+      ? "Ready"
+      : eutherBooksJob.status === "failed"
+        ? "Failed"
+        : eutherBooksJob.status === "queued"
+          ? "Queued"
+          : "Generating");
+  const label = `${labelPrefix} ${done}/${total}`;
   return { done, total, percent, label };
 }
 

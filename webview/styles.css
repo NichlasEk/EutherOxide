@@ -5699,6 +5699,14 @@ h2 {
   font-size: 0.74rem;
 }
 
+.eutherbooks-generation-progress small {
+  color: #aac99c;
+  font-size: 0.7rem;
+  font-weight: 850;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
 .eutherbooks-generation-progress progress {
   width: 100%;
   height: 9px;
