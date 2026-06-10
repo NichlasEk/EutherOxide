@@ -5603,12 +5603,14 @@ h2 {
   background: rgba(3, 9, 7, 0.64);
 }
 
-.eutherbooks-audio-select {
+.eutherbooks-audio-select,
+.eutherbooks-sleep-timer {
   display: grid;
   gap: 5px;
 }
 
-.eutherbooks-audio-select span {
+.eutherbooks-audio-select span,
+.eutherbooks-sleep-timer span {
   color: #aac99c;
   font-size: 0.68rem;
   font-weight: 900;
@@ -5616,7 +5618,8 @@ h2 {
   letter-spacing: 0.04em;
 }
 
-.eutherbooks-audio-select select {
+.eutherbooks-audio-select select,
+.eutherbooks-sleep-timer select {
   width: 100%;
   min-width: 0;
   border: 1px solid rgba(207, 240, 178, 0.16);
@@ -5627,6 +5630,25 @@ h2 {
   font: inherit;
   font-size: 0.78rem;
   font-weight: 850;
+}
+
+.eutherbooks-sleep-timer {
+  padding: 9px 10px;
+  border: 1px solid rgba(207, 240, 178, 0.14);
+  border-radius: 8px;
+  background: rgba(207, 240, 178, 0.06);
+}
+
+.eutherbooks-sleep-timer.is-active {
+  border-color: rgba(255, 205, 118, 0.32);
+  background: rgba(255, 205, 118, 0.09);
+}
+
+.eutherbooks-sleep-timer small {
+  color: #aac99c;
+  font-size: 0.72rem;
+  font-weight: 850;
+  line-height: 1.25;
 }
 
 .eutherbooks-now-playing audio {

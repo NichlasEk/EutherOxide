@@ -501,6 +501,8 @@ type EutherBooksVoice = {
   path: string;
 };
 
+type EutherBooksSleepTimerMode = "off" | "15" | "30" | "45" | "60" | "chapter";
+
 type EutheriumShopItem = {
   id: string;
   name: string;
@@ -1274,6 +1276,9 @@ let eutherBooksPrefetchPollTimer: number | null = null;
 let eutherBooksPlayerStatus = "";
 let eutherBooksJobLastCheckedAt = 0;
 let eutherBooksPlayableFallbackJob: EutherBooksJob | null = null;
+let eutherBooksSleepTimerMode: EutherBooksSleepTimerMode = "off";
+let eutherBooksSleepTimerDeadline: number | null = null;
+let eutherBooksSleepTimerId: number | null = null;
 let interactionUsers: InteractionFriend[] = [];
 let interactionUsersLoaded = false;
 let interactionUsersStatus = "Mock users";
@@ -2792,6 +2797,11 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const audioSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-audio-select]");
   if (audioSelect) {
     setEutherBooksAudioIndex(Number(audioSelect.value), true);
+    return;
+  }
+  const sleepTimerSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-sleep-timer]");
+  if (sleepTimerSelect) {
+    setEutherBooksSleepTimer(sleepTimerSelect.value);
     return;
   }
   const optionInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-option]");
@@ -7250,6 +7260,7 @@ function eutherBooksWindowMarkup(): string {
   const progress = eutherBooksJobProgress();
   const processStatus = eutherBooksProcessStatus();
   const backendPulse = eutherBooksBackendPulse();
+  const sleepTimerLabel = eutherBooksSleepTimerLabel();
   const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
   const bookmark = selectedBook ? eutherBooksBookmarkFor(selectedBook.id) : null;
   const bookmarkLabel = bookmark ? eutherBooksBookmarkLabel(bookmark) : "No bookmark";
@@ -7362,6 +7373,18 @@ function eutherBooksWindowMarkup(): string {
             <button data-eutherbooks-auto-advance class="${eutherBooksAutoAdvance ? "is-selected" : ""}" type="button">Auto-play</button>
             <button data-eutherbooks-auto-generate class="${eutherBooksAutoGenerateNext ? "is-selected" : ""}" type="button">Auto-generate next</button>
           </div>
+          <label class="eutherbooks-sleep-timer ${eutherBooksSleepTimerMode !== "off" ? "is-active" : ""}">
+            <span>Sleep timer</span>
+            <select data-eutherbooks-sleep-timer>
+              <option value="off" ${eutherBooksSleepTimerMode === "off" ? "selected" : ""}>Off</option>
+              <option value="15" ${eutherBooksSleepTimerMode === "15" ? "selected" : ""}>15 min</option>
+              <option value="30" ${eutherBooksSleepTimerMode === "30" ? "selected" : ""}>30 min</option>
+              <option value="45" ${eutherBooksSleepTimerMode === "45" ? "selected" : ""}>45 min</option>
+              <option value="60" ${eutherBooksSleepTimerMode === "60" ? "selected" : ""}>60 min</option>
+              <option value="chapter" ${eutherBooksSleepTimerMode === "chapter" ? "selected" : ""}>End of chapter</option>
+            </select>
+            <small>${escapeHtml(sleepTimerLabel)}</small>
+          </label>
           <label class="eutherbooks-audio-select">
             <span>Generated part</span>
             <select data-eutherbooks-audio-select ${audioFiles.length && !combinedPlayback ? "" : "disabled"}>
@@ -8049,6 +8072,10 @@ async function handleEutherBooksAudioEnded(): Promise<void> {
     setEutherBooksAudioIndex(eutherBooksAudioIndex + 1, true);
     return;
   }
+  if (eutherBooksSleepTimerMode === "chapter") {
+    await stopEutherBooksAtChapterEnd();
+    return;
+  }
   if (!eutherBooksAutoGenerateNext) {
     eutherBooksPlayerStatus = "Chapter complete";
     renderBooksWindowIfActive();
@@ -8079,7 +8106,43 @@ async function handleEutherBooksAudioEnded(): Promise<void> {
   await startEutherBooksTts(nextChapter.index, true);
 }
 
-function switchToEutherBooksPrefetchJob(job: EutherBooksJob, autoplay: boolean): void {
+async function stopEutherBooksAtChapterEnd(): Promise<void> {
+  clearEutherBooksSleepTimer();
+  eutherBooksPendingAutoplayJobId = null;
+  if (!eutherBooksAutoGenerateNext) {
+    eutherBooksPlayerStatus = "Sleep timer stopped at chapter end";
+    renderBooksWindowIfActive();
+    return;
+  }
+  const nextChapter = nextEutherBookChapter();
+  if (!nextChapter) {
+    eutherBooksPlayerStatus = "Sleep timer stopped at book end";
+    renderBooksWindowIfActive();
+    return;
+  }
+  const book = selectedEutherBook();
+  const prefetchedJob = book
+    ? eutherBooksPrefetchJobs.find((job) => eutherBooksPrefetchMatches(book.id, nextChapter.index, job))
+    : null;
+  if (prefetchedJob) {
+    switchToEutherBooksPrefetchJob(
+      prefetchedJob,
+      false,
+      prefetchedJob.audio_files.length
+        ? "Sleep timer stopped; next chapter is ready"
+        : `Sleep timer stopped; finishing ${nextChapter.title}`,
+    );
+    return;
+  }
+  selectedEutherBookChapterIndex = nextChapter.index;
+  eutherBooksPlayerStatus = `Sleep timer stopped; generating ${nextChapter.title}`;
+  renderBooksWindowIfActive();
+  await startEutherBooksTts(nextChapter.index, false);
+  eutherBooksPlayerStatus = "Sleep timer stopped; next chapter is generating";
+  renderBooksWindowIfActive();
+}
+
+function switchToEutherBooksPrefetchJob(job: EutherBooksJob, autoplay: boolean, status?: string): void {
   if (!eutherBooksPrefetchJobs.some((candidate) => candidate.id === job.id)) {
     return;
   }
@@ -8089,7 +8152,7 @@ function switchToEutherBooksPrefetchJob(job: EutherBooksJob, autoplay: boolean):
   eutherBooksPendingAutoplayJobId = null;
   eutherBooksPrefetchJobs = eutherBooksPrefetchJobs.filter((candidate) => candidate.id !== job.id);
   clearEutherBooksPrefetchPoll();
-  eutherBooksPlayerStatus = "Next chapter ready";
+  eutherBooksPlayerStatus = status ?? (job.audio_files.length ? "Next chapter ready" : "Preparing next chapter");
   renderBooksWindowIfActive();
   if (autoplay) {
     playEutherBooksAudioSoon(0);
@@ -8124,6 +8187,80 @@ function setEutherBooksAutoGenerateNext(value: boolean): void {
   if (value) {
     void ensureEutherBooksNextChapterPrefetched();
   }
+}
+
+function setEutherBooksSleepTimer(value: string): void {
+  const nextMode = parseEutherBooksSleepTimerMode(value);
+  clearEutherBooksSleepTimer();
+  eutherBooksSleepTimerMode = nextMode;
+  if (nextMode === "off") {
+    eutherBooksPlayerStatus = "Sleep timer off";
+    renderBooksWindowIfActive();
+    return;
+  }
+  if (nextMode === "chapter") {
+    eutherBooksPlayerStatus = "Sleep timer will stop after this chapter";
+    renderBooksWindowIfActive();
+    return;
+  }
+  eutherBooksSleepTimerDeadline = Date.now() + Number(nextMode) * 60 * 1000;
+  scheduleEutherBooksSleepTimer();
+  eutherBooksPlayerStatus = `Sleep timer set for ${nextMode} minutes`;
+  renderBooksWindowIfActive();
+}
+
+function parseEutherBooksSleepTimerMode(value: string): EutherBooksSleepTimerMode {
+  return value === "15" || value === "30" || value === "45" || value === "60" || value === "chapter"
+    ? value
+    : "off";
+}
+
+function clearEutherBooksSleepTimer(): void {
+  if (eutherBooksSleepTimerId !== null) {
+    window.clearTimeout(eutherBooksSleepTimerId);
+    eutherBooksSleepTimerId = null;
+  }
+  eutherBooksSleepTimerMode = "off";
+  eutherBooksSleepTimerDeadline = null;
+}
+
+function scheduleEutherBooksSleepTimer(): void {
+  if (eutherBooksSleepTimerId !== null) {
+    window.clearTimeout(eutherBooksSleepTimerId);
+    eutherBooksSleepTimerId = null;
+  }
+  if (!eutherBooksSleepTimerDeadline) {
+    return;
+  }
+  const delay = Math.max(0, eutherBooksSleepTimerDeadline - Date.now());
+  eutherBooksSleepTimerId = window.setTimeout(() => {
+    eutherBooksSleepTimerId = null;
+    triggerEutherBooksSleepTimer();
+  }, delay);
+}
+
+function triggerEutherBooksSleepTimer(): void {
+  const audio = currentEutherBooksAudio();
+  clearEutherBooksSleepTimer();
+  if (audio && !audio.paused && !audio.ended) {
+    audio.pause();
+    saveEutherBooksBookmark("pause");
+  }
+  eutherBooksPendingAutoplayJobId = null;
+  eutherBooksPlayerStatus = "Sleep timer paused playback";
+  renderBooksWindowIfActive();
+}
+
+function eutherBooksSleepTimerLabel(): string {
+  if (eutherBooksSleepTimerMode === "chapter") {
+    return "Stops when this chapter finishes; next chapter may still be generated.";
+  }
+  if (eutherBooksSleepTimerMode === "off" || !eutherBooksSleepTimerDeadline) {
+    return "Timer is off.";
+  }
+  const remainingMs = Math.max(0, eutherBooksSleepTimerDeadline - Date.now());
+  const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
+  return `Pauses playback in ${remainingMinutes} min.`;
 }
 
 function eutherBooksPlaybackLabel(): string {
