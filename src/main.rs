@@ -1311,6 +1311,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/login"
         && path != "/api/app/login"
         && path != "/api/eutherduke/log"
+        && !is_eutherbooks_proxy_path(path)
         && !app_token_request
         && !valid_csrf_token(state, &request)?
     {
@@ -1838,6 +1839,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }),
             )
         }
+        ("GET", path) if is_eutherbooks_audio_stream_path(path) => {
+            proxy_eutherbooks_request(stream, &request)
+        }
         _ => {
             let Some(user) = authenticated_user(state, &request)? else {
                 return if path.starts_with("/api/") {
@@ -1846,7 +1850,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     send_login_page(stream, None)
                 };
             };
-            if request.method != "GET" && !valid_csrf_token(state, &request)? {
+            if request.method != "GET"
+                && !is_eutherbooks_proxy_path(path)
+                && !valid_csrf_token(state, &request)?
+            {
                 return send_error(stream, 403, "csrf token required");
             }
             if path.starts_with("/eutherdoom-runtime/") {
@@ -1876,7 +1883,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     "/home/nichlas/eutheralert-runtime",
                 );
             }
-            if path == "/eutherbooks" || path.starts_with("/eutherbooks/") {
+            if is_eutherbooks_proxy_path(path) {
                 if eutherbooks_route_requires_manage_library(path, &request.method) {
                     if let Err(err) =
                         require_host_permission(state, &user, HostPermission::ManageLibrary)
@@ -2576,6 +2583,20 @@ fn host_route_requires_writable_library(path: &str, method: &str) -> bool {
 
 fn eutherbooks_route_requires_manage_library(path: &str, method: &str) -> bool {
     method == "POST" && path == "/eutherbooks/books/upload"
+}
+
+fn is_eutherbooks_proxy_path(path: &str) -> bool {
+    path == "/eutherbooks" || path.starts_with("/eutherbooks/")
+}
+
+fn is_eutherbooks_audio_stream_path(path: &str) -> bool {
+    if path.starts_with("/eutherbooks/audio/") {
+        return true;
+    }
+    let Some(stripped) = path.strip_prefix("/eutherbooks/jobs/") else {
+        return false;
+    };
+    stripped.ends_with("/audio") && !stripped.trim_matches('/').is_empty()
 }
 
 fn host_route_requires_origin_check(path: &str) -> bool {
@@ -5597,12 +5618,8 @@ fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> i
     if !request.body.is_empty() {
         upstream.write_all(&request.body)?;
     }
-    let mut response = Vec::new();
-    upstream.read_to_end(&mut response)?;
-    if response.is_empty() {
-        return send_error(stream, 502, "EutherBooks upstream unavailable");
-    }
-    stream.write_all(&response)
+    io::copy(&mut upstream, stream)?;
+    Ok(())
 }
 
 fn eutherbooks_upstream_path(path: &str) -> String {
