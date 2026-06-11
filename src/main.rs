@@ -5535,7 +5535,24 @@ fn host_alert_openra_client_debug(state: &HostState) -> io::Result<serde_json::V
         "hostDisplay": env::var("DISPLAY").ok(),
     });
     eprintln!("EutherAlert OpenRA debug dump: {payload}");
+    host_alert_write_debug_dump(&payload)?;
     Ok(payload)
+}
+
+fn host_alert_write_debug_dump(payload: &serde_json::Value) -> io::Result<()> {
+    let path = PathBuf::from(".euther-host")
+        .join("openra-alert")
+        .join("debug-dumps.jsonl");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, payload).map_err(|err| io::Error::other(err.to_string()))?;
+    file.write_all(b"\n")?;
+    file.flush()
 }
 
 fn host_alert_display_socket(display: &str) -> Option<PathBuf> {
