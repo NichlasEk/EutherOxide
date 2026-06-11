@@ -6,6 +6,8 @@ const role = params.get("role") || "spectator";
 const csrfToken = params.get("csrf") || "";
 
 const openRaStream = document.querySelector("#openra-stream");
+const openRaTouchPlane = document.querySelector("#openra-touch-plane");
+const openRaCursor = document.querySelector("#openra-cursor");
 const canvas = document.querySelector("#battlefield");
 const ctx = canvas.getContext("2d");
 const minimap = document.querySelector("#minimap");
@@ -49,6 +51,9 @@ const activePointers = new Map();
 let pinchGesture = null;
 let lastTap = { at: 0, x: 0, y: 0 };
 let openRaStreamActive = false;
+let openRaMouseMode = "left";
+let openRaPointer = null;
+let openRaLongPressTimer = 0;
 
 const costs = {
   refinery: 900,
@@ -210,6 +215,9 @@ async function refreshOpenRaRenderer() {
 function stopOpenRaRenderer() {
   openRaStreamActive = false;
   openRaStream.classList.remove("is-active");
+  openRaTouchPlane.classList.remove("is-active");
+  openRaCursor.classList.remove("is-active", "is-right");
+  document.querySelector(".mouse-toolbar").classList.remove("is-active");
   openRaStream.removeAttribute("src");
   openRaStream.load();
 }
@@ -217,6 +225,8 @@ function stopOpenRaRenderer() {
 openRaStream.addEventListener("playing", () => {
   openRaStreamActive = true;
   openRaStream.classList.add("is-active");
+  openRaTouchPlane.classList.add("is-active");
+  document.querySelector(".mouse-toolbar").classList.add("is-active");
   showToast("OpenRA renderer live");
 });
 
@@ -226,6 +236,75 @@ openRaStream.addEventListener("error", () => {
   }
   stopOpenRaRenderer();
 });
+
+function openRaViewportRect() {
+  const rect = openRaStream.getBoundingClientRect();
+  const sourceWidth = openRaStream.videoWidth || 1280;
+  const sourceHeight = openRaStream.videoHeight || 720;
+  const sourceAspect = sourceWidth / sourceHeight;
+  const viewAspect = rect.width / Math.max(1, rect.height);
+  if (viewAspect > sourceAspect) {
+    const width = rect.height * sourceAspect;
+    return {
+      left: rect.left + (rect.width - width) / 2,
+      top: rect.top,
+      width,
+      height: rect.height,
+      sourceWidth,
+      sourceHeight,
+    };
+  }
+  const height = rect.width / sourceAspect;
+  return {
+    left: rect.left,
+    top: rect.top + (rect.height - height) / 2,
+    width: rect.width,
+    height,
+    sourceWidth,
+    sourceHeight,
+  };
+}
+
+function openRaTouchPayload(event, extra = {}) {
+  const viewport = openRaViewportRect();
+  const clampedX = clamp(event.clientX, viewport.left, viewport.left + viewport.width);
+  const clampedY = clamp(event.clientY, viewport.top, viewport.top + viewport.height);
+  const normalizedX = (clampedX - viewport.left) / Math.max(1, viewport.width);
+  const normalizedY = (clampedY - viewport.top) / Math.max(1, viewport.height);
+  return {
+    x: normalizedX * viewport.sourceWidth,
+    y: normalizedY * viewport.sourceHeight,
+    normalizedX,
+    normalizedY,
+    pointer: event.pointerType || "touch",
+    mode: "mouse",
+    ...extra,
+  };
+}
+
+function moveOpenRaCursor(event, button = openRaMouseMode === "right" ? "right" : "left") {
+  const viewport = openRaViewportRect();
+  const x = clamp(event.clientX, viewport.left, viewport.left + viewport.width);
+  const y = clamp(event.clientY, viewport.top, viewport.top + viewport.height);
+  openRaCursor.style.transform = `translate(${x}px, ${y}px)`;
+  openRaCursor.classList.toggle("is-right", button === "right");
+  openRaCursor.classList.add("is-active");
+}
+
+function clearOpenRaLongPress() {
+  if (openRaLongPressTimer) {
+    window.clearTimeout(openRaLongPressTimer);
+    openRaLongPressTimer = 0;
+  }
+}
+
+function setOpenRaMouseMode(mode) {
+  openRaMouseMode = mode;
+  document.querySelector("#mouse-left").classList.toggle("is-active", mode === "left");
+  document.querySelector("#mouse-right").classList.toggle("is-active", mode === "right");
+  document.querySelector("#mouse-drag").classList.toggle("is-active", mode === "drag");
+  showToast(mode === "right" ? "Next tap sends right click" : mode === "drag" ? "Drag selects like mouse" : "Tap selects like mouse");
+}
 
 function screenToWorld(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
@@ -1060,6 +1139,104 @@ function touchPayload(event, extra = {}) {
   };
 }
 
+openRaTouchPlane.addEventListener("pointerdown", (event) => {
+  if (!openRaStreamActive) return;
+  event.preventDefault();
+  openRaTouchPlane.setPointerCapture(event.pointerId);
+  const button = openRaMouseMode === "right" ? "right" : "left";
+  openRaPointer = {
+    id: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    x: event.clientX,
+    y: event.clientY,
+    startedAt: performance.now(),
+    dragging: openRaMouseMode === "drag",
+    longPressed: false,
+    button,
+  };
+  moveOpenRaCursor(event, button);
+  if (openRaPointer.dragging) {
+    void postTouch("dragStart", openRaTouchPayload(event, { button: "left", phase: "down" }));
+    return;
+  }
+  clearOpenRaLongPress();
+  openRaLongPressTimer = window.setTimeout(() => {
+    if (!openRaPointer || openRaPointer.id !== event.pointerId || openRaPointer.dragging) return;
+    openRaPointer.longPressed = true;
+    openRaPointer.button = "right";
+    moveOpenRaCursor(openRaPointer, "right");
+    void postTouch("tap", openRaTouchPayload(openRaPointer, { button: "right", tapCount: 1, phase: "click" }));
+    showToast("Right click");
+  }, 430);
+});
+
+openRaTouchPlane.addEventListener("pointermove", (event) => {
+  if (!openRaPointer || openRaPointer.id !== event.pointerId) return;
+  event.preventDefault();
+  const moved = Math.hypot(event.clientX - openRaPointer.startX, event.clientY - openRaPointer.startY);
+  openRaPointer.x = event.clientX;
+  openRaPointer.y = event.clientY;
+  moveOpenRaCursor(event, openRaPointer.button);
+  if (moved > 12) {
+    clearOpenRaLongPress();
+  }
+  if (!openRaPointer.dragging && moved > 14 && openRaMouseMode === "left") {
+    openRaPointer.dragging = true;
+    openRaPointer.button = "left";
+    void postTouch("dragStart", openRaTouchPayload({
+      clientX: openRaPointer.startX,
+      clientY: openRaPointer.startY,
+      pointerType: event.pointerType,
+    }, { button: "left", phase: "down" }));
+  }
+  if (openRaPointer.dragging) {
+    void postTouch("dragMove", openRaTouchPayload(event, { button: openRaPointer.button, phase: "move" }));
+  } else {
+    void postTouch("dragMove", openRaTouchPayload(event, { button: "none", phase: "move" }));
+  }
+});
+
+openRaTouchPlane.addEventListener("pointerup", finishOpenRaPointer);
+openRaTouchPlane.addEventListener("pointercancel", finishOpenRaPointer);
+
+function finishOpenRaPointer(event) {
+  if (!openRaPointer || openRaPointer.id !== event.pointerId) return;
+  event.preventDefault();
+  clearOpenRaLongPress();
+  const pointer = openRaPointer;
+  openRaPointer = null;
+  const moved = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY);
+  moveOpenRaCursor(event, pointer.button);
+  if (pointer.dragging) {
+    void postTouch("dragEnd", openRaTouchPayload(event, { button: pointer.button, phase: "up" }));
+    if (openRaMouseMode === "drag") {
+      setOpenRaMouseMode("left");
+    }
+    return;
+  }
+  if (pointer.longPressed) {
+    if (openRaMouseMode === "right") {
+      setOpenRaMouseMode("left");
+    }
+    return;
+  }
+  const now = performance.now();
+  const doubleTap = now - lastTap.at < 320 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 30;
+  const button = openRaMouseMode === "right" ? "right" : "left";
+  const kind = doubleTap && button === "left" ? "doubleTap" : "tap";
+  void postTouch(kind, openRaTouchPayload(event, {
+    button,
+    tapCount: kind === "doubleTap" ? 2 : 1,
+    phase: "click",
+    moved,
+  }));
+  lastTap = { at: now, x: event.clientX, y: event.clientY };
+  if (openRaMouseMode === "right") {
+    setOpenRaMouseMode("left");
+  }
+}
+
 minimap.addEventListener("pointerdown", (event) => {
   const rect = minimap.getBoundingClientRect();
   state.camera.x = (event.clientX - rect.left) / rect.width * world.width - canvas.width / (2 * state.camera.zoom);
@@ -1093,6 +1270,14 @@ document.querySelectorAll("[data-train]").forEach((button) => {
   button.addEventListener("click", () => {
     void postCommand("train", { type: button.dataset.train });
   });
+});
+
+document.querySelector("#mouse-left").addEventListener("click", () => setOpenRaMouseMode("left"));
+document.querySelector("#mouse-right").addEventListener("click", () => setOpenRaMouseMode("right"));
+document.querySelector("#mouse-drag").addEventListener("click", () => setOpenRaMouseMode("drag"));
+document.querySelector("#mouse-escape").addEventListener("click", () => {
+  void postTouch("key", { key: "escape" });
+  showToast("Esc");
 });
 
 document.querySelector("#select-base").addEventListener("click", () => {

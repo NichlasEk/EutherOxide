@@ -77,14 +77,112 @@ button:disabled {
   opacity: 1;
 }
 
+.openra-touch-plane {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: none;
+  touch-action: none;
+}
+
+.openra-touch-plane.is-active {
+  display: block;
+}
+
+.openra-cursor {
+  position: absolute;
+  z-index: 5;
+  display: none;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border: 2px solid rgba(143, 224, 119, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.68), 0 0 18px rgba(143, 224, 119, 0.28);
+  pointer-events: none;
+}
+
+.openra-cursor::before,
+.openra-cursor::after {
+  content: "";
+  position: absolute;
+  background: rgba(143, 224, 119, 0.9);
+}
+
+.openra-cursor::before {
+  left: 15px;
+  top: -7px;
+  width: 2px;
+  height: 46px;
+}
+
+.openra-cursor::after {
+  left: -7px;
+  top: 15px;
+  width: 46px;
+  height: 2px;
+}
+
+.openra-cursor.is-active {
+  display: block;
+}
+
+.openra-cursor.is-right {
+  border-color: rgba(255, 207, 100, 0.95);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.68), 0 0 20px rgba(255, 207, 100, 0.32);
+}
+
+.openra-cursor.is-right::before,
+.openra-cursor.is-right::after {
+  background: rgba(255, 207, 100, 0.95);
+}
+
 .hud {
   position: absolute;
-  z-index: 2;
+  z-index: 4;
   border: 1px solid rgba(244, 209, 94, 0.18);
   border-radius: 8px;
   background: rgba(5, 8, 7, 0.66);
   box-shadow: inset 0 0 24px rgba(255, 72, 44, 0.08), 0 14px 34px rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(12px);
+}
+
+.mouse-toolbar {
+  left: calc(max(8px, env(safe-area-inset-left)) + 86px);
+  top: calc(max(8px, env(safe-area-inset-top)) + 58px);
+  display: none;
+  grid-template-columns: repeat(4, minmax(54px, 1fr));
+  gap: 8px;
+  width: min(320px, calc(100vw - 390px));
+  min-width: 254px;
+  padding: 8px;
+}
+
+.mouse-toolbar.is-active {
+  display: grid;
+}
+
+.mouse-toolbar button {
+  display: grid;
+  place-items: center;
+  gap: 1px;
+  min-height: 44px;
+  padding: 5px;
+}
+
+.mouse-toolbar span {
+  color: #ffcf64;
+  font-size: 0.82rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.mouse-toolbar b {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.56rem;
 }
 
 .top-hud {
@@ -306,6 +404,19 @@ button:disabled {
     bottom: calc(max(6px, env(safe-area-inset-bottom)) + 70px);
     width: 62px;
     padding: 6px;
+  }
+
+  .mouse-toolbar {
+    left: calc(max(6px, env(safe-area-inset-left)) + 70px);
+    top: calc(max(6px, env(safe-area-inset-top)) + 50px);
+    width: min(258px, calc(100vw - 236px));
+    min-width: 210px;
+    gap: 5px;
+    padding: 6px;
+  }
+
+  .mouse-toolbar button {
+    min-height: 38px;
   }
 
   .side-panel {

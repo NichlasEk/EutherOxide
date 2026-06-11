@@ -66,6 +66,7 @@ namespace OpenRA.EutherAlert
 		long offset;
 		int2 lastPos = int2.Zero;
 		bool leftDown;
+		bool rightDown;
 
 		public IInputHandler Inner { get; set; }
 
@@ -156,19 +157,19 @@ namespace OpenRA.EutherAlert
 			switch (touchEvent.Kind)
 			{
 				case "tap":
-					Click(MouseButton.Left, Position(touchEvent), 1);
+					Click(Button(touchEvent, MouseButton.Left), Position(touchEvent), 1);
 					break;
 				case "doubleTap":
-					Click(MouseButton.Left, Position(touchEvent), 2);
+					Click(Button(touchEvent, MouseButton.Left), Position(touchEvent), 2);
 					break;
 				case "dragStart":
-					MouseDown(MouseButton.Left, Position(touchEvent));
+					MouseDown(Button(touchEvent, MouseButton.Left), Position(touchEvent));
 					break;
 				case "dragMove":
 					MouseMove(Position(touchEvent));
 					break;
 				case "dragEnd":
-					MouseUp(MouseButton.Left, Position(touchEvent));
+					MouseUp(Button(touchEvent, leftDown ? MouseButton.Left : rightDown ? MouseButton.Right : MouseButton.Left), Position(touchEvent));
 					break;
 				case "cancel":
 					Click(MouseButton.Right, lastPos, 1);
@@ -221,7 +222,23 @@ namespace OpenRA.EutherAlert
 				case "selectBase":
 					Key(Keycode.H);
 					break;
+				case "escape":
+					Key(Keycode.ESCAPE);
+					break;
 			}
+		}
+
+		MouseButton Button(EutherAlertTouchEvent touchEvent, MouseButton fallback)
+		{
+			var button = Text(touchEvent, "button");
+			return button switch
+			{
+				"right" => MouseButton.Right,
+				"middle" => MouseButton.Middle,
+				"none" => MouseButton.None,
+				"left" => MouseButton.Left,
+				_ => fallback
+			};
 		}
 
 		int2 Position(EutherAlertTouchEvent touchEvent)
@@ -276,6 +293,8 @@ namespace OpenRA.EutherAlert
 			MouseMove(pos);
 			if (button == MouseButton.Left)
 				leftDown = true;
+			else if (button == MouseButton.Right)
+				rightDown = true;
 			Inner.OnMouseInput(new MouseInput(MouseInputEvent.Down, button, pos, int2.Zero, Modifiers.None, multiTapCount));
 		}
 
@@ -284,6 +303,8 @@ namespace OpenRA.EutherAlert
 			MouseMove(pos);
 			if (button == MouseButton.Left)
 				leftDown = false;
+			else if (button == MouseButton.Right)
+				rightDown = false;
 			Inner.OnMouseInput(new MouseInput(MouseInputEvent.Up, button, pos, int2.Zero, Modifiers.None, multiTapCount));
 		}
 
@@ -297,6 +318,8 @@ namespace OpenRA.EutherAlert
 		{
 			if (leftDown)
 				MouseUp(MouseButton.Left, lastPos);
+			if (rightDown)
+				MouseUp(MouseButton.Right, lastPos);
 
 			reader?.Dispose();
 			stream?.Dispose();
