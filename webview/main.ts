@@ -1972,7 +1972,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div id="eutheralert-runtime-panel" class="eutheralert-runtime-panel">
               <span>Command and Conquer: Red Alert Vessel</span>
               <strong>EutherAlert runtime could not start</strong>
-              <p>Expected repo runtime at /eutheralert/index.html. This first vessel uses original placeholder art and host-synced RTS commands.</p>
+              <p>Expected repo runtime at /eutheralert/index.html with a running OpenRA server and browser-streamed client.</p>
             </div>
           </div>
           <div id="euthercivet-renderer" class="euthercivet-renderer" aria-hidden="true">
@@ -6420,12 +6420,12 @@ async function startEutherAlertRenderer(): Promise<void> {
   eutherAlertRenderer.setAttribute("aria-hidden", "false");
   eutherAlertRuntimePanel.hidden = false;
   eutherAlertFrame.hidden = true;
-  void refreshEutherAlertOpenRaStatus();
   try {
     const response = await fetch("/eutheralert/index.html", { cache: "no-store" });
     if (!response.ok) {
       throw new Error("EutherAlert runtime not installed");
     }
+    await ensureEutherAlertOpenRaLive();
     eutherAlertRuntimePanel.hidden = true;
     eutherAlertFrame.hidden = false;
     const runtimeParams = new URLSearchParams({
@@ -6447,6 +6447,10 @@ async function startEutherAlertRenderer(): Promise<void> {
 function stopEutherAlertRenderer(): void {
   eutherAlertRenderer.setAttribute("aria-hidden", "true");
   eutherAlertFrame.hidden = true;
+}
+
+function eutherAlertOpenRaQuery(): string {
+  return `?instance=${encodeURIComponent(activeLobbyInstanceId)}`;
 }
 
 function renderEutherAlertOpenRaStatus(status: AlertOpenRaStatus): void {
@@ -6475,7 +6479,7 @@ function renderEutherAlertOpenRaStatus(status: AlertOpenRaStatus): void {
 
 async function refreshEutherAlertOpenRaStatus(): Promise<void> {
   try {
-    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/status", {}, 1200);
+    const status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1200);
     renderEutherAlertOpenRaStatus(status);
   } catch {
     eutherAlertOpenRaStatus.textContent = "OpenRA status unavailable";
@@ -6488,7 +6492,7 @@ async function refreshEutherAlertOpenRaStatus(): Promise<void> {
 
 async function startEutherAlertOpenRa(): Promise<void> {
   try {
-    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/start", { method: "POST" }, 2000);
+    const status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 2000);
     renderEutherAlertOpenRaStatus(status);
     pushTrace(`OpenRA Red Alert server on port ${status.port ?? "?"}`);
   } catch (err) {
@@ -6498,7 +6502,7 @@ async function startEutherAlertOpenRa(): Promise<void> {
 
 async function stopEutherAlertOpenRa(): Promise<void> {
   try {
-    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/stop", { method: "POST" }, 2000);
+    const status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/stop${eutherAlertOpenRaQuery()}`, { method: "POST" }, 2000);
     renderEutherAlertOpenRaStatus(status);
     pushTrace("OpenRA Red Alert server stopped");
   } catch (err) {
@@ -6508,8 +6512,8 @@ async function stopEutherAlertOpenRa(): Promise<void> {
 
 async function startEutherAlertOpenRaClient(): Promise<void> {
   try {
-    const client = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/client/start", { method: "POST" }, 2000);
-    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/status", {}, 1200);
+    const client = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/client/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 2000);
+    const status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1200);
     renderEutherAlertOpenRaStatus({ ...status, client });
     pushTrace(`OpenRA Red Alert client connecting to port ${client.port ?? "?"}`);
   } catch (err) {
@@ -6519,8 +6523,8 @@ async function startEutherAlertOpenRaClient(): Promise<void> {
 
 async function stopEutherAlertOpenRaClient(): Promise<void> {
   try {
-    const client = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/client/stop", { method: "POST" }, 2000);
-    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/status", {}, 1200);
+    const client = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/client/stop${eutherAlertOpenRaQuery()}`, { method: "POST" }, 2000);
+    const status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1200);
     renderEutherAlertOpenRaStatus({ ...status, client });
     pushTrace("OpenRA Red Alert client stopped");
   } catch (err) {
@@ -6531,7 +6535,7 @@ async function stopEutherAlertOpenRaClient(): Promise<void> {
 async function dumpEutherAlertOpenRaDebug(): Promise<void> {
   try {
     const debug = await bridgeJson<Record<string, unknown>>(
-      "/api/eutheralert/openra/client/debug",
+      `/api/eutheralert/openra/client/debug${eutherAlertOpenRaQuery()}`,
       { method: "POST" },
       1600,
     );
@@ -6547,6 +6551,27 @@ async function dumpEutherAlertOpenRaDebug(): Promise<void> {
     pushTrace(`OpenRA debug ${JSON.stringify(debug)}`);
   } catch (err) {
     eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA debug failed";
+  }
+}
+
+async function ensureEutherAlertOpenRaLive(): Promise<void> {
+  try {
+    let status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1600);
+    if (!status.running) {
+      eutherAlertOpenRaStatus.textContent = "Starting OpenRA server";
+      status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 5000);
+    }
+    if (!status.client?.running) {
+      eutherAlertOpenRaStatus.textContent = "Starting OpenRA client";
+      const client = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/client/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 5000);
+      status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1600);
+      renderEutherAlertOpenRaStatus({ ...status, client });
+      return;
+    }
+    renderEutherAlertOpenRaStatus(status);
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA autostart failed";
+    throw err;
   }
 }
 

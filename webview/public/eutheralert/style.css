@@ -15,6 +15,7 @@ body {
   margin: 0;
   width: 100vw;
   height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   background: #050604;
   overscroll-behavior: none;
@@ -77,6 +78,37 @@ button:disabled {
 
 .openra-live .openra-stream {
   background: #000;
+}
+
+.openra-required #battlefield,
+.openra-required .top-hud,
+.openra-required .command-rail,
+.openra-required .side-panel,
+.openra-required .build-dock,
+.openra-required .gesture-strip {
+  display: none;
+}
+
+.openra-required .openra-stream {
+  opacity: 1;
+  background: #000;
+}
+
+.openra-required:not(.openra-live)::before {
+  content: "Starting OpenRA renderer";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-content: center;
+  padding: 24px;
+  background: #000;
+  color: #fff1ca;
+  font-size: clamp(1.2rem, 3vw, 2.2rem);
+  font-weight: 950;
+  line-height: 1.05;
+  text-align: center;
+  text-transform: uppercase;
 }
 
 .openra-stream.is-active {
@@ -419,7 +451,7 @@ button:disabled {
   display: none;
 }
 
-@media (orientation: portrait) and (max-width: 900px) {
+@media (orientation: portrait) {
   .openra-stream,
   #battlefield,
   .hud,

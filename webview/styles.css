@@ -326,6 +326,129 @@ button:disabled {
   pointer-events: auto;
 }
 
+body.play-mode-eutheralert {
+  overflow: hidden;
+  touch-action: none;
+  background: #000;
+}
+
+.play-mode-eutheralert #molecule-field,
+.play-mode-eutheralert .control-rail,
+.play-mode-eutheralert .telemetry-panel,
+.play-mode-eutheralert .stage-header,
+.play-mode-eutheralert .reaction-strip {
+  display: none;
+}
+
+.play-mode-eutheralert .oxide-shell {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.play-mode-eutheralert .reactor-stage {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  border: 0;
+  background: #000;
+  box-shadow: none;
+}
+
+.play-mode-eutheralert .screen-vessel,
+.play-mode-eutheralert .screen-glass {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  min-height: 100dvh;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  aspect-ratio: auto;
+  background: #000;
+  box-shadow: none;
+}
+
+.play-mode-eutheralert .screen-glass .scanlines,
+.play-mode-eutheralert .screen-glass .oxidation-ring {
+  opacity: 0;
+}
+
+.play-mode-eutheralert .eutheralert-renderer,
+.play-mode-eutheralert .eutheralert-frame {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  background: #000;
+}
+
+.play-mode-eutheralert .eutheralert-renderer {
+  z-index: 120;
+}
+
+.play-mode-eutheralert .eutheralert-openra-panel {
+  top: max(8px, env(safe-area-inset-top));
+  left: max(8px, env(safe-area-inset-left));
+  width: min(292px, calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  padding: 8px;
+  background: rgba(3, 5, 5, 0.56);
+}
+
+@media (orientation: landscape) {
+  .play-mode-eutheralert .eutheralert-openra-panel {
+    left: auto;
+    right: max(8px, env(safe-area-inset-right));
+    width: min(252px, 32vw);
+  }
+}
+
+@media (orientation: portrait) {
+  body.play-mode-eutheralert::before {
+    content: "Turn phone to landscape";
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    display: grid;
+    place-content: center;
+    padding: 28px;
+    background: rgba(0, 0, 0, 0.94);
+    color: #fff1ca;
+    font-size: clamp(2rem, 9vw, 4rem);
+    font-weight: 950;
+    line-height: 0.98;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  body.play-mode-eutheralert::after {
+    content: "OpenRA opens as a fullscreen touch surface in landscape.";
+    position: fixed;
+    left: 24px;
+    right: 24px;
+    top: calc(50% + 58px);
+    z-index: 1000;
+    color: #d7d2bd;
+    font-size: 0.95rem;
+    line-height: 1.35;
+    text-align: center;
+  }
+}
+
 .euthercivet-renderer {
   position: absolute;
   inset: 0;
