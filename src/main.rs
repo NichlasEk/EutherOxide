@@ -5307,7 +5307,7 @@ fn host_alert_openra_start(state: &HostState, instance_id: &str) -> io::Result<s
         fs::create_dir_all(parent)?;
     }
     let child = Command::new("sh")
-        .arg(&launcher)
+        .arg("./launch-dedicated.sh")
         .current_dir(&runtime_path)
         .env("DOTNET_ROOT", &dotnet_root)
         .env("PATH", process_path)
@@ -5441,7 +5441,7 @@ fn host_alert_openra_client_start(
     let stderr_file = append_log_file(&stderr_log)?;
 
     let child = Command::new("sh")
-        .arg(&launcher)
+        .arg("./launch-game.sh")
         .arg("Game.Mod=ra")
         .arg(format!("Launch.URI=tcp://127.0.0.1:{port}"))
         .arg(format!("Engine.SupportDir={}", support_dir.display()))
