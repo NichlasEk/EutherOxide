@@ -803,6 +803,8 @@ struct HostOpenRaClientProcess {
     display: String,
     capture_width: u32,
     capture_height: u32,
+    stdout_log: PathBuf,
+    stderr_log: PathBuf,
 }
 
 struct HostAlertTouchBridgeProcess {
@@ -5161,6 +5163,8 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
                 "captureWidth": process.capture_width,
                 "captureHeight": process.capture_height,
                 "streamPath": "/api/eutheralert/openra/client/stream.mp4",
+                "stdoutLog": process.stdout_log,
+                "stderrLog": process.stderr_log,
             });
             *client = None;
             return Ok(payload);
@@ -5177,6 +5181,8 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
             "captureWidth": process.capture_width,
             "captureHeight": process.capture_height,
             "streamPath": "/api/eutheralert/openra/client/stream.mp4",
+            "stdoutLog": process.stdout_log,
+            "stderrLog": process.stderr_log,
         }));
     }
     Ok(serde_json::json!({
@@ -5392,6 +5398,10 @@ fn host_alert_openra_client_start(
     if let Some(parent) = touch_bridge_apply_log.parent() {
         fs::create_dir_all(parent)?;
     }
+    let stdout_log = support_dir.join("openra-client.stdout.log");
+    let stderr_log = support_dir.join("openra-client.stderr.log");
+    let stdout_file = append_log_file(&stdout_log)?;
+    let stderr_file = append_log_file(&stderr_log)?;
 
     let child = Command::new("sh")
         .arg(&launcher)
@@ -5411,8 +5421,8 @@ fn host_alert_openra_client_start(
             &touch_bridge_apply_log,
         )
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
         .spawn()?;
 
     let started_unix_ms = unix_ms_now();
@@ -5428,6 +5438,8 @@ fn host_alert_openra_client_start(
         display: display.clone(),
         capture_width,
         capture_height,
+        stdout_log: stdout_log.clone(),
+        stderr_log: stderr_log.clone(),
     });
     Ok(serde_json::json!({
         "running": true,
@@ -5441,6 +5453,8 @@ fn host_alert_openra_client_start(
         "captureWidth": capture_width,
         "captureHeight": capture_height,
         "streamPath": "/api/eutheralert/openra/client/stream.mp4",
+        "stdoutLog": stdout_log,
+        "stderrLog": stderr_log,
     }))
 }
 
@@ -5506,6 +5520,10 @@ fn host_alert_openra_client_debug(state: &HostState) -> io::Result<serde_json::V
             "captureHeight": process.capture_height,
             "streamPath": "/api/eutheralert/openra/client/stream.mp4",
             "xvfbManaged": process.xvfb_child.is_some(),
+            "stdoutLog": process.stdout_log,
+            "stderrLog": process.stderr_log,
+            "stdoutTail": tail_text_file(&process.stdout_log, 4096),
+            "stderrTail": tail_text_file(&process.stderr_log, 4096),
         });
         if exited.is_some() {
             if let Some(mut xvfb_child) = process.xvfb_child.take() {
@@ -5553,6 +5571,19 @@ fn host_alert_write_debug_dump(payload: &serde_json::Value) -> io::Result<()> {
     serde_json::to_writer(&mut file, payload).map_err(|err| io::Error::other(err.to_string()))?;
     file.write_all(b"\n")?;
     file.flush()
+}
+
+fn append_log_file(path: &Path) -> io::Result<fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::OpenOptions::new().create(true).append(true).open(path)
+}
+
+fn tail_text_file(path: &Path, max_bytes: usize) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let start = bytes.len().saturating_sub(max_bytes);
+    Some(String::from_utf8_lossy(&bytes[start..]).to_string())
 }
 
 fn host_alert_display_socket(display: &str) -> Option<PathBuf> {
