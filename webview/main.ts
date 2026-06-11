@@ -1228,6 +1228,7 @@ let lobbyRole: LobbyRole = "player";
 let activeLobbyInstanceId = "main";
 let claimedLobbyPlayer: PlayerPort | null = null;
 let eutherAlertVesselEnsurePromise: Promise<boolean> | null = null;
+let eutherAlertRendererStartToken = 0;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
@@ -6463,11 +6464,12 @@ function stopEutherDukeRenderer(): void {
 }
 
 async function startEutherAlertRenderer(): Promise<void> {
+  const startToken = ++eutherAlertRendererStartToken;
   eutherAlertRenderer.setAttribute("aria-hidden", "false");
   eutherAlertRuntimePanel.hidden = false;
   eutherAlertFrame.hidden = true;
   eutherAlertRuntimeTitle.textContent = "Starting EutherAlert runtime";
-  eutherAlertRuntimeMessage.textContent = "Loading /eutheralert/index.html and preparing the OpenRA bridge.";
+  eutherAlertRuntimeMessage.textContent = "Opening the EutherAlert runtime and preparing the OpenRA bridge.";
   try {
     if (activeLobbyInstance()?.kind !== "eutheralert") {
       const ready = await ensureEutherAlertVesselForPlay();
@@ -6475,12 +6477,9 @@ async function startEutherAlertRenderer(): Promise<void> {
         throw new Error("No EutherAlert vessel available");
       }
     }
-    const response = await fetch("/eutheralert/index.html", { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error("EutherAlert runtime not installed");
+    if (startToken !== eutherAlertRendererStartToken) {
+      return;
     }
-    eutherAlertRuntimePanel.hidden = true;
-    eutherAlertFrame.hidden = false;
     const runtimeParams = new URLSearchParams({
       v: Date.now().toString(),
       instance: activeLobbyInstanceId,
@@ -6489,11 +6488,16 @@ async function startEutherAlertRenderer(): Promise<void> {
       role: lobbyRole,
       csrf: hostCsrfToken ?? "",
     });
+    eutherAlertRuntimePanel.hidden = true;
+    eutherAlertFrame.hidden = false;
     eutherAlertFrame.src = `/eutheralert/index.html?${runtimeParams.toString()}`;
     void ensureEutherAlertOpenRaLive().catch((err) => {
       eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA autostart failed";
     });
   } catch (err) {
+    if (startToken !== eutherAlertRendererStartToken) {
+      return;
+    }
     eutherAlertRuntimeTitle.textContent = "EutherAlert runtime could not start";
     eutherAlertRuntimeMessage.textContent = err instanceof Error ? err.message : "Runtime request failed";
     eutherAlertFrame.removeAttribute("src");
@@ -6503,6 +6507,7 @@ async function startEutherAlertRenderer(): Promise<void> {
 }
 
 function stopEutherAlertRenderer(): void {
+  eutherAlertRendererStartToken += 1;
   eutherAlertRenderer.setAttribute("aria-hidden", "true");
   eutherAlertFrame.hidden = true;
 }
