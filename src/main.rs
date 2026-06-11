@@ -5,6 +5,8 @@ use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Child, ChildStdin, Command, Stdio};
 use std::sync::{
@@ -5041,6 +5043,45 @@ fn host_alert_openra_client_support_dir(instance_id: &str) -> PathBuf {
     host_alert_openra_support_dir(instance_id).join("client")
 }
 
+fn host_alert_openra_shared_content_dir() -> PathBuf {
+    host_alert_absolute_path(PathBuf::from(
+        ".euther-host/openra-alert/shared/Content/ra/v2",
+    ))
+}
+
+fn host_alert_openra_client_content_dir(support_dir: &Path) -> PathBuf {
+    support_dir.join("Content").join("ra").join("v2")
+}
+
+fn host_alert_ensure_openra_client_content(support_dir: &Path) -> io::Result<()> {
+    let client_content_dir = host_alert_openra_client_content_dir(support_dir);
+    if client_content_dir.join("allies.mix").is_file()
+        && client_content_dir
+            .join("expand")
+            .join("expand2.mix")
+            .is_file()
+        && client_content_dir.join("cnc").join("desert.mix").is_file()
+    {
+        return Ok(());
+    }
+
+    let shared_content_dir = host_alert_openra_shared_content_dir();
+    if !shared_content_dir.join("allies.mix").is_file() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let ra_dir = support_dir.join("Content").join("ra");
+        fs::create_dir_all(&ra_dir)?;
+        if !client_content_dir.exists() {
+            unix_fs::symlink(&shared_content_dir, &client_content_dir)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn host_alert_touch_bridge_file(instance_id: &str) -> PathBuf {
     host_alert_absolute_path(
         env::var("EUTHERALERT_TOUCH_BRIDGE_FILE")
@@ -5452,6 +5493,7 @@ fn host_alert_openra_client_start(
         process_path
     };
     fs::create_dir_all(&support_dir)?;
+    host_alert_ensure_openra_client_content(&support_dir)?;
     if let Some(parent) = touch_bridge_file.parent() {
         fs::create_dir_all(parent)?;
     }
