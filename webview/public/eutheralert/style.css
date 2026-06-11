@@ -17,6 +17,7 @@ body {
   height: 100vh;
   overflow: hidden;
   background: #050604;
+  overscroll-behavior: none;
 }
 
 button {
@@ -49,6 +50,7 @@ button:disabled {
   position: fixed;
   inset: 0;
   overflow: hidden;
+  background: #020302;
 }
 
 #battlefield {
@@ -71,6 +73,10 @@ button:disabled {
   background: #050604;
   opacity: 0;
   pointer-events: none;
+}
+
+.openra-live .openra-stream {
+  background: #000;
 }
 
 .openra-stream.is-active {
@@ -158,6 +164,26 @@ button:disabled {
   padding: 8px;
 }
 
+.openra-live .mouse-toolbar {
+  left: 50%;
+  top: auto;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(430px, calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  min-width: min(300px, calc(100vw - 24px));
+  grid-template-columns: repeat(4, minmax(58px, 1fr));
+  border-color: rgba(143, 224, 119, 0.24);
+  background: rgba(0, 0, 0, 0.48);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(10px);
+}
+
+.openra-live .mouse-toolbar button {
+  min-height: 48px;
+  border-color: rgba(143, 224, 119, 0.28);
+  background: rgba(6, 12, 9, 0.72);
+}
+
 .mouse-toolbar.is-active {
   display: grid;
 }
@@ -195,6 +221,28 @@ button:disabled {
   gap: 12px;
   min-height: 48px;
   padding: 8px 12px;
+}
+
+.openra-live .top-hud {
+  left: max(8px, env(safe-area-inset-left));
+  right: auto;
+  top: max(8px, env(safe-area-inset-top));
+  min-height: 36px;
+  padding: 6px 10px;
+  border-color: rgba(143, 224, 119, 0.18);
+  background: rgba(0, 0, 0, 0.38);
+}
+
+.openra-live .top-hud .resource-strip,
+.openra-live .command-rail,
+.openra-live .side-panel,
+.openra-live .build-dock,
+.openra-live .gesture-strip {
+  display: none;
+}
+
+.openra-live .top-hud strong {
+  font-size: 0.76rem;
 }
 
 .top-hud div,
@@ -360,24 +408,54 @@ button:disabled {
   pointer-events: none;
 }
 
+.openra-live .toast {
+  left: max(8px, env(safe-area-inset-left));
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 64px);
+  max-width: min(360px, calc(100vw - 24px));
+  background: rgba(0, 0, 0, 0.44);
+}
+
 .orientation-card {
   display: none;
 }
 
 @media (orientation: portrait) and (max-width: 900px) {
+  .openra-stream,
+  #battlefield,
+  .hud,
+  .gesture-strip,
+  .toast,
+  .openra-touch-plane,
+  .openra-cursor {
+    filter: brightness(0.32);
+  }
+
   .orientation-card {
     position: absolute;
-    inset: 18px;
-    z-index: 8;
+    inset: 0;
+    z-index: 10;
     display: grid;
     place-content: center;
-    gap: 8px;
-    padding: 24px;
-    border: 1px solid rgba(255, 207, 100, 0.28);
-    border-radius: 8px;
-    background: rgba(4, 7, 6, 0.84);
+    gap: 10px;
+    padding: 32px;
+    border: 0;
+    border-radius: 0;
+    background: rgba(0, 0, 0, 0.9);
     text-align: center;
-    backdrop-filter: blur(14px);
+    backdrop-filter: blur(18px);
+  }
+
+  .orientation-card strong {
+    font-size: clamp(1.7rem, 9vw, 3.4rem);
+    line-height: 1;
+    white-space: normal;
+  }
+
+  .orientation-card span {
+    max-width: 22rem;
+    color: #d6d3bd;
+    font-size: 0.95rem;
+    line-height: 1.35;
   }
 }
 
@@ -413,6 +491,29 @@ button:disabled {
     min-width: 210px;
     gap: 5px;
     padding: 6px;
+  }
+
+  .openra-live .mouse-toolbar {
+    left: 50%;
+    bottom: max(6px, env(safe-area-inset-bottom));
+    width: min(330px, calc(100vw - 14px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    min-width: min(250px, calc(100vw - 14px));
+    gap: 4px;
+    padding: 5px;
+  }
+
+  .openra-live .mouse-toolbar button {
+    min-height: 40px;
+    padding: 4px;
+  }
+
+  .openra-live .top-hud {
+    min-height: 30px;
+    padding: 4px 8px;
+  }
+
+  .openra-live .toast {
+    bottom: calc(max(6px, env(safe-area-inset-bottom)) + 52px);
   }
 
   .mouse-toolbar button {
@@ -476,5 +577,11 @@ button:disabled {
 
   .build-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (orientation: landscape) {
+  .alert-shell.openra-live {
+    cursor: none;
   }
 }

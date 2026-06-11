@@ -8,6 +8,7 @@ const csrfToken = params.get("csrf") || "";
 const openRaStream = document.querySelector("#openra-stream");
 const openRaTouchPlane = document.querySelector("#openra-touch-plane");
 const openRaCursor = document.querySelector("#openra-cursor");
+const alertShell = document.querySelector(".alert-shell");
 const canvas = document.querySelector("#battlefield");
 const ctx = canvas.getContext("2d");
 const minimap = document.querySelector("#minimap");
@@ -214,6 +215,7 @@ async function refreshOpenRaRenderer() {
 
 function stopOpenRaRenderer() {
   openRaStreamActive = false;
+  alertShell.classList.remove("openra-live");
   openRaStream.classList.remove("is-active");
   openRaTouchPlane.classList.remove("is-active");
   openRaCursor.classList.remove("is-active", "is-right");
@@ -224,6 +226,7 @@ function stopOpenRaRenderer() {
 
 openRaStream.addEventListener("playing", () => {
   openRaStreamActive = true;
+  alertShell.classList.add("openra-live");
   openRaStream.classList.add("is-active");
   openRaTouchPlane.classList.add("is-active");
   document.querySelector(".mouse-toolbar").classList.add("is-active");
