@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process::{self, Child, ChildStdin, Command, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
@@ -775,7 +775,48 @@ struct HostState {
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
     next_chat_id: Arc<Mutex<u64>>,
     video_chat_rooms: Arc<Mutex<Vec<HostVideoChatRoom>>>,
+    openra_server: Arc<Mutex<Option<HostOpenRaProcess>>>,
+    openra_client: Arc<Mutex<Option<HostOpenRaClientProcess>>>,
+    alert_touch_bridge: Arc<Mutex<Option<HostAlertTouchBridgeProcess>>>,
+    alert_touch_events: Arc<Mutex<Vec<HostAlertTouchEvent>>>,
+    next_alert_touch_id: Arc<Mutex<u64>>,
     active_requests: Arc<AtomicUsize>,
+}
+
+struct HostOpenRaProcess {
+    child: Child,
+    instance_id: String,
+    port: u16,
+    started_unix_ms: u64,
+    runtime_path: PathBuf,
+}
+
+struct HostOpenRaClientProcess {
+    child: Child,
+    instance_id: String,
+    port: u16,
+    started_unix_ms: u64,
+    runtime_path: PathBuf,
+    support_dir: PathBuf,
+    touch_bridge_file: PathBuf,
+}
+
+struct HostAlertTouchBridgeProcess {
+    child: Child,
+    stdin: ChildStdin,
+    command: String,
+    started_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize)]
+struct HostAlertTouchEvent {
+    id: u64,
+    unix_ms: u64,
+    instance: String,
+    client: String,
+    player: usize,
+    kind: String,
+    payload: serde_json::Value,
 }
 
 struct HostRequestGuard {
@@ -795,8 +836,33 @@ struct HostInstance {
     kind: HostInstanceKind,
     bridge: BridgeState,
     doom: Option<Arc<Mutex<eutherdoom_server::DoomSession>>>,
+    alert_seed: u64,
+    alert_events: Arc<Mutex<Vec<HostAlertEvent>>>,
     host_owner: Option<String>,
     created_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize)]
+struct HostAlertEvent {
+    id: u64,
+    unix_ms: u64,
+    player: usize,
+    kind: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct HostAlertCommandRequest {
+    player: usize,
+    kind: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct HostAlertTouchRequest {
+    player: usize,
+    kind: String,
+    payload: serde_json::Value,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1243,6 +1309,8 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         kind: HostInstanceKind::MegaDrive,
         bridge: bridge.clone(),
         doom: None,
+        alert_seed: 0,
+        alert_events: Arc::new(Mutex::new(Vec::new())),
         host_owner: None,
         created_unix_ms: unix_ms_now(),
     }]));
@@ -1256,6 +1324,11 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
         video_chat_rooms: Arc::new(Mutex::new(Vec::new())),
+        openra_server: Arc::new(Mutex::new(None)),
+        openra_client: Arc::new(Mutex::new(None)),
+        alert_touch_bridge: Arc::new(Mutex::new(None)),
+        alert_touch_events: Arc::new(Mutex::new(Vec::new())),
+        next_alert_touch_id: Arc::new(Mutex::new(1)),
         active_requests: Arc::new(AtomicUsize::new(0)),
     };
     println!(
@@ -1523,6 +1596,111 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
             reset_host_doom(state, &instance_id)?;
             send_json(stream, &host_doom_status(state, &instance_id)?)
+        }
+        ("GET", "/api/eutheralert/snapshot") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            send_json(stream, &host_alert_snapshot(state, &instance_id)?)
+        }
+        ("GET", "/api/eutheralert/events") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let after_id = query_string_value(&request.path, "after")?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            send_json(stream, &host_alert_events(state, &instance_id, after_id)?)
+        }
+        ("GET", "/api/eutheralert/openra/status") => {
+            require_host_user(state, &request)?;
+            send_json(stream, &host_alert_openra_status(state)?)
+        }
+        ("POST", "/api/eutheralert/openra/start") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let instance_id = host_instance_id(&request.path)?;
+            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &host_alert_openra_start(state, &instance_id)?)
+        }
+        ("POST", "/api/eutheralert/openra/stop") => {
+            let user = require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &host_alert_openra_stop(state, &instance_id)?)
+        }
+        ("GET", "/api/eutheralert/openra/client/status") => {
+            require_host_user(state, &request)?;
+            send_json(stream, &host_alert_openra_client_status(state)?)
+        }
+        ("POST", "/api/eutheralert/openra/client/start") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let instance_id = host_instance_id(&request.path)?;
+            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(
+                stream,
+                &host_alert_openra_client_start(state, &instance_id)?,
+            )
+        }
+        ("POST", "/api/eutheralert/openra/client/stop") => {
+            let user = require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &host_alert_openra_client_stop(state, &instance_id)?)
+        }
+        ("GET", "/api/eutheralert/touch/events") => {
+            require_host_user(state, &request)?;
+            let instance_id = host_instance_id(&request.path)?;
+            let after_id = query_string_value(&request.path, "after")?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            send_json(
+                stream,
+                &host_alert_touch_events(state, &instance_id, after_id)?,
+            )
+        }
+        ("POST", "/api/eutheralert/touch") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = query_string_value(&request.path, "client")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_request("missing client id"))?;
+            let command: HostAlertTouchRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(
+                stream,
+                &host_alert_touch_command(state, &instance_id, &client_id, command)?,
+            )
+        }
+        ("POST", "/api/eutheralert/cmd") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let instance_id = host_instance_id(&request.path)?;
+            let client_id = query_string_value(&request.path, "client")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_request("missing client id"))?;
+            let command: HostAlertCommandRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(
+                stream,
+                &host_alert_command(state, &instance_id, &client_id, command)?,
+            )
         }
         ("GET", "/api/chat") => {
             require_host_user(state, &request)?;
@@ -1896,6 +2074,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             if path == "/"
                 || path == "/index.html"
                 || path.starts_with("/assets/")
+                || path.starts_with("/eutheralert/")
                 || path.starts_with("/euthercivet-game/")
             {
                 return send_host_static(stream, path);
@@ -2442,6 +2621,12 @@ fn create_host_instance(
         HostInstanceKind::EutherAlert => format!("EutherAlert Vessel {ordinal}"),
         HostInstanceKind::EutherDoom => format!("EutherDoom Server {ordinal}"),
     };
+    let created_unix_ms = unix_ms_now();
+    let alert_seed = if kind == HostInstanceKind::EutherAlert {
+        host_alert_seed(&id, created_unix_ms)
+    } else {
+        0
+    };
     let mut instances = state
         .instances
         .lock()
@@ -2456,8 +2641,10 @@ fn create_host_instance(
                 Duration::from_millis(250),
             )))
         }),
+        alert_seed,
+        alert_events: Arc::new(Mutex::new(Vec::new())),
         host_owner: Some(user.to_string()),
-        created_unix_ms: unix_ms_now(),
+        created_unix_ms,
     });
     Ok(id)
 }
@@ -4705,6 +4892,709 @@ fn release_host_lobby_player(
         }
     }
     Ok(())
+}
+
+fn host_alert_seed(instance_id: &str, created_unix_ms: u64) -> u64 {
+    let mut hash = 14_695_981_039_346_656_037u64;
+    for byte in instance_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    (hash ^ created_unix_ms.rotate_left(17)) & 0xffff_ffff
+}
+
+fn host_alert_server_tick(instance: &HostInstance) -> u64 {
+    unix_ms_now()
+        .saturating_sub(instance.created_unix_ms)
+        .saturating_mul(30)
+        / 1000
+}
+
+fn host_alert_snapshot(state: &HostState, instance_id: &str) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherAlert {
+        return Err(invalid_request("selected instance is not EutherAlert"));
+    }
+    let events = instance
+        .alert_events
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let last_event_id = events.last().map(|event| event.id).unwrap_or(0);
+    Ok(serde_json::json!({
+        "instance": instance.id,
+        "seed": instance.alert_seed,
+        "createdUnixMs": instance.created_unix_ms,
+        "serverTick": host_alert_server_tick(&instance),
+        "lastEventId": last_event_id,
+        "events": events.clone(),
+    }))
+}
+
+fn host_alert_events(
+    state: &HostState,
+    instance_id: &str,
+    after_id: u64,
+) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherAlert {
+        return Err(invalid_request("selected instance is not EutherAlert"));
+    }
+    let events = instance
+        .alert_events
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let last_event_id = events.last().map(|event| event.id).unwrap_or(0);
+    let visible: Vec<_> = events
+        .iter()
+        .filter(|event| event.id > after_id)
+        .cloned()
+        .collect();
+    Ok(serde_json::json!({
+        "instance": instance.id,
+        "lastEventId": last_event_id,
+        "serverTick": host_alert_server_tick(&instance),
+        "events": visible,
+    }))
+}
+
+fn host_alert_openra_runtime_path() -> PathBuf {
+    env::var("EUTHERALERT_OPENRA_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".euther-openra/OpenRA"))
+}
+
+fn host_alert_dotnet_root() -> PathBuf {
+    env::var("EUTHERALERT_DOTNET_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".euther-openra/dotnet"))
+}
+
+fn host_alert_openra_port() -> u16 {
+    env::var("EUTHERALERT_OPENRA_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(32_170)
+}
+
+fn host_alert_touch_bridge_file(instance_id: &str) -> PathBuf {
+    env::var("EUTHERALERT_TOUCH_BRIDGE_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(".euther-host/openra-alert")
+                .join(instance_id)
+                .join("touch-events.jsonl")
+        })
+}
+
+fn host_alert_touch_bridge_apply_log(instance_id: &str) -> PathBuf {
+    env::var("EUTHERALERT_TOUCH_BRIDGE_APPLY_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(".euther-host/openra-alert")
+                .join(instance_id)
+                .join("touch-applied.jsonl")
+        })
+}
+
+fn host_alert_touch_bridge_command(instance_id: &str) -> String {
+    env::var("EUTHERALERT_TOUCH_BRIDGE_CMD").unwrap_or_else(|_| {
+        format!(
+            "tools/eutheralert-openra-adapter/jsonl_probe.py {}",
+            shell_quote_path(&host_alert_touch_bridge_file(instance_id))
+        )
+    })
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+fn host_alert_openra_status(state: &HostState) -> io::Result<serde_json::Value> {
+    let touch_bridge = host_alert_touch_bridge_status(state)?;
+    let client = host_alert_openra_client_status(state)?;
+    let mut server = state
+        .openra_server
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(process) = server.as_mut() {
+        if let Some(status) = process.child.try_wait()? {
+            let payload = serde_json::json!({
+                "running": false,
+                "exited": true,
+                "code": status.code(),
+                "instance": process.instance_id,
+                "port": process.port,
+                "runtimePath": process.runtime_path,
+                "touchBridge": touch_bridge,
+                "client": client,
+            });
+            *server = None;
+            return Ok(payload);
+        }
+        return Ok(serde_json::json!({
+            "running": true,
+            "instance": process.instance_id,
+            "port": process.port,
+            "startedUnixMs": process.started_unix_ms,
+            "runtimePath": process.runtime_path,
+            "touchBridge": touch_bridge,
+            "client": client,
+        }));
+    }
+    Ok(serde_json::json!({
+        "running": false,
+        "runtimePath": host_alert_openra_runtime_path(),
+        "port": host_alert_openra_port(),
+        "touchBridge": touch_bridge,
+        "client": client,
+    }))
+}
+
+fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::Value> {
+    let mut client = state
+        .openra_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(process) = client.as_mut() {
+        if let Some(status) = process.child.try_wait()? {
+            let payload = serde_json::json!({
+                "running": false,
+                "exited": true,
+                "code": status.code(),
+                "instance": process.instance_id,
+                "port": process.port,
+                "runtimePath": process.runtime_path,
+                "supportDir": process.support_dir,
+                "touchBridgeFile": process.touch_bridge_file,
+            });
+            *client = None;
+            return Ok(payload);
+        }
+        return Ok(serde_json::json!({
+            "running": true,
+            "instance": process.instance_id,
+            "port": process.port,
+            "startedUnixMs": process.started_unix_ms,
+            "runtimePath": process.runtime_path,
+            "supportDir": process.support_dir,
+            "touchBridgeFile": process.touch_bridge_file,
+        }));
+    }
+    Ok(serde_json::json!({
+        "running": false,
+        "runtimePath": host_alert_openra_runtime_path(),
+        "port": host_alert_openra_port(),
+    }))
+}
+
+fn host_alert_touch_bridge_status(state: &HostState) -> io::Result<serde_json::Value> {
+    let mut bridge = state
+        .alert_touch_bridge
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(process) = bridge.as_mut() {
+        if let Some(status) = process.child.try_wait()? {
+            let payload = serde_json::json!({
+                "running": false,
+                "exited": true,
+                "code": status.code(),
+                "command": process.command,
+            });
+            *bridge = None;
+            return Ok(payload);
+        }
+        return Ok(serde_json::json!({
+            "running": true,
+            "command": process.command,
+            "startedUnixMs": process.started_unix_ms,
+        }));
+    }
+    Ok(serde_json::json!({
+        "running": false,
+        "configured": true,
+    }))
+}
+
+fn host_alert_openra_start(state: &HostState, instance_id: &str) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherAlert {
+        return Err(invalid_request("selected instance is not EutherAlert"));
+    }
+    let runtime_path = host_alert_openra_runtime_path();
+    let launcher = runtime_path.join("launch-dedicated.sh");
+    if !launcher.is_file() {
+        return Err(invalid_request(format!(
+            "OpenRA runtime missing: expected {}",
+            launcher.display()
+        )));
+    }
+
+    let mut server = state
+        .openra_server
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(process) = server.as_mut() {
+        if process.child.try_wait()?.is_none() {
+            return Ok(serde_json::json!({
+                "running": true,
+                "instance": process.instance_id,
+                "port": process.port,
+                "startedUnixMs": process.started_unix_ms,
+                "runtimePath": process.runtime_path,
+            }));
+        }
+        *server = None;
+    }
+
+    let port = host_alert_openra_port();
+    let support_dir = PathBuf::from(".euther-host/openra-alert").join(instance_id);
+    let touch_bridge_file = host_alert_touch_bridge_file(instance_id);
+    let touch_bridge_apply_log = host_alert_touch_bridge_apply_log(instance_id);
+    let dotnet_root = host_alert_dotnet_root();
+    let process_path = env::var("PATH").unwrap_or_default();
+    let process_path = if dotnet_root.join("dotnet").is_file() {
+        format!("{}:{process_path}", dotnet_root.display())
+    } else {
+        process_path
+    };
+    fs::create_dir_all(&support_dir)?;
+    if let Some(parent) = touch_bridge_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = touch_bridge_apply_log.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let child = Command::new("sh")
+        .arg(&launcher)
+        .current_dir(&runtime_path)
+        .env("DOTNET_ROOT", &dotnet_root)
+        .env("PATH", process_path)
+        .env("EUTHERALERT_TOUCH_BRIDGE_FILE", &touch_bridge_file)
+        .env(
+            "EUTHERALERT_TOUCH_BRIDGE_APPLY_LOG",
+            &touch_bridge_apply_log,
+        )
+        .env("Name", format!("{} OpenRA", instance.name))
+        .env("Mod", "ra")
+        .env("ListenPort", port.to_string())
+        .env("AdvertiseOnline", "False")
+        .env("AdvertiseOnLocalNetwork", "True")
+        .env("RecordReplays", "True")
+        .env("RequireAuthentication", "False")
+        .env("SupportDir", support_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let started_unix_ms = unix_ms_now();
+    *server = Some(HostOpenRaProcess {
+        child,
+        instance_id: instance_id.to_string(),
+        port,
+        started_unix_ms,
+        runtime_path: runtime_path.clone(),
+    });
+    Ok(serde_json::json!({
+        "running": true,
+        "instance": instance_id,
+        "port": port,
+        "startedUnixMs": started_unix_ms,
+        "runtimePath": runtime_path,
+    }))
+}
+
+fn host_alert_openra_stop(state: &HostState, instance_id: &str) -> io::Result<serde_json::Value> {
+    let mut server = state
+        .openra_server
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(mut process) = server.take() else {
+        return Ok(serde_json::json!({ "running": false }));
+    };
+    if process.instance_id != instance_id {
+        let running_instance = process.instance_id.clone();
+        *server = Some(process);
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("OpenRA server belongs to {running_instance}"),
+        ));
+    }
+    let _ = process.child.kill();
+    let _ = process.child.wait();
+    Ok(serde_json::json!({ "running": false }))
+}
+
+fn host_alert_openra_client_start(
+    state: &HostState,
+    instance_id: &str,
+) -> io::Result<serde_json::Value> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherAlert {
+        return Err(invalid_request("selected instance is not EutherAlert"));
+    }
+    let runtime_path = host_alert_openra_runtime_path();
+    let launcher = runtime_path.join("launch-game.sh");
+    if !launcher.is_file() {
+        return Err(invalid_request(format!(
+            "OpenRA runtime missing: expected {}",
+            launcher.display()
+        )));
+    }
+
+    let mut client = state
+        .openra_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(process) = client.as_mut() {
+        if process.child.try_wait()?.is_none() {
+            return Ok(serde_json::json!({
+                "running": true,
+                "instance": process.instance_id,
+                "port": process.port,
+                "startedUnixMs": process.started_unix_ms,
+                "runtimePath": process.runtime_path,
+                "supportDir": process.support_dir,
+                "touchBridgeFile": process.touch_bridge_file,
+            }));
+        }
+        *client = None;
+    }
+
+    let port = host_alert_openra_port();
+    let support_dir = PathBuf::from(".euther-host/openra-alert")
+        .join(instance_id)
+        .join("client");
+    let touch_bridge_file = host_alert_touch_bridge_file(instance_id);
+    let touch_bridge_apply_log = host_alert_touch_bridge_apply_log(instance_id);
+    let dotnet_root = host_alert_dotnet_root();
+    let process_path = env::var("PATH").unwrap_or_default();
+    let process_path = if dotnet_root.join("dotnet").is_file() {
+        format!("{}:{process_path}", dotnet_root.display())
+    } else {
+        process_path
+    };
+    fs::create_dir_all(&support_dir)?;
+    if let Some(parent) = touch_bridge_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = touch_bridge_apply_log.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let child = Command::new("sh")
+        .arg(&launcher)
+        .arg("Game.Mod=ra")
+        .arg(format!("Launch.URI=tcp://127.0.0.1:{port}"))
+        .arg(format!("Engine.SupportDir={}", support_dir.display()))
+        .current_dir(&runtime_path)
+        .env("DOTNET_ROOT", &dotnet_root)
+        .env("PATH", process_path)
+        .env("EUTHERALERT_TOUCH_BRIDGE_FILE", &touch_bridge_file)
+        .env(
+            "EUTHERALERT_TOUCH_BRIDGE_APPLY_LOG",
+            &touch_bridge_apply_log,
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let started_unix_ms = unix_ms_now();
+    *client = Some(HostOpenRaClientProcess {
+        child,
+        instance_id: instance_id.to_string(),
+        port,
+        started_unix_ms,
+        runtime_path: runtime_path.clone(),
+        support_dir: support_dir.clone(),
+        touch_bridge_file: touch_bridge_file.clone(),
+    });
+    Ok(serde_json::json!({
+        "running": true,
+        "instance": instance_id,
+        "port": port,
+        "startedUnixMs": started_unix_ms,
+        "runtimePath": runtime_path,
+        "supportDir": support_dir,
+        "touchBridgeFile": touch_bridge_file,
+    }))
+}
+
+fn host_alert_openra_client_stop(
+    state: &HostState,
+    instance_id: &str,
+) -> io::Result<serde_json::Value> {
+    let mut client = state
+        .openra_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(mut process) = client.take() else {
+        return Ok(serde_json::json!({ "running": false }));
+    };
+    if process.instance_id != instance_id {
+        let running_instance = process.instance_id.clone();
+        *client = Some(process);
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("OpenRA client belongs to {running_instance}"),
+        ));
+    }
+    let _ = process.child.kill();
+    let _ = process.child.wait();
+    Ok(serde_json::json!({ "running": false }))
+}
+
+fn host_alert_touch_events(
+    state: &HostState,
+    instance_id: &str,
+    after_id: u64,
+) -> io::Result<serde_json::Value> {
+    let events = state
+        .alert_touch_events
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let last_event_id = events
+        .iter()
+        .filter(|event| event.instance == instance_id)
+        .map(|event| event.id)
+        .max()
+        .unwrap_or(0);
+    let visible: Vec<_> = events
+        .iter()
+        .filter(|event| event.instance == instance_id && event.id > after_id)
+        .cloned()
+        .collect();
+    Ok(serde_json::json!({
+        "instance": instance_id,
+        "lastEventId": last_event_id,
+        "events": visible,
+    }))
+}
+
+fn host_alert_touch_command(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    command: HostAlertTouchRequest,
+) -> io::Result<serde_json::Value> {
+    if command.player != 1 && command.player != 2 {
+        return Err(invalid_request("player must be 1 or 2"));
+    }
+    let instance = host_alert_claimed_instance(state, instance_id, client_id, command.player - 1)?;
+    let kind = command.kind.trim();
+    if !matches!(
+        kind,
+        "tap" | "doubleTap" | "dragStart" | "dragMove" | "dragEnd" | "pinch" | "key" | "cancel"
+    ) {
+        return Err(invalid_request("invalid EutherAlert touch command kind"));
+    }
+    validate_alert_touch_payload(&command.payload)?;
+
+    let id = {
+        let mut next = state
+            .next_alert_touch_id
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let id = *next;
+        *next += 1;
+        id
+    };
+    let event = HostAlertTouchEvent {
+        id,
+        unix_ms: unix_ms_now(),
+        instance: instance.id,
+        client: client_id.to_string(),
+        player: command.player,
+        kind: kind.to_string(),
+        payload: command.payload,
+    };
+    let injected = match host_alert_touch_inject(state, &event) {
+        Ok(injected) => injected,
+        Err(err) => {
+            eprintln!("EutherAlert touch injector failed: {err}");
+            false
+        }
+    };
+    let mut events = state
+        .alert_touch_events
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    events.push(event.clone());
+    if events.len() > 4096 {
+        let excess = events.len() - 4096;
+        events.drain(0..excess);
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "lastEventId": id,
+        "event": event,
+        "injected": injected,
+    }))
+}
+
+fn validate_alert_touch_payload(payload: &serde_json::Value) -> io::Result<()> {
+    let Some(object) = payload.as_object() else {
+        return Err(invalid_request("touch payload must be an object"));
+    };
+    for key in ["x", "y", "x2", "y2", "dx", "dy", "scale"] {
+        if let Some(value) = object.get(key) {
+            let Some(number) = value.as_f64() else {
+                return Err(invalid_request(format!(
+                    "touch payload {key} must be numeric"
+                )));
+            };
+            if !number.is_finite() || number.abs() > 10_000.0 {
+                return Err(invalid_request(format!("touch payload {key} out of range")));
+            }
+        }
+    }
+    if let Some(value) = object.get("button").or_else(|| object.get("key")) {
+        let Some(text) = value.as_str() else {
+            return Err(invalid_request("touch payload button/key must be text"));
+        };
+        if text.len() > 32 {
+            return Err(invalid_request("touch payload button/key too long"));
+        }
+    }
+    Ok(())
+}
+
+fn host_alert_touch_inject(state: &HostState, event: &HostAlertTouchEvent) -> io::Result<bool> {
+    let command = host_alert_touch_bridge_command(&event.instance);
+    if command.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let payload = serde_json::to_vec(event).map_err(|err| io::Error::other(err.to_string()))?;
+    let mut bridge = state
+        .alert_touch_bridge
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(process) = bridge.as_mut() {
+        if process.command != command || process.child.try_wait()?.is_some() {
+            *bridge = None;
+        }
+    }
+    if bridge.is_none() {
+        *bridge = Some(host_alert_touch_bridge_start(&command)?);
+    }
+    let process = bridge
+        .as_mut()
+        .ok_or_else(|| io::Error::other("touch bridge failed to start"))?;
+    if let Err(err) = process
+        .stdin
+        .write_all(&payload)
+        .and_then(|_| process.stdin.write_all(b"\n"))
+        .and_then(|_| process.stdin.flush())
+    {
+        *bridge = None;
+        return Err(err);
+    }
+    Ok(true)
+}
+
+fn host_alert_touch_bridge_start(command: &str) -> io::Result<HostAlertTouchBridgeProcess> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("touch bridge stdin unavailable"))?;
+    Ok(HostAlertTouchBridgeProcess {
+        child,
+        stdin,
+        command: command.to_string(),
+        started_unix_ms: unix_ms_now(),
+    })
+}
+
+fn host_alert_command(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    mut command: HostAlertCommandRequest,
+) -> io::Result<serde_json::Value> {
+    if command.player != 1 && command.player != 2 {
+        return Err(invalid_request("player must be 1 or 2"));
+    }
+    let instance = host_alert_claimed_instance(state, instance_id, client_id, command.player - 1)?;
+    let trimmed_kind = command.kind.trim();
+    if !matches!(trimmed_kind, "build" | "train" | "order") {
+        return Err(invalid_request("invalid EutherAlert command kind"));
+    }
+    let server_tick = host_alert_server_tick(&instance);
+    let apply_tick = server_tick + 12;
+    if let serde_json::Value::Object(payload) = &mut command.payload {
+        payload.insert("tick".to_string(), serde_json::json!(apply_tick));
+    } else {
+        let value = std::mem::take(&mut command.payload);
+        command.payload = serde_json::json!({
+            "value": value,
+            "tick": apply_tick,
+        });
+    }
+    let mut events = instance
+        .alert_events
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let next_id = events.last().map(|event| event.id + 1).unwrap_or(1);
+    let event = HostAlertEvent {
+        id: next_id,
+        unix_ms: unix_ms_now(),
+        player: command.player,
+        kind: trimmed_kind.to_string(),
+        payload: command.payload,
+    };
+    events.push(event.clone());
+    if events.len() > 4096 {
+        let excess = events.len() - 4096;
+        events.drain(0..excess);
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "lastEventId": next_id,
+        "event": event,
+    }))
+}
+
+fn host_alert_claimed_instance(
+    state: &HostState,
+    instance_id: &str,
+    client_id: &str,
+    player_index: usize,
+) -> io::Result<HostInstance> {
+    let instance = host_instance_snapshot(state, instance_id)?;
+    if instance.kind != HostInstanceKind::EutherAlert {
+        return Err(invalid_request("selected instance is not EutherAlert"));
+    }
+    let mut slots = instance
+        .bridge
+        .player_slots
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(slot) = slots.get_mut(player_index) else {
+        return Err(invalid_request("player must be 1 or 2"));
+    };
+    match slot.as_mut() {
+        Some(lease)
+            if lease.client_id == client_id
+                && Instant::now().duration_since(lease.updated) <= HOST_PLAYER_LEASE_TIMEOUT =>
+        {
+            lease.updated = Instant::now();
+            Ok(instance.clone())
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "claim an EutherAlert player slot first",
+        )),
+    }
 }
 
 fn host_doom_status(state: &HostState, instance_id: &str) -> io::Result<serde_json::Value> {

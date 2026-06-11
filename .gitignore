@@ -8,6 +8,7 @@
 /tmp/
 .euther-bridge/
 .euther-host/
+.euther-openra/
 /deploy/Caddyfile
 /deploy/eutherhost.service
 /deploy/*.local

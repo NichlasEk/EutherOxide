@@ -806,6 +806,53 @@ button:disabled {
   line-height: 1.35;
 }
 
+.eutheralert-openra-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: grid;
+  gap: 6px;
+  width: min(320px, calc(100% - 24px));
+  padding: 10px;
+  border: 1px solid rgba(255, 216, 93, 0.22);
+  border-radius: 8px;
+  background: rgba(5, 7, 6, 0.74);
+  backdrop-filter: blur(10px);
+}
+
+.eutheralert-openra-panel span,
+.eutheralert-openra-panel strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutheralert-openra-panel span {
+  color: #ffcf64;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutheralert-openra-panel strong {
+  color: #fff1ca;
+  font-size: 0.76rem;
+}
+
+.eutheralert-openra-panel div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(80px, 0.6fr);
+  gap: 8px;
+}
+
+.eutheralert-openra-panel button {
+  min-height: 34px;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
 .eutherdogs-mode .screen-glass {
   background:
     linear-gradient(180deg, rgba(2, 5, 7, 0.08), rgba(2, 5, 7, 0.34)),
@@ -3018,6 +3065,10 @@ h2 {
 
 .mode-card-euthercivet {
   border-color: rgba(216, 169, 76, 0.24);
+}
+
+.mode-card-eutheralert {
+  border-color: rgba(255, 64, 45, 0.24);
 }
 
 .mode-card-eutherdoom {

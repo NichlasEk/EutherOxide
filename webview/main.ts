@@ -179,6 +179,24 @@ type LobbyStartResult = {
   id: string;
 };
 
+type AlertOpenRaStatus = {
+  running: boolean;
+  exited?: boolean;
+  code?: number | null;
+  instance?: string | null;
+  port?: number;
+  startedUnixMs?: number;
+  runtimePath?: string;
+  touchBridge?: {
+    running?: boolean;
+    configured?: boolean;
+    exited?: boolean;
+    code?: number | null;
+    command?: string;
+  };
+  client?: AlertOpenRaStatus;
+};
+
 type DoomCommand = {
   tic: number;
   forward: number;
@@ -1934,10 +1952,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div id="eutheralert-renderer" class="eutheralert-renderer" aria-hidden="true">
             <iframe id="eutheralert-frame" class="eutheralert-frame" title="EutherAlert runtime"></iframe>
+            <div id="eutheralert-openra-panel" class="eutheralert-openra-panel">
+              <span>OpenRA</span>
+              <strong id="eutheralert-openra-status">Runtime idle</strong>
+              <div>
+                <button id="eutheralert-openra-start" type="button">Start Server</button>
+                <button id="eutheralert-openra-client-start" type="button">Start Client</button>
+                <button id="eutheralert-openra-client-stop" type="button">Stop Client</button>
+                <button id="eutheralert-openra-stop" type="button">Stop Server</button>
+              </div>
+            </div>
             <div id="eutheralert-runtime-panel" class="eutheralert-runtime-panel">
               <span>Command and Conquer: Red Alert Vessel</span>
-              <strong>EutherAlert runtime not installed</strong>
-              <p>Expected external runtime at /home/nichlas/eutheralert-runtime with index.html and legally supplied Red Alert/OpenRA content.</p>
+              <strong>EutherAlert runtime could not start</strong>
+              <p>Expected repo runtime at /eutheralert/index.html. This first vessel uses original placeholder art and host-synced RTS commands.</p>
             </div>
           </div>
           <div id="euthercivet-renderer" class="euthercivet-renderer" aria-hidden="true">
@@ -2273,6 +2301,11 @@ const eutherDukeRuntimePanel = document.querySelector<HTMLDivElement>("#eutherdu
 const eutherAlertRenderer = document.querySelector<HTMLDivElement>("#eutheralert-renderer")!;
 const eutherAlertFrame = document.querySelector<HTMLIFrameElement>("#eutheralert-frame")!;
 const eutherAlertRuntimePanel = document.querySelector<HTMLDivElement>("#eutheralert-runtime-panel")!;
+const eutherAlertOpenRaStatus = document.querySelector<HTMLElement>("#eutheralert-openra-status")!;
+const eutherAlertOpenRaStart = document.querySelector<HTMLButtonElement>("#eutheralert-openra-start")!;
+const eutherAlertOpenRaStop = document.querySelector<HTMLButtonElement>("#eutheralert-openra-stop")!;
+const eutherAlertOpenRaClientStart = document.querySelector<HTMLButtonElement>("#eutheralert-openra-client-start")!;
+const eutherAlertOpenRaClientStop = document.querySelector<HTMLButtonElement>("#eutheralert-openra-client-stop")!;
 const eutherCivetRenderer = document.querySelector<HTMLDivElement>("#euthercivet-renderer")!;
 const eutherCivetWorld = document.querySelector<HTMLDivElement>("#euthercivet-world")!;
 const eutherCivetStatus = document.querySelector<HTMLElement>("#euthercivet-status")!;
@@ -3164,6 +3197,22 @@ doomMouseSensitivityInput.addEventListener("input", () => {
 
 doomReset.addEventListener("click", async () => {
   await resetDoomMatch();
+});
+
+eutherAlertOpenRaStart.addEventListener("click", async () => {
+  await startEutherAlertOpenRa();
+});
+
+eutherAlertOpenRaClientStart.addEventListener("click", async () => {
+  await startEutherAlertOpenRaClient();
+});
+
+eutherAlertOpenRaClientStop.addEventListener("click", async () => {
+  await stopEutherAlertOpenRaClient();
+});
+
+eutherAlertOpenRaStop.addEventListener("click", async () => {
+  await stopEutherAlertOpenRa();
 });
 
 adminOpen.addEventListener("click", async () => {
@@ -6359,8 +6408,9 @@ async function startEutherAlertRenderer(): Promise<void> {
   eutherAlertRenderer.setAttribute("aria-hidden", "false");
   eutherAlertRuntimePanel.hidden = false;
   eutherAlertFrame.hidden = true;
+  void refreshEutherAlertOpenRaStatus();
   try {
-    const response = await fetch("/eutheralert-runtime/index.html", { cache: "no-store" });
+    const response = await fetch("/eutheralert/index.html", { cache: "no-store" });
     if (!response.ok) {
       throw new Error("EutherAlert runtime not installed");
     }
@@ -6369,10 +6419,12 @@ async function startEutherAlertRenderer(): Promise<void> {
     const runtimeParams = new URLSearchParams({
       v: Date.now().toString(),
       instance: activeLobbyInstanceId,
+      client: bridgeClientId,
       player: claimedLobbyPlayer?.toString() ?? "",
       role: lobbyRole,
+      csrf: hostCsrfToken ?? "",
     });
-    eutherAlertFrame.src = `/eutheralert-runtime/index.html?${runtimeParams.toString()}`;
+    eutherAlertFrame.src = `/eutheralert/index.html?${runtimeParams.toString()}`;
   } catch {
     eutherAlertFrame.removeAttribute("src");
     eutherAlertFrame.hidden = true;
@@ -6383,6 +6435,85 @@ async function startEutherAlertRenderer(): Promise<void> {
 function stopEutherAlertRenderer(): void {
   eutherAlertRenderer.setAttribute("aria-hidden", "true");
   eutherAlertFrame.hidden = true;
+}
+
+function renderEutherAlertOpenRaStatus(status: AlertOpenRaStatus): void {
+  const bridgeLabel = status.touchBridge?.running
+    ? " | touch bridge on"
+    : status.touchBridge?.configured
+      ? " | touch bridge ready"
+      : "";
+  const clientLabel = status.client?.running
+    ? " | client running"
+    : status.client?.exited
+      ? ` | client exited${status.client.code === null || status.client.code === undefined ? "" : ` (${status.client.code})`}`
+      : " | client idle";
+  if (status.running) {
+    eutherAlertOpenRaStatus.textContent = `Server on LAN port ${status.port ?? "?"}${clientLabel}${bridgeLabel}`;
+  } else if (status.exited) {
+    eutherAlertOpenRaStatus.textContent = `Server exited${status.code === null || status.code === undefined ? "" : ` (${status.code})`}${clientLabel}`;
+  } else {
+    eutherAlertOpenRaStatus.textContent = `Server idle${clientLabel} | ${status.runtimePath ?? ".euther-openra/OpenRA"}${bridgeLabel}`;
+  }
+  eutherAlertOpenRaStart.disabled = Boolean(status.running);
+  eutherAlertOpenRaStop.disabled = !status.running;
+  eutherAlertOpenRaClientStart.disabled = Boolean(status.client?.running);
+  eutherAlertOpenRaClientStop.disabled = !status.client?.running;
+}
+
+async function refreshEutherAlertOpenRaStatus(): Promise<void> {
+  try {
+    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/status", {}, 1200);
+    renderEutherAlertOpenRaStatus(status);
+  } catch {
+    eutherAlertOpenRaStatus.textContent = "OpenRA status unavailable";
+    eutherAlertOpenRaStart.disabled = false;
+    eutherAlertOpenRaStop.disabled = true;
+    eutherAlertOpenRaClientStart.disabled = false;
+    eutherAlertOpenRaClientStop.disabled = true;
+  }
+}
+
+async function startEutherAlertOpenRa(): Promise<void> {
+  try {
+    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/start", { method: "POST" }, 2000);
+    renderEutherAlertOpenRaStatus(status);
+    pushTrace(`OpenRA Red Alert server on port ${status.port ?? "?"}`);
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA start failed";
+  }
+}
+
+async function stopEutherAlertOpenRa(): Promise<void> {
+  try {
+    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/stop", { method: "POST" }, 2000);
+    renderEutherAlertOpenRaStatus(status);
+    pushTrace("OpenRA Red Alert server stopped");
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA stop failed";
+  }
+}
+
+async function startEutherAlertOpenRaClient(): Promise<void> {
+  try {
+    const client = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/client/start", { method: "POST" }, 2000);
+    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/status", {}, 1200);
+    renderEutherAlertOpenRaStatus({ ...status, client });
+    pushTrace(`OpenRA Red Alert client connecting to port ${client.port ?? "?"}`);
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA client start failed";
+  }
+}
+
+async function stopEutherAlertOpenRaClient(): Promise<void> {
+  try {
+    const client = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/client/stop", { method: "POST" }, 2000);
+    const status = await bridgeJson<AlertOpenRaStatus>("/api/eutheralert/openra/status", {}, 1200);
+    renderEutherAlertOpenRaStatus({ ...status, client });
+    pushTrace("OpenRA Red Alert client stopped");
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA client stop failed";
+  }
 }
 
 async function setDoomReady(ready: boolean): Promise<void> {

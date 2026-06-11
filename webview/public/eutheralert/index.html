@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>EutherAlert</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="alert-shell">
+      <canvas id="battlefield" width="1280" height="720"></canvas>
+      <section class="hud top-hud">
+        <div>
+          <span id="role-label">Spectator</span>
+          <strong>EutherAlert</strong>
+        </div>
+        <div class="resource-strip">
+          <span>Credits <b id="credits">0</b></span>
+          <span>Power <b id="power">0</b></span>
+          <span>Units <b id="units">0</b></span>
+        </div>
+      </section>
+      <section class="hud command-rail">
+        <button id="select-base" class="touch-command" type="button">
+          <span>⌂</span>
+          <b>Base</b>
+        </button>
+        <button id="attack-move" class="touch-command" type="button">
+          <span>✦</span>
+          <b>Attack</b>
+        </button>
+        <button id="hold-position" class="touch-command" type="button">
+          <span>■</span>
+          <b>Hold</b>
+        </button>
+        <button id="center-action" class="touch-command" type="button">
+          <span>◎</span>
+          <b>Focus</b>
+        </button>
+      </section>
+      <section class="hud side-panel">
+        <div class="panel-head">
+          <span id="selection-label">No selection</span>
+          <strong id="order-label">Ready</strong>
+        </div>
+        <canvas id="minimap" width="180" height="120" aria-label="minimap"></canvas>
+      </section>
+      <section class="hud build-dock">
+        <div class="dock-head">
+          <span>Production</span>
+          <strong id="dock-status">Ready</strong>
+        </div>
+        <div class="build-grid">
+          <button data-build="refinery" type="button"><span>▣</span><b>Refinery</b></button>
+          <button data-build="barracks" type="button"><span>▥</span><b>Barracks</b></button>
+          <button data-build="factory" type="button"><span>▤</span><b>Factory</b></button>
+          <button data-build="power" type="button"><span>⚡</span><b>Power</b></button>
+          <button data-train="rifle" type="button"><span>•</span><b>Rifle</b></button>
+          <button data-train="tank" type="button"><span>▲</span><b>Tank</b></button>
+        </div>
+      </section>
+      <section class="gesture-strip" aria-hidden="true">
+        <span>Tap select / order</span>
+        <span>Hold + drag box select</span>
+        <span>Two fingers zoom</span>
+      </section>
+      <section class="orientation-card" aria-hidden="true">
+        <strong>Rotate to landscape</strong>
+        <span>EutherAlert touch command works best wide.</span>
+      </section>
+      <div id="toast" class="toast">Initializing</div>
+    </main>
+    <script src="./game.js" type="module"></script>
+  </body>
+</html>
