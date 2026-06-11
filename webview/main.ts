@@ -3145,7 +3145,7 @@ instanceStart.addEventListener("click", async () => {
 });
 
 alertInstanceStart.addEventListener("click", async () => {
-  await startLobbyInstance("eutheralert");
+  await startEutherAlertAsServer();
 });
 
 doomInstanceStart.addEventListener("click", async () => {
@@ -6056,6 +6056,15 @@ async function startLobbyInstance(
   }
 }
 
+async function startEutherAlertAsServer(): Promise<void> {
+  await requestEutherAlertFullscreen(true);
+  await startLobbyInstance("eutheralert", { startRenderer: false });
+  await joinLobbyInstance(1, { startRenderer: false });
+  await startEutherAlertOpenRa();
+  await startEutherAlertOpenRaClient();
+  await startEutherAlertRenderer();
+}
+
 async function joinLobbyInstance(port: PlayerPort | "auto" = "auto", options: LobbyRenderOptions = {}): Promise<void> {
   const shouldStartRenderer = options.startRenderer !== false;
   const result = await bridgeJson<LobbyJoinResult>(
@@ -6614,7 +6623,11 @@ async function ensureEutherAlertOpenRaLive(): Promise<void> {
   try {
     let status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1600);
     if (!eutherAlertOpenRaProcessMatches(status)) {
-      eutherAlertOpenRaStatus.textContent = "Starting OpenRA server";
+      if (claimedLobbyPlayer !== 1) {
+        eutherAlertOpenRaStatus.textContent = "Waiting for P1 server";
+        return;
+      }
+      eutherAlertOpenRaStatus.textContent = "Starting OpenRA server as P1";
       status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 5000);
     }
     if (!eutherAlertOpenRaProcessMatches(status.client)) {
@@ -7235,7 +7248,7 @@ async function handleReactionLobbyHomeAction(button: HTMLButtonElement): Promise
       await startLobbyInstance("megadrive");
       return;
     case "start-eutheralert":
-      await startLobbyInstance("eutheralert");
+      await startEutherAlertAsServer();
       return;
     case "start-eutherdoom":
       await startLobbyInstance("eutherdoom");
