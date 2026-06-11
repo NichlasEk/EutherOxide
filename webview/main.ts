@@ -6541,7 +6541,9 @@ async function dumpEutherAlertOpenRaDebug(): Promise<void> {
     const socket = client.displaySocketExists ? "socket ok" : "socket missing";
     const ffmpeg = debug.ffmpegAvailable ? "ffmpeg ok" : "ffmpeg missing";
     const xvfb = debug.xvfbAvailable ? "xvfb ok" : "xvfb missing";
-    eutherAlertOpenRaStatus.textContent = `Debug: ${running} | ${display} | ${socket} | ${ffmpeg} | ${xvfb}`;
+    const request = (debug.request ?? {}) as Record<string, unknown>;
+    const instance = String(request.requestedInstance ?? activeLobbyInstanceId);
+    eutherAlertOpenRaStatus.textContent = `Debug: ${running} | inst ${instance} | ${display} | ${socket} | ${ffmpeg} | ${xvfb}`;
     pushTrace(`OpenRA debug ${JSON.stringify(debug)}`);
   } catch (err) {
     eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA debug failed";

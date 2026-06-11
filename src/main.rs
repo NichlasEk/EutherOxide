@@ -1644,8 +1644,11 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_json(stream, &host_alert_openra_client_status(state)?)
         }
         ("POST", "/api/eutheralert/openra/client/debug") => {
-            require_host_user(state, &request)?;
-            send_json(stream, &host_alert_openra_client_debug(state)?)
+            let user = require_host_user(state, &request)?;
+            send_json(
+                stream,
+                &host_alert_openra_client_debug(state, &request.path, &user)?,
+            )
         }
         ("GET", "/api/eutheralert/openra/client/stream.mp4") => {
             require_host_user(state, &request)?;
@@ -1653,17 +1656,51 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/eutheralert/openra/client/start") => {
             let user = require_host_user(state, &request)?;
-            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
-                return send_error(stream, 403, &err.to_string());
-            }
             let instance_id = host_instance_id(&request.path)?;
-            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+            let request_context = host_alert_openra_request_context(state, &request.path, &user)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::Play) {
+                host_alert_write_debug_dump(&serde_json::json!({
+                    "ok": false,
+                    "kind": "client-start-denied",
+                    "unixMs": unix_ms_now(),
+                    "request": request_context,
+                    "error": err.to_string(),
+                }))?;
                 return send_error(stream, 403, &err.to_string());
             }
-            send_json(
-                stream,
-                &host_alert_openra_client_start(state, &instance_id)?,
-            )
+            if let Err(err) = require_host_owner(state, &instance_id, &user) {
+                host_alert_write_debug_dump(&serde_json::json!({
+                    "ok": false,
+                    "kind": "client-start-denied",
+                    "unixMs": unix_ms_now(),
+                    "request": request_context,
+                    "error": err.to_string(),
+                }))?;
+                return send_error(stream, 403, &err.to_string());
+            }
+            let result = host_alert_openra_client_start(state, &instance_id);
+            match result {
+                Ok(payload) => {
+                    host_alert_write_debug_dump(&serde_json::json!({
+                        "ok": true,
+                        "kind": "client-start-ok",
+                        "unixMs": unix_ms_now(),
+                        "request": request_context,
+                        "client": payload,
+                    }))?;
+                    send_json(stream, &payload)
+                }
+                Err(err) => {
+                    host_alert_write_debug_dump(&serde_json::json!({
+                        "ok": false,
+                        "kind": "client-start-error",
+                        "unixMs": unix_ms_now(),
+                        "request": request_context,
+                        "error": err.to_string(),
+                    }))?;
+                    Err(err)
+                }
+            }
         }
         ("POST", "/api/eutheralert/openra/client/stop") => {
             let user = require_host_user(state, &request)?;
@@ -5486,7 +5523,44 @@ fn host_alert_openra_client_stop(
     Ok(serde_json::json!({ "running": false }))
 }
 
-fn host_alert_openra_client_debug(state: &HostState) -> io::Result<serde_json::Value> {
+fn host_alert_openra_request_context(
+    state: &HostState,
+    path: &str,
+    user: &str,
+) -> io::Result<serde_json::Value> {
+    let requested_instance = host_instance_id(path)?;
+    let permissions = host_permissions(state, user)?;
+    let instance = match host_instance_snapshot(state, &requested_instance) {
+        Ok(instance) => {
+            let host_owner = instance.host_owner.clone();
+            serde_json::json!({
+                "id": instance.id,
+                "name": instance.name,
+                "kind": instance.kind.as_str(),
+                "hostOwner": host_owner,
+                "userIsOwner": instance.host_owner.as_deref() == Some(user),
+                "createdUnixMs": instance.created_unix_ms,
+            })
+        }
+        Err(err) => serde_json::json!({
+            "error": err.to_string(),
+        }),
+    };
+    Ok(serde_json::json!({
+        "user": user,
+        "requestedInstance": requested_instance,
+        "requestedClient": query_string_value(path, "client")?,
+        "requestedPlayer": query_string_value(path, "player")?,
+        "permissions": permissions,
+        "instance": instance,
+    }))
+}
+
+fn host_alert_openra_client_debug(
+    state: &HostState,
+    path: &str,
+    user: &str,
+) -> io::Result<serde_json::Value> {
     let ffmpeg_available = Command::new("ffmpeg")
         .arg("-version")
         .stdin(Stdio::null())
@@ -5545,6 +5619,7 @@ fn host_alert_openra_client_debug(state: &HostState) -> io::Result<serde_json::V
     let payload = serde_json::json!({
         "ok": true,
         "unixMs": unix_ms_now(),
+        "request": host_alert_openra_request_context(state, path, user)?,
         "client": client_payload,
         "ffmpegAvailable": ffmpeg_available,
         "xvfbAvailable": xvfb_path.is_some(),
