@@ -2314,6 +2314,8 @@ const eutherDukeRuntimePanel = document.querySelector<HTMLDivElement>("#eutherdu
 const eutherAlertRenderer = document.querySelector<HTMLDivElement>("#eutheralert-renderer")!;
 const eutherAlertFrame = document.querySelector<HTMLIFrameElement>("#eutheralert-frame")!;
 const eutherAlertRuntimePanel = document.querySelector<HTMLDivElement>("#eutheralert-runtime-panel")!;
+const eutherAlertRuntimeTitle = eutherAlertRuntimePanel.querySelector<HTMLElement>("strong")!;
+const eutherAlertRuntimeMessage = eutherAlertRuntimePanel.querySelector<HTMLElement>("p")!;
 const eutherAlertOpenRaStatus = document.querySelector<HTMLElement>("#eutheralert-openra-status")!;
 const eutherAlertOpenRaStart = document.querySelector<HTMLButtonElement>("#eutheralert-openra-start")!;
 const eutherAlertOpenRaStop = document.querySelector<HTMLButtonElement>("#eutheralert-openra-stop")!;
@@ -6060,8 +6062,12 @@ async function startEutherAlertAsServer(): Promise<void> {
   await requestEutherAlertFullscreen(true);
   await startLobbyInstance("eutheralert", { startRenderer: false });
   await joinLobbyInstance(1, { startRenderer: false });
-  await startEutherAlertOpenRa();
-  await startEutherAlertOpenRaClient();
+  try {
+    await startEutherAlertOpenRa();
+    await startEutherAlertOpenRaClient();
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA start failed";
+  }
   await startEutherAlertRenderer();
 }
 
@@ -6460,6 +6466,8 @@ async function startEutherAlertRenderer(): Promise<void> {
   eutherAlertRenderer.setAttribute("aria-hidden", "false");
   eutherAlertRuntimePanel.hidden = false;
   eutherAlertFrame.hidden = true;
+  eutherAlertRuntimeTitle.textContent = "Starting EutherAlert runtime";
+  eutherAlertRuntimeMessage.textContent = "Loading /eutheralert/index.html and preparing the OpenRA bridge.";
   try {
     if (activeLobbyInstance()?.kind !== "eutheralert") {
       const ready = await ensureEutherAlertVesselForPlay();
@@ -6471,7 +6479,6 @@ async function startEutherAlertRenderer(): Promise<void> {
     if (!response.ok) {
       throw new Error("EutherAlert runtime not installed");
     }
-    await ensureEutherAlertOpenRaLive();
     eutherAlertRuntimePanel.hidden = true;
     eutherAlertFrame.hidden = false;
     const runtimeParams = new URLSearchParams({
@@ -6483,7 +6490,12 @@ async function startEutherAlertRenderer(): Promise<void> {
       csrf: hostCsrfToken ?? "",
     });
     eutherAlertFrame.src = `/eutheralert/index.html?${runtimeParams.toString()}`;
-  } catch {
+    void ensureEutherAlertOpenRaLive().catch((err) => {
+      eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA autostart failed";
+    });
+  } catch (err) {
+    eutherAlertRuntimeTitle.textContent = "EutherAlert runtime could not start";
+    eutherAlertRuntimeMessage.textContent = err instanceof Error ? err.message : "Runtime request failed";
     eutherAlertFrame.removeAttribute("src");
     eutherAlertFrame.hidden = true;
     eutherAlertRuntimePanel.hidden = false;
