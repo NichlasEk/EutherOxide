@@ -417,7 +417,42 @@ body.play-mode-eutheralert {
   }
 }
 
+.eutheralert-portrait-menu {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top));
+  left: max(8px, env(safe-area-inset-left));
+  right: max(8px, env(safe-area-inset-right));
+  z-index: 1002;
+  display: none;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(255, 216, 93, 0.2);
+  border-radius: 8px;
+  background: rgba(3, 5, 5, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.eutheralert-portrait-menu button {
+  min-height: 38px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+body.play-mode-eutheralert .eutheralert-renderer:fullscreen,
+body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
+  width: 100vw;
+  height: 100dvh;
+  background: #000;
+}
+
 @media (orientation: portrait) {
+  .play-mode-eutheralert .eutheralert-portrait-menu {
+    display: grid;
+  }
+
   body.play-mode-eutheralert::before {
     content: "Turn phone to landscape";
     position: fixed;
@@ -425,7 +460,7 @@ body.play-mode-eutheralert {
     z-index: 999;
     display: grid;
     place-content: center;
-    padding: 28px;
+    padding: 76px 28px 28px;
     background: rgba(0, 0, 0, 0.94);
     color: #fff1ca;
     font-size: clamp(2rem, 9vw, 4rem);
@@ -440,7 +475,7 @@ body.play-mode-eutheralert {
     position: fixed;
     left: 24px;
     right: 24px;
-    top: calc(50% + 58px);
+    top: calc(50% + 62px);
     z-index: 1000;
     color: #d7d2bd;
     font-size: 0.95rem;

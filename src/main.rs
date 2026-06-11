@@ -1670,16 +1670,6 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }))?;
                 return send_error(stream, 403, &err.to_string());
             }
-            if let Err(err) = require_host_owner(state, &instance_id, &user) {
-                host_alert_write_debug_dump(&serde_json::json!({
-                    "ok": false,
-                    "kind": "client-start-denied",
-                    "unixMs": unix_ms_now(),
-                    "request": request_context,
-                    "error": err.to_string(),
-                }))?;
-                return send_error(stream, 403, &err.to_string());
-            }
             let result = host_alert_openra_client_start(state, &instance_id);
             match result {
                 Ok(payload) => {
@@ -5343,13 +5333,17 @@ fn host_alert_openra_start(state: &HostState, instance_id: &str) -> io::Result<s
         .map_err(|err| io::Error::other(err.to_string()))?;
     if let Some(process) = server.as_mut() {
         if process.child.try_wait()?.is_none() {
-            return Ok(serde_json::json!({
-                "running": true,
-                "instance": process.instance_id,
-                "port": process.port,
-                "startedUnixMs": process.started_unix_ms,
-                "runtimePath": process.runtime_path,
-            }));
+            if process.instance_id == instance_id {
+                return Ok(serde_json::json!({
+                    "running": true,
+                    "instance": process.instance_id,
+                    "port": process.port,
+                    "startedUnixMs": process.started_unix_ms,
+                    "runtimePath": process.runtime_path,
+                }));
+            }
+            let _ = process.child.kill();
+            let _ = process.child.wait();
         }
         *server = None;
     }
@@ -5456,19 +5450,23 @@ fn host_alert_openra_client_start(
         .map_err(|err| io::Error::other(err.to_string()))?;
     if let Some(process) = client.as_mut() {
         if process.child.try_wait()?.is_none() {
-            return Ok(serde_json::json!({
-                "running": true,
-                "instance": process.instance_id,
-                "port": process.port,
-                "startedUnixMs": process.started_unix_ms,
-                "runtimePath": process.runtime_path,
-                "supportDir": process.support_dir,
-                "touchBridgeFile": process.touch_bridge_file,
-                "display": process.display,
-                "captureWidth": process.capture_width,
-                "captureHeight": process.capture_height,
-                "streamPath": "/api/eutheralert/openra/client/stream.mp4",
-            }));
+            if process.instance_id == instance_id {
+                return Ok(serde_json::json!({
+                    "running": true,
+                    "instance": process.instance_id,
+                    "port": process.port,
+                    "startedUnixMs": process.started_unix_ms,
+                    "runtimePath": process.runtime_path,
+                    "supportDir": process.support_dir,
+                    "touchBridgeFile": process.touch_bridge_file,
+                    "display": process.display,
+                    "captureWidth": process.capture_width,
+                    "captureHeight": process.capture_height,
+                    "streamPath": "/api/eutheralert/openra/client/stream.mp4",
+                }));
+            }
+            let _ = process.child.kill();
+            let _ = process.child.wait();
         }
         if let Some(mut xvfb_child) = process.xvfb_child.take() {
             let _ = xvfb_child.kill();

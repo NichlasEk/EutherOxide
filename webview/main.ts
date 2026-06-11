@@ -1227,6 +1227,7 @@ let playerPort: PlayerPort = readStoredPlayerPort();
 let lobbyRole: LobbyRole = "player";
 let activeLobbyInstanceId = "main";
 let claimedLobbyPlayer: PlayerPort | null = null;
+let eutherAlertVesselEnsurePromise: Promise<boolean> | null = null;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
@@ -1969,6 +1970,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <button id="eutheralert-openra-stop" type="button">Stop Server</button>
               </div>
             </div>
+            <div id="eutheralert-portrait-menu" class="eutheralert-portrait-menu" aria-label="EutherAlert navigation">
+              <button id="eutheralert-fullscreen" type="button">Fullscreen</button>
+              <button id="eutheralert-back" type="button">Back</button>
+              <button id="eutheralert-lobby" type="button">Lobby</button>
+            </div>
             <div id="eutheralert-runtime-panel" class="eutheralert-runtime-panel">
               <span>Command and Conquer: Red Alert Vessel</span>
               <strong>EutherAlert runtime could not start</strong>
@@ -2314,6 +2320,9 @@ const eutherAlertOpenRaStop = document.querySelector<HTMLButtonElement>("#euther
 const eutherAlertOpenRaClientStart = document.querySelector<HTMLButtonElement>("#eutheralert-openra-client-start")!;
 const eutherAlertOpenRaClientStop = document.querySelector<HTMLButtonElement>("#eutheralert-openra-client-stop")!;
 const eutherAlertOpenRaDebug = document.querySelector<HTMLButtonElement>("#eutheralert-openra-debug")!;
+const eutherAlertFullscreen = document.querySelector<HTMLButtonElement>("#eutheralert-fullscreen")!;
+const eutherAlertBack = document.querySelector<HTMLButtonElement>("#eutheralert-back")!;
+const eutherAlertLobby = document.querySelector<HTMLButtonElement>("#eutheralert-lobby")!;
 const eutherCivetRenderer = document.querySelector<HTMLDivElement>("#euthercivet-renderer")!;
 const eutherCivetWorld = document.querySelector<HTMLDivElement>("#euthercivet-world")!;
 const eutherCivetStatus = document.querySelector<HTMLElement>("#euthercivet-status")!;
@@ -3225,6 +3234,18 @@ eutherAlertOpenRaDebug.addEventListener("click", async () => {
 
 eutherAlertOpenRaStop.addEventListener("click", async () => {
   await stopEutherAlertOpenRa();
+});
+
+eutherAlertFullscreen.addEventListener("click", async () => {
+  await requestEutherAlertFullscreen();
+});
+
+eutherAlertBack.addEventListener("click", () => {
+  navigateApp("playHome");
+});
+
+eutherAlertLobby.addEventListener("click", () => {
+  navigateApp("interactionLobby");
 });
 
 adminOpen.addEventListener("click", async () => {
@@ -5961,15 +5982,20 @@ async function refreshAuthStatus(): Promise<void> {
   renderVideoChat();
 }
 
-async function selectLobbyInstance(instanceId: string): Promise<void> {
+type LobbyRenderOptions = {
+  startRenderer?: boolean;
+};
+
+async function selectLobbyInstance(instanceId: string, options: LobbyRenderOptions = {}): Promise<void> {
+  const shouldStartRenderer = options.startRenderer !== false;
   if (instanceId === activeLobbyInstanceId) {
     renderLobby();
     const kind = activeLobbyInstance()?.kind;
     if (kind === "eutherdoom") {
       await refreshDoomStatus();
-    } else if (kind === "eutheralert") {
+    } else if (kind === "eutheralert" && shouldStartRenderer) {
       await startEutherAlertRenderer();
-    } else {
+    } else if (kind !== "eutheralert") {
       await connectBridge(false);
     }
     return;
@@ -5987,14 +6013,18 @@ async function selectLobbyInstance(instanceId: string): Promise<void> {
   const kind = activeLobbyInstance()?.kind;
   if (kind === "eutherdoom") {
     await refreshDoomStatus();
-  } else if (kind === "eutheralert") {
+  } else if (kind === "eutheralert" && shouldStartRenderer) {
     await startEutherAlertRenderer();
-  } else {
+  } else if (kind !== "eutheralert") {
     await connectBridge(false);
   }
 }
 
-async function startLobbyInstance(kind: "megadrive" | "eutheralert" | "eutherdoom" = "megadrive"): Promise<void> {
+async function startLobbyInstance(
+  kind: "megadrive" | "eutheralert" | "eutherdoom" = "megadrive",
+  options: LobbyRenderOptions = {},
+): Promise<void> {
+  const shouldStartRenderer = options.startRenderer !== false;
   navigateApp(kind);
   await leaveVideoChat(true, activeLobbyInstanceId);
   const result = await bridgeJson<LobbyStartResult>(
@@ -6018,7 +6048,7 @@ async function startLobbyInstance(kind: "megadrive" | "eutheralert" | "eutherdoo
   if (kind === "eutherdoom") {
     await refreshDoomStatus();
   }
-  if (kind === "eutheralert") {
+  if (kind === "eutheralert" && shouldStartRenderer) {
     await startEutherAlertRenderer();
   }
   if (kind === "megadrive") {
@@ -6026,7 +6056,8 @@ async function startLobbyInstance(kind: "megadrive" | "eutheralert" | "eutherdoo
   }
 }
 
-async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<void> {
+async function joinLobbyInstance(port: PlayerPort | "auto" = "auto", options: LobbyRenderOptions = {}): Promise<void> {
+  const shouldStartRenderer = options.startRenderer !== false;
   const result = await bridgeJson<LobbyJoinResult>(
     `/api/lobby/join?instance=${encodeURIComponent(activeLobbyInstanceId)}&player=${port}`,
     { method: "POST" },
@@ -6048,7 +6079,7 @@ async function joinLobbyInstance(port: PlayerPort | "auto" = "auto"): Promise<vo
   renderLobby();
   if (activeLobbyInstance()?.kind === "eutherdoom") {
     await refreshDoomStatus();
-  } else if (activeLobbyInstance()?.kind === "eutheralert") {
+  } else if (activeLobbyInstance()?.kind === "eutheralert" && shouldStartRenderer) {
     await startEutherAlertRenderer();
   }
 }
@@ -6421,6 +6452,12 @@ async function startEutherAlertRenderer(): Promise<void> {
   eutherAlertRuntimePanel.hidden = false;
   eutherAlertFrame.hidden = true;
   try {
+    if (activeLobbyInstance()?.kind !== "eutheralert") {
+      const ready = await ensureEutherAlertVesselForPlay();
+      if (!ready) {
+        throw new Error("No EutherAlert vessel available");
+      }
+    }
     const response = await fetch("/eutheralert/index.html", { cache: "no-store" });
     if (!response.ok) {
       throw new Error("EutherAlert runtime not installed");
@@ -6451,6 +6488,25 @@ function stopEutherAlertRenderer(): void {
 
 function eutherAlertOpenRaQuery(): string {
   return `?instance=${encodeURIComponent(activeLobbyInstanceId)}`;
+}
+
+function eutherAlertOpenRaProcessMatches(status: AlertOpenRaStatus | undefined): boolean {
+  return Boolean(status?.running && status.instance === activeLobbyInstanceId);
+}
+
+async function requestEutherAlertFullscreen(silent = false): Promise<void> {
+  const target = eutherAlertRenderer;
+  const request = target.requestFullscreen?.bind(target);
+  if (!request || document.fullscreenElement) {
+    return;
+  }
+  try {
+    await request();
+  } catch (err) {
+    if (!silent) {
+      eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "Fullscreen unavailable";
+    }
+  }
 }
 
 function renderEutherAlertOpenRaStatus(status: AlertOpenRaStatus): void {
@@ -6557,11 +6613,11 @@ async function dumpEutherAlertOpenRaDebug(): Promise<void> {
 async function ensureEutherAlertOpenRaLive(): Promise<void> {
   try {
     let status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1600);
-    if (!status.running) {
+    if (!eutherAlertOpenRaProcessMatches(status)) {
       eutherAlertOpenRaStatus.textContent = "Starting OpenRA server";
       status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 5000);
     }
-    if (!status.client?.running) {
+    if (!eutherAlertOpenRaProcessMatches(status.client)) {
       eutherAlertOpenRaStatus.textContent = "Starting OpenRA client";
       const client = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/client/start${eutherAlertOpenRaQuery()}`, { method: "POST" }, 5000);
       status = await bridgeJson<AlertOpenRaStatus>(`/api/eutheralert/openra/status${eutherAlertOpenRaQuery()}`, {}, 1600);
@@ -7249,6 +7305,9 @@ async function openReactionLobbyInstance(
   }
   const kind = lobbyInstanceKind(instance);
   navigateApp(kind);
+  if (kind === "eutheralert") {
+    await requestEutherAlertFullscreen(true);
+  }
   if (dogsMode) {
     leaveDogsMode();
   }
@@ -9576,7 +9635,9 @@ async function activatePlayMode(mode: PlayMode): Promise<void> {
   }
 
   if (mode === "eutheralert") {
-    await selectFirstLobbyInstanceForKind("eutheralert");
+    await requestEutherAlertFullscreen(true);
+    await ensureEutherAlertVesselForPlay();
+    await startEutherAlertRenderer();
     return;
   }
 
@@ -9594,6 +9655,36 @@ async function selectFirstLobbyInstanceForKind(kind: NonNullable<LobbyInstance["
     return;
   }
   await selectLobbyInstance(instance.id);
+}
+
+async function ensureEutherAlertVesselForPlay(): Promise<boolean> {
+  if (!eutherAlertVesselEnsurePromise) {
+    eutherAlertVesselEnsurePromise = ensureEutherAlertVesselForPlayInner().finally(() => {
+      eutherAlertVesselEnsurePromise = null;
+    });
+  }
+  return eutherAlertVesselEnsurePromise;
+}
+
+async function ensureEutherAlertVesselForPlayInner(): Promise<boolean> {
+  if (!lobbyStatus) {
+    await refreshLobby();
+  }
+  const active = activeLobbyInstance();
+  if (active && lobbyInstanceKind(active) === "eutheralert") {
+    if (lobbyRole === "spectator" || claimedLobbyPlayer === null) {
+      await joinLobbyInstance("auto", { startRenderer: false });
+    }
+    return true;
+  }
+  const existing = lobbyStatus?.instances.find((candidate) => lobbyInstanceKind(candidate) === "eutheralert");
+  if (existing) {
+    await selectLobbyInstance(existing.id, { startRenderer: false });
+    await joinLobbyInstance("auto", { startRenderer: false });
+    return true;
+  }
+  await startLobbyInstance("eutheralert", { startRenderer: false });
+  return activeLobbyInstance()?.kind === "eutheralert";
 }
 
 function lobbyInstanceKind(instance: LobbyInstance): NonNullable<LobbyInstance["kind"]> {
