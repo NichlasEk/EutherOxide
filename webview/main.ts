@@ -1965,6 +1965,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <button id="eutheralert-openra-start" type="button">Start Server</button>
                 <button id="eutheralert-openra-client-start" type="button">Start Client</button>
                 <button id="eutheralert-openra-client-stop" type="button">Stop Client</button>
+                <button id="eutheralert-openra-debug" type="button">Debug</button>
                 <button id="eutheralert-openra-stop" type="button">Stop Server</button>
               </div>
             </div>
@@ -2312,6 +2313,7 @@ const eutherAlertOpenRaStart = document.querySelector<HTMLButtonElement>("#euthe
 const eutherAlertOpenRaStop = document.querySelector<HTMLButtonElement>("#eutheralert-openra-stop")!;
 const eutherAlertOpenRaClientStart = document.querySelector<HTMLButtonElement>("#eutheralert-openra-client-start")!;
 const eutherAlertOpenRaClientStop = document.querySelector<HTMLButtonElement>("#eutheralert-openra-client-stop")!;
+const eutherAlertOpenRaDebug = document.querySelector<HTMLButtonElement>("#eutheralert-openra-debug")!;
 const eutherCivetRenderer = document.querySelector<HTMLDivElement>("#euthercivet-renderer")!;
 const eutherCivetWorld = document.querySelector<HTMLDivElement>("#euthercivet-world")!;
 const eutherCivetStatus = document.querySelector<HTMLElement>("#euthercivet-status")!;
@@ -3215,6 +3217,10 @@ eutherAlertOpenRaClientStart.addEventListener("click", async () => {
 
 eutherAlertOpenRaClientStop.addEventListener("click", async () => {
   await stopEutherAlertOpenRaClient();
+});
+
+eutherAlertOpenRaDebug.addEventListener("click", async () => {
+  await dumpEutherAlertOpenRaDebug();
 });
 
 eutherAlertOpenRaStop.addEventListener("click", async () => {
@@ -6519,6 +6525,26 @@ async function stopEutherAlertOpenRaClient(): Promise<void> {
     pushTrace("OpenRA Red Alert client stopped");
   } catch (err) {
     eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA client stop failed";
+  }
+}
+
+async function dumpEutherAlertOpenRaDebug(): Promise<void> {
+  try {
+    const debug = await bridgeJson<Record<string, unknown>>(
+      "/api/eutheralert/openra/client/debug",
+      { method: "POST" },
+      1600,
+    );
+    const client = (debug.client ?? {}) as Record<string, unknown>;
+    const running = client.running ? "client running" : client.exited ? "client exited" : "client idle";
+    const display = String(client.display ?? "no display");
+    const socket = client.displaySocketExists ? "socket ok" : "socket missing";
+    const ffmpeg = debug.ffmpegAvailable ? "ffmpeg ok" : "ffmpeg missing";
+    const xvfb = debug.xvfbAvailable ? "xvfb ok" : "xvfb missing";
+    eutherAlertOpenRaStatus.textContent = `Debug: ${running} | ${display} | ${socket} | ${ffmpeg} | ${xvfb}`;
+    pushTrace(`OpenRA debug ${JSON.stringify(debug)}`);
+  } catch (err) {
+    eutherAlertOpenRaStatus.textContent = err instanceof Error ? err.message : "OpenRA debug failed";
   }
 }
 

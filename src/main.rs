@@ -1641,6 +1641,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             require_host_user(state, &request)?;
             send_json(stream, &host_alert_openra_client_status(state)?)
         }
+        ("POST", "/api/eutheralert/openra/client/debug") => {
+            require_host_user(state, &request)?;
+            send_json(stream, &host_alert_openra_client_debug(state)?)
+        }
         ("GET", "/api/eutheralert/openra/client/stream.mp4") => {
             require_host_user(state, &request)?;
             host_alert_openra_client_stream_mp4(stream, state)
@@ -5466,6 +5470,82 @@ fn host_alert_openra_client_stop(
         let _ = xvfb_child.wait();
     }
     Ok(serde_json::json!({ "running": false }))
+}
+
+fn host_alert_openra_client_debug(state: &HostState) -> io::Result<serde_json::Value> {
+    let ffmpeg_available = Command::new("ffmpeg")
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    let xvfb_path = host_alert_xvfb_path();
+    let mut client = state
+        .openra_client
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let client_payload = if let Some(process) = client.as_mut() {
+        let exited = process.child.try_wait()?;
+        let display_socket = host_alert_display_socket(&process.display);
+        let payload = serde_json::json!({
+            "running": exited.is_none(),
+            "exited": exited.is_some(),
+            "code": exited.and_then(|status| status.code()),
+            "instance": process.instance_id,
+            "port": process.port,
+            "startedUnixMs": process.started_unix_ms,
+            "runtimePath": process.runtime_path,
+            "supportDir": process.support_dir,
+            "touchBridgeFile": process.touch_bridge_file,
+            "display": process.display,
+            "displaySocket": display_socket,
+            "displaySocketExists": display_socket.as_ref().is_some_and(|path| path.is_file()),
+            "captureWidth": process.capture_width,
+            "captureHeight": process.capture_height,
+            "streamPath": "/api/eutheralert/openra/client/stream.mp4",
+            "xvfbManaged": process.xvfb_child.is_some(),
+        });
+        if exited.is_some() {
+            if let Some(mut xvfb_child) = process.xvfb_child.take() {
+                let _ = xvfb_child.kill();
+                let _ = xvfb_child.wait();
+            }
+            *client = None;
+        }
+        payload
+    } else {
+        serde_json::json!({
+            "running": false,
+            "runtimePath": host_alert_openra_runtime_path(),
+            "port": host_alert_openra_port(),
+            "captureWidth": host_alert_openra_capture_width(),
+            "captureHeight": host_alert_openra_capture_height(),
+        })
+    };
+    let payload = serde_json::json!({
+        "ok": true,
+        "unixMs": unix_ms_now(),
+        "client": client_payload,
+        "ffmpegAvailable": ffmpeg_available,
+        "xvfbAvailable": xvfb_path.is_some(),
+        "xvfbPath": xvfb_path,
+        "configuredDisplay": env::var("EUTHERALERT_OPENRA_DISPLAY").ok(),
+        "hostDisplay": env::var("DISPLAY").ok(),
+    });
+    eprintln!("EutherAlert OpenRA debug dump: {payload}");
+    Ok(payload)
+}
+
+fn host_alert_display_socket(display: &str) -> Option<PathBuf> {
+    let number = display
+        .strip_prefix(':')
+        .unwrap_or(display)
+        .split('.')
+        .next()
+        .filter(|value| !value.is_empty())?;
+    Some(PathBuf::from(format!("/tmp/.X11-unix/X{number}")))
 }
 
 fn host_alert_openra_client_stream_mp4(
