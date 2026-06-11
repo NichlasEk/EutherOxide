@@ -5009,15 +5009,60 @@ fn host_alert_events(
 }
 
 fn host_alert_openra_runtime_path() -> PathBuf {
-    env::var("EUTHERALERT_OPENRA_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(".euther-openra/OpenRA"))
+    host_alert_absolute_path(
+        env::var("EUTHERALERT_OPENRA_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(".euther-openra/OpenRA")),
+    )
 }
 
 fn host_alert_dotnet_root() -> PathBuf {
-    env::var("EUTHERALERT_DOTNET_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(".euther-openra/dotnet"))
+    host_alert_absolute_path(
+        env::var("EUTHERALERT_DOTNET_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(".euther-openra/dotnet")),
+    )
+}
+
+fn host_alert_absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(path)
+}
+
+fn host_alert_openra_support_dir(instance_id: &str) -> PathBuf {
+    host_alert_absolute_path(PathBuf::from(".euther-host/openra-alert").join(instance_id))
+}
+
+fn host_alert_openra_client_support_dir(instance_id: &str) -> PathBuf {
+    host_alert_openra_support_dir(instance_id).join("client")
+}
+
+fn host_alert_touch_bridge_file(instance_id: &str) -> PathBuf {
+    host_alert_absolute_path(
+        env::var("EUTHERALERT_TOUCH_BRIDGE_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(".euther-host/openra-alert")
+                    .join(instance_id)
+                    .join("touch-events.jsonl")
+            }),
+    )
+}
+
+fn host_alert_touch_bridge_apply_log(instance_id: &str) -> PathBuf {
+    host_alert_absolute_path(
+        env::var("EUTHERALERT_TOUCH_BRIDGE_APPLY_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(".euther-host/openra-alert")
+                    .join(instance_id)
+                    .join("touch-applied.jsonl")
+            }),
+    )
 }
 
 fn host_alert_openra_capture_width() -> u32 {
@@ -5041,26 +5086,6 @@ fn host_alert_openra_port() -> u16 {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(32_170)
-}
-
-fn host_alert_touch_bridge_file(instance_id: &str) -> PathBuf {
-    env::var("EUTHERALERT_TOUCH_BRIDGE_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(".euther-host/openra-alert")
-                .join(instance_id)
-                .join("touch-events.jsonl")
-        })
-}
-
-fn host_alert_touch_bridge_apply_log(instance_id: &str) -> PathBuf {
-    env::var("EUTHERALERT_TOUCH_BRIDGE_APPLY_LOG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(".euther-host/openra-alert")
-                .join(instance_id)
-                .join("touch-applied.jsonl")
-        })
 }
 
 fn host_alert_touch_bridge_command(instance_id: &str) -> String {
@@ -5289,7 +5314,7 @@ fn host_alert_openra_start(state: &HostState, instance_id: &str) -> io::Result<s
     }
 
     let port = host_alert_openra_port();
-    let support_dir = PathBuf::from(".euther-host/openra-alert").join(instance_id);
+    let support_dir = host_alert_openra_support_dir(instance_id);
     let touch_bridge_file = host_alert_touch_bridge_file(instance_id);
     let touch_bridge_apply_log = host_alert_touch_bridge_apply_log(instance_id);
     let dotnet_root = host_alert_dotnet_root();
@@ -5416,9 +5441,7 @@ fn host_alert_openra_client_start(
     let capture_height = host_alert_openra_capture_height();
     let (display, xvfb_child) =
         host_alert_openra_display(instance_id, capture_width, capture_height)?;
-    let support_dir = PathBuf::from(".euther-host/openra-alert")
-        .join(instance_id)
-        .join("client");
+    let support_dir = host_alert_openra_client_support_dir(instance_id);
     let touch_bridge_file = host_alert_touch_bridge_file(instance_id);
     let touch_bridge_apply_log = host_alert_touch_bridge_apply_log(instance_id);
     let dotnet_root = host_alert_dotnet_root();
