@@ -61,6 +61,22 @@ button:disabled {
     #10120d;
 }
 
+.openra-stream {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #050604;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.openra-stream.is-active {
+  opacity: 1;
+}
+
 .hud {
   position: absolute;
   z-index: 2;

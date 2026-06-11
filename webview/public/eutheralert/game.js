@@ -5,6 +5,7 @@ const playerSlot = Number(params.get("player") || "0");
 const role = params.get("role") || "spectator";
 const csrfToken = params.get("csrf") || "";
 
+const openRaStream = document.querySelector("#openra-stream");
 const canvas = document.querySelector("#battlefield");
 const ctx = canvas.getContext("2d");
 const minimap = document.querySelector("#minimap");
@@ -47,6 +48,7 @@ let mapSeed = hashString(instanceId || "main");
 const activePointers = new Map();
 let pinchGesture = null;
 let lastTap = { at: 0, x: 0, y: 0 };
+let openRaStreamActive = false;
 
 const costs = {
   refinery: 900,
@@ -180,6 +182,50 @@ function resetMatch(seed) {
 function showToast(message) {
   toast.textContent = message;
 }
+
+async function refreshOpenRaRenderer() {
+  try {
+    const response = await fetch("/api/eutheralert/openra/status", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const status = await response.json();
+    const streamPath = status?.client?.streamPath || "/api/eutheralert/openra/client/stream.mp4";
+    if (status?.client?.running) {
+      if (!openRaStream.src) {
+        openRaStream.src = `${streamPath}?v=${Date.now()}`;
+        openRaStream.load();
+        void openRaStream.play();
+        showToast("OpenRA stream connecting");
+      }
+      return;
+    }
+    stopOpenRaRenderer();
+  } catch {
+    // Keep the fallback renderer available if the native stream is offline.
+  }
+}
+
+function stopOpenRaRenderer() {
+  openRaStreamActive = false;
+  openRaStream.classList.remove("is-active");
+  openRaStream.removeAttribute("src");
+  openRaStream.load();
+}
+
+openRaStream.addEventListener("playing", () => {
+  openRaStreamActive = true;
+  openRaStream.classList.add("is-active");
+  showToast("OpenRA renderer live");
+});
+
+openRaStream.addEventListener("error", () => {
+  if (openRaStreamActive) {
+    showToast("OpenRA stream ended");
+  }
+  stopOpenRaRenderer();
+});
 
 function screenToWorld(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
@@ -1089,8 +1135,10 @@ function frame(now) {
 async function start() {
   await loadSnapshot();
   setInterval(pollEvents, 400);
+  setInterval(refreshOpenRaRenderer, 1800);
   setInterval(heartbeatSlot, 4000);
   void heartbeatSlot();
+  void refreshOpenRaRenderer();
   last = performance.now();
   requestAnimationFrame(frame);
 }

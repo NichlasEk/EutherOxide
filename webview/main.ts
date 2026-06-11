@@ -187,6 +187,12 @@ type AlertOpenRaStatus = {
   port?: number;
   startedUnixMs?: number;
   runtimePath?: string;
+  supportDir?: string;
+  touchBridgeFile?: string;
+  display?: string;
+  captureWidth?: number;
+  captureHeight?: number;
+  streamPath?: string;
   touchBridge?: {
     running?: boolean;
     configured?: boolean;
@@ -6444,7 +6450,7 @@ function renderEutherAlertOpenRaStatus(status: AlertOpenRaStatus): void {
       ? " | touch bridge ready"
       : "";
   const clientLabel = status.client?.running
-    ? " | client running"
+    ? ` | client ${status.client.display ?? "display ?"} ${status.client.captureWidth ?? "?"}x${status.client.captureHeight ?? "?"}`
     : status.client?.exited
       ? ` | client exited${status.client.code === null || status.client.code === undefined ? "" : ` (${status.client.code})`}`
       : " | client idle";

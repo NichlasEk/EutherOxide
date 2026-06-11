@@ -793,12 +793,16 @@ struct HostOpenRaProcess {
 
 struct HostOpenRaClientProcess {
     child: Child,
+    xvfb_child: Option<Child>,
     instance_id: String,
     port: u16,
     started_unix_ms: u64,
     runtime_path: PathBuf,
     support_dir: PathBuf,
     touch_bridge_file: PathBuf,
+    display: String,
+    capture_width: u32,
+    capture_height: u32,
 }
 
 struct HostAlertTouchBridgeProcess {
@@ -1636,6 +1640,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", "/api/eutheralert/openra/client/status") => {
             require_host_user(state, &request)?;
             send_json(stream, &host_alert_openra_client_status(state)?)
+        }
+        ("GET", "/api/eutheralert/openra/client/stream.mp4") => {
+            require_host_user(state, &request)?;
+            host_alert_openra_client_stream_mp4(stream, state)
         }
         ("POST", "/api/eutheralert/openra/client/start") => {
             let user = require_host_user(state, &request)?;
@@ -4969,6 +4977,22 @@ fn host_alert_dotnet_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".euther-openra/dotnet"))
 }
 
+fn host_alert_openra_capture_width() -> u32 {
+    env::var("EUTHERALERT_OPENRA_CAPTURE_WIDTH")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| (640..=3840).contains(value))
+        .unwrap_or(1280)
+}
+
+fn host_alert_openra_capture_height() -> u32 {
+    env::var("EUTHERALERT_OPENRA_CAPTURE_HEIGHT")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| (360..=2160).contains(value))
+        .unwrap_or(720)
+}
+
 fn host_alert_openra_port() -> u16 {
     env::var("EUTHERALERT_OPENRA_PORT")
         .ok()
@@ -5008,6 +5032,64 @@ fn host_alert_touch_bridge_command(instance_id: &str) -> String {
 fn shell_quote_path(path: &Path) -> String {
     let text = path.to_string_lossy();
     format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+fn host_alert_xvfb_path() -> Option<PathBuf> {
+    env::var("EUTHERALERT_XVFB_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            ["/usr/bin/Xvfb", "/usr/local/bin/Xvfb"]
+                .iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+        })
+}
+
+fn host_alert_display_number(instance_id: &str) -> u16 {
+    let mut hash = 0u16;
+    for byte in instance_id.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u16);
+    }
+    90 + (hash % 40)
+}
+
+fn host_alert_openra_display(
+    instance_id: &str,
+    width: u32,
+    height: u32,
+) -> io::Result<(String, Option<Child>)> {
+    if let Ok(display) = env::var("EUTHERALERT_OPENRA_DISPLAY") {
+        if !display.trim().is_empty() {
+            return Ok((display, None));
+        }
+    }
+    if let Ok(display) = env::var("DISPLAY") {
+        if !display.trim().is_empty() {
+            return Ok((display, None));
+        }
+    }
+    let xvfb = host_alert_xvfb_path().ok_or_else(|| {
+        invalid_request("OpenRA renderer needs DISPLAY or Xvfb installed on the host")
+    })?;
+    let display = format!(":{}", host_alert_display_number(instance_id));
+    let child = Command::new(xvfb)
+        .arg(&display)
+        .args([
+            "-screen",
+            "0",
+            &format!("{width}x{height}x24"),
+            "-nolisten",
+            "tcp",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| io::Error::other(format!("failed to start Xvfb: {err}")))?;
+    thread::sleep(Duration::from_millis(350));
+    Ok((display, Some(child)))
 }
 
 fn host_alert_openra_status(state: &HostState) -> io::Result<serde_json::Value> {
@@ -5058,6 +5140,10 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
         .map_err(|err| io::Error::other(err.to_string()))?;
     if let Some(process) = client.as_mut() {
         if let Some(status) = process.child.try_wait()? {
+            if let Some(mut xvfb_child) = process.xvfb_child.take() {
+                let _ = xvfb_child.kill();
+                let _ = xvfb_child.wait();
+            }
             let payload = serde_json::json!({
                 "running": false,
                 "exited": true,
@@ -5067,6 +5153,10 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
                 "runtimePath": process.runtime_path,
                 "supportDir": process.support_dir,
                 "touchBridgeFile": process.touch_bridge_file,
+                "display": process.display,
+                "captureWidth": process.capture_width,
+                "captureHeight": process.capture_height,
+                "streamPath": "/api/eutheralert/openra/client/stream.mp4",
             });
             *client = None;
             return Ok(payload);
@@ -5079,6 +5169,10 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
             "runtimePath": process.runtime_path,
             "supportDir": process.support_dir,
             "touchBridgeFile": process.touch_bridge_file,
+            "display": process.display,
+            "captureWidth": process.capture_width,
+            "captureHeight": process.capture_height,
+            "streamPath": "/api/eutheralert/openra/client/stream.mp4",
         }));
     }
     Ok(serde_json::json!({
@@ -5257,12 +5351,24 @@ fn host_alert_openra_client_start(
                 "runtimePath": process.runtime_path,
                 "supportDir": process.support_dir,
                 "touchBridgeFile": process.touch_bridge_file,
+                "display": process.display,
+                "captureWidth": process.capture_width,
+                "captureHeight": process.capture_height,
+                "streamPath": "/api/eutheralert/openra/client/stream.mp4",
             }));
+        }
+        if let Some(mut xvfb_child) = process.xvfb_child.take() {
+            let _ = xvfb_child.kill();
+            let _ = xvfb_child.wait();
         }
         *client = None;
     }
 
     let port = host_alert_openra_port();
+    let capture_width = host_alert_openra_capture_width();
+    let capture_height = host_alert_openra_capture_height();
+    let (display, xvfb_child) =
+        host_alert_openra_display(instance_id, capture_width, capture_height)?;
     let support_dir = PathBuf::from(".euther-host/openra-alert")
         .join(instance_id)
         .join("client");
@@ -5288,9 +5394,13 @@ fn host_alert_openra_client_start(
         .arg("Game.Mod=ra")
         .arg(format!("Launch.URI=tcp://127.0.0.1:{port}"))
         .arg(format!("Engine.SupportDir={}", support_dir.display()))
+        .arg(format!("Windowed.Size={capture_width}x{capture_height}"))
         .current_dir(&runtime_path)
         .env("DOTNET_ROOT", &dotnet_root)
         .env("PATH", process_path)
+        .env("DISPLAY", &display)
+        .env("SDL_VIDEODRIVER", "x11")
+        .env("LIBGL_ALWAYS_SOFTWARE", "1")
         .env("EUTHERALERT_TOUCH_BRIDGE_FILE", &touch_bridge_file)
         .env(
             "EUTHERALERT_TOUCH_BRIDGE_APPLY_LOG",
@@ -5304,12 +5414,16 @@ fn host_alert_openra_client_start(
     let started_unix_ms = unix_ms_now();
     *client = Some(HostOpenRaClientProcess {
         child,
+        xvfb_child,
         instance_id: instance_id.to_string(),
         port,
         started_unix_ms,
         runtime_path: runtime_path.clone(),
         support_dir: support_dir.clone(),
         touch_bridge_file: touch_bridge_file.clone(),
+        display: display.clone(),
+        capture_width,
+        capture_height,
     });
     Ok(serde_json::json!({
         "running": true,
@@ -5319,6 +5433,10 @@ fn host_alert_openra_client_start(
         "runtimePath": runtime_path,
         "supportDir": support_dir,
         "touchBridgeFile": touch_bridge_file,
+        "display": display,
+        "captureWidth": capture_width,
+        "captureHeight": capture_height,
+        "streamPath": "/api/eutheralert/openra/client/stream.mp4",
     }))
 }
 
@@ -5343,7 +5461,106 @@ fn host_alert_openra_client_stop(
     }
     let _ = process.child.kill();
     let _ = process.child.wait();
+    if let Some(mut xvfb_child) = process.xvfb_child.take() {
+        let _ = xvfb_child.kill();
+        let _ = xvfb_child.wait();
+    }
     Ok(serde_json::json!({ "running": false }))
+}
+
+fn host_alert_openra_client_stream_mp4(
+    stream: &mut TcpStream,
+    state: &HostState,
+) -> io::Result<()> {
+    let (display, width, height) = {
+        let mut client = state
+            .openra_client
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let Some(process) = client.as_mut() else {
+            return send_error(stream, 409, "OpenRA client not running");
+        };
+        if process.child.try_wait()?.is_some() {
+            if let Some(mut xvfb_child) = process.xvfb_child.take() {
+                let _ = xvfb_child.kill();
+                let _ = xvfb_child.wait();
+            }
+            *client = None;
+            return send_error(stream, 409, "OpenRA client exited");
+        }
+        (
+            process.display.clone(),
+            process.capture_width,
+            process.capture_height,
+        )
+    };
+
+    let input = format!("{display}.0+0,0");
+    let video_size = format!("{width}x{height}");
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "x11grab",
+            "-draw_mouse",
+            "0",
+            "-framerate",
+            "30",
+            "-video_size",
+            &video_size,
+            "-i",
+            &input,
+            "-an",
+            "-vf",
+            "format=yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-profile:v",
+            "baseline",
+            "-level",
+            "3.1",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-bf",
+            "0",
+            "-b:v",
+            "1800k",
+            "-maxrate",
+            "2200k",
+            "-bufsize",
+            "600k",
+            "-f",
+            "mp4",
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| io::Error::other(format!("ffmpeg x11grab unavailable: {err}")))?;
+
+    stream.set_nodelay(true)?;
+    send_stream_header(stream, "video/mp4")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("ffmpeg stdout unavailable"))?;
+    let copy_result = io::copy(&mut stdout, stream);
+    let _ = child.kill();
+    let _ = child.wait();
+    copy_result.map(|_| ())
 }
 
 fn host_alert_touch_events(
