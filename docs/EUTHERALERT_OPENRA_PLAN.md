@@ -53,6 +53,15 @@ The EutherAlert panel exposes separate Start Server, Start Client, Stop Client,
 and Stop Server buttons so the host-rendered client can be controlled without
 mixing it with the dedicated server process.
 
+Red Alert requires original/freeware artwork and audio before the GUI client can
+enter the game. Install OpenRA's verified quickinstall package into the client
+support directory with:
+
+```sh
+EUTHERALERT_OPENRA_CONTENT_OWNER=nobody:nogroup \
+  scripts/eutheralert-install-ra-content.sh .euther-host/openra-alert/alert-2/client
+```
+
 ## Touch Command Bridge
 
 The browser vessel posts normalized touch commands to EutherHost. EutherHost
