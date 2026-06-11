@@ -5045,6 +5045,7 @@ fn host_alert_openra_client_content_dir(support_dir: &Path) -> PathBuf {
 
 fn host_alert_ensure_openra_client_content(support_dir: &Path) -> io::Result<()> {
     let client_content_dir = host_alert_openra_client_content_dir(support_dir);
+    let shared_content_dir = host_alert_openra_shared_content_dir();
     if client_content_dir.join("allies.mix").is_file()
         && client_content_dir
             .join("expand")
@@ -5052,10 +5053,14 @@ fn host_alert_ensure_openra_client_content(support_dir: &Path) -> io::Result<()>
             .is_file()
         && client_content_dir.join("cnc").join("desert.mix").is_file()
     {
+        let shared_scores = shared_content_dir.join("scores.mix");
+        let client_scores = client_content_dir.join("scores.mix");
+        if shared_scores.is_file() && !client_scores.is_file() {
+            fs::copy(shared_scores, client_scores)?;
+        }
         return Ok(());
     }
 
-    let shared_content_dir = host_alert_openra_shared_content_dir();
     if !shared_content_dir.join("allies.mix").is_file() {
         return Ok(());
     }
