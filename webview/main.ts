@@ -6047,7 +6047,7 @@ async function startLobbyInstance(
         : "New host instance primed",
   );
   renderLobby();
-  await joinLobbyInstance(1);
+  await joinLobbyInstance(1, { startRenderer: shouldStartRenderer });
   if (kind === "eutherdoom") {
     await refreshDoomStatus();
   }
@@ -6472,10 +6472,7 @@ async function startEutherAlertRenderer(): Promise<void> {
   eutherAlertRuntimeMessage.textContent = "Opening the EutherAlert runtime and preparing the OpenRA bridge.";
   try {
     if (activeLobbyInstance()?.kind !== "eutheralert") {
-      const ready = await ensureEutherAlertVesselForPlay();
-      if (!ready) {
-        throw new Error("No EutherAlert vessel available");
-      }
+      throw new Error("Select or start an EutherAlert vessel first");
     }
     if (startToken !== eutherAlertRendererStartToken) {
       return;
