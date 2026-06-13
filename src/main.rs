@@ -1134,6 +1134,7 @@ struct HostEutherBooksVoiceSampleUpload {
     language: String,
     prompt_text: String,
     content_type: String,
+    file_name: Option<String>,
     data_base64: String,
 }
 
@@ -1396,7 +1397,12 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
                 thread::spawn(move || {
                     let _guard = guard;
                     if let Err(err) = handle_host_request(&mut stream, &state) {
-                        let _ = send_error(&mut stream, 500, &err.to_string());
+                        let status = if err.kind() == io::ErrorKind::InvalidInput {
+                            400
+                        } else {
+                            500
+                        };
+                        let _ = send_error(&mut stream, status, &err.to_string());
                     }
                 });
             }
@@ -11305,7 +11311,13 @@ fn save_host_eutherbooks_voice_sample(
         return Err(invalid_request("voice sample is too large"));
     }
     let content_type = upload.content_type.trim().to_ascii_lowercase();
-    if !is_supported_eutherbooks_voice_sample_content_type(&content_type) {
+    let file_name = upload
+        .file_name
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !is_supported_eutherbooks_voice_sample_content_type(&content_type, &file_name) {
         return Err(invalid_request("unsupported voice sample type"));
     }
 
@@ -11313,7 +11325,7 @@ fn save_host_eutherbooks_voice_sample(
         .join("eutherbooks")
         .join("voices");
     fs::create_dir_all(&voice_dir)?;
-    let raw_extension = eutherbooks_voice_sample_extension(&content_type);
+    let raw_extension = eutherbooks_voice_sample_extension(&content_type, &file_name);
     let raw_path = voice_dir.join(format!("{voice_id}.source.{raw_extension}"));
     let wav_path = voice_dir.join(format!("{voice_id}.wav"));
     fs::write(&raw_path, &bytes)?;
@@ -11334,25 +11346,48 @@ fn save_host_eutherbooks_voice_sample(
     read_host_user_preferences(user)
 }
 
-fn is_supported_eutherbooks_voice_sample_content_type(content_type: &str) -> bool {
+fn is_supported_eutherbooks_voice_sample_content_type(content_type: &str, file_name: &str) -> bool {
     content_type.starts_with("audio/webm")
         || content_type.starts_with("audio/ogg")
         || content_type.starts_with("audio/wav")
         || content_type.starts_with("audio/x-wav")
         || content_type.starts_with("audio/mpeg")
+        || content_type.starts_with("audio/mp3")
         || content_type.starts_with("audio/mp4")
+        || content_type.starts_with("audio/m4a")
+        || content_type.starts_with("audio/x-m4a")
+        || content_type.starts_with("audio/aac")
         || content_type == "application/octet-stream"
+        || matches!(
+            Path::new(file_name)
+                .extension()
+                .and_then(|ext| ext.to_str()),
+            Some("webm" | "ogg" | "wav" | "mp3" | "m4a" | "mp4" | "aac")
+        )
 }
 
-fn eutherbooks_voice_sample_extension(content_type: &str) -> &'static str {
-    if content_type.starts_with("audio/ogg") {
+fn eutherbooks_voice_sample_extension(content_type: &str, file_name: &str) -> &'static str {
+    if content_type.starts_with("audio/ogg") || file_name.ends_with(".ogg") {
         "ogg"
-    } else if content_type.starts_with("audio/wav") || content_type.starts_with("audio/x-wav") {
+    } else if content_type.starts_with("audio/wav")
+        || content_type.starts_with("audio/x-wav")
+        || file_name.ends_with(".wav")
+    {
         "wav"
-    } else if content_type.starts_with("audio/mpeg") {
+    } else if content_type.starts_with("audio/mpeg")
+        || content_type.starts_with("audio/mp3")
+        || file_name.ends_with(".mp3")
+    {
         "mp3"
-    } else if content_type.starts_with("audio/mp4") {
+    } else if content_type.starts_with("audio/mp4")
+        || content_type.starts_with("audio/m4a")
+        || content_type.starts_with("audio/x-m4a")
+        || file_name.ends_with(".m4a")
+        || file_name.ends_with(".mp4")
+    {
         "m4a"
+    } else if content_type.starts_with("audio/aac") || file_name.ends_with(".aac") {
+        "aac"
     } else {
         "webm"
     }
@@ -11365,7 +11400,7 @@ fn convert_eutherbooks_voice_sample_to_wav(
     if input_path == output_path {
         return Ok(());
     }
-    let status = Command::new("ffmpeg")
+    let output = Command::new("ffmpeg")
         .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -11377,16 +11412,23 @@ fn convert_eutherbooks_voice_sample_to_wav(
         .arg("-ar")
         .arg("16000")
         .arg(output_path)
-        .status()
+        .output()
         .map_err(|err| {
             invalid_request(format!(
                 "ffmpeg unavailable for voice sample conversion: {err}"
             ))
         })?;
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        Err(invalid_request("voice sample conversion failed"))
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if detail.is_empty() {
+            Err(invalid_request("voice sample conversion failed"))
+        } else {
+            Err(invalid_request(format!(
+                "voice sample conversion failed: {detail}"
+            )))
+        }
     }
 }
 

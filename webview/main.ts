@@ -8016,6 +8016,7 @@ async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void
         language,
         promptText: eutherBooksOwnVoicePrompt(),
         contentType: sampleBlob.type || "application/octet-stream",
+        fileName: sampleBlob instanceof File ? sampleBlob.name : "voice-sample.webm",
         dataBase64: await blobToBase64(sampleBlob),
       }),
     }, 30000);
