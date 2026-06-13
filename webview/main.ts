@@ -8089,7 +8089,7 @@ async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void
       eutherBooksVoiceSampleStatus = `Saving voice sample ${Math.min(90, Math.max(1, percent))}%`;
       renderBooksWindowIfActive();
     });
-    eutherBooksVoiceSampleStatus = "Saving voice sample 95%";
+    eutherBooksVoiceSampleStatus = "Upload complete. Converting voice sample on server 95%";
     renderBooksWindowIfActive();
     const preferences = await bridgeJson<UserPreferences>("/api/user/eutherbooks/voice-sample", {
       method: "POST",

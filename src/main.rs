@@ -11400,7 +11400,11 @@ fn convert_eutherbooks_voice_sample_to_wav(
     if input_path == output_path {
         return Ok(());
     }
-    let output = Command::new("ffmpeg")
+    let output = Command::new("timeout")
+        .arg("--kill-after=5s")
+        .arg("30s")
+        .arg("ffmpeg")
+        .arg("-nostdin")
         .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -11420,6 +11424,8 @@ fn convert_eutherbooks_voice_sample_to_wav(
         })?;
     if output.status.success() {
         Ok(())
+    } else if output.status.code() == Some(124) || output.status.code() == Some(137) {
+        Err(invalid_request("voice sample conversion timed out"))
     } else {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if detail.is_empty() {
