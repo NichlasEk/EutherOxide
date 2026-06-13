@@ -2810,6 +2810,11 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await startEutherBooksVoiceRecording();
     return;
   }
+  const voicePick = target.closest<HTMLButtonElement>("[data-eutherbooks-pick-voice]");
+  if (voicePick) {
+    openEutherBooksVoiceSamplePicker();
+    return;
+  }
   const voiceStop = target.closest<HTMLButtonElement>("[data-eutherbooks-stop-voice]");
   if (voiceStop) {
     stopEutherBooksVoiceRecording();
@@ -2892,6 +2897,12 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   if (booksUploadInput?.files?.length) {
     void uploadEutherBooksFiles([...booksUploadInput.files]);
     booksUploadInput.value = "";
+    return;
+  }
+  const voiceSampleInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-voice-sample-input]");
+  if (voiceSampleInput?.files?.length) {
+    void useEutherBooksVoiceSampleFile(voiceSampleInput.files[0]);
+    voiceSampleInput.value = "";
     return;
   }
   const bookSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-book-select]");
@@ -7897,8 +7908,10 @@ function eutherBooksOwnVoiceControl(): string {
       <p>${escapeHtml(eutherBooksOwnVoicePrompt())}</p>
       <div class="eutherbooks-own-voice-actions">
         <button data-eutherbooks-record-voice type="button" ${recording ? "disabled" : ""}>${hasSaved ? "Replace sample" : "Record sample"}</button>
+        <button data-eutherbooks-pick-voice type="button" ${recording ? "disabled" : ""}>Choose audio</button>
         <button data-eutherbooks-stop-voice type="button" ${recording ? "" : "disabled"}>Stop</button>
         <button data-eutherbooks-save-voice type="button" ${hasPreview && !recording ? "" : "disabled"}>Lock voice sample</button>
+        <input data-eutherbooks-voice-sample-input type="file" accept="audio/*" capture="microphone" hidden>
       </div>
       ${hasPreview ? `<audio controls src="${escapeHtml(eutherBooksVoiceSampleUrl)}"></audio>` : ""}
       <small>${escapeHtml(eutherBooksVoiceSampleStatus || (hasSaved ? "Voice sample locked" : "No voice sample saved"))}</small>
@@ -7938,8 +7951,9 @@ async function startEutherBooksVoiceRecording(): Promise<void> {
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-    eutherBooksVoiceSampleStatus = "Recording is not supported in this browser";
+    eutherBooksVoiceSampleStatus = "Use Choose audio to record or select a voice sample";
     renderBooksWindowIfActive();
+    openEutherBooksVoiceSamplePicker();
     return;
   }
   let stream: MediaStream;
@@ -7987,6 +8001,10 @@ async function saveEutherBooksOwnVoiceSample(): Promise<void> {
   if (!eutherBooksVoiceSampleBlob) {
     return;
   }
+  await saveEutherBooksOwnVoiceSampleBlob(eutherBooksVoiceSampleBlob);
+}
+
+async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void> {
   eutherBooksVoiceSampleStatus = "Saving voice sample";
   renderBooksWindowIfActive();
   try {
@@ -7997,8 +8015,8 @@ async function saveEutherBooksOwnVoiceSample(): Promise<void> {
         voiceId: selectedEutherBooksVoice,
         language,
         promptText: eutherBooksOwnVoicePrompt(),
-        contentType: eutherBooksVoiceSampleBlob.type || "audio/webm",
-        dataBase64: await blobToBase64(eutherBooksVoiceSampleBlob),
+        contentType: sampleBlob.type || "application/octet-stream",
+        dataBase64: await blobToBase64(sampleBlob),
       }),
     }, 30000);
     applyEutherBooksOwnVoicePreferences(preferences);
@@ -8012,6 +8030,27 @@ async function saveEutherBooksOwnVoiceSample(): Promise<void> {
   } catch (error) {
     eutherBooksVoiceSampleStatus = error instanceof Error ? error.message : "Could not save voice sample";
   }
+  renderBooksWindowIfActive();
+}
+
+function openEutherBooksVoiceSamplePicker(): void {
+  eutherBooksVoiceSettingsOpen = true;
+  const input = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-eutherbooks-voice-sample-input]");
+  input?.click();
+}
+
+function useEutherBooksVoiceSampleFile(file: File): void {
+  if (!file.type.startsWith("audio/") && file.type !== "application/octet-stream") {
+    eutherBooksVoiceSampleStatus = "Choose an audio file for the voice sample";
+    renderBooksWindowIfActive();
+    return;
+  }
+  eutherBooksVoiceSampleBlob = file;
+  if (eutherBooksVoiceSampleUrl) {
+    URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
+  }
+  eutherBooksVoiceSampleUrl = URL.createObjectURL(file);
+  eutherBooksVoiceSampleStatus = "Preview the sample, then lock it to save";
   renderBooksWindowIfActive();
 }
 
