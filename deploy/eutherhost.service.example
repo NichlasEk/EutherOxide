@@ -5,7 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=nichlas
+Group=nichlas
 WorkingDirectory=/home/nichlas/EutherOxide
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ExecStart=/home/nichlas/EutherOxide/scripts/host-server.sh
 Restart=on-failure
 RestartSec=3

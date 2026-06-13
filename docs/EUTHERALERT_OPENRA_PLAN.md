@@ -17,6 +17,12 @@ surface.
   on `Microsoft.NETCore.App 6.x`, so the bootstrap installs both locally.
 - Dedicated server port defaults to `32170`.
 - Override with `EUTHERALERT_OPENRA_PORT=32170`.
+- The host-rendered OpenRA client defaults SDL audio to PipeWire with
+  `SDL_AUDIODRIVER=pipewire`.
+- Override the SDL audio backend with `EUTHERALERT_SDL_AUDIODRIVER=<backend>`.
+- EutherHost creates a per-instance PipeWire null sink and points OpenRA at it
+  with `PIPEWIRE_NODE=<sink>`.
+- EutherHost no longer creates PulseAudio null sinks or calls `pactl`.
 
 ## Bootstrap
 
@@ -137,9 +143,11 @@ Default bridge flow:
 
 ## Next Work
 
-1. Run the GUI client smoke test from a desktop session with DISPLAY/Wayland or
+1. Smoke-test the per-instance PipeWire sink capture on the host and confirm the
+   MP4 stream carries OpenRA audio without PulseAudio server packages.
+2. Run the GUI client smoke test from a desktop session with DISPLAY/Wayland or
    Xvfb available, then confirm `touch-applied.jsonl` receives phone taps.
-2. Decide whether to keep synthetic input for the first playable milestone or
+3. Decide whether to keep synthetic input for the first playable milestone or
    move directly to OpenRA order API calls for cleaner command semantics.
-3. Add client discovery instructions for phones on the LAN.
-4. Replace fallback JS RTS rules once OpenRA client/render path is operational.
+4. Add client discovery instructions for phones on the LAN.
+5. Replace fallback JS RTS rules once OpenRA client/render path is operational.

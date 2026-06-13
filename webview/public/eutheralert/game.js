@@ -6,6 +6,7 @@ const role = params.get("role") || "spectator";
 const csrfToken = params.get("csrf") || "";
 
 const openRaStream = document.querySelector("#openra-stream");
+const openRaAudio = document.querySelector("#openra-audio");
 const openRaTouchPlane = document.querySelector("#openra-touch-plane");
 const openRaCursor = document.querySelector("#openra-cursor");
 const alertShell = document.querySelector(".alert-shell");
@@ -55,6 +56,9 @@ let openRaStreamActive = false;
 let openRaMouseMode = "left";
 let openRaPointer = null;
 let openRaLongPressTimer = 0;
+let openRaStreamPath = "";
+let openRaAudioUnlocked = false;
+let openRaAudioRestarted = false;
 
 const costs = {
   refinery: 900,
@@ -198,12 +202,10 @@ async function refreshOpenRaRenderer() {
     if (!response.ok) return;
     const status = await response.json();
     const streamPath = status?.client?.streamPath || "/api/eutheralert/openra/client/stream.mp4";
+    openRaStreamPath = streamPath;
     if (status?.client?.running) {
       if (!openRaStream.src) {
-        openRaStream.src = `${streamPath}?v=${Date.now()}`;
-        openRaStream.load();
-        void openRaStream.play();
-        showToast("OpenRA stream connecting");
+        startOpenRaStream(streamPath);
       }
       return;
     }
@@ -213,8 +215,26 @@ async function refreshOpenRaRenderer() {
   }
 }
 
+function startOpenRaStream(streamPath = openRaStreamPath || "/api/eutheralert/openra/client/stream.mp4") {
+  openRaStreamPath = streamPath;
+  openRaStream.muted = !openRaAudioUnlocked;
+  openRaStream.defaultMuted = !openRaAudioUnlocked;
+  openRaStream.volume = openRaAudioUnlocked ? 1 : 0;
+  if (openRaAudioUnlocked) {
+    openRaStream.removeAttribute("muted");
+  } else {
+    openRaStream.setAttribute("muted", "");
+  }
+  openRaStream.src = `${streamPath}?v=${Date.now()}&audio=${openRaAudioUnlocked ? "1" : "0"}`;
+  openRaStream.load();
+  void openRaStream.play().catch(() => undefined);
+  showToast(openRaAudioUnlocked ? "OpenRA stream connecting with sound" : "OpenRA stream connecting");
+  updateOpenRaAudioButton();
+}
+
 function stopOpenRaRenderer() {
   openRaStreamActive = false;
+  openRaAudioRestarted = false;
   alertShell.classList.remove("openra-live");
   openRaStream.classList.remove("is-active");
   openRaTouchPlane.classList.remove("is-active");
@@ -222,7 +242,44 @@ function stopOpenRaRenderer() {
   document.querySelector(".mouse-toolbar").classList.remove("is-active");
   openRaStream.removeAttribute("src");
   openRaStream.load();
+  updateOpenRaAudioButton();
 }
+
+function updateOpenRaAudioButton() {
+  openRaAudio.classList.toggle("is-enabled", openRaAudioUnlocked);
+  openRaAudio.querySelector("span").textContent = openRaAudioUnlocked ? "Sound On" : "Sound";
+}
+
+function unlockOpenRaAudio({ restart = true } = {}) {
+  if (openRaAudioUnlocked) return;
+  openRaAudioUnlocked = true;
+  openRaStream.muted = false;
+  openRaStream.defaultMuted = false;
+  openRaStream.removeAttribute("muted");
+  openRaStream.volume = 1;
+  updateOpenRaAudioButton();
+  if (openRaStream.src && restart && !openRaAudioRestarted) {
+    openRaAudioRestarted = true;
+    startOpenRaStream();
+    return;
+  }
+  void openRaStream.play().catch(() => undefined);
+  showToast("OpenRA sound on");
+}
+
+openRaAudio.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  unlockOpenRaAudio();
+});
+
+document.addEventListener("pointerdown", () => {
+  unlockOpenRaAudio();
+}, { capture: true });
+
+document.addEventListener("touchstart", () => {
+  unlockOpenRaAudio();
+}, { capture: true, passive: true });
 
 openRaStream.addEventListener("playing", () => {
   openRaStreamActive = true;
@@ -230,7 +287,8 @@ openRaStream.addEventListener("playing", () => {
   openRaStream.classList.add("is-active");
   openRaTouchPlane.classList.add("is-active");
   document.querySelector(".mouse-toolbar").classList.add("is-active");
-  showToast("OpenRA renderer live");
+  updateOpenRaAudioButton();
+  showToast(openRaAudioUnlocked ? "OpenRA renderer live with sound" : "OpenRA renderer live");
 });
 
 openRaStream.addEventListener("error", () => {

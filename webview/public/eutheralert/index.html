@@ -7,12 +7,15 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>EutherAlert</title>
-    <link rel="stylesheet" href="./style.css?v=20260611-openra-required" />
+    <link rel="stylesheet" href="./style.css?v=20260611-auto-audio-unlock" />
   </head>
   <body>
     <main class="alert-shell openra-required">
       <canvas id="battlefield" width="1280" height="720"></canvas>
       <video id="openra-stream" class="openra-stream" muted playsinline autoplay></video>
+      <button id="openra-audio" class="openra-audio" type="button" aria-label="Enable OpenRA sound">
+        <span>Sound</span>
+      </button>
       <div id="openra-touch-plane" class="openra-touch-plane" aria-label="OpenRA touch mouse surface"></div>
       <div id="openra-cursor" class="openra-cursor" aria-hidden="true"></div>
       <section class="hud mouse-toolbar" aria-label="OpenRA mouse controls">
@@ -82,6 +85,6 @@
       </section>
       <div id="toast" class="toast">Initializing</div>
     </main>
-    <script src="./game.js?v=20260611-openra-required" type="module"></script>
+    <script src="./game.js?v=20260611-auto-audio-unlock" type="module"></script>
   </body>
 </html>

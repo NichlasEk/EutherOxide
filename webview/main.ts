@@ -900,11 +900,18 @@ const bridgeBase =
     ? window.location.origin
     : "http://127.0.0.1:32161");
 const defaultEutherBooksHost = localWebHost ? "127.0.0.1" : window.location.hostname;
+const hostedEutherBooksBase =
+  hostedServerMode || (window.location.port && window.location.port !== "5173")
+    ? "/eutherbooks"
+    : explicitBridgeBase
+      ? new URL("/eutherbooks", bridgeBase).toString()
+      : `${window.location.protocol}//${defaultEutherBooksHost}:8088`;
 const eutherBooksBase = (
   pageParams.get("books") ??
   import.meta.env.VITE_EUTHERBOOKS_BASE ??
-  (hostedServerMode ? "/eutherbooks" : `${window.location.protocol}//${defaultEutherBooksHost}:8088`)
+  hostedEutherBooksBase
 ).replace(/\/$/, "");
+const eutherBooksUsesHostProxy = isEutherBooksHostProxyBase(eutherBooksBase);
 const eutherDogsAssets = parseEutherDogsManifest(eutherDogsManifestToml, eutherDogsAssetModules);
 const dogsStaffOptions: DogsStaffOption[] = [
   {
@@ -954,6 +961,18 @@ function isPrivateLanHostname(hostname: string): boolean {
     (parts[0] === 169 && parts[1] === 254)
   );
 }
+
+function isEutherBooksHostProxyBase(base: string): boolean {
+  if (base === "/eutherbooks") {
+    return true;
+  }
+  try {
+    return new URL(base, window.location.origin).pathname.replace(/\/$/, "") === "/eutherbooks";
+  } catch (_err) {
+    return false;
+  }
+}
+
 const romCacheDb = "eutheroxide-rom-cache";
 const romCacheStore = "roms";
 const volumeStorageKey = "eutheroxide-audio-volume";
@@ -8181,10 +8200,10 @@ function eutherBooksPrefetchMatches(bookId: string, chapterIndex: number, job: E
 async function eutherBooksJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const method = (init.method ?? "GET").toUpperCase();
-  if (eutherBooksBase.startsWith("/") && !["GET", "HEAD", "OPTIONS"].includes(method) && !hostCsrfToken) {
+  if (eutherBooksUsesHostProxy && !["GET", "HEAD", "OPTIONS"].includes(method) && !hostCsrfToken) {
     await refreshAuthStatus();
   }
-  if (eutherBooksBase.startsWith("/") && !["GET", "HEAD", "OPTIONS"].includes(method) && hostCsrfToken) {
+  if (eutherBooksUsesHostProxy && !["GET", "HEAD", "OPTIONS"].includes(method) && hostCsrfToken) {
     headers.set("X-CSRF-Token", hostCsrfToken);
   }
   const response = await fetch(`${eutherBooksBase}${path}`, { ...init, headers, credentials: "include" });

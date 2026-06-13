@@ -43,6 +43,17 @@ sudo apt-get install -y \
   caddy dnsmasq openssh-server
 ```
 
+For EutherAlert/OpenRA host rendering, prefer the PipeWire stack and avoid
+installing the standalone PulseAudio server:
+
+```sh
+sudo apt-get install -y pipewire pipewire-audio pipewire-alsa wireplumber xvfb
+```
+
+Do not purge `pipewire-pulse` on desktops that use it; it is PipeWire's
+compatibility service. The old `pulseaudio` daemon package can be removed if it
+was installed for the failed EutherAlert experiment.
+
 Install Rust with rustup or the distro package. The current machine builds the
 root crate with Rust `1.85.0`; newer stable Rust is fine for the root server.
 
@@ -171,7 +182,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=nichlas
+Group=nichlas
 WorkingDirectory=/home/nichlas/EutherOxide
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ExecStart=/home/nichlas/EutherOxide/scripts/host-server.sh
 Restart=on-failure
 RestartSec=3

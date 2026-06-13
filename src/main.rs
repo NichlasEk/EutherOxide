@@ -796,9 +796,9 @@ struct HostOpenRaProcess {
 struct HostOpenRaClientProcess {
     child: Child,
     xvfb_child: Option<Child>,
-    pulse_module_id: Option<String>,
-    pulse_server: Option<String>,
-    pulse_sink_name: Option<String>,
+    pipewire_node_id: Option<String>,
+    audio_sink_name: Option<String>,
+    audio_backend: String,
     instance_id: String,
     port: u16,
     started_unix_ms: u64,
@@ -5251,7 +5251,7 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
                 let _ = xvfb_child.kill();
                 let _ = xvfb_child.wait();
             }
-            host_alert_unload_pulse_sink(process.pulse_server.as_deref(), process.pulse_module_id.as_deref());
+            host_alert_destroy_pipewire_sink(process.pipewire_node_id.as_deref());
             let payload = serde_json::json!({
                 "running": false,
                 "exited": true,
@@ -5264,9 +5264,9 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
                 "display": process.display,
                 "captureWidth": process.capture_width,
                 "captureHeight": process.capture_height,
-                "pulseServer": process.pulse_server,
-                "pulseSink": process.pulse_sink_name,
-                "audioStream": process.pulse_sink_name.is_some(),
+                "audioBackend": process.audio_backend,
+                "audioSink": process.audio_sink_name,
+                "audioStream": process.audio_sink_name.is_some(),
                 "streamPath": "/api/eutheralert/openra/client/stream.mp4",
                 "stdoutLog": process.stdout_log,
                 "stderrLog": process.stderr_log,
@@ -5285,9 +5285,9 @@ fn host_alert_openra_client_status(state: &HostState) -> io::Result<serde_json::
             "display": process.display,
             "captureWidth": process.capture_width,
             "captureHeight": process.capture_height,
-            "pulseServer": process.pulse_server,
-            "pulseSink": process.pulse_sink_name,
-            "audioStream": process.pulse_sink_name.is_some(),
+            "audioBackend": process.audio_backend,
+            "audioSink": process.audio_sink_name,
+            "audioStream": process.audio_sink_name.is_some(),
             "streamPath": "/api/eutheralert/openra/client/stream.mp4",
             "stdoutLog": process.stdout_log,
             "stderrLog": process.stderr_log,
@@ -5477,15 +5477,15 @@ fn host_alert_openra_client_start(
                     "display": process.display,
                     "captureWidth": process.capture_width,
                     "captureHeight": process.capture_height,
-                    "pulseServer": process.pulse_server,
-                    "pulseSink": process.pulse_sink_name,
-                    "audioStream": process.pulse_sink_name.is_some(),
+                    "audioBackend": process.audio_backend,
+                    "audioSink": process.audio_sink_name,
+                    "audioStream": process.audio_sink_name.is_some(),
                     "streamPath": "/api/eutheralert/openra/client/stream.mp4",
                 }));
             }
             let _ = process.child.kill();
             let _ = process.child.wait();
-            host_alert_unload_pulse_sink(process.pulse_server.as_deref(), process.pulse_module_id.as_deref());
+            host_alert_destroy_pipewire_sink(process.pipewire_node_id.as_deref());
         }
         if let Some(mut xvfb_child) = process.xvfb_child.take() {
             let _ = xvfb_child.kill();
@@ -5502,12 +5502,10 @@ fn host_alert_openra_client_start(
     let support_dir = host_alert_openra_client_support_dir(instance_id);
     let touch_bridge_file = host_alert_touch_bridge_file(instance_id);
     let touch_bridge_apply_log = host_alert_touch_bridge_apply_log(instance_id);
-    let pulse_server = host_alert_pulse_server();
-    let pulse_sink_name = host_alert_openra_pulse_sink_name(instance_id);
-    let pulse_module_id = host_alert_load_pulse_sink(pulse_server.as_deref(), &pulse_sink_name)?;
-    let pulse_sink_name = pulse_module_id
-        .as_ref()
-        .map(|_| pulse_sink_name);
+    let audio_backend = host_alert_openra_audio_backend();
+    let audio_sink_name = host_alert_openra_pipewire_sink_name(instance_id);
+    let pipewire_node_id = host_alert_create_pipewire_sink(&audio_sink_name)?;
+    let audio_sink_name = pipewire_node_id.as_ref().map(|_| audio_sink_name);
     let dotnet_root = host_alert_dotnet_root();
     let process_path = env::var("PATH").unwrap_or_default();
     let process_path = if dotnet_root.join("dotnet").is_file() {
@@ -5539,6 +5537,13 @@ fn host_alert_openra_client_start(
         .env("PATH", process_path)
         .env("DISPLAY", &display)
         .env("SDL_VIDEODRIVER", "x11")
+        .env("SDL_AUDIODRIVER", &audio_backend)
+        .envs(
+            audio_sink_name
+                .as_ref()
+                .into_iter()
+                .map(|sink| ("PIPEWIRE_NODE", sink.as_str())),
+        )
         .env("LIBGL_ALWAYS_SOFTWARE", "1")
         .env("EUTHERALERT_TOUCH_BRIDGE_FILE", &touch_bridge_file)
         .env(
@@ -5548,28 +5553,15 @@ fn host_alert_openra_client_start(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
-        .envs(
-            pulse_server
-                .as_ref()
-                .zip(pulse_sink_name.as_ref())
-                .into_iter()
-                .flat_map(|(server, sink)| {
-                    [
-                        ("PULSE_SERVER", server.as_str()),
-                        ("PULSE_SINK", sink.as_str()),
-                        ("SDL_AUDIODRIVER", "pulseaudio"),
-                    ]
-                }),
-        )
         .spawn()?;
 
     let started_unix_ms = unix_ms_now();
     *client = Some(HostOpenRaClientProcess {
         child,
         xvfb_child,
-        pulse_module_id,
-        pulse_server: pulse_server.clone().filter(|_| pulse_sink_name.is_some()),
-        pulse_sink_name: pulse_sink_name.clone(),
+        pipewire_node_id,
+        audio_sink_name: audio_sink_name.clone(),
+        audio_backend: audio_backend.clone(),
         instance_id: instance_id.to_string(),
         port,
         started_unix_ms,
@@ -5593,9 +5585,9 @@ fn host_alert_openra_client_start(
         "display": display,
         "captureWidth": capture_width,
         "captureHeight": capture_height,
-        "pulseServer": pulse_server,
-        "pulseSink": pulse_sink_name,
-        "audioStream": pulse_sink_name.is_some(),
+        "audioBackend": audio_backend,
+        "audioSink": audio_sink_name,
+        "audioStream": audio_sink_name.is_some(),
         "streamPath": "/api/eutheralert/openra/client/stream.mp4",
         "stdoutLog": stdout_log,
         "stderrLog": stderr_log,
@@ -5623,7 +5615,7 @@ fn host_alert_openra_client_stop(
     }
     let _ = process.child.kill();
     let _ = process.child.wait();
-    host_alert_unload_pulse_sink(process.pulse_server.as_deref(), process.pulse_module_id.as_deref());
+    host_alert_destroy_pipewire_sink(process.pipewire_node_id.as_deref());
     if let Some(mut xvfb_child) = process.xvfb_child.take() {
         let _ = xvfb_child.kill();
         let _ = xvfb_child.wait();
@@ -5700,9 +5692,9 @@ fn host_alert_openra_client_debug(
             "displaySocketExists": display_socket.as_ref().is_some_and(|path| path.is_file()),
             "captureWidth": process.capture_width,
             "captureHeight": process.capture_height,
-            "pulseServer": process.pulse_server,
-            "pulseSink": process.pulse_sink_name,
-            "audioStream": process.pulse_sink_name.is_some(),
+            "audioBackend": process.audio_backend,
+            "audioSink": process.audio_sink_name,
+            "audioStream": process.audio_sink_name.is_some(),
             "streamPath": "/api/eutheralert/openra/client/stream.mp4",
             "xvfbManaged": process.xvfb_child.is_some(),
             "stdoutLog": process.stdout_log,
@@ -5715,7 +5707,7 @@ fn host_alert_openra_client_debug(
                 let _ = xvfb_child.kill();
                 let _ = xvfb_child.wait();
             }
-            host_alert_unload_pulse_sink(process.pulse_server.as_deref(), process.pulse_module_id.as_deref());
+            host_alert_destroy_pipewire_sink(process.pipewire_node_id.as_deref());
             *client = None;
         }
         payload
@@ -5783,20 +5775,15 @@ fn host_alert_display_socket(display: &str) -> Option<PathBuf> {
     Some(PathBuf::from(format!("/tmp/.X11-unix/X{number}")))
 }
 
-fn host_alert_pulse_server() -> Option<String> {
-    env::var("EUTHERALERT_PULSE_SERVER")
+fn host_alert_openra_audio_backend() -> String {
+    env::var("EUTHERALERT_SDL_AUDIODRIVER")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| env::var("PULSE_SERVER").ok().filter(|value| !value.trim().is_empty()))
-        .or_else(|| {
-            let socket = Path::new("/run/user/1000/pulse/native");
-            socket
-                .exists()
-                .then(|| format!("unix:{}", socket.display()))
-        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "pipewire".to_string())
 }
 
-fn host_alert_openra_pulse_sink_name(instance_id: &str) -> String {
+fn host_alert_openra_pipewire_sink_name(instance_id: &str) -> String {
     let sanitized: String = instance_id
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
@@ -5804,61 +5791,91 @@ fn host_alert_openra_pulse_sink_name(instance_id: &str) -> String {
     format!("eutheralert_openra_{sanitized}")
 }
 
-fn host_alert_load_pulse_sink(
-    pulse_server: Option<&str>,
-    sink_name: &str,
-) -> io::Result<Option<String>> {
-    let Some(pulse_server) = pulse_server else {
-        return Ok(None);
-    };
-    let output = Command::new("pactl")
-        .env("PULSE_SERVER", pulse_server)
-        .args([
-            "load-module",
-            "module-null-sink",
-            &format!("sink_name={sink_name}"),
-            "rate=44100",
-            "channels=2",
-        ])
+fn host_alert_create_pipewire_sink(sink_name: &str) -> io::Result<Option<String>> {
+    let props = format!(
+        "{{ factory.name=support.null-audio-sink node.name={sink_name} node.description=\"EutherAlert {sink_name}\" media.class=Audio/Sink object.linger=true audio.position=[ FL FR ] }}"
+    );
+    let output = Command::new("pw-cli")
+        .args(["create-node", "adapter", &props])
         .stdin(Stdio::null())
         .output();
     match output {
-        Ok(output) if output.status.success() => {
-            let module_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Ok((!module_id.is_empty()).then_some(module_id))
-        }
+        Ok(output) if output.status.success() => host_alert_pipewire_node_id_by_name(sink_name),
         Ok(output) => {
             eprintln!(
-                "EutherAlert OpenRA Pulse sink unavailable: {}",
+                "EutherAlert OpenRA PipeWire sink unavailable: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             );
             Ok(None)
         }
         Err(err) => {
-            eprintln!("EutherAlert OpenRA Pulse sink unavailable: {err}");
+            eprintln!("EutherAlert OpenRA PipeWire sink unavailable: {err}");
             Ok(None)
         }
     }
 }
 
-fn host_alert_unload_pulse_sink(pulse_server: Option<&str>, module_id: Option<&str>) {
-    let (Some(pulse_server), Some(module_id)) = (pulse_server, module_id) else {
+fn host_alert_pipewire_node_id_by_name(sink_name: &str) -> io::Result<Option<String>> {
+    let output = Command::new("pw-cli")
+        .args(["list-objects", "Node"])
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(parse_pipewire_node_id_by_name(&stdout, sink_name))
+        }
+        Ok(output) => {
+            eprintln!(
+                "EutherAlert OpenRA PipeWire sink lookup failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            Ok(None)
+        }
+        Err(err) => {
+            eprintln!("EutherAlert OpenRA PipeWire sink lookup failed: {err}");
+            Ok(None)
+        }
+    }
+}
+
+fn host_alert_destroy_pipewire_sink(node_id: Option<&str>) {
+    let Some(node_id) = node_id else {
         return;
     };
-    let _ = Command::new("pactl")
-        .env("PULSE_SERVER", pulse_server)
-        .args(["unload-module", module_id])
+    let _ = Command::new("pw-cli")
+        .args(["destroy", node_id])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
 }
 
+fn parse_pipewire_node_id_by_name(value: &str, node_name: &str) -> Option<String> {
+    let mut current_id = None::<String>;
+    for line in value.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("id ") {
+            current_id = rest
+                .split(',')
+                .next()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            continue;
+        }
+        if trimmed == format!("node.name = \"{node_name}\"") {
+            return current_id;
+        }
+    }
+    None
+}
+
 fn host_alert_openra_client_stream_mp4(
     stream: &mut TcpStream,
     state: &HostState,
 ) -> io::Result<()> {
-    let (display, width, height, pulse_server, pulse_sink_name) = {
+    let (display, width, height, audio_sink_name) = {
         let mut client = state
             .openra_client
             .lock()
@@ -5871,7 +5888,7 @@ fn host_alert_openra_client_stream_mp4(
                 let _ = xvfb_child.kill();
                 let _ = xvfb_child.wait();
             }
-            host_alert_unload_pulse_sink(process.pulse_server.as_deref(), process.pulse_module_id.as_deref());
+            host_alert_destroy_pipewire_sink(process.pipewire_node_id.as_deref());
             *client = None;
             return send_error(stream, 409, "OpenRA client exited");
         }
@@ -5879,8 +5896,7 @@ fn host_alert_openra_client_stream_mp4(
             process.display.clone(),
             process.capture_width,
             process.capture_height,
-            process.pulse_server.clone(),
-            process.pulse_sink_name.clone(),
+            process.audio_sink_name.clone(),
         )
     };
 
@@ -5901,14 +5917,24 @@ fn host_alert_openra_client_stream_mp4(
         "-i".to_string(),
         input,
     ];
-    if let (Some(pulse_server), Some(pulse_sink_name)) = (&pulse_server, &pulse_sink_name) {
+    let mut pwcat_child = audio_sink_name
+        .as_ref()
+        .and_then(|sink| host_alert_spawn_pipewire_capture(sink).ok());
+    eprintln!(
+        "EutherAlert OpenRA stream capture: display={display} size={width}x{height} audio_sink={} audio_capture={}",
+        audio_sink_name.as_deref().unwrap_or("none"),
+        pwcat_child.is_some()
+    );
+    if pwcat_child.is_some() {
         args.extend([
             "-f".to_string(),
-            "pulse".to_string(),
-            "-server".to_string(),
-            pulse_server.clone(),
+            "s16le".to_string(),
+            "-ar".to_string(),
+            "44100".to_string(),
+            "-ac".to_string(),
+            "2".to_string(),
             "-i".to_string(),
-            format!("{pulse_sink_name}.monitor"),
+            "pipe:0".to_string(),
         ]);
     } else {
         args.push("-an".to_string());
@@ -5941,7 +5967,7 @@ fn host_alert_openra_client_stream_mp4(
         "-bufsize".to_string(),
         "600k".to_string(),
     ]);
-    if pulse_sink_name.is_some() {
+    if pwcat_child.is_some() {
         args.extend([
             "-c:a".to_string(),
             "aac".to_string(),
@@ -5960,9 +5986,14 @@ fn host_alert_openra_client_stream_mp4(
         "frag_keyframe+empty_moov+default_base_moof".to_string(),
         "pipe:1".to_string(),
     ]);
+    let ffmpeg_stdin = pwcat_child
+        .as_mut()
+        .and_then(|child| child.stdout.take())
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::null);
     let mut child = Command::new("ffmpeg")
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(ffmpeg_stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -5977,7 +6008,32 @@ fn host_alert_openra_client_stream_mp4(
     let copy_result = io::copy(&mut stdout, stream);
     let _ = child.kill();
     let _ = child.wait();
+    if let Some(mut pwcat_child) = pwcat_child {
+        let _ = pwcat_child.kill();
+        let _ = pwcat_child.wait();
+    }
     copy_result.map(|_| ())
+}
+
+fn host_alert_spawn_pipewire_capture(sink_name: &str) -> io::Result<Child> {
+    Command::new("pw-cat")
+        .args([
+            "--record",
+            "--raw",
+            "--target",
+            sink_name,
+            "--rate",
+            "44100",
+            "--channels",
+            "2",
+            "--format",
+            "s16",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
 }
 
 fn host_alert_touch_events(

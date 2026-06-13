@@ -127,6 +127,36 @@ button:disabled {
   display: block;
 }
 
+.openra-audio {
+  position: absolute;
+  z-index: 7;
+  right: max(10px, env(safe-area-inset-right));
+  top: max(10px, env(safe-area-inset-top));
+  display: none;
+  min-width: 74px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border-color: rgba(143, 224, 119, 0.32);
+  background: rgba(0, 0, 0, 0.58);
+  color: #fff8da;
+  backdrop-filter: blur(10px);
+}
+
+.openra-live .openra-audio {
+  display: grid;
+  place-items: center;
+}
+
+.openra-audio.is-enabled {
+  opacity: 0.48;
+}
+
+.openra-audio span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .openra-cursor {
   position: absolute;
   z-index: 5;
@@ -542,6 +572,13 @@ button:disabled {
   .openra-live .top-hud {
     min-height: 30px;
     padding: 4px 8px;
+  }
+
+  .openra-audio {
+    min-width: 64px;
+    min-height: 34px;
+    padding: 6px 8px;
+    font-size: 0.58rem;
   }
 
   .openra-live .toast {
