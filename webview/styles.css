@@ -5750,6 +5750,41 @@ h2 {
   background: rgba(3, 9, 7, 0.5);
 }
 
+
+.eutherbooks-voice-control summary {
+  cursor: pointer;
+  color: #fff4c6;
+  font-size: 0.78rem;
+  font-weight: 950;
+  list-style-position: inside;
+  text-transform: uppercase;
+}
+
+.eutherbooks-voice-control select:disabled {
+  opacity: 0.72;
+}
+
+.eutherbooks-custom-voice input {
+  min-height: 38px;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.86);
+  color: #edf6dd;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0 10px;
+}
+
+@media (max-width: 720px) {
+  .eutherbooks-voice-control:not([open]) {
+    gap: 0;
+  }
+
+  .eutherbooks-option-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .eutherbooks-voice-control label {
   display: grid;
   gap: 6px;

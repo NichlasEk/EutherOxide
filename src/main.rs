@@ -1222,10 +1222,17 @@ struct HostUserPreferences {
     theme: String,
     skin: String,
     eutherbooks_voice: String,
+    eutherbooks_custom_voice: String,
     eutherbooks_length_scale: f64,
     eutherbooks_noise_scale: f64,
     eutherbooks_noise_w: f64,
     eutherbooks_sentence_silence: f64,
+    eutherbooks_cfg_value: f64,
+    eutherbooks_inference_timesteps: f64,
+    eutherbooks_max_chunk_chars: f64,
+    eutherbooks_last_book_id: String,
+    eutherbooks_last_chapter_index: f64,
+    eutherbooks_auto_generate_next: bool,
 }
 
 impl Default for HostUserPreferences {
@@ -1236,11 +1243,20 @@ impl Default for HostUserPreferences {
             doom_mouse_sensitivity: 2.2,
             theme: "dark".to_string(),
             skin: "classic".to_string(),
-            eutherbooks_voice: "sv".to_string(),
+            eutherbooks_voice: "sv-female-warm".to_string(),
+            eutherbooks_custom_voice:
+                "A warm Swedish audiobook narrator with clear pronunciation and natural pacing."
+                    .to_string(),
             eutherbooks_length_scale: 1.0,
             eutherbooks_noise_scale: 0.667,
             eutherbooks_noise_w: 0.8,
             eutherbooks_sentence_silence: 0.2,
+            eutherbooks_cfg_value: 2.0,
+            eutherbooks_inference_timesteps: 10.0,
+            eutherbooks_max_chunk_chars: 700.0,
+            eutherbooks_last_book_id: String::new(),
+            eutherbooks_last_chapter_index: 0.0,
+            eutherbooks_auto_generate_next: true,
         }
     }
 }
@@ -11067,6 +11083,10 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_string(&contents, "eutherbooks_voice") {
         preferences.eutherbooks_voice = clean_eutherbooks_voice(&value);
     }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_custom_voice") {
+        preferences.eutherbooks_custom_voice =
+            clean_eutherbooks_text(&value, &preferences.eutherbooks_custom_voice, 500);
+    }
     if let Some(value) = parse_toml_f64(&contents, "eutherbooks_length_scale") {
         preferences.eutherbooks_length_scale =
             clamp_f64(value, 0.75, 1.35, preferences.eutherbooks_length_scale);
@@ -11083,6 +11103,40 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
         preferences.eutherbooks_sentence_silence =
             clamp_f64(value, 0.0, 0.8, preferences.eutherbooks_sentence_silence);
     }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_cfg_value") {
+        preferences.eutherbooks_cfg_value =
+            clamp_f64(value, 1.0, 3.0, preferences.eutherbooks_cfg_value);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_inference_timesteps") {
+        preferences.eutherbooks_inference_timesteps = clamp_f64(
+            value.round(),
+            1.0,
+            50.0,
+            preferences.eutherbooks_inference_timesteps,
+        );
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_max_chunk_chars") {
+        preferences.eutherbooks_max_chunk_chars = clamp_f64(
+            value.round(),
+            120.0,
+            1500.0,
+            preferences.eutherbooks_max_chunk_chars,
+        );
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_last_book_id") {
+        preferences.eutherbooks_last_book_id = clean_eutherbooks_book_id(&value);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_last_chapter_index") {
+        preferences.eutherbooks_last_chapter_index = clamp_f64(
+            value.round(),
+            0.0,
+            100000.0,
+            preferences.eutherbooks_last_chapter_index,
+        );
+    }
+    if let Some(value) = parse_toml_bool(&contents, "eutherbooks_auto_generate_next") {
+        preferences.eutherbooks_auto_generate_next = value;
+    }
     Ok(preferences)
 }
 
@@ -11095,6 +11149,11 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         theme: clean_host_user_theme(&preferences.theme),
         skin: clean_host_user_skin(&preferences.skin),
         eutherbooks_voice: clean_eutherbooks_voice(&preferences.eutherbooks_voice),
+        eutherbooks_custom_voice: clean_eutherbooks_text(
+            &preferences.eutherbooks_custom_voice,
+            "A warm Swedish audiobook narrator with clear pronunciation and natural pacing.",
+            500,
+        ),
         eutherbooks_length_scale: clamp_f64(preferences.eutherbooks_length_scale, 0.75, 1.35, 1.0),
         eutherbooks_noise_scale: clamp_f64(preferences.eutherbooks_noise_scale, 0.2, 1.0, 0.667),
         eutherbooks_noise_w: clamp_f64(preferences.eutherbooks_noise_w, 0.2, 1.2, 0.8),
@@ -11104,36 +11163,87 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             0.8,
             0.2,
         ),
+        eutherbooks_cfg_value: clamp_f64(preferences.eutherbooks_cfg_value, 1.0, 3.0, 2.0),
+        eutherbooks_inference_timesteps: clamp_f64(
+            preferences.eutherbooks_inference_timesteps.round(),
+            1.0,
+            50.0,
+            10.0,
+        ),
+        eutherbooks_max_chunk_chars: clamp_f64(
+            preferences.eutherbooks_max_chunk_chars.round(),
+            120.0,
+            1500.0,
+            700.0,
+        ),
+        eutherbooks_last_book_id: clean_eutherbooks_book_id(&preferences.eutherbooks_last_book_id),
+        eutherbooks_last_chapter_index: clamp_f64(
+            preferences.eutherbooks_last_chapter_index.round(),
+            0.0,
+            100000.0,
+            0.0,
+        ),
+        eutherbooks_auto_generate_next: preferences.eutherbooks_auto_generate_next,
     };
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
             toml_escape(&preferences.theme),
             toml_escape(&preferences.skin),
             toml_escape(&preferences.eutherbooks_voice),
+            toml_escape(&preferences.eutherbooks_custom_voice),
             preferences.eutherbooks_length_scale,
             preferences.eutherbooks_noise_scale,
             preferences.eutherbooks_noise_w,
-            preferences.eutherbooks_sentence_silence
+            preferences.eutherbooks_sentence_silence,
+            preferences.eutherbooks_cfg_value,
+            preferences.eutherbooks_inference_timesteps,
+            preferences.eutherbooks_max_chunk_chars,
+            toml_escape(&preferences.eutherbooks_last_book_id),
+            preferences.eutherbooks_last_chapter_index,
+            preferences.eutherbooks_auto_generate_next
         ),
     )
 }
 
 fn clean_eutherbooks_voice(value: &str) -> String {
-    let value = value.trim();
-    if value.is_empty() || value.len() > 160 {
-        return "sv".to_string();
+    let cleaned = clean_eutherbooks_identifier(value, 160);
+    if cleaned.is_empty() {
+        "sv-female-warm".to_string()
+    } else {
+        cleaned
     }
-    let cleaned = value
+}
+
+fn clean_eutherbooks_book_id(value: &str) -> String {
+    clean_eutherbooks_identifier(value, 220)
+}
+
+fn clean_eutherbooks_identifier(value: &str, max_len: usize) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    value
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':'))
+        .take(max_len)
+        .collect::<String>()
+}
+
+fn clean_eutherbooks_text(value: &str, fallback: &str, max_len: usize) -> String {
+    let cleaned = value
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == ' ' || *ch == '\t')
+        .take(max_len)
         .collect::<String>();
     if cleaned.is_empty() {
-        "sv".to_string()
+        fallback.to_string()
     } else {
         cleaned
     }
