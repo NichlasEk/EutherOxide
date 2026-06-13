@@ -1514,6 +1514,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|err| invalid_request(err.to_string()))?;
             send_json(stream, &save_host_eutherbooks_voice_sample(&user, upload)?)
         }
+        ("GET", "/api/user/eutherbooks/voice-sample.wav") => {
+            let user = require_host_user(state, &request)?;
+            send_host_eutherbooks_voice_sample_wav(stream, &user, &request.path)
+        }
         ("GET", "/api/lobby") => {
             require_host_user(state, &request)?;
             send_json(stream, &host_lobby_status(state)?)
@@ -11310,6 +11314,7 @@ fn save_host_eutherbooks_voice_sample(
     user: &str,
     upload: HostEutherBooksVoiceSampleUpload,
 ) -> io::Result<HostUserPreferences> {
+    let total_started = Instant::now();
     let voice_id = clean_eutherbooks_voice(&upload.voice_id);
     if !matches!(voice_id.as_str(), "own-sv" | "own-en") {
         return Err(invalid_request("invalid voice sample slot"));
@@ -11323,7 +11328,9 @@ fn save_host_eutherbooks_voice_sample(
         eutherbooks_own_voice_prompt(language),
         500,
     );
+    let decode_started = Instant::now();
     let bytes = decode_base64(upload.data_base64.trim())?;
+    let decode_ms = decode_started.elapsed().as_millis();
     if bytes.is_empty() || bytes.len() > HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES {
         return Err(invalid_request("voice sample is too large"));
     }
@@ -11345,8 +11352,29 @@ fn save_host_eutherbooks_voice_sample(
     let raw_extension = eutherbooks_voice_sample_extension(&content_type, &file_name);
     let raw_path = voice_dir.join(format!("{voice_id}.source.{raw_extension}"));
     let wav_path = voice_dir.join(format!("{voice_id}.wav"));
+    let write_started = Instant::now();
     fs::write(&raw_path, &bytes)?;
+    let write_ms = write_started.elapsed().as_millis();
+    let convert_started = Instant::now();
     convert_eutherbooks_voice_sample_to_wav(&raw_path, &wav_path)?;
+    let convert_ms = convert_started.elapsed().as_millis();
+    let wav_bytes = wav_path.metadata().map(|meta| meta.len()).unwrap_or(0);
+    eprintln!(
+        "TTS_TRACE eutheroxide_voice_sample_saved user={} voice={} language={} content_type={} file_name={} source_bytes={} wav_bytes={} raw_path={} wav_path={} decode_ms={} write_ms={} convert_ms={} total_ms={}",
+        user,
+        voice_id,
+        language,
+        content_type,
+        file_name,
+        bytes.len(),
+        wav_bytes,
+        raw_path.display(),
+        wav_path.display(),
+        decode_ms,
+        write_ms,
+        convert_ms,
+        total_started.elapsed().as_millis(),
+    );
 
     let mut preferences = read_host_user_preferences(user)?;
     let wav_path_text = wav_path.to_string_lossy().to_string();
@@ -11362,6 +11390,48 @@ fn save_host_eutherbooks_voice_sample(
     save_host_user_preferences(user, preferences)?;
     read_host_user_preferences(user)
 }
+
+fn send_host_eutherbooks_voice_sample_wav(
+    stream: &mut TcpStream,
+    user: &str,
+    request_path: &str,
+) -> io::Result<()> {
+    let voice = query_string_value(request_path, "voice")?.unwrap_or_else(|| "own-sv".to_string());
+    let voice_id = clean_eutherbooks_voice(&voice);
+    if !matches!(voice_id.as_str(), "own-sv" | "own-en") {
+        return send_error(stream, 400, "invalid voice sample slot");
+    }
+    let preferences = read_host_user_preferences(user)?;
+    let (locked, path_text) = if voice_id == "own-en" {
+        (
+            preferences.eutherbooks_own_voice_en_locked,
+            preferences.eutherbooks_own_voice_en_path,
+        )
+    } else {
+        (
+            preferences.eutherbooks_own_voice_sv_locked,
+            preferences.eutherbooks_own_voice_sv_path,
+        )
+    };
+    if !locked || path_text.trim().is_empty() {
+        return send_error(stream, 404, "voice sample not locked");
+    }
+    let root = host_user_data_dir(user).canonicalize()?;
+    let path = PathBuf::from(path_text).canonicalize()?;
+    if !path.starts_with(&root) || path.extension().and_then(|ext| ext.to_str()) != Some("wav") {
+        return send_error(stream, 404, "voice sample not found");
+    }
+    let bytes = fs::read(&path)?;
+    eprintln!(
+        "TTS_TRACE eutheroxide_voice_sample_replay user={} voice={} path={} bytes={}",
+        user,
+        voice_id,
+        path.display(),
+        bytes.len(),
+    );
+    send_response(stream, 200, "audio/wav", &bytes)
+}
+
 
 fn is_supported_eutherbooks_voice_sample_content_type(content_type: &str, file_name: &str) -> bool {
     content_type.starts_with("audio/webm")

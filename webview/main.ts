@@ -2841,6 +2841,11 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await saveEutherBooksOwnVoiceSample();
     return;
   }
+  const voiceReplay = target.closest<HTMLButtonElement>("[data-eutherbooks-replay-voice]");
+  if (voiceReplay) {
+    await replayEutherBooksLockedVoiceSample();
+    return;
+  }
   const booksPrev = target.closest<HTMLButtonElement>("[data-eutherbooks-prev-audio]");
   if (booksPrev) {
     setEutherBooksAudioIndex(eutherBooksAudioIndex - 1);
@@ -7937,6 +7942,7 @@ function eutherBooksOwnVoiceControl(): string {
         <button data-eutherbooks-record-voice type="button">${hasSaved ? "Replace sample" : "Record sample"}</button>
         <button data-eutherbooks-pick-voice type="button" ${recording ? "disabled" : ""}>Choose audio</button>
         <button data-eutherbooks-save-voice type="button" ${hasPreview && !recording ? "" : "disabled"}>Lock voice sample</button>
+        <button data-eutherbooks-replay-voice type="button" ${hasSaved && !recording ? "" : "disabled"}>Replay WAV</button>
         <input data-eutherbooks-voice-sample-input type="file" accept="audio/*" capture="microphone" hidden>
       </div>
       ${hasPreview ? `<audio controls src="${escapeHtml(eutherBooksVoiceSampleUrl)}"></audio>` : ""}
@@ -7965,6 +7971,7 @@ function eutherBooksVoiceSampleDialog(): string {
           <button data-eutherbooks-stop-voice type="button" ${recording ? "" : "disabled"}>Stop</button>
           <button data-eutherbooks-pick-voice type="button" ${recording ? "disabled" : ""}>Choose audio</button>
           <button data-eutherbooks-save-voice type="button" ${hasPreview && !recording ? "" : "disabled"}>Lock voice sample</button>
+          <button data-eutherbooks-replay-voice type="button" ${eutherBooksOwnVoiceLocked() && !recording ? "" : "disabled"}>Replay WAV</button>
         </div>
         ${hasPreview ? `<audio controls src="${escapeHtml(eutherBooksVoiceSampleUrl)}"></audio>` : ""}
         <small>${escapeHtml(eutherBooksVoiceSampleStatus || "Keep the phone close and read the text once in your normal voice")}</small>
@@ -8073,6 +8080,24 @@ function closeEutherBooksVoiceSampleDialog(): void {
 function stopEutherBooksVoiceRecording(): void {
   if (eutherBooksVoiceRecorder?.state === "recording") {
     eutherBooksVoiceRecorder.stop();
+  }
+}
+
+async function replayEutherBooksLockedVoiceSample(): Promise<void> {
+  if (!eutherBooksOwnVoiceLocked() || !eutherBooksOwnVoicePath()) {
+    eutherBooksVoiceSampleStatus = "No locked server WAV to replay";
+    renderBooksWindowIfActive();
+    return;
+  }
+  const url = `/api/user/eutherbooks/voice-sample.wav?voice=${encodeURIComponent(selectedEutherBooksVoice)}&t=${Date.now()}`;
+  try {
+    eutherBooksVoiceSampleStatus = "Replaying locked WAV from server";
+    renderBooksWindowIfActive();
+    const audio = new Audio(url);
+    await audio.play();
+  } catch (error) {
+    eutherBooksVoiceSampleStatus = error instanceof Error ? error.message : "Could not replay locked WAV";
+    renderBooksWindowIfActive();
   }
 }
 
