@@ -8081,10 +8081,16 @@ async function saveEutherBooksOwnVoiceSample(): Promise<void> {
 }
 
 async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void> {
-  eutherBooksVoiceSampleStatus = "Saving voice sample";
+  eutherBooksVoiceSampleStatus = "Saving voice sample 0%";
   renderBooksWindowIfActive();
   try {
     const language = eutherBooksOwnVoiceLanguage();
+    const dataBase64 = await blobToBase64(sampleBlob, (percent) => {
+      eutherBooksVoiceSampleStatus = `Saving voice sample ${Math.min(90, Math.max(1, percent))}%`;
+      renderBooksWindowIfActive();
+    });
+    eutherBooksVoiceSampleStatus = "Saving voice sample 95%";
+    renderBooksWindowIfActive();
     const preferences = await bridgeJson<UserPreferences>("/api/user/eutherbooks/voice-sample", {
       method: "POST",
       body: JSON.stringify({
@@ -8093,11 +8099,11 @@ async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void
         promptText: eutherBooksOwnVoicePrompt(),
         contentType: sampleBlob.type || "application/octet-stream",
         fileName: sampleBlob instanceof File ? sampleBlob.name : "voice-sample.webm",
-        dataBase64: await blobToBase64(sampleBlob),
+        dataBase64,
       }),
-    }, 30000);
+    });
     applyEutherBooksOwnVoicePreferences(preferences);
-    eutherBooksVoiceSampleStatus = "Voice sample locked";
+    eutherBooksVoiceSampleStatus = "Voice sample locked 100%";
     eutherBooksVoiceSampleBlob = null;
     if (eutherBooksVoiceSampleUrl) {
       URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
@@ -8134,10 +8140,16 @@ function useEutherBooksVoiceSampleFile(file: File): void {
   renderBooksWindowIfActive();
 }
 
-function blobToBase64(blob: Blob): Promise<string> {
+function blobToBase64(blob: Blob, onProgress?: (percent: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    reader.addEventListener("progress", (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress?.(Math.round((event.loaded / event.total) * 90));
+      }
+    });
     reader.addEventListener("load", () => {
+      onProgress?.(90);
       const result = String(reader.result ?? "");
       resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
     });
