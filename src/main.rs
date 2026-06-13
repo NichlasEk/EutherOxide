@@ -39,6 +39,7 @@ const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
 const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
 const HOST_SOCIAL_ATTACHMENT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
+const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
 const HOST_CODEX_USER: &str = "codex";
 const HOST_CODEX_DISPLAY_NAME: &str = "Codex Developer";
@@ -1126,6 +1127,16 @@ struct HostAppLoginRequest {
     password: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutherBooksVoiceSampleUpload {
+    voice_id: String,
+    language: String,
+    prompt_text: String,
+    content_type: String,
+    data_base64: String,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HostShoppingListMemberEntry {
@@ -1233,6 +1244,12 @@ struct HostUserPreferences {
     eutherbooks_last_book_id: String,
     eutherbooks_last_chapter_index: f64,
     eutherbooks_auto_generate_next: bool,
+    eutherbooks_own_voice_sv_path: String,
+    eutherbooks_own_voice_sv_prompt: String,
+    eutherbooks_own_voice_sv_locked: bool,
+    eutherbooks_own_voice_en_path: String,
+    eutherbooks_own_voice_en_prompt: String,
+    eutherbooks_own_voice_en_locked: bool,
 }
 
 impl Default for HostUserPreferences {
@@ -1257,6 +1274,12 @@ impl Default for HostUserPreferences {
             eutherbooks_last_book_id: String::new(),
             eutherbooks_last_chapter_index: 0.0,
             eutherbooks_auto_generate_next: true,
+            eutherbooks_own_voice_sv_path: String::new(),
+            eutherbooks_own_voice_sv_prompt: eutherbooks_own_voice_prompt("sv").to_string(),
+            eutherbooks_own_voice_sv_locked: false,
+            eutherbooks_own_voice_en_path: String::new(),
+            eutherbooks_own_voice_en_prompt: eutherbooks_own_voice_prompt("en").to_string(),
+            eutherbooks_own_voice_en_locked: false,
         }
     }
 }
@@ -1476,6 +1499,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|err| invalid_request(err.to_string()))?;
             save_host_user_preferences(&user, preferences)?;
             send_json(stream, &read_host_user_preferences(&user)?)
+        }
+        ("POST", "/api/user/eutherbooks/voice-sample") => {
+            let user = require_host_user(state, &request)?;
+            let upload: HostEutherBooksVoiceSampleUpload = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &save_host_eutherbooks_voice_sample(&user, upload)?)
         }
         ("GET", "/api/lobby") => {
             require_host_user(state, &request)?;
@@ -11137,6 +11166,26 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_bool(&contents, "eutherbooks_auto_generate_next") {
         preferences.eutherbooks_auto_generate_next = value;
     }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_own_voice_sv_path") {
+        preferences.eutherbooks_own_voice_sv_path = clean_eutherbooks_sample_path(&value);
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_own_voice_sv_prompt") {
+        preferences.eutherbooks_own_voice_sv_prompt =
+            clean_eutherbooks_text(&value, eutherbooks_own_voice_prompt("sv"), 500);
+    }
+    if let Some(value) = parse_toml_bool(&contents, "eutherbooks_own_voice_sv_locked") {
+        preferences.eutherbooks_own_voice_sv_locked = value;
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_own_voice_en_path") {
+        preferences.eutherbooks_own_voice_en_path = clean_eutherbooks_sample_path(&value);
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_own_voice_en_prompt") {
+        preferences.eutherbooks_own_voice_en_prompt =
+            clean_eutherbooks_text(&value, eutherbooks_own_voice_prompt("en"), 500);
+    }
+    if let Some(value) = parse_toml_bool(&contents, "eutherbooks_own_voice_en_locked") {
+        preferences.eutherbooks_own_voice_en_locked = value;
+    }
     Ok(preferences)
 }
 
@@ -11184,11 +11233,29 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             0.0,
         ),
         eutherbooks_auto_generate_next: preferences.eutherbooks_auto_generate_next,
+        eutherbooks_own_voice_sv_path: clean_eutherbooks_sample_path(
+            &preferences.eutherbooks_own_voice_sv_path,
+        ),
+        eutherbooks_own_voice_sv_prompt: clean_eutherbooks_text(
+            &preferences.eutherbooks_own_voice_sv_prompt,
+            eutherbooks_own_voice_prompt("sv"),
+            500,
+        ),
+        eutherbooks_own_voice_sv_locked: preferences.eutherbooks_own_voice_sv_locked,
+        eutherbooks_own_voice_en_path: clean_eutherbooks_sample_path(
+            &preferences.eutherbooks_own_voice_en_path,
+        ),
+        eutherbooks_own_voice_en_prompt: clean_eutherbooks_text(
+            &preferences.eutherbooks_own_voice_en_prompt,
+            eutherbooks_own_voice_prompt("en"),
+            500,
+        ),
+        eutherbooks_own_voice_en_locked: preferences.eutherbooks_own_voice_en_locked,
     };
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
@@ -11205,9 +11272,130 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             preferences.eutherbooks_max_chunk_chars,
             toml_escape(&preferences.eutherbooks_last_book_id),
             preferences.eutherbooks_last_chapter_index,
-            preferences.eutherbooks_auto_generate_next
+            preferences.eutherbooks_auto_generate_next,
+            toml_escape(&preferences.eutherbooks_own_voice_sv_path),
+            toml_escape(&preferences.eutherbooks_own_voice_sv_prompt),
+            preferences.eutherbooks_own_voice_sv_locked,
+            toml_escape(&preferences.eutherbooks_own_voice_en_path),
+            toml_escape(&preferences.eutherbooks_own_voice_en_prompt),
+            preferences.eutherbooks_own_voice_en_locked
         ),
     )
+}
+
+fn save_host_eutherbooks_voice_sample(
+    user: &str,
+    upload: HostEutherBooksVoiceSampleUpload,
+) -> io::Result<HostUserPreferences> {
+    let voice_id = clean_eutherbooks_voice(&upload.voice_id);
+    if !matches!(voice_id.as_str(), "own-sv" | "own-en") {
+        return Err(invalid_request("invalid voice sample slot"));
+    }
+    let language = if voice_id == "own-en" { "en" } else { "sv" };
+    if !upload.language.trim().is_empty() && upload.language.trim() != language {
+        return Err(invalid_request("voice sample language mismatch"));
+    }
+    let prompt_text = clean_eutherbooks_text(
+        &upload.prompt_text,
+        eutherbooks_own_voice_prompt(language),
+        500,
+    );
+    let bytes = decode_base64(upload.data_base64.trim())?;
+    if bytes.is_empty() || bytes.len() > HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES {
+        return Err(invalid_request("voice sample is too large"));
+    }
+    let content_type = upload.content_type.trim().to_ascii_lowercase();
+    if !is_supported_eutherbooks_voice_sample_content_type(&content_type) {
+        return Err(invalid_request("unsupported voice sample type"));
+    }
+
+    let voice_dir = ensure_host_user_data_dir(user)?
+        .join("eutherbooks")
+        .join("voices");
+    fs::create_dir_all(&voice_dir)?;
+    let raw_extension = eutherbooks_voice_sample_extension(&content_type);
+    let raw_path = voice_dir.join(format!("{voice_id}.source.{raw_extension}"));
+    let wav_path = voice_dir.join(format!("{voice_id}.wav"));
+    fs::write(&raw_path, &bytes)?;
+    convert_eutherbooks_voice_sample_to_wav(&raw_path, &wav_path)?;
+
+    let mut preferences = read_host_user_preferences(user)?;
+    let wav_path_text = wav_path.to_string_lossy().to_string();
+    if voice_id == "own-en" {
+        preferences.eutherbooks_own_voice_en_path = wav_path_text;
+        preferences.eutherbooks_own_voice_en_prompt = prompt_text;
+        preferences.eutherbooks_own_voice_en_locked = true;
+    } else {
+        preferences.eutherbooks_own_voice_sv_path = wav_path_text;
+        preferences.eutherbooks_own_voice_sv_prompt = prompt_text;
+        preferences.eutherbooks_own_voice_sv_locked = true;
+    }
+    save_host_user_preferences(user, preferences)?;
+    read_host_user_preferences(user)
+}
+
+fn is_supported_eutherbooks_voice_sample_content_type(content_type: &str) -> bool {
+    content_type.starts_with("audio/webm")
+        || content_type.starts_with("audio/ogg")
+        || content_type.starts_with("audio/wav")
+        || content_type.starts_with("audio/x-wav")
+        || content_type.starts_with("audio/mpeg")
+        || content_type.starts_with("audio/mp4")
+        || content_type == "application/octet-stream"
+}
+
+fn eutherbooks_voice_sample_extension(content_type: &str) -> &'static str {
+    if content_type.starts_with("audio/ogg") {
+        "ogg"
+    } else if content_type.starts_with("audio/wav") || content_type.starts_with("audio/x-wav") {
+        "wav"
+    } else if content_type.starts_with("audio/mpeg") {
+        "mp3"
+    } else if content_type.starts_with("audio/mp4") {
+        "m4a"
+    } else {
+        "webm"
+    }
+}
+
+fn convert_eutherbooks_voice_sample_to_wav(
+    input_path: &Path,
+    output_path: &Path,
+) -> io::Result<()> {
+    if input_path == output_path {
+        return Ok(());
+    }
+    let status = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg(output_path)
+        .status()
+        .map_err(|err| {
+            invalid_request(format!(
+                "ffmpeg unavailable for voice sample conversion: {err}"
+            ))
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(invalid_request("voice sample conversion failed"))
+    }
+}
+
+fn eutherbooks_own_voice_prompt(language: &str) -> &'static str {
+    if language == "en" {
+        "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone."
+    } else {
+        "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst."
+    }
 }
 
 fn clean_eutherbooks_voice(value: &str) -> String {
@@ -11232,6 +11420,17 @@ fn clean_eutherbooks_identifier(value: &str, max_len: usize) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':'))
         .take(max_len)
+        .collect::<String>()
+}
+
+fn clean_eutherbooks_sample_path(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 600 {
+        return String::new();
+    }
+    value
+        .chars()
+        .filter(|ch| !ch.is_control() && *ch != '\"')
         .collect::<String>()
 }
 

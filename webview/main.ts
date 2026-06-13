@@ -293,6 +293,12 @@ type UserPreferences = {
   eutherbooksLastBookId?: string;
   eutherbooksLastChapterIndex?: number;
   eutherbooksAutoGenerateNext?: boolean;
+  eutherbooksOwnVoiceSvPath?: string;
+  eutherbooksOwnVoiceSvPrompt?: string;
+  eutherbooksOwnVoiceSvLocked?: boolean;
+  eutherbooksOwnVoiceEnPath?: string;
+  eutherbooksOwnVoiceEnPrompt?: string;
+  eutherbooksOwnVoiceEnLocked?: boolean;
 };
 
 type UserTheme = "dark" | "light" | "royal-apothic";
@@ -1312,7 +1318,20 @@ let selectedEutherBookChapters: EutherBookChapter[] = [];
 let selectedEutherBookChaptersLoading = false;
 let selectedEutherBookChapterIndex = storedEutherBooksNumber("last_chapter", 0);
 let selectedEutherBooksVoice = localStorage.getItem("eutherbooks-voice") ?? "sv-female-warm";
+const eutherBooksOwnVoiceSvPromptDefault = "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst.";
+const eutherBooksOwnVoiceEnPromptDefault = "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone.";
 let eutherBooksCustomVoicePrompt = localStorage.getItem("eutherbooks-custom-voice") ?? "A warm Swedish audiobook narrator with clear pronunciation and natural pacing.";
+let eutherBooksOwnVoiceSvPath = localStorage.getItem("eutherbooks-own-sv-path") ?? "";
+let eutherBooksOwnVoiceSvPrompt = localStorage.getItem("eutherbooks-own-sv-prompt") ?? eutherBooksOwnVoiceSvPromptDefault;
+let eutherBooksOwnVoiceSvLocked = localStorage.getItem("eutherbooks-own-sv-locked") === "true";
+let eutherBooksOwnVoiceEnPath = localStorage.getItem("eutherbooks-own-en-path") ?? "";
+let eutherBooksOwnVoiceEnPrompt = localStorage.getItem("eutherbooks-own-en-prompt") ?? eutherBooksOwnVoiceEnPromptDefault;
+let eutherBooksOwnVoiceEnLocked = localStorage.getItem("eutherbooks-own-en-locked") === "true";
+let eutherBooksVoiceRecorder: MediaRecorder | null = null;
+let eutherBooksVoiceRecordChunks: Blob[] = [];
+let eutherBooksVoiceSampleBlob: Blob | null = null;
+let eutherBooksVoiceSampleUrl = "";
+let eutherBooksVoiceSampleStatus = "";
 let eutherBooksLengthScale = storedEutherBooksNumber("length_scale", 1);
 let eutherBooksNoiseScale = storedEutherBooksNumber("noise_scale", 0.667);
 let eutherBooksNoiseW = storedEutherBooksNumber("noise_w", 0.8);
@@ -2783,6 +2802,21 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   const booksAutoGenerate = target.closest<HTMLButtonElement>("[data-eutherbooks-auto-generate]");
   if (booksAutoGenerate) {
     setEutherBooksAutoGenerateNext(!eutherBooksAutoGenerateNext);
+    return;
+  }
+  const voiceRecord = target.closest<HTMLButtonElement>("[data-eutherbooks-record-voice]");
+  if (voiceRecord) {
+    await startEutherBooksVoiceRecording();
+    return;
+  }
+  const voiceStop = target.closest<HTMLButtonElement>("[data-eutherbooks-stop-voice]");
+  if (voiceStop) {
+    stopEutherBooksVoiceRecording();
+    return;
+  }
+  const voiceSave = target.closest<HTMLButtonElement>("[data-eutherbooks-save-voice]");
+  if (voiceSave) {
+    await saveEutherBooksOwnVoiceSample();
     return;
   }
   const booksPrev = target.closest<HTMLButtonElement>("[data-eutherbooks-prev-audio]");
@@ -7677,6 +7711,7 @@ function eutherBooksWindowMarkup(): string {
             </select>
           </label>
           ${eutherBooksCustomVoiceControl()}
+          ${eutherBooksOwnVoiceControl()}
           <div class="eutherbooks-option-grid">
             ${eutherBooksTtsOptionControls()}
           </div>
@@ -7745,11 +7780,14 @@ function eutherBooksVoiceOptions(): string {
     : [
         { id: "sv-female-warm", label: "Warm female narrator", language: "sv", backend: "eutherlink", path: "" },
         { id: "sv-male-warm", label: "Warm male narrator", language: "sv", backend: "eutherlink", path: "" },
+        { id: "own-sv", label: "Your own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv" },
+        { id: "own-en", label: "Your own voice EN", language: "en", backend: "eutherlink", path: "user:own-en" },
         { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "" },
       ];
   const groups = [
-    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && voice.id !== "custom")],
-    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en"))],
+    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id))],
+    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id))],
+    ["Your own voice", voices.filter((voice) => voice.id === "own-sv" || voice.id === "own-en")],
     ["Egen röst", voices.filter((voice) => voice.id === "custom")],
   ] as const;
   return groups
@@ -7812,6 +7850,165 @@ function eutherBooksRequestVoice(): string {
     return eutherBooksCustomVoicePrompt.trim() || "custom";
   }
   return selectedEutherBooksVoice;
+}
+
+function eutherBooksOwnVoiceLanguage(): "sv" | "en" {
+  return selectedEutherBooksVoice === "own-en" ? "en" : "sv";
+}
+
+function eutherBooksOwnVoicePath(): string {
+  return eutherBooksOwnVoiceLanguage() === "en" ? eutherBooksOwnVoiceEnPath : eutherBooksOwnVoiceSvPath;
+}
+
+function eutherBooksOwnVoicePrompt(): string {
+  return eutherBooksOwnVoiceLanguage() === "en" ? eutherBooksOwnVoiceEnPrompt : eutherBooksOwnVoiceSvPrompt;
+}
+
+function eutherBooksOwnVoiceLocked(): boolean {
+  return eutherBooksOwnVoiceLanguage() === "en" ? eutherBooksOwnVoiceEnLocked : eutherBooksOwnVoiceSvLocked;
+}
+
+function eutherBooksOwnVoiceControl(): string {
+  if (selectedEutherBooksVoice !== "own-sv" && selectedEutherBooksVoice !== "own-en") {
+    return "";
+  }
+  const recording = eutherBooksVoiceRecorder?.state === "recording";
+  const hasPreview = Boolean(eutherBooksVoiceSampleUrl);
+  const hasSaved = eutherBooksOwnVoiceLocked() && eutherBooksOwnVoicePath();
+  return `
+    <div class="eutherbooks-own-voice">
+      <strong>${selectedEutherBooksVoice === "own-en" ? "Your own voice EN" : "Your own voice SV"}</strong>
+      <p>${escapeHtml(eutherBooksOwnVoicePrompt())}</p>
+      <div class="eutherbooks-own-voice-actions">
+        <button data-eutherbooks-record-voice type="button" ${recording ? "disabled" : ""}>${hasSaved ? "Replace sample" : "Record sample"}</button>
+        <button data-eutherbooks-stop-voice type="button" ${recording ? "" : "disabled"}>Stop</button>
+        <button data-eutherbooks-save-voice type="button" ${hasPreview && !recording ? "" : "disabled"}>Lock voice sample</button>
+      </div>
+      ${hasPreview ? `<audio controls src="${escapeHtml(eutherBooksVoiceSampleUrl)}"></audio>` : ""}
+      <small>${escapeHtml(eutherBooksVoiceSampleStatus || (hasSaved ? "Voice sample locked" : "No voice sample saved"))}</small>
+    </div>
+  `;
+}
+
+function applyEutherBooksOwnVoicePreferences(preferences: UserPreferences): void {
+  if (typeof preferences.eutherbooksOwnVoiceSvPath === "string") {
+    eutherBooksOwnVoiceSvPath = preferences.eutherbooksOwnVoiceSvPath;
+    localStorage.setItem("eutherbooks-own-sv-path", eutherBooksOwnVoiceSvPath);
+  }
+  if (typeof preferences.eutherbooksOwnVoiceSvPrompt === "string") {
+    eutherBooksOwnVoiceSvPrompt = preferences.eutherbooksOwnVoiceSvPrompt || eutherBooksOwnVoiceSvPromptDefault;
+    localStorage.setItem("eutherbooks-own-sv-prompt", eutherBooksOwnVoiceSvPrompt);
+  }
+  if (typeof preferences.eutherbooksOwnVoiceSvLocked === "boolean") {
+    eutherBooksOwnVoiceSvLocked = preferences.eutherbooksOwnVoiceSvLocked;
+    localStorage.setItem("eutherbooks-own-sv-locked", String(eutherBooksOwnVoiceSvLocked));
+  }
+  if (typeof preferences.eutherbooksOwnVoiceEnPath === "string") {
+    eutherBooksOwnVoiceEnPath = preferences.eutherbooksOwnVoiceEnPath;
+    localStorage.setItem("eutherbooks-own-en-path", eutherBooksOwnVoiceEnPath);
+  }
+  if (typeof preferences.eutherbooksOwnVoiceEnPrompt === "string") {
+    eutherBooksOwnVoiceEnPrompt = preferences.eutherbooksOwnVoiceEnPrompt || eutherBooksOwnVoiceEnPromptDefault;
+    localStorage.setItem("eutherbooks-own-en-prompt", eutherBooksOwnVoiceEnPrompt);
+  }
+  if (typeof preferences.eutherbooksOwnVoiceEnLocked === "boolean") {
+    eutherBooksOwnVoiceEnLocked = preferences.eutherbooksOwnVoiceEnLocked;
+    localStorage.setItem("eutherbooks-own-en-locked", String(eutherBooksOwnVoiceEnLocked));
+  }
+}
+
+async function startEutherBooksVoiceRecording(): Promise<void> {
+  if (eutherBooksVoiceRecorder?.state === "recording") {
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    eutherBooksVoiceSampleStatus = "Recording is not supported in this browser";
+    renderBooksWindowIfActive();
+    return;
+  }
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    eutherBooksVoiceSampleStatus = error instanceof Error ? error.message : "Could not start recording";
+    renderBooksWindowIfActive();
+    return;
+  }
+  eutherBooksVoiceRecordChunks = [];
+  eutherBooksVoiceSampleBlob = null;
+  if (eutherBooksVoiceSampleUrl) {
+    URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
+    eutherBooksVoiceSampleUrl = "";
+  }
+  const recorder = new MediaRecorder(stream);
+  eutherBooksVoiceRecorder = recorder;
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size > 0) {
+      eutherBooksVoiceRecordChunks.push(event.data);
+    }
+  });
+  recorder.addEventListener("stop", () => {
+    stream.getTracks().forEach((track) => track.stop());
+    const type = recorder.mimeType || "audio/webm";
+    eutherBooksVoiceSampleBlob = new Blob(eutherBooksVoiceRecordChunks, { type });
+    eutherBooksVoiceSampleUrl = URL.createObjectURL(eutherBooksVoiceSampleBlob);
+    eutherBooksVoiceSampleStatus = "Preview the sample, then lock it to save";
+    eutherBooksVoiceRecorder = null;
+    renderBooksWindowIfActive();
+  });
+  recorder.start();
+  eutherBooksVoiceSampleStatus = "Recording voice sample";
+  renderBooksWindowIfActive();
+}
+
+function stopEutherBooksVoiceRecording(): void {
+  if (eutherBooksVoiceRecorder?.state === "recording") {
+    eutherBooksVoiceRecorder.stop();
+  }
+}
+
+async function saveEutherBooksOwnVoiceSample(): Promise<void> {
+  if (!eutherBooksVoiceSampleBlob) {
+    return;
+  }
+  eutherBooksVoiceSampleStatus = "Saving voice sample";
+  renderBooksWindowIfActive();
+  try {
+    const language = eutherBooksOwnVoiceLanguage();
+    const preferences = await bridgeJson<UserPreferences>("/api/user/eutherbooks/voice-sample", {
+      method: "POST",
+      body: JSON.stringify({
+        voiceId: selectedEutherBooksVoice,
+        language,
+        promptText: eutherBooksOwnVoicePrompt(),
+        contentType: eutherBooksVoiceSampleBlob.type || "audio/webm",
+        dataBase64: await blobToBase64(eutherBooksVoiceSampleBlob),
+      }),
+    }, 30000);
+    applyEutherBooksOwnVoicePreferences(preferences);
+    eutherBooksVoiceSampleStatus = "Voice sample locked";
+    eutherBooksVoiceSampleBlob = null;
+    if (eutherBooksVoiceSampleUrl) {
+      URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
+      eutherBooksVoiceSampleUrl = "";
+    }
+    resetEutherBooksSelectionAudio();
+  } catch (error) {
+    eutherBooksVoiceSampleStatus = error instanceof Error ? error.message : "Could not save voice sample";
+  }
+  renderBooksWindowIfActive();
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = String(reader.result ?? "");
+      resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
+    });
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("failed to read voice sample")));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function setEutherBooksCustomVoicePrompt(value: string): void {
@@ -8103,6 +8300,8 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
       cfg_value: eutherBooksCfgValue,
       inference_timesteps: eutherBooksInferenceTimesteps,
       max_chunk_chars: eutherBooksMaxChunkChars,
+      voice_reference_path: eutherBooksOwnVoicePath(),
+      voice_prompt_text: eutherBooksOwnVoicePrompt(),
       queue_remainder: false,
     }),
   });
@@ -13311,6 +13510,12 @@ function currentUserPreferences(): UserPreferences {
     eutherbooksLastBookId: selectedEutherBookId ?? "",
     eutherbooksLastChapterIndex: selectedEutherBookChapterIndex,
     eutherbooksAutoGenerateNext: eutherBooksAutoGenerateNext,
+    eutherbooksOwnVoiceSvPath: eutherBooksOwnVoiceSvPath,
+    eutherbooksOwnVoiceSvPrompt: eutherBooksOwnVoiceSvPrompt,
+    eutherbooksOwnVoiceSvLocked: eutherBooksOwnVoiceSvLocked,
+    eutherbooksOwnVoiceEnPath: eutherBooksOwnVoiceEnPath,
+    eutherbooksOwnVoiceEnPrompt: eutherBooksOwnVoiceEnPrompt,
+    eutherbooksOwnVoiceEnLocked: eutherBooksOwnVoiceEnLocked,
   };
 }
 
@@ -13372,6 +13577,7 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     eutherBooksAutoGenerateNext = preferences.eutherbooksAutoGenerateNext;
     localStorage.setItem("eutherbooks-auto-generate-next", String(eutherBooksAutoGenerateNext));
   }
+  applyEutherBooksOwnVoicePreferences(preferences);
   eutherBooksLengthScale = applyEutherBooksNumberPreference(
     "length_scale",
     preferences.eutherbooksLengthScale,

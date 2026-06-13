@@ -5775,6 +5775,45 @@ h2 {
   padding: 0 10px;
 }
 
+.eutherbooks-own-voice {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(207, 240, 178, 0.14);
+  border-radius: 8px;
+  background: rgba(5, 12, 9, 0.72);
+}
+
+.eutherbooks-own-voice strong {
+  color: #fff4c6;
+  font-size: 0.78rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherbooks-own-voice p,
+.eutherbooks-own-voice small {
+  margin: 0;
+  color: rgba(237, 246, 221, 0.78);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.eutherbooks-own-voice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.eutherbooks-own-voice-actions button {
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.eutherbooks-own-voice audio {
+  width: 100%;
+}
+
 @media (max-width: 720px) {
   .eutherbooks-voice-control:not([open]) {
     gap: 0;
