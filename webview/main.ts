@@ -290,6 +290,7 @@ type UserPreferences = {
   eutherbooksCfgValue?: number;
   eutherbooksInferenceTimesteps?: number;
   eutherbooksMaxChunkChars?: number;
+  eutherbooksSeed?: number;
   eutherbooksLastBookId?: string;
   eutherbooksLastChapterIndex?: number;
   eutherbooksAutoGenerateNext?: boolean;
@@ -1321,8 +1322,8 @@ let selectedEutherBooksVoice = localStorage.getItem("eutherbooks-voice") ?? "sv-
 let eutherBooksVoiceSettingsOpen = !window.matchMedia("(max-width: 720px)").matches;
 const eutherBooksOwnVoiceSvPromptLegacy = "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst.";
 const eutherBooksOwnVoiceEnPromptLegacy = "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone.";
-const eutherBooksOwnVoiceSvPromptDefault = "Solen går långsamt upp över skogen. Jag läser den här texten med min naturliga berättarröst, tydligt och lugnt, så att varje ord hörs klart.";
-const eutherBooksOwnVoiceEnPromptDefault = "The morning light moves slowly across the room. I read this text in my natural narrator voice, clearly and calmly, so every word is easy to hear.";
+const eutherBooksOwnVoiceSvPromptDefault = "Solen går långsamt upp över skogen, och rummet fylls av ett mjukt morgonljus. Jag läser den här texten med min naturliga berättarröst, tydligt och lugnt, med små pauser mellan meningarna. Rösten ska låta avslappnad, jämn och lätt att följa.";
+const eutherBooksOwnVoiceEnPromptDefault = "The morning light moves slowly across the room. I read this passage in my natural audiobook voice, with clear English pronunciation, steady pacing, and relaxed emphasis. Each sentence should sound calm, consistent, and easy to understand.";
 let eutherBooksCustomVoicePrompt = localStorage.getItem("eutherbooks-custom-voice") ?? "A warm Swedish audiobook narrator with clear pronunciation and natural pacing.";
 let eutherBooksOwnVoiceSvPath = localStorage.getItem("eutherbooks-own-sv-path") ?? "";
 let eutherBooksOwnVoiceSvPrompt = normalizeEutherBooksOwnVoicePrompt("sv", localStorage.getItem("eutherbooks-own-sv-prompt"));
@@ -1344,6 +1345,7 @@ let eutherBooksSentenceSilence = storedEutherBooksNumber("sentence_silence", 0.2
 let eutherBooksCfgValue = storedEutherBooksNumber("cfg_value", 2);
 let eutherBooksInferenceTimesteps = storedEutherBooksNumber("inference_timesteps", 10);
 let eutherBooksMaxChunkChars = storedEutherBooksNumber("max_chunk_chars", 700);
+let eutherBooksSeed = storedEutherBooksNumber("seed", 0);
 let eutherBooksJob: EutherBooksJob | null = null;
 let eutherBooksJobPollTimer: number | null = null;
 let eutherBooksTtsSubmitting = false;
@@ -7864,6 +7866,7 @@ function eutherBooksTtsOptionControls(): string {
       eutherBooksOptionSlider("Guidance", "cfg_value", eutherBooksCfgValue, 1, 3, 0.1, "Speaker consistency and prompt adherence"),
       eutherBooksOptionSlider("Steps", "inference_timesteps", eutherBooksInferenceTimesteps, 10, 50, 1, "Higher costs more time"),
       eutherBooksOptionSlider("Chunk size", "max_chunk_chars", eutherBooksMaxChunkChars, 120, 1500, 20, "Longer chunks keep more context"),
+      eutherBooksSeedControl(),
     ].join("");
   }
   return [
@@ -8193,6 +8196,16 @@ function eutherBooksOptionSlider(
   `;
 }
 
+function eutherBooksSeedControl(): string {
+  return `
+    <label>
+      <span>Seed <strong>${formatEutherBooksOptionValue(eutherBooksSeed)}</strong></span>
+      <input data-eutherbooks-option="seed" type="number" min="0" max="2147483647" step="1" value="${eutherBooksSeed}">
+      <small>0 uses sample default; same seed repeats cloned-voice sampling</small>
+    </label>
+  `;
+}
+
 function formatEutherBooksOptionValue(value: number): string {
   return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
@@ -8447,6 +8460,7 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
       cfg_value: eutherBooksCfgValue,
       inference_timesteps: eutherBooksInferenceTimesteps,
       max_chunk_chars: eutherBooksMaxChunkChars,
+      seed: eutherBooksSeed,
       voice_reference_path: eutherBooksOwnVoicePath(),
       voice_prompt_text: eutherBooksOwnVoicePrompt(),
       queue_remainder: false,
@@ -9120,6 +9134,9 @@ function setEutherBooksOption(key: string, value: number): void {
     case "max_chunk_chars":
       eutherBooksMaxChunkChars = safeValue;
       break;
+    case "seed":
+      eutherBooksSeed = safeValue;
+      break;
     default:
       return;
   }
@@ -9153,6 +9170,8 @@ function clampEutherBooksOption(key: string, value: number): number {
       return Math.round(Math.min(Math.max(value, 10), 50));
     case "max_chunk_chars":
       return Math.round(Math.min(Math.max(value, 120), 1500));
+    case "seed":
+      return Math.round(Math.min(Math.max(value, 0), 2147483647));
     default:
       return value;
   }
@@ -9174,6 +9193,8 @@ function eutherBooksOptionFallback(key: string): number {
       return 10;
     case "max_chunk_chars":
       return 700;
+    case "seed":
+      return 0;
     default:
       return 0;
   }
@@ -13654,6 +13675,7 @@ function currentUserPreferences(): UserPreferences {
     eutherbooksCfgValue: eutherBooksCfgValue,
     eutherbooksInferenceTimesteps: eutherBooksInferenceTimesteps,
     eutherbooksMaxChunkChars: eutherBooksMaxChunkChars,
+    eutherbooksSeed: eutherBooksSeed,
     eutherbooksLastBookId: selectedEutherBookId ?? "",
     eutherbooksLastChapterIndex: selectedEutherBookChapterIndex,
     eutherbooksAutoGenerateNext: eutherBooksAutoGenerateNext,
@@ -13752,6 +13774,7 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     preferences.eutherbooksMaxChunkChars,
     eutherBooksMaxChunkChars,
   );
+  eutherBooksSeed = applyEutherBooksNumberPreference("seed", preferences.eutherbooksSeed, eutherBooksSeed);
   renderBooksWindowIfActive();
 }
 

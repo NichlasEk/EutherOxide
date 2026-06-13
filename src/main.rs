@@ -1242,6 +1242,7 @@ struct HostUserPreferences {
     eutherbooks_cfg_value: f64,
     eutherbooks_inference_timesteps: f64,
     eutherbooks_max_chunk_chars: f64,
+    eutherbooks_seed: f64,
     eutherbooks_last_book_id: String,
     eutherbooks_last_chapter_index: f64,
     eutherbooks_auto_generate_next: bool,
@@ -1272,6 +1273,7 @@ impl Default for HostUserPreferences {
             eutherbooks_cfg_value: 2.0,
             eutherbooks_inference_timesteps: 10.0,
             eutherbooks_max_chunk_chars: 700.0,
+            eutherbooks_seed: 0.0,
             eutherbooks_last_book_id: String::new(),
             eutherbooks_last_chapter_index: 0.0,
             eutherbooks_auto_generate_next: true,
@@ -11158,6 +11160,14 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
             preferences.eutherbooks_max_chunk_chars,
         );
     }
+    if let Some(value) = parse_toml_f64(&contents, "eutherbooks_seed") {
+        preferences.eutherbooks_seed = clamp_f64(
+            value.round(),
+            0.0,
+            2147483647.0,
+            preferences.eutherbooks_seed,
+        );
+    }
     if let Some(value) = parse_toml_string(&contents, "eutherbooks_last_book_id") {
         preferences.eutherbooks_last_book_id = clean_eutherbooks_book_id(&value);
     }
@@ -11231,6 +11241,12 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             1500.0,
             700.0,
         ),
+        eutherbooks_seed: clamp_f64(
+            preferences.eutherbooks_seed.round(),
+            0.0,
+            2147483647.0,
+            0.0,
+        ),
         eutherbooks_last_book_id: clean_eutherbooks_book_id(&preferences.eutherbooks_last_book_id),
         eutherbooks_last_chapter_index: clamp_f64(
             preferences.eutherbooks_last_chapter_index.round(),
@@ -11261,7 +11277,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
@@ -11276,6 +11292,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             preferences.eutherbooks_cfg_value,
             preferences.eutherbooks_inference_timesteps,
             preferences.eutherbooks_max_chunk_chars,
+            preferences.eutherbooks_seed,
             toml_escape(&preferences.eutherbooks_last_book_id),
             preferences.eutherbooks_last_chapter_index,
             preferences.eutherbooks_auto_generate_next,
