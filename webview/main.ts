@@ -7862,7 +7862,7 @@ function eutherBooksTtsOptionControls(): string {
   if (eutherBooksUsesEutherLinkVoice()) {
     return [
       eutherBooksOptionSlider("Guidance", "cfg_value", eutherBooksCfgValue, 1, 3, 0.1, "Speaker consistency and prompt adherence"),
-      eutherBooksOptionSlider("Steps", "inference_timesteps", eutherBooksInferenceTimesteps, 1, 50, 1, "Higher costs more time"),
+      eutherBooksOptionSlider("Steps", "inference_timesteps", eutherBooksInferenceTimesteps, 10, 50, 1, "Higher costs more time"),
       eutherBooksOptionSlider("Chunk size", "max_chunk_chars", eutherBooksMaxChunkChars, 120, 1500, 20, "Longer chunks keep more context"),
     ].join("");
   }
@@ -9138,7 +9138,7 @@ function clampEutherBooksOption(key: string, value: number): number {
     case "cfg_value":
       return Math.min(Math.max(value, 1), 3);
     case "inference_timesteps":
-      return Math.round(Math.min(Math.max(value, 1), 50));
+      return Math.round(Math.min(Math.max(value, 10), 50));
     case "max_chunk_chars":
       return Math.round(Math.min(Math.max(value, 120), 1500));
     default:

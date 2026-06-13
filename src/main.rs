@@ -11145,7 +11145,7 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_f64(&contents, "eutherbooks_inference_timesteps") {
         preferences.eutherbooks_inference_timesteps = clamp_f64(
             value.round(),
-            1.0,
+            10.0,
             50.0,
             preferences.eutherbooks_inference_timesteps,
         );
@@ -11221,7 +11221,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         eutherbooks_cfg_value: clamp_f64(preferences.eutherbooks_cfg_value, 1.0, 3.0, 2.0),
         eutherbooks_inference_timesteps: clamp_f64(
             preferences.eutherbooks_inference_timesteps.round(),
-            1.0,
+            10.0,
             50.0,
             10.0,
         ),
