@@ -1319,16 +1319,20 @@ let selectedEutherBookChaptersLoading = false;
 let selectedEutherBookChapterIndex = storedEutherBooksNumber("last_chapter", 0);
 let selectedEutherBooksVoice = localStorage.getItem("eutherbooks-voice") ?? "sv-female-warm";
 let eutherBooksVoiceSettingsOpen = !window.matchMedia("(max-width: 720px)").matches;
-const eutherBooksOwnVoiceSvPromptDefault = "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst.";
-const eutherBooksOwnVoiceEnPromptDefault = "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone.";
+const eutherBooksOwnVoiceSvPromptLegacy = "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst.";
+const eutherBooksOwnVoiceEnPromptLegacy = "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone.";
+const eutherBooksOwnVoiceSvPromptDefault = "Solen går långsamt upp över skogen. Jag läser den här texten med min naturliga berättarröst, tydligt och lugnt, så att varje ord hörs klart.";
+const eutherBooksOwnVoiceEnPromptDefault = "The morning light moves slowly across the room. I read this text in my natural narrator voice, clearly and calmly, so every word is easy to hear.";
 let eutherBooksCustomVoicePrompt = localStorage.getItem("eutherbooks-custom-voice") ?? "A warm Swedish audiobook narrator with clear pronunciation and natural pacing.";
 let eutherBooksOwnVoiceSvPath = localStorage.getItem("eutherbooks-own-sv-path") ?? "";
-let eutherBooksOwnVoiceSvPrompt = localStorage.getItem("eutherbooks-own-sv-prompt") ?? eutherBooksOwnVoiceSvPromptDefault;
+let eutherBooksOwnVoiceSvPrompt = normalizeEutherBooksOwnVoicePrompt("sv", localStorage.getItem("eutherbooks-own-sv-prompt"));
 let eutherBooksOwnVoiceSvLocked = localStorage.getItem("eutherbooks-own-sv-locked") === "true";
 let eutherBooksOwnVoiceEnPath = localStorage.getItem("eutherbooks-own-en-path") ?? "";
-let eutherBooksOwnVoiceEnPrompt = localStorage.getItem("eutherbooks-own-en-prompt") ?? eutherBooksOwnVoiceEnPromptDefault;
+let eutherBooksOwnVoiceEnPrompt = normalizeEutherBooksOwnVoicePrompt("en", localStorage.getItem("eutherbooks-own-en-prompt"));
 let eutherBooksOwnVoiceEnLocked = localStorage.getItem("eutherbooks-own-en-locked") === "true";
 let eutherBooksVoiceRecorder: MediaRecorder | null = null;
+let eutherBooksVoiceRecordCancelled = false;
+let eutherBooksVoiceSampleDialogOpen = false;
 let eutherBooksVoiceRecordChunks: Blob[] = [];
 let eutherBooksVoiceSampleBlob: Blob | null = null;
 let eutherBooksVoiceSampleUrl = "";
@@ -2807,6 +2811,16 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   }
   const voiceRecord = target.closest<HTMLButtonElement>("[data-eutherbooks-record-voice]");
   if (voiceRecord) {
+    openEutherBooksVoiceSampleDialog();
+    return;
+  }
+  const voiceDialogClose = target.closest<HTMLButtonElement>("[data-eutherbooks-voice-dialog-close]");
+  if (voiceDialogClose) {
+    closeEutherBooksVoiceSampleDialog();
+    return;
+  }
+  const voiceDialogRecord = target.closest<HTMLButtonElement>("[data-eutherbooks-dialog-record-voice]");
+  if (voiceDialogRecord) {
     await startEutherBooksVoiceRecording();
     return;
   }
@@ -7891,6 +7905,16 @@ function eutherBooksOwnVoicePrompt(): string {
   return eutherBooksOwnVoiceLanguage() === "en" ? eutherBooksOwnVoiceEnPrompt : eutherBooksOwnVoiceSvPrompt;
 }
 
+function normalizeEutherBooksOwnVoicePrompt(language: "sv" | "en", value: string | null | undefined): string {
+  const fallback = language === "en" ? eutherBooksOwnVoiceEnPromptDefault : eutherBooksOwnVoiceSvPromptDefault;
+  const legacy = language === "en" ? eutherBooksOwnVoiceEnPromptLegacy : eutherBooksOwnVoiceSvPromptLegacy;
+  const trimmed = (value ?? "").trim();
+  if (!trimmed || trimmed === legacy) {
+    return fallback;
+  }
+  return trimmed.slice(0, 500);
+}
+
 function eutherBooksOwnVoiceLocked(): boolean {
   return eutherBooksOwnVoiceLanguage() === "en" ? eutherBooksOwnVoiceEnLocked : eutherBooksOwnVoiceSvLocked;
 }
@@ -7905,16 +7929,43 @@ function eutherBooksOwnVoiceControl(): string {
   return `
     <div class="eutherbooks-own-voice">
       <strong>${selectedEutherBooksVoice === "own-en" ? "Your own voice EN" : "Your own voice SV"}</strong>
-      <p>${escapeHtml(eutherBooksOwnVoicePrompt())}</p>
+      <p>${escapeHtml(hasSaved ? "Voice sample locked" : "No voice sample saved")}</p>
       <div class="eutherbooks-own-voice-actions">
-        <button data-eutherbooks-record-voice type="button" ${recording ? "disabled" : ""}>${hasSaved ? "Replace sample" : "Record sample"}</button>
+        <button data-eutherbooks-record-voice type="button">${hasSaved ? "Replace sample" : "Record sample"}</button>
         <button data-eutherbooks-pick-voice type="button" ${recording ? "disabled" : ""}>Choose audio</button>
-        <button data-eutherbooks-stop-voice type="button" ${recording ? "" : "disabled"}>Stop</button>
         <button data-eutherbooks-save-voice type="button" ${hasPreview && !recording ? "" : "disabled"}>Lock voice sample</button>
         <input data-eutherbooks-voice-sample-input type="file" accept="audio/*" capture="microphone" hidden>
       </div>
       ${hasPreview ? `<audio controls src="${escapeHtml(eutherBooksVoiceSampleUrl)}"></audio>` : ""}
-      <small>${escapeHtml(eutherBooksVoiceSampleStatus || (hasSaved ? "Voice sample locked" : "No voice sample saved"))}</small>
+      <small>${escapeHtml(eutherBooksVoiceSampleStatus || "Read the prompt exactly when recording a new sample")}</small>
+      ${eutherBooksVoiceSampleDialog()}
+    </div>
+  `;
+}
+
+function eutherBooksVoiceSampleDialog(): string {
+  if (!eutherBooksVoiceSampleDialogOpen) {
+    return "";
+  }
+  const recording = eutherBooksVoiceRecorder?.state === "recording";
+  const hasPreview = Boolean(eutherBooksVoiceSampleUrl);
+  return `
+    <div class="eutherbooks-voice-dialog" role="dialog" aria-modal="true" aria-labelledby="eutherbooks-voice-dialog-title">
+      <div class="eutherbooks-voice-dialog-panel">
+        <div class="eutherbooks-voice-dialog-head">
+          <h2 id="eutherbooks-voice-dialog-title">Press record when ready to read</h2>
+          <button data-eutherbooks-voice-dialog-close type="button" aria-label="Close">Close</button>
+        </div>
+        <p class="eutherbooks-voice-read-text">${escapeHtml(eutherBooksOwnVoicePrompt())}</p>
+        <div class="eutherbooks-voice-dialog-actions">
+          <button data-eutherbooks-dialog-record-voice type="button" ${recording ? "disabled" : ""}>Record</button>
+          <button data-eutherbooks-stop-voice type="button" ${recording ? "" : "disabled"}>Stop</button>
+          <button data-eutherbooks-pick-voice type="button" ${recording ? "disabled" : ""}>Choose audio</button>
+          <button data-eutherbooks-save-voice type="button" ${hasPreview && !recording ? "" : "disabled"}>Lock voice sample</button>
+        </div>
+        ${hasPreview ? `<audio controls src="${escapeHtml(eutherBooksVoiceSampleUrl)}"></audio>` : ""}
+        <small>${escapeHtml(eutherBooksVoiceSampleStatus || "Keep the phone close and read the text once in your normal voice")}</small>
+      </div>
     </div>
   `;
 }
@@ -7925,7 +7976,7 @@ function applyEutherBooksOwnVoicePreferences(preferences: UserPreferences): void
     localStorage.setItem("eutherbooks-own-sv-path", eutherBooksOwnVoiceSvPath);
   }
   if (typeof preferences.eutherbooksOwnVoiceSvPrompt === "string") {
-    eutherBooksOwnVoiceSvPrompt = preferences.eutherbooksOwnVoiceSvPrompt || eutherBooksOwnVoiceSvPromptDefault;
+    eutherBooksOwnVoiceSvPrompt = normalizeEutherBooksOwnVoicePrompt("sv", preferences.eutherbooksOwnVoiceSvPrompt);
     localStorage.setItem("eutherbooks-own-sv-prompt", eutherBooksOwnVoiceSvPrompt);
   }
   if (typeof preferences.eutherbooksOwnVoiceSvLocked === "boolean") {
@@ -7937,7 +7988,7 @@ function applyEutherBooksOwnVoicePreferences(preferences: UserPreferences): void
     localStorage.setItem("eutherbooks-own-en-path", eutherBooksOwnVoiceEnPath);
   }
   if (typeof preferences.eutherbooksOwnVoiceEnPrompt === "string") {
-    eutherBooksOwnVoiceEnPrompt = preferences.eutherbooksOwnVoiceEnPrompt || eutherBooksOwnVoiceEnPromptDefault;
+    eutherBooksOwnVoiceEnPrompt = normalizeEutherBooksOwnVoicePrompt("en", preferences.eutherbooksOwnVoiceEnPrompt);
     localStorage.setItem("eutherbooks-own-en-prompt", eutherBooksOwnVoiceEnPrompt);
   }
   if (typeof preferences.eutherbooksOwnVoiceEnLocked === "boolean") {
@@ -7965,6 +8016,7 @@ async function startEutherBooksVoiceRecording(): Promise<void> {
     return;
   }
   eutherBooksVoiceRecordChunks = [];
+  eutherBooksVoiceRecordCancelled = false;
   eutherBooksVoiceSampleBlob = null;
   if (eutherBooksVoiceSampleUrl) {
     URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
@@ -7979,6 +8031,14 @@ async function startEutherBooksVoiceRecording(): Promise<void> {
   });
   recorder.addEventListener("stop", () => {
     stream.getTracks().forEach((track) => track.stop());
+    if (eutherBooksVoiceRecordCancelled) {
+      eutherBooksVoiceRecordCancelled = false;
+      eutherBooksVoiceRecordChunks = [];
+      eutherBooksVoiceSampleStatus = "Recording cancelled";
+      eutherBooksVoiceRecorder = null;
+      renderBooksWindowIfActive();
+      return;
+    }
     const type = recorder.mimeType || "audio/webm";
     eutherBooksVoiceSampleBlob = new Blob(eutherBooksVoiceRecordChunks, { type });
     eutherBooksVoiceSampleUrl = URL.createObjectURL(eutherBooksVoiceSampleBlob);
@@ -7987,7 +8047,23 @@ async function startEutherBooksVoiceRecording(): Promise<void> {
     renderBooksWindowIfActive();
   });
   recorder.start();
+  eutherBooksVoiceSampleDialogOpen = true;
   eutherBooksVoiceSampleStatus = "Recording voice sample";
+  renderBooksWindowIfActive();
+}
+
+function openEutherBooksVoiceSampleDialog(): void {
+  eutherBooksVoiceSettingsOpen = true;
+  eutherBooksVoiceSampleDialogOpen = true;
+  renderBooksWindowIfActive();
+}
+
+function closeEutherBooksVoiceSampleDialog(): void {
+  if (eutherBooksVoiceRecorder?.state === "recording") {
+    eutherBooksVoiceRecordCancelled = true;
+    eutherBooksVoiceRecorder.stop();
+  }
+  eutherBooksVoiceSampleDialogOpen = false;
   renderBooksWindowIfActive();
 }
 
@@ -8027,6 +8103,7 @@ async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void
       URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
       eutherBooksVoiceSampleUrl = "";
     }
+    eutherBooksVoiceSampleDialogOpen = false;
     resetEutherBooksSelectionAudio();
   } catch (error) {
     eutherBooksVoiceSampleStatus = error instanceof Error ? error.message : "Could not save voice sample";
@@ -8036,6 +8113,7 @@ async function saveEutherBooksOwnVoiceSampleBlob(sampleBlob: Blob): Promise<void
 
 function openEutherBooksVoiceSamplePicker(): void {
   eutherBooksVoiceSettingsOpen = true;
+  eutherBooksVoiceSampleDialogOpen = true;
   const input = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-eutherbooks-voice-sample-input]");
   input?.click();
 }
@@ -8051,6 +8129,7 @@ function useEutherBooksVoiceSampleFile(file: File): void {
     URL.revokeObjectURL(eutherBooksVoiceSampleUrl);
   }
   eutherBooksVoiceSampleUrl = URL.createObjectURL(file);
+  eutherBooksVoiceSampleDialogOpen = true;
   eutherBooksVoiceSampleStatus = "Preview the sample, then lock it to save";
   renderBooksWindowIfActive();
 }

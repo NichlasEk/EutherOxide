@@ -5814,6 +5814,75 @@ h2 {
   width: 100%;
 }
 
+.eutherbooks-voice-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 4vw, 40px);
+  background: rgba(2, 6, 5, 0.92);
+  backdrop-filter: blur(10px);
+}
+
+.eutherbooks-voice-dialog-panel {
+  width: min(760px, 100%);
+  max-height: min(860px, 100%);
+  overflow: auto;
+  display: grid;
+  gap: 18px;
+  padding: clamp(18px, 4vw, 34px);
+  border: 1px solid rgba(207, 240, 178, 0.22);
+  border-radius: 8px;
+  background: rgba(7, 15, 11, 0.96);
+  box-shadow: 0 22px 80px rgba(0, 0, 0, 0.48);
+}
+
+.eutherbooks-voice-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.eutherbooks-voice-dialog-head h2 {
+  margin: 0;
+  color: #fff4c6;
+  font-size: clamp(1.15rem, 3vw, 1.8rem);
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.eutherbooks-voice-dialog-head button,
+.eutherbooks-voice-dialog-actions button {
+  min-height: 42px;
+  padding: 0 14px;
+}
+
+.eutherbooks-voice-read-text {
+  margin: 0;
+  color: #edf6dd;
+  font-size: clamp(1.05rem, 2.6vw, 1.65rem);
+  line-height: 1.45;
+  font-weight: 750;
+}
+
+.eutherbooks-voice-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.eutherbooks-voice-dialog audio {
+  width: 100%;
+}
+
+.eutherbooks-voice-dialog small {
+  color: rgba(237, 246, 221, 0.72);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 @media (max-width: 720px) {
   .eutherbooks-voice-control:not([open]) {
     gap: 0;
