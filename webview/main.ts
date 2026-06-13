@@ -1318,6 +1318,7 @@ let selectedEutherBookChapters: EutherBookChapter[] = [];
 let selectedEutherBookChaptersLoading = false;
 let selectedEutherBookChapterIndex = storedEutherBooksNumber("last_chapter", 0);
 let selectedEutherBooksVoice = localStorage.getItem("eutherbooks-voice") ?? "sv-female-warm";
+let eutherBooksVoiceSettingsOpen = !window.matchMedia("(max-width: 720px)").matches;
 const eutherBooksOwnVoiceSvPromptDefault = "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst.";
 const eutherBooksOwnVoiceEnPromptDefault = "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone.";
 let eutherBooksCustomVoicePrompt = localStorage.getItem("eutherbooks-custom-voice") ?? "A warm Swedish audiobook narrator with clear pronunciation and natural pacing.";
@@ -2901,6 +2902,9 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const voiceSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-voice]");
   if (voiceSelect?.value) {
     selectedEutherBooksVoice = voiceSelect.value;
+    if (selectedEutherBooksVoice === "custom" || selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en") {
+      eutherBooksVoiceSettingsOpen = true;
+    }
     localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
     resetEutherBooksSelectionAudio();
     scheduleUserPreferencesSave();
@@ -2952,6 +2956,18 @@ workspaceWindowDynamic.addEventListener("submit", (event) => {
   event.preventDefault();
   void sendSocialChatMessage();
 });
+
+workspaceWindowDynamic.addEventListener(
+  "toggle",
+  (event) => {
+    const settings = (event.target as HTMLElement).closest<HTMLDetailsElement>("[data-eutherbooks-voice-settings]");
+    if (!settings || activeWorkspaceWindow !== "books") {
+      return;
+    }
+    eutherBooksVoiceSettingsOpen = settings.open;
+  },
+  true,
+);
 
 workspaceWindowDynamic.addEventListener("input", (event) => {
   const customVoiceInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-custom-voice]");
@@ -7696,7 +7712,7 @@ function eutherBooksWindowMarkup(): string {
           </label>
           <button class="primary-action" data-eutherbooks-tts type="button" ${canGenerate && !eutherBooksTtsSubmitting ? "" : "disabled"}>Generate speech</button>
         </div>
-        <details class="eutherbooks-voice-control" ${eutherBooksSettingsOpenAttr()}>
+        <details class="eutherbooks-voice-control" data-eutherbooks-voice-settings ${eutherBooksSettingsOpenAttr()}>
           <summary>Voice and model</summary>
           <label>
             <span>Voice</span>
@@ -7814,7 +7830,7 @@ function eutherBooksUsesEutherLinkVoice(): boolean {
 }
 
 function eutherBooksSettingsOpenAttr(): string {
-  return window.matchMedia("(max-width: 720px)").matches ? "" : "open";
+  return eutherBooksVoiceSettingsOpen || !window.matchMedia("(max-width: 720px)").matches ? "open" : "";
 }
 
 function eutherBooksTtsOptionControls(): string {
