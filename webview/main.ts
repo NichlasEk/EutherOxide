@@ -7868,6 +7868,7 @@ function eutherBooksSettingsOpenAttr(): string {
 function eutherBooksTtsOptionControls(): string {
   if (eutherBooksUsesEutherLinkVoice()) {
     return [
+      eutherBooksOptionSlider("Speed", "length_scale", eutherBooksLengthScale, 0.75, 1.35, 0.05, "Lower is faster"),
       eutherBooksOptionSlider("Guidance", "cfg_value", eutherBooksCfgValue, 1, 3, 0.1, "Speaker consistency and prompt adherence"),
       eutherBooksOptionSlider("Steps", "inference_timesteps", eutherBooksInferenceTimesteps, 10, 50, 1, "Higher costs more time"),
       eutherBooksOptionSlider("Chunk size", "max_chunk_chars", eutherBooksMaxChunkChars, 120, 1500, 20, "Longer chunks keep more context"),
