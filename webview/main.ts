@@ -291,6 +291,11 @@ type UserPreferences = {
   eutherbooksInferenceTimesteps?: number;
   eutherbooksMaxChunkChars?: number;
   eutherbooksSeed?: number;
+  eutherbooksModelBackend?: string;
+  eutherbooksDotsGuidanceScale?: number;
+  eutherbooksDotsSpeakerScale?: number;
+  eutherbooksDotsNumSteps?: number;
+  eutherbooksDotsMaxGenerateLength?: number;
   eutherbooksLastBookId?: string;
   eutherbooksLastChapterIndex?: number;
   eutherbooksAutoGenerateNext?: boolean;
@@ -537,6 +542,9 @@ type EutherBooksVoice = {
   language: string;
   backend: string;
   path: string;
+  model_backend?: string | null;
+  default_length_scale?: number | null;
+  default_seed?: number | null;
 };
 
 type EutherBooksSleepTimerMode = "off" | "15" | "30" | "45" | "60" | "chapter";
@@ -1319,6 +1327,7 @@ let selectedEutherBookChapters: EutherBookChapter[] = [];
 let selectedEutherBookChaptersLoading = false;
 let selectedEutherBookChapterIndex = storedEutherBooksNumber("last_chapter", 0);
 let selectedEutherBooksVoice = localStorage.getItem("eutherbooks-voice") ?? "sv-female-warm";
+let selectedEutherBooksModelBackend = normalizeEutherBooksModelBackend(localStorage.getItem("eutherbooks-model") ?? "");
 let eutherBooksVoiceSettingsOpen = !window.matchMedia("(max-width: 720px)").matches;
 const eutherBooksOwnVoiceSvPromptLegacy = "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst.";
 const eutherBooksOwnVoiceEnPromptLegacy = "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone.";
@@ -1344,6 +1353,10 @@ let eutherBooksNoiseW = storedEutherBooksNumber("noise_w", 0.8);
 let eutherBooksSentenceSilence = storedEutherBooksNumber("sentence_silence", 0.2);
 let eutherBooksCfgValue = storedEutherBooksNumber("cfg_value", 2);
 let eutherBooksInferenceTimesteps = storedEutherBooksNumber("inference_timesteps", 10);
+let eutherBooksDotsGuidanceScale = storedEutherBooksNumber("dots_guidance_scale", 1.2);
+let eutherBooksDotsSpeakerScale = storedEutherBooksNumber("dots_speaker_scale", 1.5);
+let eutherBooksDotsNumSteps = storedEutherBooksNumber("dots_num_steps", 10);
+let eutherBooksDotsMaxGenerateLength = storedEutherBooksNumber("dots_max_generate_length", 500);
 let eutherBooksMaxChunkChars = storedEutherBooksNumber("max_chunk_chars", 700);
 let eutherBooksSeed = storedEutherBooksNumber("seed", 0);
 let eutherBooksJob: EutherBooksJob | null = null;
@@ -2934,9 +2947,23 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const voiceSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-voice]");
   if (voiceSelect?.value) {
     selectedEutherBooksVoice = voiceSelect.value;
-    if (selectedEutherBooksVoice === "custom" || selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en") {
+    selectedEutherBooksModelBackend = eutherBooksVoiceModelBackend(eutherBooksSelectedVoice()) ?? selectedEutherBooksModelBackend;
+    if (eutherBooksIsOwnVoiceSelection() || selectedEutherBooksVoice === "custom") {
       eutherBooksVoiceSettingsOpen = true;
     }
+    persistEutherBooksModelBackend();
+    localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
+    applyEutherBooksSelectedVoiceDefaults();
+    resetEutherBooksSelectionAudio();
+    scheduleUserPreferencesSave();
+    renderWorkspaceWindow();
+    return;
+  }
+  const modelSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-model]");
+  if (modelSelect?.value) {
+    selectedEutherBooksModelBackend = normalizeEutherBooksModelBackend(modelSelect.value);
+    selectEutherBooksVoiceForModelBackend();
+    persistEutherBooksModelBackend();
     localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
     resetEutherBooksSelectionAudio();
     scheduleUserPreferencesSave();
@@ -7754,8 +7781,8 @@ function eutherBooksWindowMarkup(): string {
           </label>
           <label>
             <span>Model</span>
-            <select data-eutherbooks-model disabled>
-              <option>VoxCPM2</option>
+            <select data-eutherbooks-model>
+              ${eutherBooksModelOptions()}
             </select>
           </label>
           ${eutherBooksCustomVoiceControl()}
@@ -7826,16 +7853,21 @@ function eutherBooksVoiceOptions(): string {
   const voices = eutherBooksVoices.length
     ? eutherBooksVoices
     : [
-        { id: "sv-female-warm", label: "Warm female narrator", language: "sv", backend: "eutherlink", path: "" },
-        { id: "sv-male-warm", label: "Warm male narrator", language: "sv", backend: "eutherlink", path: "" },
-        { id: "own-sv", label: "Your own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv" },
-        { id: "own-en", label: "Your own voice EN", language: "en", backend: "eutherlink", path: "user:own-en" },
-        { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "" },
+        { id: "sv-female-warm", label: "Warm female narrator", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2", default_length_scale: 1.15, default_seed: 774928057 },
+        { id: "sv-male-warm", label: "Warm male narrator", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2", default_length_scale: 1.15, default_seed: 757444653 },
+        { id: "en-female-warm", label: "English warm female narrator", language: "en", backend: "eutherlink", path: "", model_backend: "voxcpm2", default_length_scale: 1.15, default_seed: 2073739982 },
+        { id: "en-male-warm", label: "English warm male narrator", language: "en", backend: "eutherlink", path: "", model_backend: "voxcpm2", default_length_scale: 1.15, default_seed: 550498084 },
+        { id: "own-sv", label: "Your own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "voxcpm2" },
+        { id: "own-en", label: "Your own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "voxcpm2" },
+        { id: "dots-soar-own-sv", label: "Dots SOAR own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "dots.tts-soar" },
+        { id: "dots-soar-own-en", label: "Dots SOAR own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-soar" },
+        { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2" },
       ];
   const groups = [
-    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id))],
-    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id))],
+    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-"))],
+    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-"))],
     ["Your own voice", voices.filter((voice) => voice.id === "own-sv" || voice.id === "own-en")],
+    ["Dots SOAR", voices.filter((voice) => voice.id.startsWith("dots-soar-"))],
     ["Egen röst", voices.filter((voice) => voice.id === "custom")],
   ] as const;
   return groups
@@ -7848,13 +7880,81 @@ function eutherBooksVoiceOptions(): string {
     .join("");
 }
 
+function eutherBooksModelOptions(): string {
+  const active = eutherBooksEffectiveModelBackend();
+  return [
+    `<option value="voxcpm2" ${active === "voxcpm2" ? "selected" : ""}>VoxCPM2</option>`,
+    `<option value="dots.tts-soar" ${active === "dots.tts-soar" ? "selected" : ""}>Dots SOAR</option>`,
+  ].join("");
+}
+
+function normalizeEutherBooksModelBackend(value: string): "voxcpm2" | "dots.tts-soar" {
+  return value.trim().toLowerCase() === "dots.tts-soar" ? "dots.tts-soar" : "voxcpm2";
+}
+
+function eutherBooksVoiceModelBackend(voice: EutherBooksVoice | undefined): "voxcpm2" | "dots.tts-soar" | undefined {
+  if (!voice?.model_backend) {
+    return undefined;
+  }
+  return normalizeEutherBooksModelBackend(voice.model_backend);
+}
+
+function eutherBooksEffectiveModelBackend(): "voxcpm2" | "dots.tts-soar" {
+  return eutherBooksVoiceModelBackend(eutherBooksSelectedVoice()) ?? selectedEutherBooksModelBackend;
+}
+
+function persistEutherBooksModelBackend(): void {
+  localStorage.setItem("eutherbooks-model", selectedEutherBooksModelBackend);
+}
+
+function eutherBooksIsOwnVoiceSelection(): boolean {
+  return selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-soar-own-sv" || selectedEutherBooksVoice === "dots-soar-own-en";
+}
+
+function selectEutherBooksVoiceForModelBackend(): void {
+  const language = eutherBooksRequestLanguage();
+  if (selectedEutherBooksModelBackend === "dots.tts-soar") {
+    selectedEutherBooksVoice = language === "en" ? "dots-soar-own-en" : "dots-soar-own-sv";
+    eutherBooksVoiceSettingsOpen = true;
+    return;
+  }
+  if (selectedEutherBooksVoice.startsWith("dots-soar-")) {
+    selectedEutherBooksVoice = language === "en" ? "own-en" : "own-sv";
+    eutherBooksVoiceSettingsOpen = true;
+  }
+}
+
 function eutherBooksVoiceOption(voice: EutherBooksVoice): string {
   return `<option value="${escapeHtml(voice.id)}" ${voice.id === selectedEutherBooksVoice ? "selected" : ""}>${escapeHtml(voice.label)}</option>`;
 }
 
 
+function eutherBooksSelectedVoice(): EutherBooksVoice | undefined {
+  return eutherBooksVoices.find((voice) => voice.id === selectedEutherBooksVoice);
+}
+
+function eutherBooksRequestLanguage(): string {
+  const language = eutherBooksSelectedVoice()?.language?.toLowerCase() ?? (selectedEutherBooksVoice.startsWith("en-") ? "en" : "sv");
+  return language.startsWith("en") ? "en" : "sv";
+}
+
+function applyEutherBooksSelectedVoiceDefaults(): void {
+  const voice = eutherBooksSelectedVoice();
+  if (!voice || selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "custom") {
+    return;
+  }
+  if (typeof voice.default_length_scale === "number" && Number.isFinite(voice.default_length_scale)) {
+    eutherBooksLengthScale = clampEutherBooksOption("length_scale", voice.default_length_scale);
+    localStorage.setItem("eutherbooks-length_scale", String(eutherBooksLengthScale));
+  }
+  if (typeof voice.default_seed === "number" && Number.isFinite(voice.default_seed)) {
+    eutherBooksSeed = clampEutherBooksOption("seed", voice.default_seed);
+    localStorage.setItem("eutherbooks-seed", String(eutherBooksSeed));
+  }
+}
+
 function eutherBooksSelectedVoiceBackend(): string {
-  return eutherBooksVoices.find((voice) => voice.id === selectedEutherBooksVoice)?.backend ?? "eutherlink";
+  return eutherBooksSelectedVoice()?.backend ?? "eutherlink";
 }
 
 function eutherBooksUsesEutherLinkVoice(): boolean {
@@ -7867,6 +7967,17 @@ function eutherBooksSettingsOpenAttr(): string {
 
 function eutherBooksTtsOptionControls(): string {
   if (eutherBooksUsesEutherLinkVoice()) {
+    if (eutherBooksEffectiveModelBackend() === "dots.tts-soar") {
+      return [
+        eutherBooksOptionSlider("Speed", "length_scale", eutherBooksLengthScale, 0.75, 1.35, 0.05, "Lower is faster"),
+        eutherBooksOptionSlider("Guidance scale", "dots_guidance_scale", eutherBooksDotsGuidanceScale, 0, 5, 0.05, "Dots classifier-free guidance"),
+        eutherBooksOptionSlider("Speaker scale", "dots_speaker_scale", eutherBooksDotsSpeakerScale, 0, 5, 0.05, "Reference voice strength"),
+        eutherBooksOptionSlider("Steps", "dots_num_steps", eutherBooksDotsNumSteps, 1, 50, 1, "Dots diffusion steps"),
+        eutherBooksOptionSlider("Max audio length", "dots_max_generate_length", eutherBooksDotsMaxGenerateLength, 128, 4096, 32, "Prompt plus generated audio patches"),
+        eutherBooksOptionSlider("Chunk size", "max_chunk_chars", eutherBooksMaxChunkChars, 120, 1500, 20, "Longer chunks keep more context"),
+        eutherBooksSeedControl(),
+      ].join("");
+    }
     return [
       eutherBooksOptionSlider("Speed", "length_scale", eutherBooksLengthScale, 0.75, 1.35, 0.05, "Lower is faster"),
       eutherBooksOptionSlider("Guidance", "cfg_value", eutherBooksCfgValue, 1, 3, 0.1, "Speaker consistency and prompt adherence"),
@@ -7903,7 +8014,7 @@ function eutherBooksRequestVoice(): string {
 }
 
 function eutherBooksOwnVoiceLanguage(): "sv" | "en" {
-  return selectedEutherBooksVoice === "own-en" ? "en" : "sv";
+  return selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-soar-own-en" ? "en" : "sv";
 }
 
 function eutherBooksOwnVoicePath(): string {
@@ -7929,7 +8040,7 @@ function eutherBooksOwnVoiceLocked(): boolean {
 }
 
 function eutherBooksOwnVoiceControl(): string {
-  if (selectedEutherBooksVoice !== "own-sv" && selectedEutherBooksVoice !== "own-en") {
+  if (!eutherBooksIsOwnVoiceSelection()) {
     return "";
   }
   const recording = eutherBooksVoiceRecorder?.state === "recording";
@@ -7937,7 +8048,7 @@ function eutherBooksOwnVoiceControl(): string {
   const hasSaved = eutherBooksOwnVoiceLocked() && eutherBooksOwnVoicePath();
   return `
     <div class="eutherbooks-own-voice">
-      <strong>${selectedEutherBooksVoice === "own-en" ? "Your own voice EN" : "Your own voice SV"}</strong>
+      <strong>${eutherBooksOwnVoiceLanguage() === "en" ? "Your own voice EN" : "Your own voice SV"}</strong>
       <p>${escapeHtml(hasSaved ? "Voice sample locked" : "No voice sample saved")}</p>
       <div class="eutherbooks-own-voice-actions">
         <button data-eutherbooks-record-voice type="button">${hasSaved ? "Replace sample" : "Record sample"}</button>
@@ -8476,15 +8587,22 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      language: "sv",
+      language: eutherBooksRequestLanguage(),
       voice: eutherBooksRequestVoice(),
       chapters: [chapterIndex],
       length_scale: eutherBooksLengthScale,
       noise_scale: eutherBooksNoiseScale,
       noise_w: eutherBooksNoiseW,
       sentence_silence: eutherBooksSentenceSilence,
+      model_backend: eutherBooksEffectiveModelBackend(),
       cfg_value: eutherBooksCfgValue,
       inference_timesteps: eutherBooksInferenceTimesteps,
+      dots_template_name: "tts",
+      dots_ode_method: "euler",
+      dots_num_steps: eutherBooksDotsNumSteps,
+      dots_guidance_scale: eutherBooksDotsGuidanceScale,
+      dots_speaker_scale: eutherBooksDotsSpeakerScale,
+      dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
       max_chunk_chars: eutherBooksMaxChunkChars,
       seed: eutherBooksSeed,
       voice_reference_path: eutherBooksOwnVoicePath(),
@@ -9157,6 +9275,18 @@ function setEutherBooksOption(key: string, value: number): void {
     case "inference_timesteps":
       eutherBooksInferenceTimesteps = safeValue;
       break;
+    case "dots_guidance_scale":
+      eutherBooksDotsGuidanceScale = safeValue;
+      break;
+    case "dots_speaker_scale":
+      eutherBooksDotsSpeakerScale = safeValue;
+      break;
+    case "dots_num_steps":
+      eutherBooksDotsNumSteps = safeValue;
+      break;
+    case "dots_max_generate_length":
+      eutherBooksDotsMaxGenerateLength = safeValue;
+      break;
     case "max_chunk_chars":
       eutherBooksMaxChunkChars = safeValue;
       break;
@@ -9194,6 +9324,14 @@ function clampEutherBooksOption(key: string, value: number): number {
       return Math.min(Math.max(value, 1), 3);
     case "inference_timesteps":
       return Math.round(Math.min(Math.max(value, 10), 50));
+    case "dots_guidance_scale":
+      return Math.min(Math.max(value, 0), 5);
+    case "dots_speaker_scale":
+      return Math.min(Math.max(value, 0), 5);
+    case "dots_num_steps":
+      return Math.round(Math.min(Math.max(value, 1), 50));
+    case "dots_max_generate_length":
+      return Math.round(Math.min(Math.max(value, 128), 4096));
     case "max_chunk_chars":
       return Math.round(Math.min(Math.max(value, 120), 1500));
     case "seed":
@@ -9217,6 +9355,14 @@ function eutherBooksOptionFallback(key: string): number {
       return 2;
     case "inference_timesteps":
       return 10;
+    case "dots_guidance_scale":
+      return 1.2;
+    case "dots_speaker_scale":
+      return 1.5;
+    case "dots_num_steps":
+      return 10;
+    case "dots_max_generate_length":
+      return 500;
     case "max_chunk_chars":
       return 700;
     case "seed":
@@ -13702,6 +13848,11 @@ function currentUserPreferences(): UserPreferences {
     eutherbooksInferenceTimesteps: eutherBooksInferenceTimesteps,
     eutherbooksMaxChunkChars: eutherBooksMaxChunkChars,
     eutherbooksSeed: eutherBooksSeed,
+    eutherbooksModelBackend: selectedEutherBooksModelBackend,
+    eutherbooksDotsGuidanceScale: eutherBooksDotsGuidanceScale,
+    eutherbooksDotsSpeakerScale: eutherBooksDotsSpeakerScale,
+    eutherbooksDotsNumSteps: eutherBooksDotsNumSteps,
+    eutherbooksDotsMaxGenerateLength: eutherBooksDotsMaxGenerateLength,
     eutherbooksLastBookId: selectedEutherBookId ?? "",
     eutherbooksLastChapterIndex: selectedEutherBookChapterIndex,
     eutherbooksAutoGenerateNext: eutherBooksAutoGenerateNext,
@@ -13759,6 +13910,10 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
   if (typeof preferences.eutherbooksCustomVoice === "string") {
     setEutherBooksCustomVoicePrompt(preferences.eutherbooksCustomVoice);
   }
+  if (typeof preferences.eutherbooksModelBackend === "string") {
+    selectedEutherBooksModelBackend = normalizeEutherBooksModelBackend(preferences.eutherbooksModelBackend);
+    persistEutherBooksModelBackend();
+  }
   const lastBookId = preferences.eutherbooksLastBookId?.trim();
   if (lastBookId) {
     selectedEutherBookId = lastBookId;
@@ -13794,6 +13949,26 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     "inference_timesteps",
     preferences.eutherbooksInferenceTimesteps,
     eutherBooksInferenceTimesteps,
+  );
+  eutherBooksDotsGuidanceScale = applyEutherBooksNumberPreference(
+    "dots_guidance_scale",
+    preferences.eutherbooksDotsGuidanceScale,
+    eutherBooksDotsGuidanceScale,
+  );
+  eutherBooksDotsSpeakerScale = applyEutherBooksNumberPreference(
+    "dots_speaker_scale",
+    preferences.eutherbooksDotsSpeakerScale,
+    eutherBooksDotsSpeakerScale,
+  );
+  eutherBooksDotsNumSteps = applyEutherBooksNumberPreference(
+    "dots_num_steps",
+    preferences.eutherbooksDotsNumSteps,
+    eutherBooksDotsNumSteps,
+  );
+  eutherBooksDotsMaxGenerateLength = applyEutherBooksNumberPreference(
+    "dots_max_generate_length",
+    preferences.eutherbooksDotsMaxGenerateLength,
+    eutherBooksDotsMaxGenerateLength,
   );
   eutherBooksMaxChunkChars = applyEutherBooksNumberPreference(
     "max_chunk_chars",
