@@ -515,6 +515,7 @@ type EutherBooksJob = {
   voice: string;
   chapter_indexes: number[];
   audio_files: string[];
+  audio_durations?: number[];
   total_audio_files?: number;
   tts_options?: Record<string, number | string | boolean | null>;
   queue_remainder?: boolean;
@@ -1391,6 +1392,7 @@ let eutherBooksPrefetchPollTimer: number | null = null;
 let eutherBooksPlayerStatus = "";
 let eutherBooksJobLastCheckedAt = 0;
 let eutherBooksPlayableFallbackJob: EutherBooksJob | null = null;
+const eutherBooksAudioDurationCache = new Map<string, number>();
 let eutherBooksSleepTimerMode: EutherBooksSleepTimerMode = "off";
 let eutherBooksSleepTimerDeadline: number | null = null;
 let eutherBooksSleepTimerId: number | null = null;
@@ -2834,6 +2836,11 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     renderBooksWindowIfActive();
     return;
   }
+  const booksPlayToggle = target.closest<HTMLButtonElement>("[data-eutherbooks-play-toggle]");
+  if (booksPlayToggle) {
+    toggleEutherBooksPlayback();
+    return;
+  }
   const booksAutoAdvance = target.closest<HTMLButtonElement>("[data-eutherbooks-auto-advance]");
   if (booksAutoAdvance) {
     setEutherBooksAutoAdvance(!eutherBooksAutoAdvance);
@@ -2995,6 +3002,11 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
     setEutherBooksCustomVoicePrompt(customVoiceInput.value);
     return;
   }
+  const virtualSeek = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-virtual-seek]");
+  if (virtualSeek) {
+    seekEutherBooksVirtualTime(Number(virtualSeek.value), isEutherBooksAudioPlaying());
+    return;
+  }
   const audioSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-audio-select]");
   if (audioSelect) {
     setEutherBooksAudioIndex(Number(audioSelect.value), true);
@@ -3053,6 +3065,11 @@ workspaceWindowDynamic.addEventListener("input", (event) => {
   const customVoiceInput = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-custom-voice]");
   if (customVoiceInput) {
     setEutherBooksCustomVoicePrompt(customVoiceInput.value);
+    return;
+  }
+  const virtualSeek = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherbooks-virtual-seek]");
+  if (virtualSeek) {
+    seekEutherBooksVirtualTime(Number(virtualSeek.value), isEutherBooksAudioPlaying());
     return;
   }
   const search = (event.target as HTMLElement).closest<HTMLInputElement>("[data-social-user-search]");
@@ -3116,6 +3133,35 @@ workspaceWindowDynamic.addEventListener(
     }
     eutherBooksPlayerStatus = eutherBooksAudioErrorMessage(audio.error);
     renderBooksWindowIfActive();
+  },
+  true,
+);
+
+workspaceWindowDynamic.addEventListener(
+  "timeupdate",
+  (event) => {
+    const audio = (event.target as HTMLElement).closest<HTMLAudioElement>("audio");
+    if (!audio || activeWorkspaceWindow !== "books") {
+      return;
+    }
+    const job = currentEutherBooksPlaybackJob();
+    const path = job?.audio_files[eutherBooksAudioIndex];
+    if (path && Number.isFinite(audio.duration) && audio.duration > 0) {
+      eutherBooksAudioDurationCache.set(path, audio.duration);
+    }
+    updateEutherBooksVirtualPlayerDom(audio);
+  },
+  true,
+);
+
+workspaceWindowDynamic.addEventListener(
+  "loadedmetadata",
+  (event) => {
+    const audio = (event.target as HTMLElement).closest<HTMLAudioElement>("audio");
+    if (!audio || activeWorkspaceWindow !== "books") {
+      return;
+    }
+    updateEutherBooksVirtualPlayerDom(audio);
   },
   true,
 );
@@ -7702,6 +7748,7 @@ function eutherBooksWindowMarkup(): string {
     : audioPath
       ? eutherBooksAudioUrl(audioPath)
       : null;
+  const virtualPlayer = eutherBooksVirtualPlayerMarkup(playbackJob, audioSource);
   const progress = eutherBooksJobProgress();
   const processStatus = eutherBooksProcessStatus();
   const backendPulse = eutherBooksBackendPulse();
@@ -7843,8 +7890,7 @@ function eutherBooksWindowMarkup(): string {
               ${audioOptions}
             </select>
           </label>
-          <audio controls preload="auto" ${audioSource ? `src="${escapeHtml(audioSource)}"` : ""}></audio>
-          ${audioSource ? "" : `<div class="eutherbooks-audio-waiting">${escapeHtml(eutherBooksAudioWaitingLabel())}</div>`}
+          ${virtualPlayer}
         </div>
         <div class="eutherbooks-bookmark-panel">
           <span>${escapeHtml(bookmarkLabel)}</span>
@@ -8735,6 +8781,7 @@ async function refreshEutherBooksJob(): Promise<void> {
       void attachEutherBooksReadyFallbackForSelection(eutherBooksJob.id);
     }
     if (eutherBooksJob.audio_files.length) {
+      loadEutherBooksAudioDurations(eutherBooksJob);
       if (previousAudioCount === 0) {
         eutherBooksAudioIndex = 0;
         if (eutherBooksAutoAdvance) {
@@ -9060,6 +9107,152 @@ function eutherBooksBookmarkLabel(bookmark: EutherBooksBookmark): string {
   return `${chapterLabel} / ${formatDuration(bookmark.current_time)}`;
 }
 
+function eutherBooksVirtualPlayerMarkup(job: EutherBooksJob | null, audioSource: string | null): string {
+  if (!audioSource) {
+    return `<div class="eutherbooks-audio-waiting">${escapeHtml(eutherBooksAudioWaitingLabel())}</div>`;
+  }
+  loadEutherBooksAudioDurations(job);
+  const total = eutherBooksVirtualTotalDuration(job);
+  const current = eutherBooksVirtualCurrentTime(job, currentEutherBooksAudio());
+  const max = Math.max(total, current, 0.01);
+  const isPlaying = isEutherBooksAudioPlaying();
+  return `
+    <div class="eutherbooks-virtual-player">
+      <audio data-eutherbooks-audio preload="auto" src="${escapeHtml(audioSource)}"></audio>
+      <button data-eutherbooks-play-toggle type="button" aria-label="${isPlaying ? "Pause" : "Play"}">${isPlaying ? "Pause" : "Play"}</button>
+      <input data-eutherbooks-virtual-seek type="range" min="0" max="${max.toFixed(3)}" step="0.05" value="${Math.min(current, max).toFixed(3)}" aria-label="Audiobook position">
+      <span data-eutherbooks-virtual-time>${escapeHtml(formatDuration(current))} / ${escapeHtml(total > 0 ? formatDuration(total) : "--:--")}</span>
+    </div>
+  `;
+}
+
+function eutherBooksChunkDurations(job: EutherBooksJob | null): number[] {
+  const audioFiles = job?.audio_files ?? [];
+  const durations = job?.audio_durations ?? [];
+  return audioFiles.map((path, index) => {
+    const duration = Number(durations[index] ?? eutherBooksAudioDurationCache.get(path) ?? 0);
+    return Number.isFinite(duration) && duration > 0 ? duration : 0;
+  });
+}
+
+function eutherBooksVirtualTotalDuration(job: EutherBooksJob | null): number {
+  return eutherBooksChunkDurations(job).reduce((sum, duration) => sum + duration, 0);
+}
+
+function loadEutherBooksAudioDurations(job: EutherBooksJob | null): void {
+  const audioFiles = job?.audio_files ?? [];
+  for (const path of audioFiles) {
+    if (eutherBooksAudioDurationCache.has(path)) {
+      continue;
+    }
+    const probe = new Audio(eutherBooksAudioUrl(path));
+    probe.preload = "metadata";
+    probe.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(probe.duration) && probe.duration > 0) {
+        eutherBooksAudioDurationCache.set(path, probe.duration);
+        const currentJob = currentEutherBooksPlaybackJob();
+        if (currentJob?.audio_files.includes(path)) {
+          updateEutherBooksVirtualPlayerDom(currentEutherBooksAudio());
+        }
+      }
+    }, { once: true });
+    probe.addEventListener("error", () => {
+      eutherBooksAudioDurationCache.set(path, 0);
+    }, { once: true });
+    probe.load();
+  }
+}
+
+function eutherBooksVirtualCurrentTime(job: EutherBooksJob | null, audio: HTMLAudioElement | null): number {
+  const durations = eutherBooksChunkDurations(job);
+  const before = durations.slice(0, Math.max(0, eutherBooksAudioIndex)).reduce((sum, duration) => sum + duration, 0);
+  const current = audio && Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
+  return before + current;
+}
+
+function eutherBooksVirtualSeekTarget(job: EutherBooksJob | null, seconds: number): { index: number; offset: number } | null {
+  const audioFiles = job?.audio_files ?? [];
+  if (!audioFiles.length) {
+    return null;
+  }
+  const durations = eutherBooksChunkDurations(job);
+  let remaining = Math.max(0, seconds);
+  for (let index = 0; index < audioFiles.length; index += 1) {
+    const duration = durations[index] || (index === audioFiles.length - 1 ? Number.POSITIVE_INFINITY : 0);
+    if (remaining <= duration || index === audioFiles.length - 1) {
+      return { index, offset: Math.max(0, Math.min(remaining, Number.isFinite(duration) ? Math.max(0, duration - 0.15) : remaining)) };
+    }
+    remaining -= duration;
+  }
+  return { index: audioFiles.length - 1, offset: 0 };
+}
+
+function seekEutherBooksVirtualTime(seconds: number, autoplay = false): void {
+  const job = currentEutherBooksPlaybackJob();
+  const target = eutherBooksVirtualSeekTarget(job, seconds);
+  if (!target) {
+    return;
+  }
+  if (target.index !== eutherBooksAudioIndex) {
+    eutherBooksAudioIndex = target.index;
+    renderBooksWindowIfActive();
+    playEutherBooksAudioSoon(target.offset, autoplay);
+    return;
+  }
+  const audio = currentEutherBooksAudio();
+  if (!audio) {
+    return;
+  }
+  const apply = () => {
+    audio.currentTime = target.offset;
+    updateEutherBooksVirtualPlayerDom(audio);
+    if (autoplay) {
+      audio.play().catch((err) => {
+        eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
+        renderBooksWindowIfActive();
+      });
+    }
+  };
+  if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    apply();
+  } else {
+    audio.addEventListener("loadedmetadata", apply, { once: true });
+  }
+}
+
+function updateEutherBooksVirtualPlayerDom(audio: HTMLAudioElement | null): void {
+  const job = currentEutherBooksPlaybackJob();
+  const current = eutherBooksVirtualCurrentTime(job, audio);
+  const total = eutherBooksVirtualTotalDuration(job);
+  const range = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-eutherbooks-virtual-seek]");
+  if (range) {
+    const max = Math.max(total, current, 0.01);
+    range.max = max.toFixed(3);
+    range.value = Math.min(current, max).toFixed(3);
+  }
+  const label = workspaceWindowDynamic.querySelector<HTMLElement>("[data-eutherbooks-virtual-time]");
+  if (label) {
+    label.textContent = `${formatDuration(current)} / ${total > 0 ? formatDuration(total) : "--:--"}`;
+  }
+}
+
+function toggleEutherBooksPlayback(): void {
+  const audio = currentEutherBooksAudio();
+  if (!audio) {
+    return;
+  }
+  if (audio.paused || audio.ended) {
+    updateEutherBooksVirtualPlayerDom(audio);
+    audio.play().catch((err) => {
+      eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
+      renderBooksWindowIfActive();
+    });
+  } else {
+    audio.pause();
+  }
+  renderBooksWindowIfActive();
+}
+
 function currentEutherBooksAudio(): HTMLAudioElement | null {
   return workspaceWindowDynamic.querySelector<HTMLAudioElement>(".eutherbooks-now-playing audio");
 }
@@ -9093,8 +9286,8 @@ function saveEutherBooksBookmark(reason: "pause" | "manual" | "auto"): void {
     chapter_index: selectedEutherBookChapterIndex,
     audio_index: eutherBooksAudioIndex,
     audio_path: audioPath,
-    current_time: Math.max(0, audio.currentTime),
-    duration: Number.isFinite(audio.duration) ? Math.max(0, audio.duration) : null,
+    current_time: eutherBooksVirtualCurrentTime(playbackJob, audio),
+    duration: eutherBooksVirtualTotalDuration(playbackJob) || (Number.isFinite(audio.duration) ? Math.max(0, audio.duration) : null),
     updated_at: Date.now(),
   };
   localStorage.setItem(eutherBooksBookmarkKey(book.id), JSON.stringify(bookmark));
@@ -9137,7 +9330,7 @@ async function resumeEutherBooksBookmark(): Promise<void> {
   eutherBooksAudioIndex = bookmarkedJobId ? 0 : Math.max(0, job.audio_files.indexOf(bookmark.audio_path));
   eutherBooksPlayerStatus = `Resuming ${formatDuration(bookmark.current_time)}`;
   renderBooksWindowIfActive();
-  playEutherBooksAudioSoon(bookmark.current_time);
+  seekEutherBooksVirtualTime(bookmark.current_time, true);
 }
 
 async function handleEutherBooksAudioEnded(): Promise<void> {
@@ -9582,7 +9775,7 @@ function setEutherBooksAudioIndex(index: number, autoplay = false): void {
   }
 }
 
-function playEutherBooksAudioSoon(startTime = 0): void {
+function playEutherBooksAudioSoon(startTime = 0, autoplay = true): void {
   window.setTimeout(() => {
     const audio = currentEutherBooksAudio();
     if (!audio) {
@@ -9597,6 +9790,10 @@ function playEutherBooksAudioSoon(startTime = 0): void {
       } else {
         audio.addEventListener("loadedmetadata", applyStartTime, { once: true });
       }
+    }
+    updateEutherBooksVirtualPlayerDom(audio);
+    if (!autoplay) {
+      return;
     }
     audio.play().catch((err) => {
       eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";

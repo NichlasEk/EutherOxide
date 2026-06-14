@@ -6082,6 +6082,43 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+
+.eutherbooks-virtual-player {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid rgba(207, 240, 178, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.eutherbooks-virtual-player audio {
+  display: none;
+}
+
+.eutherbooks-virtual-player button {
+  min-width: 72px;
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 0.74rem;
+  font-weight: 950;
+}
+
+.eutherbooks-virtual-player input[type="range"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.eutherbooks-virtual-player span {
+  color: #fff4c6;
+  font-size: 0.82rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
 .eutherbooks-smart-controls,
 .eutherbooks-bookmark-panel > div {
   display: grid;
