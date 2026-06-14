@@ -1375,7 +1375,7 @@ let eutherBooksInferenceTimesteps = storedEutherBooksNumber("inference_timesteps
 let eutherBooksDotsGuidanceScale = storedEutherBooksNumber("dots_guidance_scale", 1.2);
 let eutherBooksDotsSpeakerScale = storedEutherBooksNumber("dots_speaker_scale", 1.5);
 let eutherBooksDotsNumSteps = storedEutherBooksNumber("dots_num_steps", 10);
-let eutherBooksDotsMaxGenerateLength = storedEutherBooksNumber("dots_max_generate_length", 128);
+const eutherBooksDotsMaxGenerateLength = 500;
 let eutherBooksMaxChunkChars = storedEutherBooksNumber("max_chunk_chars", 700);
 let eutherBooksSeed = storedEutherBooksNumber("seed", 0);
 let eutherBooksJob: EutherBooksJob | null = null;
@@ -8022,7 +8022,6 @@ function eutherBooksTtsOptionControls(): string {
         eutherBooksOptionSlider("Guidance scale", "dots_guidance_scale", eutherBooksDotsGuidanceScale, 0, 5, 0.05, "Dots classifier-free guidance"),
         eutherBooksOptionSlider("Speaker scale", "dots_speaker_scale", eutherBooksDotsSpeakerScale, 0, 5, 0.05, "Reference voice strength"),
         eutherBooksOptionSlider("Steps", "dots_num_steps", eutherBooksDotsNumSteps, 1, 50, 1, "Dots diffusion steps"),
-        eutherBooksOptionSlider("Max audio length", "dots_max_generate_length", eutherBooksDotsMaxGenerateLength, 128, 4096, 32, "Prompt plus generated audio patches"),
         eutherBooksOptionSlider("Chunk size", "max_chunk_chars", eutherBooksMaxChunkChars, 120, 1500, 20, "Longer chunks keep more context"),
         eutherBooksSeedControl(),
       ].join("");
@@ -9449,8 +9448,7 @@ function setEutherBooksOption(key: string, value: number): void {
       eutherBooksDotsNumSteps = safeValue;
       break;
     case "dots_max_generate_length":
-      eutherBooksDotsMaxGenerateLength = safeValue;
-      break;
+      return;
     case "max_chunk_chars":
       eutherBooksMaxChunkChars = safeValue;
       break;
@@ -9495,7 +9493,7 @@ function clampEutherBooksOption(key: string, value: number): number {
     case "dots_num_steps":
       return Math.round(Math.min(Math.max(value, 1), 50));
     case "dots_max_generate_length":
-      return Math.round(Math.min(Math.max(value, 128), 4096));
+      return 500;
     case "max_chunk_chars":
       return Math.round(Math.min(Math.max(value, 120), 1500));
     case "seed":
@@ -14129,11 +14127,8 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     preferences.eutherbooksDotsNumSteps,
     eutherBooksDotsNumSteps,
   );
-  eutherBooksDotsMaxGenerateLength = applyEutherBooksNumberPreference(
-    "dots_max_generate_length",
-    preferences.eutherbooksDotsMaxGenerateLength,
-    eutherBooksDotsMaxGenerateLength,
-  );
+  // Dots max_generate_length is a backend contract, not a user preference.
+  localStorage.setItem("eutherbooks-dots_max_generate_length", String(eutherBooksDotsMaxGenerateLength));
   eutherBooksMaxChunkChars = applyEutherBooksNumberPreference(
     "max_chunk_chars",
     preferences.eutherbooksMaxChunkChars,
