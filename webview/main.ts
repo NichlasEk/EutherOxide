@@ -1375,7 +1375,7 @@ let eutherBooksInferenceTimesteps = storedEutherBooksNumber("inference_timesteps
 let eutherBooksDotsGuidanceScale = storedEutherBooksNumber("dots_guidance_scale", 1.2);
 let eutherBooksDotsSpeakerScale = storedEutherBooksNumber("dots_speaker_scale", 1.5);
 let eutherBooksDotsNumSteps = storedEutherBooksNumber("dots_num_steps", 10);
-const eutherBooksDotsMaxGenerateLength = 500;
+const eutherBooksDotsMaxGenerateLength = 256;
 let eutherBooksMaxChunkChars = storedEutherBooksNumber("max_chunk_chars", 700);
 let eutherBooksSeed = storedEutherBooksNumber("seed", 0);
 let eutherBooksJob: EutherBooksJob | null = null;
@@ -8694,7 +8694,7 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
       dots_guidance_scale: eutherBooksDotsGuidanceScale,
       dots_speaker_scale: eutherBooksDotsSpeakerScale,
       dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
-      max_chunk_chars: eutherBooksMaxChunkChars,
+      max_chunk_chars: eutherBooksEffectiveModelBackend() === "dots.tts-soar" ? 420 : eutherBooksMaxChunkChars,
       seed: eutherBooksSeed,
       voice_reference_path: eutherBooksOwnVoicePath(),
       voice_prompt_text: eutherBooksOwnVoicePrompt(),
@@ -8849,7 +8849,7 @@ function eutherBooksJobMatchesCurrentRequest(job: EutherBooksJob): boolean {
     dots_guidance_scale: eutherBooksDotsGuidanceScale,
     dots_speaker_scale: eutherBooksDotsSpeakerScale,
     dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
-    max_chunk_chars: eutherBooksMaxChunkChars,
+    max_chunk_chars: eutherBooksEffectiveModelBackend() === "dots.tts-soar" ? 420 : eutherBooksMaxChunkChars,
     seed: eutherBooksSeed,
     voice_reference_path: eutherBooksOwnVoicePath(),
     voice_prompt_text: eutherBooksOwnVoicePrompt(),
