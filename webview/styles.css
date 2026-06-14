@@ -5741,6 +5741,21 @@ h2 {
   font-size: 0.8rem;
 }
 
+.eutherbooks-voice-control select {
+  min-height: 50px;
+  padding-block: 10px;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.eutherbooks-voice-control select option,
+.eutherbooks-voice-control select optgroup {
+  min-height: 36px;
+  padding-block: 10px;
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
 .eutherbooks-voice-control {
   display: grid;
   gap: 10px;
