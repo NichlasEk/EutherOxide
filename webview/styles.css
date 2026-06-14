@@ -6085,7 +6085,7 @@ h2 {
 
 .eutherbooks-virtual-player {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 56px;
@@ -6102,13 +6102,6 @@ h2 {
   min-height: 40px;
 }
 
-.eutherbooks-virtual-player button {
-  min-width: 72px;
-  min-height: 36px;
-  padding: 0 12px;
-  font-size: 0.74rem;
-  font-weight: 950;
-}
 
 .eutherbooks-virtual-player input[type="range"] {
   width: 100%;

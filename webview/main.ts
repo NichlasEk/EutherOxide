@@ -2836,11 +2836,6 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     renderBooksWindowIfActive();
     return;
   }
-  const booksPlayToggle = target.closest<HTMLButtonElement>("[data-eutherbooks-play-toggle]");
-  if (booksPlayToggle) {
-    toggleEutherBooksPlayback();
-    return;
-  }
   const booksAutoAdvance = target.closest<HTMLButtonElement>("[data-eutherbooks-auto-advance]");
   if (booksAutoAdvance) {
     setEutherBooksAutoAdvance(!eutherBooksAutoAdvance);
@@ -9115,11 +9110,9 @@ function eutherBooksVirtualPlayerMarkup(job: EutherBooksJob | null, audioSource:
   const total = eutherBooksVirtualTotalDuration(job);
   const current = eutherBooksVirtualCurrentTime(job, currentEutherBooksAudio());
   const max = Math.max(total, current, 0.01);
-  const isPlaying = isEutherBooksAudioPlaying();
   return `
     <div class="eutherbooks-virtual-player">
       <audio data-eutherbooks-audio controls preload="auto" src="${escapeHtml(audioSource)}"></audio>
-      <button data-eutherbooks-play-toggle type="button" aria-label="${isPlaying ? "Pause" : "Play"}">${isPlaying ? "Pause" : "Play"}</button>
       <input data-eutherbooks-virtual-seek type="range" min="0" max="${max.toFixed(3)}" step="0.05" value="${Math.min(current, max).toFixed(3)}" aria-label="Audiobook position">
       <span data-eutherbooks-virtual-time>${escapeHtml(formatDuration(current))} / ${escapeHtml(total > 0 ? formatDuration(total) : "--:--")}</span>
     </div>
@@ -9236,22 +9229,6 @@ function updateEutherBooksVirtualPlayerDom(audio: HTMLAudioElement | null): void
   }
 }
 
-function toggleEutherBooksPlayback(): void {
-  const audio = currentEutherBooksAudio();
-  if (!audio) {
-    return;
-  }
-  if (audio.paused || audio.ended) {
-    updateEutherBooksVirtualPlayerDom(audio);
-    audio.play().catch((err) => {
-      eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
-      renderBooksWindowIfActive();
-    });
-  } else {
-    audio.pause();
-  }
-  renderBooksWindowIfActive();
-}
 
 function currentEutherBooksAudio(): HTMLAudioElement | null {
   return workspaceWindowDynamic.querySelector<HTMLAudioElement>(".eutherbooks-now-playing audio");
