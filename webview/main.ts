@@ -8730,9 +8730,14 @@ async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex
   persistEutherBooksSelectionPreference();
   eutherBooksStatus = statusLabel ?? (autoplayWhenReady ? "Preparing next chapter" : "Generating speech");
   eutherBooksTtsSubmitting = true;
+  stopEutherBooksWebAudioPlayback(false);
   eutherBooksJob = null;
   eutherBooksPlayableFallbackJob = null;
   eutherBooksAudioIndex = 0;
+  eutherBooksPendingAutoplayJobId = null;
+  eutherBooksBufferedAutoplayJobId = null;
+  eutherBooksPrefetchJobs = [];
+  clearEutherBooksPrefetchPoll();
   eutherBooksPlayerStatus = "";
   renderBooksWindowIfActive();
   try {
@@ -8741,7 +8746,7 @@ async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex
     } else {
       normalizeSelectedEutherBooksVoice();
     }
-    eutherBooksJob = await createEutherBooksTtsJob(book.id, chapterIndex);
+    eutherBooksJob = await createEutherBooksTtsJob(book.id, chapterIndex, true);
     eutherBooksJobLastCheckedAt = Date.now();
     eutherBooksStatus = eutherBooksJob.status;
     eutherBooksPendingAutoplayJobId = autoplayWhenReady ? eutherBooksJob.id : null;
@@ -8757,12 +8762,13 @@ async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex
   renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
 }
 
-async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Promise<EutherBooksJob> {
+async function createEutherBooksTtsJob(bookId: string, chapterIndex: number, cancelExisting = true): Promise<EutherBooksJob> {
   return eutherBooksJson<EutherBooksJob>(`/books/${encodeURIComponent(bookId)}/tts`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       owner: hostUsername ?? "anonymous",
+      cancel_existing: cancelExisting,
       language: eutherBooksRequestLanguage(),
       voice: eutherBooksRequestVoice(),
       chapters: [chapterIndex],
@@ -9061,7 +9067,7 @@ async function ensureEutherBooksNextChapterPrefetched(): Promise<void> {
       if (eutherBooksPrefetchJobs.some((job) => eutherBooksPrefetchMatches(book.id, chapter.index, job))) {
         continue;
       }
-      eutherBooksPrefetchJobs.push(await createEutherBooksTtsJob(book.id, chapter.index));
+      eutherBooksPrefetchJobs.push(await createEutherBooksTtsJob(book.id, chapter.index, false));
     }
     scheduleEutherBooksPrefetchPoll();
   } catch (_err) {
@@ -9250,6 +9256,7 @@ type EutherBooksWebAudioState = {
   scheduledIndex: number;
   renderToken: number;
   waitingForMoreAudio: boolean;
+  scheduling: Promise<void> | null;
 };
 
 function audioContextConstructor(): typeof AudioContext | null {
@@ -9413,6 +9420,7 @@ async function startEutherBooksWebAudioPlayback(startTime: number): Promise<void
     scheduledIndex: eutherBooksVirtualSeekTarget(playbackJob, virtualTime)?.index ?? 0,
     renderToken: eutherBooksAudioRenderToken,
     waitingForMoreAudio: false,
+    scheduling: null,
   };
   eutherBooksPlayerStatus = "Playing generated chapter";
   renderBooksWindowIfActive();
@@ -9432,6 +9440,21 @@ async function scheduleEutherBooksWebAudioAhead(): Promise<void> {
   if (!state || !job || state.jobId !== job.id || !state.playing) {
     return;
   }
+  if (state.scheduling) {
+    return state.scheduling;
+  }
+  const scheduling = scheduleEutherBooksWebAudioAheadLocked(state, job);
+  state.scheduling = scheduling;
+  try {
+    await scheduling;
+  } finally {
+    if (eutherBooksWebAudioState === state && state.scheduling === scheduling) {
+      state.scheduling = null;
+    }
+  }
+}
+
+async function scheduleEutherBooksWebAudioAheadLocked(state: EutherBooksWebAudioState, job: EutherBooksJob): Promise<void> {
   const current = eutherBooksWebAudioCurrentTime(job) ?? state.virtualStartedAt;
   const targetUntil = current + EUTHERBOOKS_WEB_AUDIO_SCHEDULE_AHEAD_SECONDS;
   let cursorVirtual = Math.max(state.scheduledUntil, current);
@@ -9495,6 +9518,11 @@ function updateEutherBooksWebAudioPlayback(): void {
       state.waitingForMoreAudio = true;
       eutherBooksPlayerStatus = "Buffering next generated part";
       scheduleEutherBooksJobPoll(250);
+      void scheduleEutherBooksWebAudioAhead().catch((err) => {
+        eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
+        stopEutherBooksWebAudioPlayback(true);
+        renderBooksWindowIfActive();
+      });
       return;
     }
     stopEutherBooksWebAudioPlayback(false);
