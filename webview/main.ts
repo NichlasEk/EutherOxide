@@ -8500,7 +8500,7 @@ async function refreshEutherBooksHealth(render = false): Promise<void> {
   }
   eutherBooksHealthLoading = true;
   if (render) {
-    renderBooksWindowIfActive();
+    renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
   }
   try {
     eutherBooksHealth = await eutherBooksJson<EutherBooksHealth>("/health");
@@ -8513,7 +8513,7 @@ async function refreshEutherBooksHealth(render = false): Promise<void> {
   } finally {
     eutherBooksHealthLoading = false;
     if (render) {
-      renderBooksWindowIfActive();
+      renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
     }
     scheduleEutherBooksHealthPoll();
   }
