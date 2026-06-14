@@ -1394,6 +1394,7 @@ let eutherBooksBufferedResumeSeconds = 0;
 let eutherBooksBufferedAudioCount = 0;
 let eutherBooksPrefetchJobs: EutherBooksJob[] = [];
 let eutherBooksPrefetchPollTimer: number | null = null;
+let eutherBooksPrefetchCheckAt = 0;
 let eutherBooksPlayerStatus = "";
 let eutherBooksJobLastCheckedAt = 0;
 let eutherBooksPlayableFallbackJob: EutherBooksJob | null = null;
@@ -1403,6 +1404,8 @@ const eutherBooksWebAudioChunkCache = new Map<string, Promise<EutherBooksDecoded
 let eutherBooksWebAudioState: EutherBooksWebAudioState | null = null;
 const EUTHERBOOKS_WEB_AUDIO_CROSSFADE_SECONDS = 0.055;
 const EUTHERBOOKS_WEB_AUDIO_SCHEDULE_AHEAD_SECONDS = 35;
+const EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_SECONDS = 240;
+const EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_FRACTION = 0.35;
 let eutherBooksSleepTimerMode: EutherBooksSleepTimerMode = "off";
 let eutherBooksSleepTimerDeadline: number | null = null;
 let eutherBooksSleepTimerId: number | null = null;
@@ -3160,6 +3163,7 @@ workspaceWindowDynamic.addEventListener(
     if (path && Number.isFinite(audio.duration) && audio.duration > 0) {
       eutherBooksAudioDurationCache.set(path, audio.duration);
     }
+    maybePrefetchEutherBooksNextChapter();
     updateEutherBooksVirtualPlayerDom(audio);
   },
   true,
@@ -9077,6 +9081,34 @@ async function refreshEutherBooksPrefetchJobs(): Promise<void> {
   renderBooksWindowIfActiveUnlessEutherBooksAudioPlaying();
 }
 
+function maybePrefetchEutherBooksNextChapter(): void {
+  if (!eutherBooksAutoGenerateNext || eutherBooksPendingAutoplayJobId) {
+    return;
+  }
+  const now = Date.now();
+  if (now - eutherBooksPrefetchCheckAt < 5000) {
+    return;
+  }
+  eutherBooksPrefetchCheckAt = now;
+  const job = currentEutherBooksPlaybackJob();
+  if (!job || job.status !== "done" || !job.audio_files.length) {
+    return;
+  }
+  if (!nextEutherBookChapter()) {
+    return;
+  }
+  const current = eutherBooksVirtualCurrentTime(job, currentEutherBooksAudio());
+  const total = eutherBooksVirtualTotalDuration(job);
+  if (!(total > 0) || !(current > 0)) {
+    return;
+  }
+  const remaining = Math.max(0, total - current);
+  const playedFraction = current / total;
+  if (remaining <= EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_SECONDS || playedFraction >= EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_FRACTION) {
+    void ensureEutherBooksNextChapterPrefetched();
+  }
+}
+
 async function ensureEutherBooksNextChapterPrefetched(): Promise<void> {
   if (!eutherBooksAutoGenerateNext || eutherBooksPendingAutoplayJobId) {
     return;
@@ -9539,6 +9571,7 @@ function updateEutherBooksWebAudioPlayback(): void {
   }
   const current = eutherBooksWebAudioCurrentTime(job) ?? 0;
   const total = eutherBooksVirtualTotalDuration(job);
+  maybePrefetchEutherBooksNextChapter();
   updateEutherBooksVirtualPlayerDom(null);
   if (total > 0 && current >= Math.max(0, total - 0.08)) {
     if (job.status !== "done" && job.status !== "failed") {
