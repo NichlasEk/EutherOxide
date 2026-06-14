@@ -522,6 +522,7 @@ type EutherBooksJob = {
   progress_detail?: string;
   current_chapter_index?: number | null;
   current_chunk_index?: number;
+  worker_progress?: number;
   total_chunks?: number;
   error: string | null;
 };
@@ -9293,13 +9294,17 @@ function eutherBooksJobProgress(): { done: number; total: number; percent: numbe
   if (!eutherBooksJob) {
     return { done: 0, total: 0, percent: 0, label: "Generation idle" };
   }
-  const done = Math.max(eutherBooksJob.audio_files.length, eutherBooksJob.current_chunk_index ?? 0);
+  const baseDone = Math.max(eutherBooksJob.audio_files.length, eutherBooksJob.current_chunk_index ?? 0);
+  const workerProgress = eutherBooksJob.status === "running"
+    ? Math.min(0.99, Math.max(0, eutherBooksJob.worker_progress ?? 0))
+    : 0;
   const total = Math.max(
     eutherBooksJob.total_chunks ?? 0,
     eutherBooksJob.total_audio_files ?? 0,
     eutherBooksJob.audio_files.length,
-    eutherBooksJob.status === "done" ? done : 1,
+    eutherBooksJob.status === "done" ? baseDone : 1,
   );
+  const done = Math.min(total, baseDone + workerProgress);
   const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   const labelPrefix = eutherBooksJob.progress_label?.trim()
     || (eutherBooksJob.status === "done"
@@ -9309,7 +9314,8 @@ function eutherBooksJobProgress(): { done: number; total: number; percent: numbe
         : eutherBooksJob.status === "queued"
           ? "Queued"
           : "Generating");
-  const label = `${labelPrefix} ${done}/${total}`;
+  const doneLabel = Number.isInteger(done) ? String(done) : done.toFixed(1);
+  const label = `${labelPrefix} ${doneLabel}/${total}`;
   return { done, total, percent, label };
 }
 
