@@ -1373,10 +1373,10 @@ let eutherBooksNoiseW = storedEutherBooksNumber("noise_w", 0.8);
 let eutherBooksSentenceSilence = storedEutherBooksNumber("sentence_silence", 0.2);
 let eutherBooksCfgValue = storedEutherBooksNumber("cfg_value", 2);
 let eutherBooksInferenceTimesteps = storedEutherBooksNumber("inference_timesteps", 10);
-let eutherBooksDotsGuidanceScale = storedEutherBooksNumber("dots_guidance_scale", 1.2);
-let eutherBooksDotsSpeakerScale = storedEutherBooksNumber("dots_speaker_scale", 1.5);
-let eutherBooksDotsNumSteps = storedEutherBooksNumber("dots_num_steps", 10);
-const eutherBooksDotsMaxGenerateLength = 256;
+let eutherBooksDotsGuidanceScale = 1.2;
+let eutherBooksDotsSpeakerScale = 1.5;
+let eutherBooksDotsNumSteps = 10;
+const eutherBooksDotsMaxGenerateLength = 500;
 let eutherBooksMaxChunkChars = storedEutherBooksNumber("max_chunk_chars", 700);
 let eutherBooksSeed = storedEutherBooksNumber("seed", 0);
 let eutherBooksJob: EutherBooksJob | null = null;
@@ -9637,14 +9637,9 @@ function setEutherBooksOption(key: string, value: number): void {
       eutherBooksInferenceTimesteps = safeValue;
       break;
     case "dots_guidance_scale":
-      eutherBooksDotsGuidanceScale = safeValue;
-      break;
     case "dots_speaker_scale":
-      eutherBooksDotsSpeakerScale = safeValue;
-      break;
     case "dots_num_steps":
-      eutherBooksDotsNumSteps = safeValue;
-      break;
+      return;
     case "dots_max_generate_length":
       return;
     case "max_chunk_chars":
@@ -14314,22 +14309,13 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     preferences.eutherbooksInferenceTimesteps,
     eutherBooksInferenceTimesteps,
   );
-  eutherBooksDotsGuidanceScale = applyEutherBooksNumberPreference(
-    "dots_guidance_scale",
-    preferences.eutherbooksDotsGuidanceScale,
-    eutherBooksDotsGuidanceScale,
-  );
-  eutherBooksDotsSpeakerScale = applyEutherBooksNumberPreference(
-    "dots_speaker_scale",
-    preferences.eutherbooksDotsSpeakerScale,
-    eutherBooksDotsSpeakerScale,
-  );
-  eutherBooksDotsNumSteps = applyEutherBooksNumberPreference(
-    "dots_num_steps",
-    preferences.eutherbooksDotsNumSteps,
-    eutherBooksDotsNumSteps,
-  );
-  // Dots max_generate_length is a backend contract, not a user preference.
+  // Dots SOAR quality controls are locked to the upstream voice-cloning defaults.
+  eutherBooksDotsGuidanceScale = 1.2;
+  eutherBooksDotsSpeakerScale = 1.5;
+  eutherBooksDotsNumSteps = 10;
+  localStorage.setItem("eutherbooks-dots_guidance_scale", String(eutherBooksDotsGuidanceScale));
+  localStorage.setItem("eutherbooks-dots_speaker_scale", String(eutherBooksDotsSpeakerScale));
+  localStorage.setItem("eutherbooks-dots_num_steps", String(eutherBooksDotsNumSteps));
   localStorage.setItem("eutherbooks-dots_max_generate_length", String(eutherBooksDotsMaxGenerateLength));
   eutherBooksMaxChunkChars = applyEutherBooksNumberPreference(
     "max_chunk_chars",
