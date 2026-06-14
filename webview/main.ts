@@ -514,6 +514,7 @@ type EutherBooksJob = {
   language: string;
   voice: string;
   chapter_indexes: number[];
+  owner?: string;
   audio_files: string[];
   audio_durations?: number[];
   total_audio_files?: number;
@@ -8729,6 +8730,7 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      owner: hostUsername ?? "anonymous",
       language: eutherBooksRequestLanguage(),
       voice: eutherBooksRequestVoice(),
       chapters: [chapterIndex],
