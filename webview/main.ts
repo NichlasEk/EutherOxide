@@ -1375,7 +1375,7 @@ let eutherBooksCfgValue = storedEutherBooksNumber("cfg_value", 2);
 let eutherBooksInferenceTimesteps = storedEutherBooksNumber("inference_timesteps", 10);
 let eutherBooksDotsGuidanceScale = 1.2;
 let eutherBooksDotsSpeakerScale = 1.5;
-let eutherBooksDotsNumSteps = 10;
+let eutherBooksDotsNumSteps = 4;
 const eutherBooksDotsMaxGenerateLength = 500;
 let eutherBooksMaxChunkChars = storedEutherBooksNumber("max_chunk_chars", 700);
 let eutherBooksSeed = storedEutherBooksNumber("seed", 0);
@@ -14309,10 +14309,10 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     preferences.eutherbooksInferenceTimesteps,
     eutherBooksInferenceTimesteps,
   );
-  // Dots SOAR quality controls are locked to the upstream voice-cloning defaults.
+  // Dots SOAR runs in fast audiobook mode by default; raise steps manually for quality tests.
   eutherBooksDotsGuidanceScale = 1.2;
   eutherBooksDotsSpeakerScale = 1.5;
-  eutherBooksDotsNumSteps = 10;
+  eutherBooksDotsNumSteps = 4;
   localStorage.setItem("eutherbooks-dots_guidance_scale", String(eutherBooksDotsGuidanceScale));
   localStorage.setItem("eutherbooks-dots_speaker_scale", String(eutherBooksDotsSpeakerScale));
   localStorage.setItem("eutherbooks-dots_num_steps", String(eutherBooksDotsNumSteps));
