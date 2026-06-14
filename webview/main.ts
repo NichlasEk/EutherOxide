@@ -8816,11 +8816,75 @@ async function attachEutherBooksReadyFallbackForSelection(excludeJobId: string):
         && job.chapter_indexes.includes(selectedEutherBookChapterIndex)
         && job.status === "done"
         && job.audio_files.length > 0
+        && eutherBooksJobCanBePlaybackFallback(job)
       ) ?? null;
   } catch (_err) {
     return;
   }
   renderBooksWindowIfActive();
+}
+
+function eutherBooksJobCanBePlaybackFallback(job: EutherBooksJob): boolean {
+  if (eutherBooksJob) {
+    return eutherBooksJobsUseSameTtsSettings(job, eutherBooksJob);
+  }
+  return eutherBooksJobMatchesCurrentRequest(job);
+}
+
+function eutherBooksJobsUseSameTtsSettings(candidate: EutherBooksJob, reference: EutherBooksJob): boolean {
+  if (candidate.voice !== reference.voice || candidate.language !== reference.language) {
+    return false;
+  }
+  return eutherBooksTtsOptionKeys().every((key) => eutherBooksSameOption(candidate.tts_options?.[key], reference.tts_options?.[key]));
+}
+
+function eutherBooksJobMatchesCurrentRequest(job: EutherBooksJob): boolean {
+  if (job.voice !== eutherBooksRequestVoice() || job.language !== eutherBooksRequestLanguage()) {
+    return false;
+  }
+  const expected: Record<string, number | string> = {
+    model_backend: eutherBooksEffectiveModelBackend(),
+    dots_template_name: "tts",
+    dots_ode_method: "euler",
+    dots_num_steps: eutherBooksDotsNumSteps,
+    dots_guidance_scale: eutherBooksDotsGuidanceScale,
+    dots_speaker_scale: eutherBooksDotsSpeakerScale,
+    dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
+    max_chunk_chars: eutherBooksMaxChunkChars,
+    seed: eutherBooksSeed,
+    voice_reference_path: eutherBooksOwnVoicePath(),
+    voice_prompt_text: eutherBooksOwnVoicePrompt(),
+  };
+  return eutherBooksTtsOptionKeys().every((key) => eutherBooksSameOption(job.tts_options?.[key], expected[key]));
+}
+
+function eutherBooksTtsOptionKeys(): string[] {
+  return [
+    "model_backend",
+    "dots_template_name",
+    "dots_ode_method",
+    "dots_num_steps",
+    "dots_guidance_scale",
+    "dots_speaker_scale",
+    "dots_max_generate_length",
+    "max_chunk_chars",
+    "seed",
+    "voice_reference_path",
+    "voice_prompt_text",
+  ];
+}
+
+function eutherBooksSameOption(left: unknown, right: unknown): boolean {
+  if (left === undefined || left === null || left === "") {
+    return right === undefined || right === null || right === "";
+  }
+  if (right === undefined || right === null || right === "") {
+    return false;
+  }
+  if (typeof left === "number" || typeof right === "number") {
+    return Number(left) === Number(right);
+  }
+  return String(left).trim() === String(right).trim();
 }
 
 function clearEutherBooksPrefetchPoll(): void {
@@ -8986,8 +9050,11 @@ function currentEutherBooksAudio(): HTMLAudioElement | null {
 }
 
 function currentEutherBooksPlaybackJob(): EutherBooksJob | null {
-  if (eutherBooksJob?.status === "done" && eutherBooksJob.audio_files.length) {
+  if (eutherBooksJob?.audio_files.length) {
     return eutherBooksJob;
+  }
+  if (eutherBooksJob && eutherBooksJob.status !== "done" && eutherBooksJob.status !== "failed") {
+    return null;
   }
   return eutherBooksPlayableFallbackJob;
 }
