@@ -539,6 +539,8 @@ type EutherBooksBookmark = {
   updated_at: number;
 };
 
+type EutherBooksModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf";
+
 type EutherBooksVoice = {
   id: string;
   label: string;
@@ -7936,15 +7938,18 @@ function eutherBooksVoiceOptions(): string {
         { id: "en-male-warm", label: "English warm male narrator", language: "en", backend: "eutherlink", path: "", model_backend: "voxcpm2", default_length_scale: 1.15, default_seed: 550498084 },
         { id: "own-sv", label: "Your own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "voxcpm2" },
         { id: "own-en", label: "Your own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "voxcpm2" },
+        { id: "dots-mf-own-sv", label: "Dots MF own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "dots.tts-mf" },
+        { id: "dots-mf-own-en", label: "Dots MF own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-mf" },
         { id: "dots-soar-own-sv", label: "Dots SOAR own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "dots.tts-soar" },
         { id: "dots-soar-own-en", label: "Dots SOAR own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-soar" },
         { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2" },
       ];
   const groups = [
-    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-"))],
-    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-"))],
+    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-") && !voice.id.startsWith("dots-mf-"))],
+    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-") && !voice.id.startsWith("dots-mf-"))],
     ["Your own voice", voices.filter((voice) => voice.id === "own-sv" || voice.id === "own-en")],
-    ["Dots SOAR", voices.filter((voice) => voice.id.startsWith("dots-soar-"))],
+    ["Dots MF fast", voices.filter((voice) => voice.id.startsWith("dots-mf-"))],
+    ["Dots SOAR quality", voices.filter((voice) => voice.id.startsWith("dots-soar-"))],
     ["Egen röst", voices.filter((voice) => voice.id === "custom")],
   ] as const;
   return groups
@@ -7961,13 +7966,14 @@ function eutherBooksModelOptions(): string {
   const active = eutherBooksEffectiveModelBackend();
   return [
     `<option value="voxcpm2" ${active === "voxcpm2" ? "selected" : ""}>VoxCPM2</option>`,
-    `<option value="dots.tts-soar" ${active === "dots.tts-soar" ? "selected" : ""}>Dots SOAR</option>`,
+    `<option value="dots.tts-mf" ${active === "dots.tts-mf" ? "selected" : ""}>Dots MF fast</option>`,
+    `<option value="dots.tts-soar" ${active === "dots.tts-soar" ? "selected" : ""}>Dots SOAR quality</option>`,
   ].join("");
 }
 
 function eutherBooksModelReadyMarkup(): string {
   const active = eutherBooksEffectiveModelBackend();
-  if (active !== "dots.tts-soar") {
+  if (!eutherBooksIsDotsModel(active)) {
     return `
       <div class="eutherbooks-model-ready">
         <span>Model</span>
@@ -7980,10 +7986,10 @@ function eutherBooksModelReadyMarkup(): string {
   const offline = status === "offline" || status === "unknown";
   const label = ready ? "Model ready" : offline ? "Model offline" : "Model warming";
   const detail = ready
-    ? `Dots SOAR warm${eutherBooksHealth?.dots_tts?.precision ? ` / ${eutherBooksHealth.dots_tts.precision}` : ""}`
+    ? `${active === "dots.tts-mf" ? "Dots MF" : "Dots SOAR"} warm${eutherBooksHealth?.dots_tts?.precision ? ` / ${eutherBooksHealth.dots_tts.precision}` : ""}`
     : offline
-      ? "Dots SOAR not reachable"
-      : "Dots SOAR loading";
+      ? `${active === "dots.tts-mf" ? "Dots MF" : "Dots SOAR"} not reachable`
+      : `${active === "dots.tts-mf" ? "Dots MF" : "Dots SOAR"} loading`;
   return `
     <div class="eutherbooks-model-ready ${ready ? "is-ready" : offline ? "is-offline" : "is-warming"}">
       <span>${escapeHtml(label)}</span>
@@ -7992,18 +7998,23 @@ function eutherBooksModelReadyMarkup(): string {
   `;
 }
 
-function normalizeEutherBooksModelBackend(value: string): "voxcpm2" | "dots.tts-soar" {
-  return value.trim().toLowerCase() === "dots.tts-soar" ? "dots.tts-soar" : "voxcpm2";
+function normalizeEutherBooksModelBackend(value: string): EutherBooksModelBackend {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "dots.tts-mf" || normalized === "dots.tts-soar" ? normalized : "voxcpm2";
 }
 
-function eutherBooksVoiceModelBackend(voice: EutherBooksVoice | undefined): "voxcpm2" | "dots.tts-soar" | undefined {
+function eutherBooksIsDotsModel(value: string): boolean {
+  return value === "dots.tts-mf" || value === "dots.tts-soar";
+}
+
+function eutherBooksVoiceModelBackend(voice: EutherBooksVoice | undefined): EutherBooksModelBackend | undefined {
   if (!voice?.model_backend) {
     return undefined;
   }
   return normalizeEutherBooksModelBackend(voice.model_backend);
 }
 
-function eutherBooksEffectiveModelBackend(): "voxcpm2" | "dots.tts-soar" {
+function eutherBooksEffectiveModelBackend(): EutherBooksModelBackend {
   return eutherBooksVoiceModelBackend(eutherBooksSelectedVoice()) ?? selectedEutherBooksModelBackend;
 }
 
@@ -8012,17 +8023,22 @@ function persistEutherBooksModelBackend(): void {
 }
 
 function eutherBooksIsOwnVoiceSelection(): boolean {
-  return selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-soar-own-sv" || selectedEutherBooksVoice === "dots-soar-own-en";
+  return selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-mf-own-sv" || selectedEutherBooksVoice === "dots-mf-own-en" || selectedEutherBooksVoice === "dots-soar-own-sv" || selectedEutherBooksVoice === "dots-soar-own-en";
 }
 
 function selectEutherBooksVoiceForModelBackend(): void {
   const language = eutherBooksRequestLanguage();
+  if (selectedEutherBooksModelBackend === "dots.tts-mf") {
+    selectedEutherBooksVoice = language === "en" ? "dots-mf-own-en" : "dots-mf-own-sv";
+    eutherBooksVoiceSettingsOpen = true;
+    return;
+  }
   if (selectedEutherBooksModelBackend === "dots.tts-soar") {
     selectedEutherBooksVoice = language === "en" ? "dots-soar-own-en" : "dots-soar-own-sv";
     eutherBooksVoiceSettingsOpen = true;
     return;
   }
-  if (selectedEutherBooksVoice.startsWith("dots-soar-")) {
+  if (selectedEutherBooksVoice.startsWith("dots-soar-") || selectedEutherBooksVoice.startsWith("dots-mf-")) {
     selectedEutherBooksVoice = language === "en" ? "own-en" : "own-sv";
     eutherBooksVoiceSettingsOpen = true;
   }
@@ -8071,7 +8087,7 @@ function eutherBooksSettingsOpenAttr(): string {
 
 function eutherBooksTtsOptionControls(): string {
   if (eutherBooksUsesEutherLinkVoice()) {
-    if (eutherBooksEffectiveModelBackend() === "dots.tts-soar") {
+    if (eutherBooksIsDotsModel(eutherBooksEffectiveModelBackend())) {
       return [
         eutherBooksOptionSlider("Speed", "length_scale", eutherBooksLengthScale, 0.75, 1.35, 0.05, "Lower is faster"),
         eutherBooksOptionSlider("Guidance scale", "dots_guidance_scale", eutherBooksDotsGuidanceScale, 0, 5, 0.05, "Dots classifier-free guidance"),
@@ -8117,7 +8133,7 @@ function eutherBooksRequestVoice(): string {
 }
 
 function eutherBooksOwnVoiceLanguage(): "sv" | "en" {
-  return selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-soar-own-en" ? "en" : "sv";
+  return selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-mf-own-en" || selectedEutherBooksVoice === "dots-soar-own-en" ? "en" : "sv";
 }
 
 function eutherBooksOwnVoicePath(): string {
@@ -8752,7 +8768,7 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number): Pr
       dots_guidance_scale: eutherBooksDotsGuidanceScale,
       dots_speaker_scale: eutherBooksDotsSpeakerScale,
       dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
-      max_chunk_chars: eutherBooksEffectiveModelBackend() === "dots.tts-soar" ? 520 : eutherBooksMaxChunkChars,
+      max_chunk_chars: eutherBooksIsDotsModel(eutherBooksEffectiveModelBackend()) ? 520 : eutherBooksMaxChunkChars,
       seed: eutherBooksSeed,
       voice_reference_path: eutherBooksOwnVoicePath(),
       voice_prompt_text: eutherBooksOwnVoicePrompt(),
@@ -8935,7 +8951,7 @@ function eutherBooksJobMatchesCurrentRequest(job: EutherBooksJob): boolean {
     dots_guidance_scale: eutherBooksDotsGuidanceScale,
     dots_speaker_scale: eutherBooksDotsSpeakerScale,
     dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
-    max_chunk_chars: eutherBooksEffectiveModelBackend() === "dots.tts-soar" ? 520 : eutherBooksMaxChunkChars,
+    max_chunk_chars: eutherBooksIsDotsModel(eutherBooksEffectiveModelBackend()) ? 520 : eutherBooksMaxChunkChars,
     seed: eutherBooksSeed,
     voice_reference_path: eutherBooksOwnVoicePath(),
     voice_prompt_text: eutherBooksOwnVoicePrompt(),
