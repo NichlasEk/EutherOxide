@@ -5764,6 +5764,49 @@ h2 {
   opacity: 0.72;
 }
 
+.eutherbooks-model-ready {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 7px 9px;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.72);
+}
+
+.eutherbooks-model-ready span {
+  color: #9fbe91;
+  font-size: 0.64rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherbooks-model-ready strong {
+  min-width: 0;
+  color: #fff4c6;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherbooks-model-ready.is-ready {
+  border-color: rgba(105, 226, 116, 0.32);
+  background: rgba(17, 55, 29, 0.5);
+}
+
+.eutherbooks-model-ready.is-warming {
+  border-color: rgba(255, 206, 100, 0.3);
+  background: rgba(55, 39, 12, 0.44);
+}
+
+.eutherbooks-model-ready.is-offline {
+  border-color: rgba(255, 104, 85, 0.3);
+  background: rgba(55, 16, 12, 0.44);
+}
+
 .eutherbooks-custom-voice input {
   min-height: 38px;
   border: 1px solid rgba(207, 240, 178, 0.16);

@@ -547,6 +547,21 @@ type EutherBooksVoice = {
   default_seed?: number | null;
 };
 
+type EutherBooksModelHealth = {
+  ok?: boolean;
+  status?: string;
+  model_loaded?: boolean;
+  loaded_model?: string | null;
+  precision?: string | null;
+  max_generate_length?: number | null;
+};
+
+type EutherBooksHealth = {
+  status: string;
+  tts_backend: string;
+  dots_tts?: EutherBooksModelHealth | null;
+};
+
 type EutherBooksSleepTimerMode = "off" | "15" | "30" | "45" | "60" | "chapter";
 
 type EutheriumShopItem = {
@@ -1320,6 +1335,9 @@ let shoppingListShareStatus = "Not shared";
 let eutherBooksLoaded = false;
 let eutherBooksLoading = false;
 let eutherBooksStatus = "Not loaded";
+let eutherBooksHealth: EutherBooksHealth | null = null;
+let eutherBooksHealthLoading = false;
+let eutherBooksHealthPollTimer: number | null = null;
 let eutherBooks: EutherBook[] = [];
 let eutherBooksVoices: EutherBooksVoice[] = [];
 let selectedEutherBookId: string | null = localStorage.getItem("eutherbooks-last-book") || null;
@@ -7540,6 +7558,7 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
     }
   } else if (windowName === "books") {
     void loadEutherBooks();
+    void refreshEutherBooksHealth(true);
   } else if (windowName === "interaction") {
     void loadInteractionUsers();
     void refreshActiveSocialChat("open", 0);
@@ -7556,6 +7575,7 @@ function closeWorkspaceWindow(): void {
   }
   eutherBooksPrefetchJobs = [];
   clearEutherBooksPrefetchPoll();
+  clearEutherBooksHealthPoll();
   activeWorkspaceWindow = null;
   workspaceWindowLayer.hidden = true;
   document.body.classList.remove("workspace-window-open");
@@ -7785,6 +7805,7 @@ function eutherBooksWindowMarkup(): string {
               ${eutherBooksModelOptions()}
             </select>
           </label>
+          ${eutherBooksModelReadyMarkup()}
           ${eutherBooksCustomVoiceControl()}
           ${eutherBooksOwnVoiceControl()}
           <div class="eutherbooks-option-grid">
@@ -7886,6 +7907,33 @@ function eutherBooksModelOptions(): string {
     `<option value="voxcpm2" ${active === "voxcpm2" ? "selected" : ""}>VoxCPM2</option>`,
     `<option value="dots.tts-soar" ${active === "dots.tts-soar" ? "selected" : ""}>Dots SOAR</option>`,
   ].join("");
+}
+
+function eutherBooksModelReadyMarkup(): string {
+  const active = eutherBooksEffectiveModelBackend();
+  if (active !== "dots.tts-soar") {
+    return `
+      <div class="eutherbooks-model-ready">
+        <span>Model</span>
+        <strong>VoxCPM2 selected</strong>
+      </div>
+    `;
+  }
+  const status = eutherBooksHealth?.dots_tts?.status ?? (eutherBooksHealthLoading ? "checking" : "unknown");
+  const ready = eutherBooksHealth?.dots_tts?.model_loaded === true || status === "ready";
+  const offline = status === "offline" || status === "unknown";
+  const label = ready ? "Model ready" : offline ? "Model offline" : "Model warming";
+  const detail = ready
+    ? `Dots SOAR warm${eutherBooksHealth?.dots_tts?.precision ? ` / ${eutherBooksHealth.dots_tts.precision}` : ""}`
+    : offline
+      ? "Dots SOAR not reachable"
+      : "Dots SOAR loading";
+  return `
+    <div class="eutherbooks-model-ready ${ready ? "is-ready" : offline ? "is-offline" : "is-warming"}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(detail)}</strong>
+    </div>
+  `;
 }
 
 function normalizeEutherBooksModelBackend(value: string): "voxcpm2" | "dots.tts-soar" {
@@ -8425,6 +8473,49 @@ function normalizeSelectedEutherBooksVoice(): void {
   }
   selectedEutherBooksVoice = eutherBooksVoices.find((voice) => voice.language.startsWith("sv"))?.id ?? eutherBooksVoices[0]?.id ?? "sv-female-warm";
   localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
+}
+
+function clearEutherBooksHealthPoll(): void {
+  if (eutherBooksHealthPollTimer !== null) {
+    window.clearTimeout(eutherBooksHealthPollTimer);
+    eutherBooksHealthPollTimer = null;
+  }
+}
+
+function scheduleEutherBooksHealthPoll(delayMs = 5000): void {
+  clearEutherBooksHealthPoll();
+  if (activeWorkspaceWindow !== "books") {
+    return;
+  }
+  eutherBooksHealthPollTimer = window.setTimeout(() => {
+    eutherBooksHealthPollTimer = null;
+    void refreshEutherBooksHealth(true);
+  }, delayMs);
+}
+
+async function refreshEutherBooksHealth(render = false): Promise<void> {
+  if (eutherBooksHealthLoading) {
+    return;
+  }
+  eutherBooksHealthLoading = true;
+  if (render) {
+    renderBooksWindowIfActive();
+  }
+  try {
+    eutherBooksHealth = await eutherBooksJson<EutherBooksHealth>("/health");
+  } catch (_err) {
+    eutherBooksHealth = {
+      status: "offline",
+      tts_backend: "unknown",
+      dots_tts: { ok: false, status: "offline", model_loaded: false },
+    };
+  } finally {
+    eutherBooksHealthLoading = false;
+    if (render) {
+      renderBooksWindowIfActive();
+    }
+    scheduleEutherBooksHealthPoll();
+  }
 }
 
 async function loadEutherBooks(force = false): Promise<void> {
