@@ -1395,6 +1395,7 @@ let eutherBooksPrefetchPollTimer: number | null = null;
 let eutherBooksPlayerStatus = "";
 let eutherBooksJobLastCheckedAt = 0;
 let eutherBooksPlayableFallbackJob: EutherBooksJob | null = null;
+let eutherBooksAudioRenderToken = 0;
 const eutherBooksAudioDurationCache = new Map<string, number>();
 let eutherBooksSleepTimerMode: EutherBooksSleepTimerMode = "off";
 let eutherBooksSleepTimerDeadline: number | null = null;
@@ -7637,6 +7638,10 @@ function renderWorkspaceWindow(): void {
     return;
   }
   const audioState = windowName === "books" ? captureEutherBooksAudioRenderState() : null;
+  const renderToken = windowName === "books" ? ++eutherBooksAudioRenderToken : eutherBooksAudioRenderToken;
+  if (windowName === "books") {
+    retireDetachedEutherBooksAudio();
+  }
   const showingShopping = windowName === "shopping";
   workspaceWindowEyebrow.textContent = "Workspace window";
   workspaceWindowTitle.textContent = workspaceWindowTitleFor(windowName);
@@ -7652,7 +7657,7 @@ function renderWorkspaceWindow(): void {
   }
   workspaceWindowDynamic.innerHTML = workspaceWindowContentMarkup(windowName);
   if (audioState) {
-    restoreEutherBooksAudioRenderState(audioState);
+    restoreEutherBooksAudioRenderState(audioState, renderToken);
   }
 }
 
@@ -9073,13 +9078,7 @@ function eutherBooksAudioUrl(path: string): string {
 }
 
 function eutherBooksJobAudioUrl(job: EutherBooksJob): string {
-  const version = [
-    job.audio_files.length,
-    job.current_chunk_index ?? 0,
-    job.total_audio_files ?? 0,
-    job.status,
-  ].join("-");
-  return `${eutherBooksBase}/jobs/${encodeURIComponent(job.id)}/audio?v=${encodeURIComponent(version)}`;
+  return `${eutherBooksBase}/jobs/${encodeURIComponent(job.id)}/audio`;
 }
 
 function eutherBooksUsesCombinedPlayback(job: EutherBooksJob | null): boolean {
@@ -9269,6 +9268,14 @@ function currentEutherBooksAudio(): HTMLAudioElement | null {
   return workspaceWindowDynamic.querySelector<HTMLAudioElement>(".eutherbooks-now-playing audio");
 }
 
+function retireDetachedEutherBooksAudio(): void {
+  for (const audio of workspaceWindowDynamic.querySelectorAll<HTMLAudioElement>(".eutherbooks-now-playing audio")) {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+  }
+}
+
 type EutherBooksAudioRenderState = {
   jobId: string;
   currentTime: number;
@@ -9288,13 +9295,17 @@ function captureEutherBooksAudioRenderState(): EutherBooksAudioRenderState | nul
   };
 }
 
-function restoreEutherBooksAudioRenderState(state: EutherBooksAudioRenderState): void {
+function restoreEutherBooksAudioRenderState(state: EutherBooksAudioRenderState, renderToken: number): void {
   const job = currentEutherBooksPlaybackJob();
   const audio = currentEutherBooksAudio();
   if (!job || job.id !== state.jobId || !audio) {
     return;
   }
   const apply = () => {
+    if (renderToken !== eutherBooksAudioRenderToken || currentEutherBooksAudio() !== audio) {
+      audio.pause();
+      return;
+    }
     const maxTime = Number.isFinite(audio.duration) && audio.duration > 0
       ? Math.max(0, audio.duration - 0.1)
       : state.currentTime;
@@ -9302,6 +9313,9 @@ function restoreEutherBooksAudioRenderState(state: EutherBooksAudioRenderState):
     updateEutherBooksVirtualPlayerDom(audio);
     if (state.wasPlaying) {
       audio.play().catch((err) => {
+        if (renderToken !== eutherBooksAudioRenderToken) {
+          return;
+        }
         eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
         renderBooksWindowIfActive();
       });
@@ -9832,7 +9846,11 @@ function setEutherBooksAudioIndex(index: number, autoplay = false): void {
 }
 
 function playEutherBooksAudioSoon(startTime = 0, autoplay = true): void {
+  const renderToken = eutherBooksAudioRenderToken;
   window.setTimeout(() => {
+    if (renderToken !== eutherBooksAudioRenderToken) {
+      return;
+    }
     const audio = currentEutherBooksAudio();
     if (!audio) {
       return;
@@ -9852,6 +9870,9 @@ function playEutherBooksAudioSoon(startTime = 0, autoplay = true): void {
       return;
     }
     audio.play().catch((err) => {
+      if (renderToken !== eutherBooksAudioRenderToken) {
+        return;
+      }
       eutherBooksPlayerStatus = err instanceof Error && err.message ? `Playback failed: ${err.message}` : "Playback failed";
       renderBooksWindowIfActive();
     });
