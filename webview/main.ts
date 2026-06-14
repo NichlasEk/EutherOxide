@@ -2820,7 +2820,7 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   }
   const booksTts = target.closest<HTMLButtonElement>("[data-eutherbooks-tts]");
   if (booksTts) {
-    await startEutherBooksTts();
+    await startEutherBooksTts(selectedEutherBookChapterIndex, true, "Generating speech");
     return;
   }
   const booksResume = target.closest<HTMLButtonElement>("[data-eutherbooks-resume]");
@@ -8636,7 +8636,7 @@ async function loadEutherBookChapters(bookId: string): Promise<void> {
   }
 }
 
-async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex, autoplayWhenReady = false): Promise<void> {
+async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex, autoplayWhenReady = false, statusLabel?: string): Promise<void> {
   if (eutherBooksTtsSubmitting) {
     return;
   }
@@ -8648,7 +8648,7 @@ async function startEutherBooksTts(chapterIndex = selectedEutherBookChapterIndex
   }
   selectedEutherBookChapterIndex = chapterIndex;
   persistEutherBooksSelectionPreference();
-  eutherBooksStatus = autoplayWhenReady ? "Preparing next chapter" : "Generating speech";
+  eutherBooksStatus = statusLabel ?? (autoplayWhenReady ? "Preparing next chapter" : "Generating speech");
   eutherBooksTtsSubmitting = true;
   eutherBooksJob = null;
   eutherBooksPlayableFallbackJob = null;
