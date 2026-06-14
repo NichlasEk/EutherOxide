@@ -9118,7 +9118,7 @@ function eutherBooksVirtualPlayerMarkup(job: EutherBooksJob | null, audioSource:
   const isPlaying = isEutherBooksAudioPlaying();
   return `
     <div class="eutherbooks-virtual-player">
-      <audio data-eutherbooks-audio preload="auto" src="${escapeHtml(audioSource)}"></audio>
+      <audio data-eutherbooks-audio controls preload="auto" src="${escapeHtml(audioSource)}"></audio>
       <button data-eutherbooks-play-toggle type="button" aria-label="${isPlaying ? "Pause" : "Play"}">${isPlaying ? "Pause" : "Play"}</button>
       <input data-eutherbooks-virtual-seek type="range" min="0" max="${max.toFixed(3)}" step="0.05" value="${Math.min(current, max).toFixed(3)}" aria-label="Audiobook position">
       <span data-eutherbooks-virtual-time>${escapeHtml(formatDuration(current))} / ${escapeHtml(total > 0 ? formatDuration(total) : "--:--")}</span>
