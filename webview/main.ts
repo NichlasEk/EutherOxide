@@ -9053,8 +9053,8 @@ function eutherBooksJobAudioUrl(jobId: string): string {
   return `${eutherBooksBase}/jobs/${encodeURIComponent(jobId)}/audio`;
 }
 
-function eutherBooksUsesCombinedPlayback(_job: EutherBooksJob | null): boolean {
-  return false;
+function eutherBooksUsesCombinedPlayback(job: EutherBooksJob | null): boolean {
+  return Boolean(job && job.status === "done" && job.audio_files.length > 1);
 }
 
 function eutherBooksAudioPartLabel(path: string, index: number): string {
@@ -9157,9 +9157,12 @@ function loadEutherBooksAudioDurations(job: EutherBooksJob | null): void {
 }
 
 function eutherBooksVirtualCurrentTime(job: EutherBooksJob | null, audio: HTMLAudioElement | null): number {
+  const current = audio && Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
+  if (eutherBooksUsesCombinedPlayback(job)) {
+    return current;
+  }
   const durations = eutherBooksChunkDurations(job);
   const before = durations.slice(0, Math.max(0, eutherBooksAudioIndex)).reduce((sum, duration) => sum + duration, 0);
-  const current = audio && Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
   return before + current;
 }
 
@@ -9167,6 +9170,9 @@ function eutherBooksVirtualSeekTarget(job: EutherBooksJob | null, seconds: numbe
   const audioFiles = job?.audio_files ?? [];
   if (!audioFiles.length) {
     return null;
+  }
+  if (eutherBooksUsesCombinedPlayback(job)) {
+    return { index: 0, offset: Math.max(0, seconds) };
   }
   const durations = eutherBooksChunkDurations(job);
   let remaining = Math.max(0, seconds);
