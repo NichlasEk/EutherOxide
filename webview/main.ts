@@ -9086,6 +9086,8 @@ async function refreshEutherBooksJob(): Promise<void> {
           renderBooksWindowIfActive();
           return;
         }
+        resumeEutherBooksBufferedAutoplay(eutherBooksJob);
+        return;
       } else if (combinedPlayback) {
         eutherBooksAudioIndex = 0;
       } else {
@@ -9107,13 +9109,7 @@ async function refreshEutherBooksJob(): Promise<void> {
           renderBooksWindowIfActive();
           return;
         }
-        eutherBooksPendingAutoplayJobId = null;
-        eutherBooksBufferedAutoplayJobId = null;
-        setEutherBooksPlaybackState(eutherBooksJob.status === "done" ? "paused" : "playing", eutherBooksJob.status === "done" ? "Next chapter ready" : "Playing generated chapter");
-        renderBooksWindowIfActive();
-        playEutherBooksAudioSoon(eutherBooksBufferedResumeSeconds);
-        eutherBooksBufferedResumeSeconds = 0;
-        eutherBooksBufferedAudioCount = 0;
+        resumeEutherBooksBufferedAutoplay(eutherBooksJob);
         return;
       }
     }
@@ -9633,6 +9629,16 @@ function queueEutherBooksBufferedAutoplay(job: EutherBooksJob, fromSeconds: numb
   scheduleEutherBooksJobPoll(250);
 }
 
+function resumeEutherBooksBufferedAutoplay(job: EutherBooksJob, fromSeconds = eutherBooksBufferedResumeSeconds): void {
+  eutherBooksPendingAutoplayJobId = null;
+  eutherBooksBufferedAutoplayJobId = null;
+  eutherBooksBufferedResumeSeconds = 0;
+  eutherBooksBufferedAudioCount = 0;
+  setEutherBooksPlaybackState("playing", "Playing generated chapter");
+  renderBooksWindowIfActive();
+  playEutherBooksAudioSoon(fromSeconds);
+}
+
 function eutherBooksChunkStartTime(job: EutherBooksJob | null, index: number): number {
   const durations = eutherBooksChunkDurations(job);
   return durations.slice(0, Math.max(0, index)).reduce((sum, duration) => sum + duration, 0);
@@ -10044,9 +10050,7 @@ function updateEutherBooksWebAudioPlayback(): void {
       scheduleEutherBooksJobPoll(250);
       return;
     }
-    eutherBooksPendingAutoplayJobId = null;
-    eutherBooksBufferedAutoplayJobId = null;
-    void startEutherBooksWebAudioPlayback(current);
+    resumeEutherBooksBufferedAutoplay(job, current);
     return;
   }
   if (
