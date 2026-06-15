@@ -9061,10 +9061,30 @@ async function refreshEutherBooksJob(): Promise<void> {
     return;
   }
   try {
+    const playbackJobBeforeRefresh = currentEutherBooksPlaybackJob();
     const previousAudioCount = eutherBooksJob.audio_files.length;
     eutherBooksJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(eutherBooksJob.id)}`);
     eutherBooksJobLastCheckedAt = Date.now();
     eutherBooksStatus = eutherBooksJob.status;
+    if (playbackJobBeforeRefresh && playbackJobBeforeRefresh.id !== eutherBooksJob.id) {
+      const refreshedPlaybackJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(playbackJobBeforeRefresh.id)}`);
+      if (eutherBooksPlayableFallbackJob?.id === refreshedPlaybackJob.id) {
+        eutherBooksPlayableFallbackJob = refreshedPlaybackJob;
+      }
+      if (eutherBooksWebAudioState?.jobId === refreshedPlaybackJob.id) {
+        loadEutherBooksAudioDurations(refreshedPlaybackJob);
+        const current = eutherBooksWebAudioCurrentTime(refreshedPlaybackJob) ?? eutherBooksBufferedResumeSeconds;
+        if (eutherBooksWebAudioState.waitingForMoreAudio) {
+          const buffer = eutherBooksBufferedAutoplayStatus(refreshedPlaybackJob, current, false);
+          if (buffer.ready) {
+            resumeEutherBooksBufferedAutoplay(refreshedPlaybackJob, current);
+            return;
+          }
+        } else {
+          void scheduleEutherBooksWebAudioAhead();
+        }
+      }
+    }
     if (eutherBooksJob.status === "done") {
       eutherBooksPlayableFallbackJob = null;
     } else if (!eutherBooksPlayableFallbackJob) {
@@ -9120,7 +9140,12 @@ async function refreshEutherBooksJob(): Promise<void> {
   } catch (err) {
     eutherBooksStatus = err instanceof Error ? "Job poll failed" : "Offline";
     setEutherBooksPlaybackState("buffering", "Still waiting for EutherBooks to report progress");
-    if (eutherBooksJob.status !== "done" && eutherBooksJob.status !== "failed") {
+    const playbackJob = currentEutherBooksPlaybackJob();
+    if (
+      eutherBooksJob.status !== "done"
+      && eutherBooksJob.status !== "failed"
+      || (playbackJob && playbackJob.status !== "done" && playbackJob.status !== "failed")
+    ) {
       scheduleEutherBooksJobPoll(1500);
     }
   }
