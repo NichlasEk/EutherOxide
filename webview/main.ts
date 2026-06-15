@@ -3245,12 +3245,18 @@ workspaceWindowDynamic.addEventListener("pointercancel", () => {
 
 window.addEventListener("focus", () => {
   void refreshActiveSocialChat("focus", 2500);
+  void recoverEutherBooksPlaybackAfterPageResume("focus");
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     void refreshActiveSocialChat("visible", 2500);
+    void recoverEutherBooksPlaybackAfterPageResume("visible");
   }
+});
+
+window.addEventListener("pageshow", () => {
+  void recoverEutherBooksPlaybackAfterPageResume("pageshow");
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {
@@ -8276,6 +8282,14 @@ function eutherBooksOwnVoicePrompt(): string {
   return eutherBooksOwnVoiceLanguage() === "en" ? eutherBooksOwnVoiceEnPrompt : eutherBooksOwnVoiceSvPrompt;
 }
 
+function eutherBooksRequestVoiceReferencePath(): string {
+  return eutherBooksIsOwnVoiceSelection() ? eutherBooksOwnVoicePath() : "";
+}
+
+function eutherBooksRequestVoicePromptText(): string {
+  return eutherBooksIsOwnVoiceSelection() ? eutherBooksOwnVoicePrompt() : "";
+}
+
 function normalizeEutherBooksOwnVoicePrompt(language: "sv" | "en", value: string | null | undefined): string {
   const fallback = language === "en" ? eutherBooksOwnVoiceEnPromptDefault : eutherBooksOwnVoiceSvPromptDefault;
   const legacy = language === "en" ? eutherBooksOwnVoiceEnPromptLegacy : eutherBooksOwnVoiceSvPromptLegacy;
@@ -8924,8 +8938,8 @@ async function createEutherBooksTtsJob(bookId: string, chapterIndex: number, can
       dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
       max_chunk_chars: eutherBooksIsDotsModel(eutherBooksEffectiveModelBackend()) ? 520 : eutherBooksMaxChunkChars,
       seed: eutherBooksSeed,
-      voice_reference_path: eutherBooksOwnVoicePath(),
-      voice_prompt_text: eutherBooksOwnVoicePrompt(),
+      voice_reference_path: eutherBooksRequestVoiceReferencePath(),
+      voice_prompt_text: eutherBooksRequestVoicePromptText(),
       queue_remainder: false,
     }),
   });
@@ -9112,8 +9126,8 @@ function eutherBooksJobMatchesCurrentRequest(job: EutherBooksJob): boolean {
     dots_max_generate_length: eutherBooksDotsMaxGenerateLength,
     max_chunk_chars: eutherBooksIsDotsModel(eutherBooksEffectiveModelBackend()) ? 520 : eutherBooksMaxChunkChars,
     seed: eutherBooksSeed,
-    voice_reference_path: eutherBooksOwnVoicePath(),
-    voice_prompt_text: eutherBooksOwnVoicePrompt(),
+    voice_reference_path: eutherBooksRequestVoiceReferencePath(),
+    voice_prompt_text: eutherBooksRequestVoicePromptText(),
   };
   return eutherBooksTtsOptionKeys().every((key) => eutherBooksSameOption(job.tts_options?.[key], expected[key]));
 }
@@ -9488,7 +9502,8 @@ function ensureEutherBooksAudioContext(): AudioContext | null {
 }
 
 async function decodedEutherBooksAudioChunk(path: string): Promise<EutherBooksDecodedAudioChunk> {
-  const cached = eutherBooksWebAudioChunkCache.get(path);
+  const mutable = eutherBooksAudioPathIsMutable(path);
+  const cached = mutable ? null : eutherBooksWebAudioChunkCache.get(path);
   if (cached) {
     return cached;
   }
@@ -9515,8 +9530,14 @@ async function decodedEutherBooksAudioChunk(path: string): Promise<EutherBooksDe
     }
     return decoded;
   })();
-  eutherBooksWebAudioChunkCache.set(path, promise);
+  if (!mutable) {
+    eutherBooksWebAudioChunkCache.set(path, promise);
+  }
   return promise;
+}
+
+function eutherBooksAudioPathIsMutable(path: string): boolean {
+  return path.includes(".stream-");
 }
 
 function eutherBooksAudioTrim(buffer: AudioBuffer): { start: number; end: number } {
@@ -9755,6 +9776,36 @@ function updateEutherBooksWebAudioPlayback(): void {
       renderBooksWindowIfActive();
     });
   }
+}
+
+async function recoverEutherBooksPlaybackAfterPageResume(reason: string): Promise<void> {
+  const state = eutherBooksWebAudioState;
+  const job = currentEutherBooksPlaybackJob();
+  if (!state || !job || state.jobId !== job.id || !state.playing) {
+    return;
+  }
+  if (eutherBooksJob && eutherBooksJob.status !== "done" && eutherBooksJob.status !== "failed") {
+    scheduleEutherBooksJobPoll(100);
+  }
+  if (state.context.state === "suspended") {
+    try {
+      await state.context.resume();
+    } catch (_err) {
+      eutherBooksPlayerStatus = "Tap Play to resume audio";
+      renderBooksWindowIfActive();
+      return;
+    }
+  }
+  const current = eutherBooksWebAudioCurrentTime(job) ?? state.virtualStartedAt;
+  const total = eutherBooksVirtualTotalDuration(job);
+  if (!state.waitingForMoreAudio && state.sources.size === 0 && current < Math.max(0, total - 0.1)) {
+    eutherBooksPlayerStatus = `Resuming after ${reason}`;
+    await startEutherBooksWebAudioPlayback(current);
+    return;
+  }
+  state.contextStartedAt = state.context.currentTime - Math.max(0, current - state.virtualStartedAt);
+  await scheduleEutherBooksWebAudioAhead();
+  updateEutherBooksWebAudioPlayback();
 }
 
 function eutherBooksVirtualCurrentTime(job: EutherBooksJob | null, audio: HTMLAudioElement | null): number {
