@@ -1,5 +1,7 @@
+/target
 /target/
 /crates/*/target/
+/src-tauri/target
 /src-tauri/target/
 /src-tauri/gen/
 /node_modules/
@@ -8,6 +10,7 @@
 /tmp/
 .euther-bridge/
 .euther-host/
+.euther-openra
 .euther-openra/
 /deploy/Caddyfile
 /deploy/eutherhost.service
