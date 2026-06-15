@@ -2987,11 +2987,10 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const voiceSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-voice]");
   if (voiceSelect?.value) {
     selectedEutherBooksVoice = voiceSelect.value;
-    selectedEutherBooksModelBackend = eutherBooksVoiceModelBackend(eutherBooksSelectedVoice()) ?? selectedEutherBooksModelBackend;
+    normalizeSelectedEutherBooksVoice();
     if (eutherBooksIsOwnVoiceSelection() || selectedEutherBooksVoice === "custom") {
       eutherBooksVoiceSettingsOpen = true;
     }
-    persistEutherBooksModelBackend();
     localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
     applyEutherBooksSelectedVoiceDefaults();
     resetEutherBooksSelectionAudio();
@@ -7958,14 +7957,21 @@ function eutherBooksVoiceOptions(): string {
         { id: "dots-soar-own-en", label: "Dots SOAR own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-soar" },
         { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2" },
       ];
-  const groups = [
-    ["Svenska röster", voices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-") && !voice.id.startsWith("dots-mf-"))],
-    ["English voices", voices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id) && !voice.id.startsWith("dots-soar-") && !voice.id.startsWith("dots-mf-"))],
-    ["Your own voice", voices.filter((voice) => voice.id === "own-sv" || voice.id === "own-en")],
-    ["Dots MF fast", voices.filter((voice) => voice.id.startsWith("dots-mf-"))],
-    ["Dots SOAR quality", voices.filter((voice) => voice.id.startsWith("dots-soar-"))],
-    ["Egen röst", voices.filter((voice) => voice.id === "custom")],
-  ] as const;
+  const activeModel = selectedEutherBooksModelBackend;
+  const modelVoices = voices.filter((voice) => (eutherBooksVoiceModelBackend(voice) ?? "voxcpm2") === activeModel);
+  const groups: Array<[string, EutherBooksVoice[]]> =
+    activeModel === "voxcpm2"
+      ? [
+          ["Svenska röster", modelVoices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !["custom", "own-sv", "own-en"].includes(voice.id))],
+          ["English voices", modelVoices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !["own-sv", "own-en"].includes(voice.id))],
+          ["Your own voice", modelVoices.filter((voice) => voice.id === "own-sv" || voice.id === "own-en")],
+          ["Egen röst", modelVoices.filter((voice) => voice.id === "custom")],
+        ]
+      : [
+          ["Svenska röster", modelVoices.filter((voice) => voice.language.toLowerCase().startsWith("sv") && !eutherBooksVoiceIsOwn(voice.id))],
+          ["English voices", modelVoices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !eutherBooksVoiceIsOwn(voice.id))],
+          ["Your own voice", modelVoices.filter((voice) => eutherBooksVoiceIsOwn(voice.id))],
+        ];
   return groups
     .filter(([, groupVoices]) => groupVoices.length > 0)
     .map(([label, groupVoices]) => `
@@ -7996,7 +8002,9 @@ function eutherBooksModelReadyMarkup(): string {
     `;
   }
   const status = eutherBooksHealth?.dots_tts?.status ?? (eutherBooksHealthLoading ? "checking" : "unknown");
-  const ready = eutherBooksHealth?.dots_tts?.model_loaded === true || status === "ready";
+  const loadedModel = eutherBooksLoadedDotsModelBackend();
+  const selectedModelLoaded = loadedModel === null || loadedModel === active;
+  const ready = selectedModelLoaded && (eutherBooksHealth?.dots_tts?.model_loaded === true || status === "ready");
   const offline = status === "offline" || status === "unknown";
   const label = ready ? "Model ready" : offline ? "Model offline" : "Model warming";
   const detail = ready
@@ -8010,6 +8018,20 @@ function eutherBooksModelReadyMarkup(): string {
       <strong>${escapeHtml(detail)}</strong>
     </div>
   `;
+}
+
+function eutherBooksLoadedDotsModelBackend(): EutherBooksModelBackend | null {
+  const loadedModel = eutherBooksHealth?.dots_tts?.loaded_model?.toLowerCase() ?? "";
+  if (!loadedModel) {
+    return null;
+  }
+  if (loadedModel.includes("dots.tts-mf")) {
+    return "dots.tts-mf";
+  }
+  if (loadedModel.includes("dots.tts-soar")) {
+    return "dots.tts-soar";
+  }
+  return null;
 }
 
 function normalizeEutherBooksModelBackend(value: string): EutherBooksModelBackend {
@@ -8029,7 +8051,7 @@ function eutherBooksVoiceModelBackend(voice: EutherBooksVoice | undefined): Euth
 }
 
 function eutherBooksEffectiveModelBackend(): EutherBooksModelBackend {
-  return eutherBooksVoiceModelBackend(eutherBooksSelectedVoice()) ?? selectedEutherBooksModelBackend;
+  return selectedEutherBooksModelBackend;
 }
 
 function eutherBooksBaseVoiceId(voiceId: string): string {
@@ -8075,7 +8097,11 @@ function persistEutherBooksModelBackend(): void {
 }
 
 function eutherBooksIsOwnVoiceSelection(): boolean {
-  return selectedEutherBooksVoice === "own-sv" || selectedEutherBooksVoice === "own-en" || selectedEutherBooksVoice === "dots-mf-own-sv" || selectedEutherBooksVoice === "dots-mf-own-en" || selectedEutherBooksVoice === "dots-soar-own-sv" || selectedEutherBooksVoice === "dots-soar-own-en";
+  return eutherBooksVoiceIsOwn(selectedEutherBooksVoice);
+}
+
+function eutherBooksVoiceIsOwn(voiceId: string): boolean {
+  return voiceId === "own-sv" || voiceId === "own-en" || voiceId === "dots-mf-own-sv" || voiceId === "dots-mf-own-en" || voiceId === "dots-soar-own-sv" || voiceId === "dots-soar-own-en";
 }
 
 function selectEutherBooksVoiceForModelBackend(): void {
@@ -8584,10 +8610,24 @@ function eutherBooksAudioErrorMessage(error: MediaError | null): string {
 }
 
 function normalizeSelectedEutherBooksVoice(): void {
-  if (!eutherBooksVoices.length || eutherBooksVoices.some((voice) => voice.id === selectedEutherBooksVoice)) {
+  if (!eutherBooksVoices.length) {
     return;
   }
-  selectedEutherBooksVoice = eutherBooksVoices.find((voice) => voice.language.startsWith("sv"))?.id ?? eutherBooksVoices[0]?.id ?? "sv-female-warm";
+  const selected = eutherBooksSelectedVoice();
+  if (selected && (eutherBooksVoiceModelBackend(selected) ?? "voxcpm2") === selectedEutherBooksModelBackend) {
+    return;
+  }
+  const language = selected?.language?.toLowerCase().startsWith("en") || selectedEutherBooksVoice.startsWith("en-") ? "en" : "sv";
+  const mappedVoice = eutherBooksVoiceIdForModelBackend(
+    eutherBooksBaseVoiceId(selectedEutherBooksVoice),
+    selectedEutherBooksModelBackend,
+    language,
+  );
+  selectedEutherBooksVoice = eutherBooksVoices.some((voice) => voice.id === mappedVoice)
+    ? mappedVoice
+    : eutherBooksVoices.find((voice) => (eutherBooksVoiceModelBackend(voice) ?? "voxcpm2") === selectedEutherBooksModelBackend && voice.language.startsWith("sv"))?.id
+      ?? eutherBooksVoices.find((voice) => (eutherBooksVoiceModelBackend(voice) ?? "voxcpm2") === selectedEutherBooksModelBackend)?.id
+      ?? "sv-female-warm";
   localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
 }
 
@@ -14858,6 +14898,7 @@ function applyEutherBooksUserPreferences(preferences: UserPreferences): void {
     selectedEutherBooksModelBackend = normalizeEutherBooksModelBackend(preferences.eutherbooksModelBackend);
     persistEutherBooksModelBackend();
   }
+  normalizeSelectedEutherBooksVoice();
   const lastBookId = preferences.eutherbooksLastBookId?.trim();
   if (lastBookId) {
     selectedEutherBookId = lastBookId;
