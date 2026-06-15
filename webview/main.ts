@@ -9606,8 +9606,10 @@ function eutherBooksBufferedAutoplayStatus(
   const available = eutherBooksPlayableBufferAhead(job, fromSeconds);
   const required = initialStart ? EUTHERBOOKS_AUTOPLAY_START_BUFFER_SECONDS : EUTHERBOOKS_AUTOPLAY_RESUME_BUFFER_SECONDS;
   const waitingForParts = initialStart && job.audio_files.length < EUTHERBOOKS_AUTOPLAY_MIN_START_PARTS && !done;
+  const hasEnoughUnknownDurationParts = available <= 0
+    && job.audio_files.length >= (initialStart ? EUTHERBOOKS_AUTOPLAY_MIN_START_PARTS : Math.max(eutherBooksBufferedAudioCount + 1, 1));
   return {
-    ready: done || (!waitingForParts && available >= required),
+    ready: done || (!waitingForParts && (available >= required || hasEnoughUnknownDurationParts)),
     available,
     required,
     waitingForParts,
@@ -10337,7 +10339,7 @@ function currentEutherBooksPlaybackJob(): EutherBooksJob | null {
   if (eutherBooksJob?.audio_files.length) {
     return eutherBooksJob;
   }
-  if (eutherBooksJob && eutherBooksJob.status !== "done" && eutherBooksJob.status !== "failed") {
+  if (eutherBooksJob && eutherBooksJob.status !== "done" && eutherBooksJob.status !== "failed" && !eutherBooksPlayableFallbackJob) {
     return null;
   }
   return eutherBooksPlayableFallbackJob;
