@@ -11315,10 +11315,8 @@ fn save_host_eutherbooks_voice_sample(
     upload: HostEutherBooksVoiceSampleUpload,
 ) -> io::Result<HostUserPreferences> {
     let total_started = Instant::now();
-    let voice_id = clean_eutherbooks_voice(&upload.voice_id);
-    if !matches!(voice_id.as_str(), "own-sv" | "own-en") {
-        return Err(invalid_request("invalid voice sample slot"));
-    }
+    let voice_id = eutherbooks_own_voice_slot(&upload.voice_id)
+        .ok_or_else(|| invalid_request("invalid voice sample slot"))?;
     let language = if voice_id == "own-en" { "en" } else { "sv" };
     if !upload.language.trim().is_empty() && upload.language.trim() != language {
         return Err(invalid_request("voice sample language mismatch"));
@@ -11397,10 +11395,9 @@ fn send_host_eutherbooks_voice_sample_wav(
     request_path: &str,
 ) -> io::Result<()> {
     let voice = query_string_value(request_path, "voice")?.unwrap_or_else(|| "own-sv".to_string());
-    let voice_id = clean_eutherbooks_voice(&voice);
-    if !matches!(voice_id.as_str(), "own-sv" | "own-en") {
+    let Some(voice_id) = eutherbooks_own_voice_slot(&voice) else {
         return send_error(stream, 400, "invalid voice sample slot");
-    }
+    };
     let preferences = read_host_user_preferences(user)?;
     let (locked, path_text) = if voice_id == "own-en" {
         (
@@ -11530,6 +11527,14 @@ fn eutherbooks_own_voice_prompt(language: &str) -> &'static str {
         "This is my own audiobook narrator voice. I speak clearly and calmly so the system can learn my tone."
     } else {
         "Det här är min egen berättarröst för ljudböcker. Jag talar tydligt och lugnt så systemet kan lära sig min röst."
+    }
+}
+
+fn eutherbooks_own_voice_slot(value: &str) -> Option<String> {
+    match clean_eutherbooks_voice(value).as_str() {
+        "own-en" | "dots-mf-own-en" | "dots-soar-own-en" => Some("own-en".to_string()),
+        "own-sv" | "dots-mf-own-sv" | "dots-soar-own-sv" => Some("own-sv".to_string()),
+        _ => None,
     }
 }
 
