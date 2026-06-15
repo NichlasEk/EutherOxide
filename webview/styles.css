@@ -6122,6 +6122,10 @@ h2 {
   gap: 5px;
 }
 
+.eutherbooks-audio-select.is-virtual {
+  opacity: 0.82;
+}
+
 .eutherbooks-audio-select span,
 .eutherbooks-sleep-timer span {
   color: #aac99c;
@@ -6197,6 +6201,65 @@ h2 {
   font-size: 0.72rem;
   font-weight: 850;
   line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.eutherbooks-playback-buffer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(77, 188, 120, 0.22);
+  border-radius: 8px;
+  background: rgba(77, 188, 120, 0.08);
+  color: #cfeeb2;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.eutherbooks-playback-buffer strong {
+  color: #fff4c6;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.eutherbooks-playback-debug {
+  display: grid;
+  gap: 8px;
+}
+
+.eutherbooks-playback-debug button {
+  justify-self: start;
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 0.66rem;
+  font-weight: 900;
+}
+
+.eutherbooks-playback-debug dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(207, 240, 178, 0.14);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  color: #aac99c;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.eutherbooks-playback-debug dt {
+  color: #fff4c6;
+  text-transform: uppercase;
+}
+
+.eutherbooks-playback-debug dd {
+  min-width: 0;
+  margin: 0;
   overflow-wrap: anywhere;
 }
 

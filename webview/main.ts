@@ -578,6 +578,18 @@ type EutherBooksPlaybackState =
   | "ended"
   | "error";
 
+type EutherBooksPlaybackTimeline = {
+  current: number;
+  total: number;
+  generatedUntil: number;
+  scheduledUntil: number;
+  bufferAhead: number;
+  readyAudioFiles: number;
+  totalAudioFiles: number;
+  isComplete: boolean;
+  isWebAudio: boolean;
+};
+
 type EutheriumShopItem = {
   id: string;
   name: string;
@@ -1409,6 +1421,8 @@ let eutherBooksPlaybackState: EutherBooksPlaybackState = "idle";
 let eutherBooksJobLastCheckedAt = 0;
 let eutherBooksPlayableFallbackJob: EutherBooksJob | null = null;
 let eutherBooksAudioRenderToken = 0;
+let eutherBooksPlaybackSessionCounter = 0;
+let eutherBooksPlaybackDebugOpen = localStorage.getItem("eutherbooks-playback-debug") === "true";
 let eutherBooksVoicePickerScrollTop = 0;
 const eutherBooksAudioDurationCache = new Map<string, number>();
 const eutherBooksWebAudioChunkCache = new Map<string, Promise<EutherBooksDecodedAudioChunk>>();
@@ -2925,17 +2939,35 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   }
   const booksPrev = target.closest<HTMLButtonElement>("[data-eutherbooks-prev-audio]");
   if (booksPrev) {
-    setEutherBooksAudioIndex(eutherBooksAudioIndex - 1);
+    const job = currentEutherBooksPlaybackJob();
+    if (eutherBooksUsesWebAudioPlayback(job)) {
+      seekEutherBooksVirtualTime(Math.max(0, eutherBooksVirtualCurrentTime(job, null) - 15), isEutherBooksAudioPlaying());
+    } else {
+      setEutherBooksAudioIndex(eutherBooksAudioIndex - 1);
+    }
     return;
   }
   const booksNext = target.closest<HTMLButtonElement>("[data-eutherbooks-next-audio]");
   if (booksNext) {
-    setEutherBooksAudioIndex(eutherBooksAudioIndex + 1);
+    const job = currentEutherBooksPlaybackJob();
+    if (eutherBooksUsesWebAudioPlayback(job)) {
+      const total = eutherBooksVirtualTotalDuration(job);
+      seekEutherBooksVirtualTime(Math.min(Math.max(0, total - 0.2), eutherBooksVirtualCurrentTime(job, null) + 15), isEutherBooksAudioPlaying());
+    } else {
+      setEutherBooksAudioIndex(eutherBooksAudioIndex + 1);
+    }
     return;
   }
   const booksWebAudioToggle = target.closest<HTMLButtonElement>("[data-eutherbooks-web-audio-toggle]");
   if (booksWebAudioToggle) {
     await toggleEutherBooksWebAudioPlayback();
+    return;
+  }
+  const booksPlaybackDebug = target.closest<HTMLButtonElement>("[data-eutherbooks-playback-debug-toggle]");
+  if (booksPlaybackDebug) {
+    eutherBooksPlaybackDebugOpen = !eutherBooksPlaybackDebugOpen;
+    localStorage.setItem("eutherbooks-playback-debug", String(eutherBooksPlaybackDebugOpen));
+    renderWorkspaceWindow();
     return;
   }
   const refresh = target.closest<HTMLButtonElement>("[data-eutherium-refresh]");
@@ -7821,6 +7853,8 @@ function eutherBooksWindowMarkup(): string {
   const playbackJob = currentEutherBooksPlaybackJob();
   const audioFiles = playbackJob?.audio_files ?? [];
   const combinedPlayback = eutherBooksUsesCombinedPlayback(playbackJob);
+  const webAudioPlayback = eutherBooksUsesWebAudioPlayback(playbackJob);
+  const playbackTimeline = eutherBooksPlaybackTimeline(playbackJob, null);
   const audioPath = audioFiles[eutherBooksAudioIndex] ?? null;
   const audioSource = playbackJob && combinedPlayback
     ? eutherBooksJobAudioUrl(playbackJob)
@@ -7835,7 +7869,7 @@ function eutherBooksWindowMarkup(): string {
   const canGenerate = Boolean(selectedBook && selectedEutherBookChapters.length && !eutherBooksLoading);
   const bookmark = selectedBook ? eutherBooksBookmarkFor(selectedBook.id) : null;
   const bookmarkLabel = bookmark ? eutherBooksBookmarkLabel(bookmark) : "No bookmark";
-  const audioOptions = combinedPlayback
+  const audioOptions = combinedPlayback || webAudioPlayback
     ? `<option value="0">Full chapter</option>`
     : audioFiles.length
     ? audioFiles
@@ -7959,13 +7993,15 @@ function eutherBooksWindowMarkup(): string {
             </select>
             <small>${escapeHtml(sleepTimerLabel)}</small>
           </label>
-          <label class="eutherbooks-audio-select">
-            <span>Generated part</span>
-            <select data-eutherbooks-audio-select ${audioFiles.length && !combinedPlayback ? "" : "disabled"}>
+          <label class="eutherbooks-audio-select ${webAudioPlayback ? "is-virtual" : ""}">
+            <span>${webAudioPlayback ? "Playback scope" : "Generated part"}</span>
+            <select data-eutherbooks-audio-select ${audioFiles.length && !combinedPlayback && !webAudioPlayback ? "" : "disabled"}>
               ${audioOptions}
             </select>
           </label>
           ${virtualPlayer}
+          ${eutherBooksPlaybackBufferMarkup(playbackTimeline)}
+          ${eutherBooksPlaybackDebugMarkup(playbackTimeline)}
         </div>
         <div class="eutherbooks-bookmark-panel">
           <span>${escapeHtml(bookmarkLabel)}</span>
@@ -7983,8 +8019,8 @@ function eutherBooksWindowMarkup(): string {
           ${processStatus ? `<small>${escapeHtml(processStatus)}</small>` : ""}
         </div>
         <div class="eutherbooks-player-actions">
-          <button data-eutherbooks-prev-audio type="button" ${!combinedPlayback && eutherBooksAudioIndex > 0 ? "" : "disabled"}>Prev</button>
-          <button data-eutherbooks-next-audio type="button" ${!combinedPlayback && eutherBooksAudioIndex + 1 < audioFiles.length ? "" : "disabled"}>Next</button>
+          <button data-eutherbooks-prev-audio type="button" ${audioFiles.length ? "" : "disabled"}>${webAudioPlayback ? "-15s" : "Prev"}</button>
+          <button data-eutherbooks-next-audio type="button" ${audioFiles.length ? "" : "disabled"}>${webAudioPlayback ? "+15s" : "Next"}</button>
         </div>
         <div class="eutherbooks-job-note">
           ${escapeHtml(eutherBooksVisibleJobNote())}
@@ -8682,6 +8718,10 @@ function setEutherBooksPlaybackError(error: unknown, fallback = "Playback failed
   setEutherBooksPlaybackState("error", error instanceof Error && error.message ? `${fallback}: ${error.message}` : fallback);
 }
 
+function isEutherBooksAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function eutherBooksPlaybackStateLabel(): string {
   switch (eutherBooksPlaybackState) {
     case "loading":
@@ -8705,7 +8745,12 @@ function eutherBooksPlaybackStateLabel(): string {
 function eutherBooksPlaybackButtonLabel(job: EutherBooksJob | null): string {
   const webAudioState = eutherBooksWebAudioState;
   const buffering = Boolean(webAudioState && webAudioState.jobId === job?.id && webAudioState.waitingForMoreAudio);
-  if (buffering || eutherBooksPlaybackState === "buffering" || eutherBooksPlaybackState === "loading") {
+  const stateBelongsToJob = Boolean(job && (
+    eutherBooksPendingAutoplayJobId === job.id
+    || eutherBooksBufferedAutoplayJobId === job.id
+    || webAudioState?.jobId === job.id
+  ));
+  if (buffering || (stateBelongsToJob && (eutherBooksPlaybackState === "buffering" || eutherBooksPlaybackState === "loading"))) {
     return "Buffering";
   }
   return isEutherBooksWebAudioPlaying(job) ? "Pause" : "Play";
@@ -9169,7 +9214,11 @@ function eutherBooksJobMatchesCurrentRequest(job: EutherBooksJob): boolean {
   if (job.voice !== eutherBooksRequestVoice() || job.language !== eutherBooksRequestLanguage()) {
     return false;
   }
-  const expected: Record<string, number | string> = {
+  return eutherBooksTtsOptionKeys().every((key) => eutherBooksSameOption(job.tts_options?.[key], eutherBooksCurrentTtsOptions()[key]));
+}
+
+function eutherBooksCurrentTtsOptions(): Record<string, number | string> {
+  return {
     model_backend: eutherBooksEffectiveModelBackend(),
     dots_template_name: "tts",
     dots_ode_method: "euler",
@@ -9182,7 +9231,29 @@ function eutherBooksJobMatchesCurrentRequest(job: EutherBooksJob): boolean {
     voice_reference_path: eutherBooksRequestVoiceReferencePath(),
     voice_prompt_text: eutherBooksRequestVoicePromptText(),
   };
-  return eutherBooksTtsOptionKeys().every((key) => eutherBooksSameOption(job.tts_options?.[key], expected[key]));
+}
+
+function eutherBooksCurrentTtsSettingsHash(): string {
+  return eutherBooksTtsSettingsHash(eutherBooksRequestVoice(), eutherBooksRequestLanguage(), eutherBooksCurrentTtsOptions());
+}
+
+function eutherBooksJobTtsSettingsHash(job: EutherBooksJob): string {
+  return eutherBooksTtsSettingsHash(job.voice, job.language, job.tts_options ?? {});
+}
+
+function eutherBooksTtsSettingsHash(voice: string, language: string, options: Record<string, unknown>): string {
+  const normalized: Record<string, string | number | boolean> = {
+    language: language.trim().toLowerCase(),
+    voice: voice.trim(),
+  };
+  for (const key of eutherBooksTtsOptionKeys()) {
+    const value = options[key];
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    normalized[key] = typeof value === "number" ? Number(value) : String(value).trim();
+  }
+  return JSON.stringify(Object.keys(normalized).sort().map((key) => [key, normalized[key]]));
 }
 
 function eutherBooksTtsOptionKeys(): string[] {
@@ -9266,7 +9337,7 @@ function maybePrefetchEutherBooksNextChapter(): void {
   }
   eutherBooksPrefetchCheckAt = now;
   const job = currentEutherBooksPlaybackJob();
-  if (!job || job.status !== "done" || !job.audio_files.length) {
+  if (!job || !job.audio_files.length) {
     return;
   }
   if (!nextEutherBookChapter()) {
@@ -9279,7 +9350,12 @@ function maybePrefetchEutherBooksNextChapter(): void {
   }
   const remaining = Math.max(0, total - current);
   const playedFraction = current / total;
-  if (remaining <= EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_SECONDS || playedFraction >= EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_FRACTION) {
+  if (
+    job.status === "done"
+    || remaining <= EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_SECONDS
+    || playedFraction >= EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_FRACTION
+    || (current >= 120 && job.audio_files.length >= EUTHERBOOKS_AUTOPLAY_MIN_START_PARTS)
+  ) {
     void ensureEutherBooksNextChapterPrefetched();
   }
 }
@@ -9319,7 +9395,7 @@ function eutherBooksPrefetchMatches(bookId: string, chapterIndex: number, job: E
   return job.book_id === bookId
     && job.chapter_indexes.length === 1
     && job.chapter_indexes[0] === chapterIndex
-    && job.voice === eutherBooksRequestVoice();
+    && eutherBooksJobMatchesCurrentRequest(job);
 }
 
 async function eutherBooksJson<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -9409,8 +9485,9 @@ function eutherBooksVirtualPlayerMarkup(job: EutherBooksJob | null, audioSource:
     return `<div class="eutherbooks-audio-waiting">${escapeHtml(eutherBooksAudioWaitingLabel())}</div>`;
   }
   loadEutherBooksAudioDurations(job);
-  const total = eutherBooksVirtualTotalDuration(job);
-  const current = eutherBooksVirtualCurrentTime(job, currentEutherBooksAudio());
+  const timeline = eutherBooksPlaybackTimeline(job, currentEutherBooksAudio());
+  const total = timeline.total;
+  const current = timeline.current;
   const max = Math.max(total, current, 0.01);
   if (eutherBooksUsesWebAudioPlayback(job)) {
     return `
@@ -9430,6 +9507,49 @@ function eutherBooksVirtualPlayerMarkup(job: EutherBooksJob | null, audioSource:
   `;
 }
 
+function eutherBooksPlaybackBufferMarkup(timeline: EutherBooksPlaybackTimeline): string {
+  if (!timeline.readyAudioFiles) {
+    return "";
+  }
+  const generatedLabel = timeline.isComplete
+    ? `Generated ${formatDuration(timeline.generatedUntil)}`
+    : `Generated ${formatDuration(timeline.generatedUntil)}${timeline.totalAudioFiles > timeline.readyAudioFiles ? ` (${timeline.readyAudioFiles}/${timeline.totalAudioFiles} parts)` : ""}`;
+  const scheduledLabel = timeline.isWebAudio && timeline.scheduledUntil > timeline.current
+    ? `Scheduled ${Math.floor(timeline.bufferAhead)}s ahead`
+    : timeline.isWebAudio
+      ? "Waiting for decoded audio"
+      : "HTML audio";
+  return `
+    <div class="eutherbooks-playback-buffer" data-eutherbooks-playback-buffer>
+      <span>${escapeHtml(generatedLabel)}</span>
+      <strong>${escapeHtml(scheduledLabel)}</strong>
+    </div>
+  `;
+}
+
+function eutherBooksPlaybackDebugMarkup(timeline: EutherBooksPlaybackTimeline): string {
+  const state = eutherBooksWebAudioState;
+  const rows = [
+    ["state", eutherBooksPlaybackState],
+    ["job", currentEutherBooksPlaybackJob()?.id?.slice(0, 10) ?? "-"],
+    ["session", state ? String(state.sessionId) : "-"],
+    ["settings", state?.settingsHash.slice(0, 10) ?? eutherBooksCurrentTtsSettingsHash().slice(0, 10)],
+    ["current", timeline.current.toFixed(2)],
+    ["total", timeline.total.toFixed(2)],
+    ["generated", timeline.generatedUntil.toFixed(2)],
+    ["scheduled", timeline.scheduledUntil.toFixed(2)],
+    ["buffer", timeline.bufferAhead.toFixed(2)],
+    ["sources", state ? String(state.sources.size) : "0"],
+    ["audioctx", state?.context.state ?? "-"],
+  ];
+  return `
+    <div class="eutherbooks-playback-debug ${eutherBooksPlaybackDebugOpen ? "is-open" : ""}">
+      <button data-eutherbooks-playback-debug-toggle type="button">${eutherBooksPlaybackDebugOpen ? "Hide player debug" : "Show player debug"}</button>
+      ${eutherBooksPlaybackDebugOpen ? `<dl>${rows.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>` : ""}
+    </div>
+  `;
+}
+
 function eutherBooksChunkDurations(job: EutherBooksJob | null): number[] {
   const audioFiles = job?.audio_files ?? [];
   const durations = job?.audio_durations ?? [];
@@ -9441,6 +9561,28 @@ function eutherBooksChunkDurations(job: EutherBooksJob | null): number[] {
 
 function eutherBooksVirtualTotalDuration(job: EutherBooksJob | null): number {
   return eutherBooksChunkDurations(job).reduce((sum, duration) => sum + duration, 0);
+}
+
+function eutherBooksPlaybackTimeline(job: EutherBooksJob | null, audio: HTMLAudioElement | null): EutherBooksPlaybackTimeline {
+  const current = eutherBooksVirtualCurrentTime(job, audio);
+  const generatedUntil = eutherBooksVirtualTotalDuration(job);
+  const state = eutherBooksWebAudioState;
+  const scheduledUntil = state && job && state.jobId === job.id ? Math.max(state.scheduledUntil, state.virtualStartedAt) : generatedUntil;
+  const totalAudioFiles = Math.max(job?.total_audio_files ?? 0, job?.total_chunks ?? 0, job?.audio_files.length ?? 0);
+  const isComplete = job?.status === "done" || job?.status === "failed";
+  const knownTotal = isComplete ? generatedUntil : Math.max(generatedUntil, current);
+  const bufferAhead = Math.max(0, Math.min(generatedUntil, scheduledUntil) - current);
+  return {
+    current,
+    total: knownTotal,
+    generatedUntil,
+    scheduledUntil,
+    bufferAhead,
+    readyAudioFiles: job?.audio_files.length ?? 0,
+    totalAudioFiles,
+    isComplete,
+    isWebAudio: eutherBooksUsesWebAudioPlayback(job),
+  };
 }
 
 function eutherBooksPlayableBufferAhead(job: EutherBooksJob | null, fromSeconds: number): number {
@@ -9528,7 +9670,10 @@ type EutherBooksDecodedAudioChunk = {
 
 type EutherBooksWebAudioState = {
   context: AudioContext;
+  sessionId: number;
   jobId: string;
+  settingsHash: string;
+  abortController: AbortController;
   sources: Set<AudioBufferSourceNode>;
   timer: number | null;
   playing: boolean;
@@ -9553,9 +9698,9 @@ function ensureEutherBooksAudioContext(): AudioContext | null {
   return AudioCtor ? new AudioCtor() : null;
 }
 
-async function decodedEutherBooksAudioChunk(path: string): Promise<EutherBooksDecodedAudioChunk> {
+async function decodedEutherBooksAudioChunk(path: string, signal?: AbortSignal): Promise<EutherBooksDecodedAudioChunk> {
   const mutable = eutherBooksAudioPathIsMutable(path);
-  const cached = mutable ? null : eutherBooksWebAudioChunkCache.get(path);
+  const cached = mutable || signal ? null : eutherBooksWebAudioChunkCache.get(path);
   if (cached) {
     return cached;
   }
@@ -9564,11 +9709,18 @@ async function decodedEutherBooksAudioChunk(path: string): Promise<EutherBooksDe
     if (!context) {
       throw new Error("WebAudio is not supported in this browser.");
     }
-    const response = await fetch(eutherBooksAudioUrl(path), { credentials: "include", cache: "no-store" });
+    const response = await fetch(eutherBooksAudioUrl(path), { credentials: "include", cache: "no-store", signal });
     if (!response.ok) {
       throw new Error(`Audio fetch failed: ${response.status}`);
     }
-    const buffer = await context.decodeAudioData(await response.arrayBuffer());
+    const bytes = await response.arrayBuffer();
+    if (signal?.aborted) {
+      throw new DOMException("Playback session was cancelled", "AbortError");
+    }
+    const buffer = await context.decodeAudioData(bytes);
+    if (signal?.aborted) {
+      throw new DOMException("Playback session was cancelled", "AbortError");
+    }
     const trim = eutherBooksAudioTrim(buffer);
     const decoded = {
       path,
@@ -9582,7 +9734,7 @@ async function decodedEutherBooksAudioChunk(path: string): Promise<EutherBooksDe
     }
     return decoded;
   })();
-  if (!mutable) {
+  if (!mutable && !signal) {
     eutherBooksWebAudioChunkCache.set(path, promise);
   }
   return promise;
@@ -9639,11 +9791,49 @@ function isEutherBooksWebAudioPlaying(job: EutherBooksJob | null = currentEuther
   return Boolean(eutherBooksWebAudioState?.playing && job && eutherBooksWebAudioState.jobId === job.id);
 }
 
+function updateEutherBooksMediaSession(job: EutherBooksJob | null, state: MediaSessionPlaybackState = "none"): void {
+  if (!("mediaSession" in navigator)) {
+    return;
+  }
+  const book = selectedEutherBook();
+  const chapter = selectedEutherBookChapters.find((candidate) => candidate.index === selectedEutherBookChapterIndex);
+  navigator.mediaSession.metadata = book
+    ? new MediaMetadata({
+        title: chapter?.title ?? book.title,
+        artist: book.author ?? "EutherBooks",
+        album: book.title,
+      })
+    : null;
+  navigator.mediaSession.playbackState = state;
+  try {
+    navigator.mediaSession.setActionHandler("play", () => {
+      void startEutherBooksWebAudioPlayback(eutherBooksVirtualCurrentTime(job, null));
+    });
+    navigator.mediaSession.setActionHandler("pause", () => {
+      stopEutherBooksWebAudioPlayback(true);
+      saveEutherBooksBookmark("pause");
+      renderBooksWindowIfActive();
+    });
+    navigator.mediaSession.setActionHandler("seekbackward", () => {
+      seekEutherBooksVirtualTime(Math.max(0, eutherBooksVirtualCurrentTime(job, null) - 15), isEutherBooksAudioPlaying());
+    });
+    navigator.mediaSession.setActionHandler("seekforward", () => {
+      const total = eutherBooksVirtualTotalDuration(job);
+      seekEutherBooksVirtualTime(Math.min(Math.max(0, total - 0.2), eutherBooksVirtualCurrentTime(job, null) + 15), isEutherBooksAudioPlaying());
+    });
+  } catch (_err) {
+    // Some mobile browsers expose Media Session partially.
+  }
+}
+
 function stopEutherBooksWebAudioPlayback(keepPosition = true): void {
   const state = eutherBooksWebAudioState;
   if (!state) {
+    eutherBooksPlaybackSessionCounter += 1;
     return;
   }
+  eutherBooksPlaybackSessionCounter += 1;
+  state.abortController.abort();
   const current = keepPosition ? eutherBooksWebAudioCurrentTime(currentEutherBooksPlaybackJob()) ?? state.virtualStartedAt : 0;
   for (const source of state.sources) {
     try {
@@ -9663,6 +9853,7 @@ function stopEutherBooksWebAudioPlayback(keepPosition = true): void {
   state.scheduledUntil = current;
   state.waitingForMoreAudio = false;
   setEutherBooksPlaybackState(keepPosition ? "paused" : "idle");
+  updateEutherBooksMediaSession(currentEutherBooksPlaybackJob(), keepPosition ? "paused" : "none");
   updateEutherBooksVirtualPlayerDom(null);
 }
 
@@ -9680,6 +9871,7 @@ function pauseEutherBooksWebAudioForBuffering(state: EutherBooksWebAudioState, j
   state.contextStartedAt = state.context.currentTime;
   state.scheduledUntil = bufferedAt;
   state.waitingForMoreAudio = true;
+  updateEutherBooksMediaSession(job, "paused");
   queueEutherBooksBufferedAutoplay(job, bufferedAt, false);
 }
 
@@ -9716,10 +9908,15 @@ async function startEutherBooksWebAudioPlayback(startTime: number): Promise<void
     await context.resume();
   }
   stopEutherBooksWebAudioPlayback(false);
+  const sessionId = eutherBooksPlaybackSessionCounter + 1;
+  eutherBooksPlaybackSessionCounter = sessionId;
   const virtualTime = Math.max(0, startTime);
   eutherBooksWebAudioState = {
     context,
+    sessionId,
     jobId: playbackJob.id,
+    settingsHash: eutherBooksJobTtsSettingsHash(playbackJob),
+    abortController: new AbortController(),
     sources: new Set<AudioBufferSourceNode>(),
     timer: null,
     playing: true,
@@ -9732,10 +9929,23 @@ async function startEutherBooksWebAudioPlayback(startTime: number): Promise<void
     scheduling: null,
   };
   setEutherBooksPlaybackState("playing", "Playing generated chapter");
+  updateEutherBooksMediaSession(playbackJob, "playing");
   renderBooksWindowIfActive();
-  await scheduleEutherBooksWebAudioAhead();
+  try {
+    await scheduleEutherBooksWebAudioAhead();
+  } catch (err) {
+    if (isEutherBooksAbortError(err)) {
+      return;
+    }
+    if (eutherBooksWebAudioState?.sessionId === sessionId) {
+      stopEutherBooksWebAudioPlayback(true);
+      setEutherBooksPlaybackError(err);
+      renderBooksWindowIfActive();
+    }
+    return;
+  }
   const state = eutherBooksWebAudioState;
-  if (!state || state.jobId !== playbackJob.id) {
+  if (!state || state.jobId !== playbackJob.id || state.sessionId !== sessionId) {
     return;
   }
   state.timer = window.setInterval(() => {
@@ -9746,7 +9956,7 @@ async function startEutherBooksWebAudioPlayback(startTime: number): Promise<void
 async function scheduleEutherBooksWebAudioAhead(): Promise<void> {
   const state = eutherBooksWebAudioState;
   const job = currentEutherBooksPlaybackJob();
-  if (!state || !job || state.jobId !== job.id || !state.playing) {
+  if (!state || !job || state.jobId !== job.id || state.sessionId !== eutherBooksPlaybackSessionCounter || !state.playing) {
     return;
   }
   if (state.scheduling) {
@@ -9764,6 +9974,9 @@ async function scheduleEutherBooksWebAudioAhead(): Promise<void> {
 }
 
 async function scheduleEutherBooksWebAudioAheadLocked(state: EutherBooksWebAudioState, job: EutherBooksJob): Promise<void> {
+  if (state.settingsHash !== eutherBooksJobTtsSettingsHash(job)) {
+    throw new Error("Playback settings changed; restart audio.");
+  }
   const current = eutherBooksWebAudioCurrentTime(job) ?? state.virtualStartedAt;
   const targetUntil = current + EUTHERBOOKS_WEB_AUDIO_SCHEDULE_AHEAD_SECONDS;
   let cursorVirtual = Math.max(state.scheduledUntil, current);
@@ -9774,8 +9987,9 @@ async function scheduleEutherBooksWebAudioAheadLocked(state: EutherBooksWebAudio
   }
   while (target.index < job.audio_files.length && cursorVirtual < targetUntil && state.playing) {
     const path = job.audio_files[target.index];
-    const decoded = await decodedEutherBooksAudioChunk(path);
-    if (!state.playing || eutherBooksWebAudioState !== state) {
+    const sessionId = state.sessionId;
+    const decoded = await decodedEutherBooksAudioChunk(path, state.abortController.signal);
+    if (!state.playing || eutherBooksWebAudioState !== state || state.sessionId !== sessionId || state.sessionId !== eutherBooksPlaybackSessionCounter) {
       return;
     }
     const offset = Math.min(Math.max(0, target.offset), decoded.duration);
@@ -9813,11 +10027,12 @@ async function scheduleEutherBooksWebAudioAheadLocked(state: EutherBooksWebAudio
 function updateEutherBooksWebAudioPlayback(): void {
   const state = eutherBooksWebAudioState;
   const job = currentEutherBooksPlaybackJob();
-  if (!state || !job || state.jobId !== job.id || !state.playing) {
+  if (!state || !job || state.jobId !== job.id || state.sessionId !== eutherBooksPlaybackSessionCounter || !state.playing) {
     return;
   }
-  const current = eutherBooksWebAudioCurrentTime(job) ?? 0;
-  const total = eutherBooksVirtualTotalDuration(job);
+  const timeline = eutherBooksPlaybackTimeline(job, null);
+  const current = timeline.current;
+  const total = timeline.total;
   maybePrefetchEutherBooksNextChapter();
   updateEutherBooksVirtualPlayerDom(null);
   if (state.waitingForMoreAudio) {
@@ -9836,7 +10051,7 @@ function updateEutherBooksWebAudioPlayback(): void {
     total > 0
     && job.status !== "done"
     && job.status !== "failed"
-    && eutherBooksPlayableBufferAhead(job, current) <= EUTHERBOOKS_AUTOPLAY_UNDERRUN_GUARD_SECONDS
+    && Math.min(eutherBooksPlayableBufferAhead(job, current), Math.max(0, state.scheduledUntil - current)) <= EUTHERBOOKS_AUTOPLAY_UNDERRUN_GUARD_SECONDS
   ) {
     pauseEutherBooksWebAudioForBuffering(state, job, Math.min(current, total));
     renderBooksWindowIfActive();
@@ -9856,6 +10071,9 @@ function updateEutherBooksWebAudioPlayback(): void {
   }
   if (state.scheduledUntil - current < 12) {
     void scheduleEutherBooksWebAudioAhead().catch((err) => {
+      if (isEutherBooksAbortError(err)) {
+        return;
+      }
       stopEutherBooksWebAudioPlayback(true);
       setEutherBooksPlaybackError(err);
       renderBooksWindowIfActive();
@@ -9900,7 +10118,15 @@ async function recoverEutherBooksPlaybackAfterPageResume(reason: string): Promis
     return;
   }
   state.contextStartedAt = state.context.currentTime - Math.max(0, current - state.virtualStartedAt);
-  await scheduleEutherBooksWebAudioAhead();
+  try {
+    await scheduleEutherBooksWebAudioAhead();
+  } catch (err) {
+    if (!isEutherBooksAbortError(err)) {
+      setEutherBooksPlaybackError(err);
+      renderBooksWindowIfActive();
+    }
+    return;
+  }
   updateEutherBooksWebAudioPlayback();
 }
 
@@ -9988,8 +10214,9 @@ function seekEutherBooksVirtualTime(seconds: number, autoplay = false): void {
 
 function updateEutherBooksVirtualPlayerDom(audio: HTMLAudioElement | null): void {
   const job = currentEutherBooksPlaybackJob();
-  const current = eutherBooksVirtualCurrentTime(job, audio);
-  const total = eutherBooksVirtualTotalDuration(job);
+  const timeline = eutherBooksPlaybackTimeline(job, audio);
+  const current = timeline.current;
+  const total = timeline.total;
   const range = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-eutherbooks-virtual-seek]");
   if (range) {
     const max = Math.max(total, current, 0.01);
@@ -10003,6 +10230,10 @@ function updateEutherBooksVirtualPlayerDom(audio: HTMLAudioElement | null): void
   const toggle = workspaceWindowDynamic.querySelector<HTMLButtonElement>("[data-eutherbooks-web-audio-toggle]");
   if (toggle) {
     toggle.textContent = eutherBooksPlaybackButtonLabel(job);
+  }
+  const buffer = workspaceWindowDynamic.querySelector<HTMLElement>("[data-eutherbooks-playback-buffer]");
+  if (buffer) {
+    buffer.outerHTML = eutherBooksPlaybackBufferMarkup(timeline);
   }
 }
 
@@ -10386,6 +10617,13 @@ function eutherBooksPlaybackLabel(): string {
   const playbackJob = currentEutherBooksPlaybackJob();
   if (playbackJob?.audio_files.length) {
     const total = Math.max(playbackJob.total_audio_files ?? 0, playbackJob.audio_files.length);
+    if (eutherBooksUsesWebAudioPlayback(playbackJob)) {
+      const timeline = eutherBooksPlaybackTimeline(playbackJob, null);
+      const readyLabel = playbackJob.status === "done" || playbackJob.status === "failed"
+        ? "Chapter ready"
+        : "Chapter buffering";
+      return `${readyLabel}: ${formatDuration(timeline.generatedUntil)} generated (${playbackJob.audio_files.length}/${total} parts)`;
+    }
     return `Ready: ${eutherBooksAudioIndex + 1}/${playbackJob.audio_files.length} (${total} generated)`;
   }
   if (!eutherBooksJob) {
