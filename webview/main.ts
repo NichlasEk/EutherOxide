@@ -9143,9 +9143,18 @@ async function attachEutherBooksJobForSelection(): Promise<void> {
       && job.chapter_indexes.includes(selectedEutherBookChapterIndex)
       && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
     );
-    const ready = [...matching].reverse().find((job) => job.status === "done" && job.audio_files.length > 0);
-    const active = [...matching].reverse().find((job) => job.status === "queued" || job.status === "running");
-    const nextJob = ready ?? active ?? null;
+    const matchingCurrentSettings = matching.filter((job) => eutherBooksJobMatchesCurrentRequest(job));
+    const playableCurrent = [...matchingCurrentSettings]
+      .reverse()
+      .find((job) => job.audio_files.length > 0);
+    const activeCurrent = [...matchingCurrentSettings]
+      .reverse()
+      .find((job) => job.status === "queued" || job.status === "running");
+    const ready = [...matching]
+      .reverse()
+      .find((job) => job.status === "done" && job.audio_files.length > 0);
+    const active = activeCurrent ?? [...matching].reverse().find((job) => job.status === "queued" || job.status === "running");
+    const nextJob = playableCurrent ?? activeCurrent ?? ready ?? active ?? null;
     if (!nextJob) {
       return;
     }
@@ -9155,8 +9164,8 @@ async function attachEutherBooksJobForSelection(): Promise<void> {
     const playbackJob = currentEutherBooksPlaybackJob();
     eutherBooksAudioIndex = playbackJob ? Math.min(eutherBooksAudioIndex, Math.max(0, playbackJob.audio_files.length - 1)) : 0;
     eutherBooksStatus = nextJob.status;
-    eutherBooksPlayerStatus = ready
-      ? active
+    eutherBooksPlayerStatus = nextJob.audio_files.length
+      ? nextJob.status === "done" && active && nextJob.id !== active.id
         ? "Loaded generated audio; backend is also preparing a newer job"
         : "Loaded generated audio"
       : "Found running backend job";
