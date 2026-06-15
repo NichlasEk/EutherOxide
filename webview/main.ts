@@ -9062,13 +9062,21 @@ async function refreshEutherBooksJob(): Promise<void> {
   }
   try {
     const playbackJobBeforeRefresh = currentEutherBooksPlaybackJob();
+    const webAudioJobId = eutherBooksWebAudioState?.playing ? eutherBooksWebAudioState.jobId : null;
     const previousAudioCount = eutherBooksJob.audio_files.length;
     eutherBooksJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(eutherBooksJob.id)}`);
     eutherBooksJobLastCheckedAt = Date.now();
     eutherBooksStatus = eutherBooksJob.status;
-    if (playbackJobBeforeRefresh && playbackJobBeforeRefresh.id !== eutherBooksJob.id) {
-      const refreshedPlaybackJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(playbackJobBeforeRefresh.id)}`);
+    const refreshPlaybackJobId = playbackJobBeforeRefresh?.id !== eutherBooksJob.id
+      ? playbackJobBeforeRefresh?.id
+      : webAudioJobId && webAudioJobId !== eutherBooksJob.id
+        ? webAudioJobId
+        : null;
+    if (refreshPlaybackJobId) {
+      const refreshedPlaybackJob = await eutherBooksJson<EutherBooksJob>(`/jobs/${encodeURIComponent(refreshPlaybackJobId)}`);
       if (eutherBooksPlayableFallbackJob?.id === refreshedPlaybackJob.id) {
+        eutherBooksPlayableFallbackJob = refreshedPlaybackJob;
+      } else if (eutherBooksWebAudioState?.jobId === refreshedPlaybackJob.id) {
         eutherBooksPlayableFallbackJob = refreshedPlaybackJob;
       }
       if (eutherBooksWebAudioState?.jobId === refreshedPlaybackJob.id) {
