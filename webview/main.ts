@@ -1399,6 +1399,7 @@ let eutherBooksPlayerStatus = "";
 let eutherBooksJobLastCheckedAt = 0;
 let eutherBooksPlayableFallbackJob: EutherBooksJob | null = null;
 let eutherBooksAudioRenderToken = 0;
+let eutherBooksVoicePickerScrollTop = 0;
 const eutherBooksAudioDurationCache = new Map<string, number>();
 const eutherBooksWebAudioChunkCache = new Map<string, Promise<EutherBooksDecodedAudioChunk>>();
 let eutherBooksWebAudioState: EutherBooksWebAudioState | null = null;
@@ -3015,6 +3016,7 @@ workspaceWindowDynamic.addEventListener("change", (event) => {
   const modelSelect = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-eutherbooks-model]");
   if (modelSelect?.value) {
     selectedEutherBooksModelBackend = normalizeEutherBooksModelBackend(modelSelect.value);
+    eutherBooksVoicePickerScrollTop = 0;
     selectEutherBooksVoiceForModelBackend();
     persistEutherBooksModelBackend();
     localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
@@ -3120,6 +3122,11 @@ workspaceWindowDynamic.addEventListener("paste", (event) => {
 });
 
 workspaceWindowDynamic.addEventListener("scroll", (event) => {
+  const voicePicker = (event.target as HTMLElement).closest<HTMLDivElement>(".eutherbooks-voice-picker-groups");
+  if (voicePicker && activeWorkspaceWindow === "books") {
+    eutherBooksVoicePickerScrollTop = voicePicker.scrollTop;
+    return;
+  }
   const messageList = (event.target as HTMLElement).closest<HTMLDivElement>(".social-message-list");
   if (!messageList || activeWorkspaceWindow !== "interaction" || messageList.scrollTop > 0) {
     return;
@@ -7685,9 +7692,25 @@ function renderWorkspaceWindow(): void {
     return;
   }
   workspaceWindowDynamic.innerHTML = workspaceWindowContentMarkup(windowName);
+  if (windowName === "books") {
+    restoreEutherBooksVoicePickerScroll();
+  }
   if (audioState) {
     restoreEutherBooksAudioRenderState(audioState, renderToken);
   }
+}
+
+function restoreEutherBooksVoicePickerScroll(): void {
+  if (eutherBooksVoicePickerScrollTop <= 0) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    const picker = workspaceWindowDynamic.querySelector<HTMLDivElement>(".eutherbooks-voice-picker-groups");
+    if (!picker) {
+      return;
+    }
+    picker.scrollTop = Math.min(eutherBooksVoicePickerScrollTop, picker.scrollHeight);
+  });
 }
 
 function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
