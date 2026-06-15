@@ -5822,6 +5822,97 @@ h2 {
   background: rgba(55, 16, 12, 0.44);
 }
 
+.eutherbooks-voice-picker {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.eutherbooks-voice-picker-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.eutherbooks-voice-picker-head span,
+.eutherbooks-voice-picker-group > span {
+  color: #9fbe91;
+  font-size: 0.64rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.eutherbooks-voice-picker-head strong {
+  min-width: 0;
+  color: #fff4c6;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherbooks-voice-picker-groups {
+  display: grid;
+  gap: 8px;
+  max-height: min(42dvh, 430px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.eutherbooks-voice-picker-group {
+  display: grid;
+  gap: 6px;
+}
+
+.eutherbooks-voice-picker-group > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.eutherbooks-voice-choice {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 9px;
+  border-color: rgba(207, 240, 178, 0.14);
+  background: rgba(5, 11, 8, 0.72);
+  text-align: left;
+}
+
+.eutherbooks-voice-choice strong,
+.eutherbooks-voice-choice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherbooks-voice-choice strong {
+  color: #eef8dd;
+  font-size: 0.76rem;
+  line-height: 1.1;
+}
+
+.eutherbooks-voice-choice span {
+  color: #9fbe91;
+  font-size: 0.62rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.eutherbooks-voice-choice.is-selected {
+  border-color: rgba(245, 215, 125, 0.62);
+  background: linear-gradient(135deg, rgba(53, 27, 78, 0.88), rgba(72, 35, 26, 0.76));
+  box-shadow: inset 0 0 0 1px rgba(245, 215, 125, 0.12);
+}
+
 .eutherbooks-custom-voice input {
   min-height: 38px;
   border: 1px solid rgba(207, 240, 178, 0.16);
@@ -5948,6 +6039,18 @@ h2 {
 
   .eutherbooks-option-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .eutherbooks-voice-picker-groups {
+    max-height: min(38dvh, 360px);
+  }
+
+  .eutherbooks-voice-picker-group > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .eutherbooks-voice-choice {
+    min-height: 52px;
   }
 }
 

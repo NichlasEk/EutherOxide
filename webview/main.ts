@@ -2859,6 +2859,20 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     setEutherBooksAutoGenerateNext(!eutherBooksAutoGenerateNext);
     return;
   }
+  const voiceChoice = target.closest<HTMLButtonElement>("[data-eutherbooks-voice-choice]");
+  if (voiceChoice?.dataset.eutherbooksVoiceChoice) {
+    selectedEutherBooksVoice = voiceChoice.dataset.eutherbooksVoiceChoice;
+    normalizeSelectedEutherBooksVoice();
+    if (eutherBooksIsOwnVoiceSelection() || selectedEutherBooksVoice === "custom") {
+      eutherBooksVoiceSettingsOpen = true;
+    }
+    localStorage.setItem("eutherbooks-voice", selectedEutherBooksVoice);
+    applyEutherBooksSelectedVoiceDefaults();
+    resetEutherBooksSelectionAudio();
+    scheduleUserPreferencesSave();
+    renderWorkspaceWindow();
+    return;
+  }
   const voiceRecord = target.closest<HTMLButtonElement>("[data-eutherbooks-record-voice]");
   if (voiceRecord) {
     openEutherBooksVoiceSampleDialog();
@@ -7804,7 +7818,6 @@ function eutherBooksWindowMarkup(): string {
         )
         .join("")
     : `<option value="">No books</option>`;
-  const voiceOptions = eutherBooksVoiceOptions();
   const bookRows = eutherBooks.length
     ? eutherBooks
         .map(
@@ -7866,18 +7879,13 @@ function eutherBooksWindowMarkup(): string {
         <details class="eutherbooks-voice-control" data-eutherbooks-voice-settings ${eutherBooksSettingsOpenAttr()}>
           <summary>Voice and model</summary>
           <label>
-            <span>Voice</span>
-            <select data-eutherbooks-voice>
-              ${voiceOptions}
-            </select>
-          </label>
-          <label>
             <span>Model</span>
             <select data-eutherbooks-model>
               ${eutherBooksModelOptions()}
             </select>
           </label>
           ${eutherBooksModelReadyMarkup()}
+          ${eutherBooksVoicePickerMarkup()}
           ${eutherBooksCustomVoiceControl()}
           ${eutherBooksOwnVoiceControl()}
           <div class="eutherbooks-option-grid">
@@ -7941,7 +7949,31 @@ function eutherBooksWindowMarkup(): string {
   `;
 }
 
-function eutherBooksVoiceOptions(): string {
+function eutherBooksVoicePickerMarkup(): string {
+  const selected = eutherBooksSelectedVoice();
+  const selectedLabel = selected?.label ?? selectedEutherBooksVoice;
+  const groups = eutherBooksVoiceGroups().filter(([, groupVoices]) => groupVoices.length > 0);
+  return `
+    <div class="eutherbooks-voice-picker">
+      <div class="eutherbooks-voice-picker-head">
+        <span>Voice</span>
+        <strong>${escapeHtml(selectedLabel)}</strong>
+      </div>
+      <div class="eutherbooks-voice-picker-groups" role="listbox" aria-label="Voice">
+        ${groups.map(([label, groupVoices]) => `
+          <section class="eutherbooks-voice-picker-group">
+            <span>${escapeHtml(label)}</span>
+            <div>
+              ${groupVoices.map(eutherBooksVoiceChoiceButton).join("")}
+            </div>
+          </section>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function eutherBooksVoiceGroups(): Array<[string, EutherBooksVoice[]]> {
   const voices = eutherBooksVoices.length
     ? eutherBooksVoices
     : [
@@ -7972,14 +8004,7 @@ function eutherBooksVoiceOptions(): string {
           ["English voices", modelVoices.filter((voice) => voice.language.toLowerCase().startsWith("en") && !eutherBooksVoiceIsOwn(voice.id))],
           ["Your own voice", modelVoices.filter((voice) => eutherBooksVoiceIsOwn(voice.id))],
         ];
-  return groups
-    .filter(([, groupVoices]) => groupVoices.length > 0)
-    .map(([label, groupVoices]) => `
-      <optgroup label="${escapeHtml(label)}">
-        ${groupVoices.map(eutherBooksVoiceOption).join("")}
-      </optgroup>
-    `)
-    .join("");
+  return groups;
 }
 
 function eutherBooksModelOptions(): string {
@@ -8113,10 +8138,22 @@ function selectEutherBooksVoiceForModelBackend(): void {
   }
 }
 
-function eutherBooksVoiceOption(voice: EutherBooksVoice): string {
-  return `<option value="${escapeHtml(voice.id)}" ${voice.id === selectedEutherBooksVoice ? "selected" : ""}>${escapeHtml(voice.label)}</option>`;
+function eutherBooksVoiceChoiceButton(voice: EutherBooksVoice): string {
+  const selected = voice.id === selectedEutherBooksVoice;
+  const language = voice.language.toLowerCase().startsWith("en") ? "EN" : "SV";
+  return `
+    <button
+      class="eutherbooks-voice-choice ${selected ? "is-selected" : ""}"
+      data-eutherbooks-voice-choice="${escapeHtml(voice.id)}"
+      type="button"
+      role="option"
+      aria-selected="${selected ? "true" : "false"}"
+    >
+      <strong>${escapeHtml(voice.label)}</strong>
+      <span>${escapeHtml(language)}${eutherBooksVoiceIsOwn(voice.id) ? " own voice" : ""}</span>
+    </button>
+  `;
 }
-
 
 function eutherBooksSelectedVoice(): EutherBooksVoice | undefined {
   return eutherBooksVoices.find((voice) => voice.id === selectedEutherBooksVoice);
