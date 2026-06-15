@@ -1430,9 +1430,9 @@ let eutherBooksWebAudioState: EutherBooksWebAudioState | null = null;
 const EUTHERBOOKS_WEB_AUDIO_CROSSFADE_SECONDS = 0.055;
 const EUTHERBOOKS_WEB_AUDIO_SCHEDULE_AHEAD_SECONDS = 35;
 const EUTHERBOOKS_AUTOPLAY_START_BUFFER_SECONDS = 30;
-const EUTHERBOOKS_AUTOPLAY_RESUME_BUFFER_SECONDS = 12;
+const EUTHERBOOKS_AUTOPLAY_RESUME_BUFFER_SECONDS = 2.5;
 const EUTHERBOOKS_AUTOPLAY_MIN_START_PARTS = 2;
-const EUTHERBOOKS_AUTOPLAY_UNDERRUN_GUARD_SECONDS = 3;
+const EUTHERBOOKS_AUTOPLAY_UNDERRUN_GUARD_SECONDS = 0.75;
 const EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_SECONDS = 240;
 const EUTHERBOOKS_NEXT_CHAPTER_PREFETCH_FRACTION = 0.35;
 let eutherBooksSleepTimerMode: EutherBooksSleepTimerMode = "off";
@@ -9602,10 +9602,13 @@ function eutherBooksBufferedAutoplayStatus(
   const available = eutherBooksPlayableBufferAhead(job, fromSeconds);
   const required = initialStart ? EUTHERBOOKS_AUTOPLAY_START_BUFFER_SECONDS : EUTHERBOOKS_AUTOPLAY_RESUME_BUFFER_SECONDS;
   const waitingForParts = initialStart && job.audio_files.length < EUTHERBOOKS_AUTOPLAY_MIN_START_PARTS && !done;
+  const hasNewAudioSinceBuffering = !initialStart && job.audio_files.length > eutherBooksBufferedAudioCount;
+  const hasEnoughNewAudio = hasNewAudioSinceBuffering
+    && available >= Math.max(1, EUTHERBOOKS_AUTOPLAY_UNDERRUN_GUARD_SECONDS);
   const hasEnoughUnknownDurationParts = available <= 0
     && job.audio_files.length >= (initialStart ? EUTHERBOOKS_AUTOPLAY_MIN_START_PARTS : Math.max(eutherBooksBufferedAudioCount + 1, 1));
   return {
-    ready: done || (!waitingForParts && (available >= required || hasEnoughUnknownDurationParts)),
+    ready: done || (!waitingForParts && (available >= required || hasEnoughNewAudio || hasEnoughUnknownDurationParts)),
     available,
     required,
     waitingForParts,
