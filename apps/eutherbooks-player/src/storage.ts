@@ -4,6 +4,8 @@ const settingsKey = "eutherbooks-player-settings";
 
 export const defaultSettings: AppSettings = {
   serverUrl: defaultServerUrl(),
+  username: "",
+  authToken: "",
   voiceId: "dots-mf-own-sv",
   modelBackend: "dots.tts-mf",
   autoPlay: true,
@@ -19,6 +21,8 @@ export function loadSettings(): AppSettings {
       ...defaultSettings,
       ...parsed,
       serverUrl: cleanServerUrl(parsed?.serverUrl) || defaultSettings.serverUrl,
+      username: typeof parsed?.username === "string" ? parsed.username.trim() : "",
+      authToken: typeof parsed?.authToken === "string" ? parsed.authToken.trim() : "",
     };
   } catch (_err) {
     return defaultSettings;

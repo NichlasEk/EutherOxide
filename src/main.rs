@@ -2133,6 +2133,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             proxy_eutherbooks_request(stream, &request)
         }
         _ => {
+            if is_eutherbooks_proxy_path(path) {
+                let user = require_host_user_or_app(state, &request)?;
+                if eutherbooks_route_requires_manage_library(path, &request.method) {
+                    if let Err(err) =
+                        require_host_permission(state, &user, HostPermission::ManageLibrary)
+                    {
+                        return send_error(stream, 403, &err.to_string());
+                    }
+                }
+                return proxy_eutherbooks_request(stream, &request);
+            }
             let Some(user) = authenticated_user(state, &request)? else {
                 return if path.starts_with("/api/") {
                     send_error(stream, 401, "login required")
@@ -2172,16 +2183,6 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     "EUTHERALERT_RUNTIME_PATH",
                     "/home/nichlas/eutheralert-runtime",
                 );
-            }
-            if is_eutherbooks_proxy_path(path) {
-                if eutherbooks_route_requires_manage_library(path, &request.method) {
-                    if let Err(err) =
-                        require_host_permission(state, &user, HostPermission::ManageLibrary)
-                    {
-                        return send_error(stream, 403, &err.to_string());
-                    }
-                }
-                return proxy_eutherbooks_request(stream, &request);
             }
             if path == "/"
                 || path == "/index.html"

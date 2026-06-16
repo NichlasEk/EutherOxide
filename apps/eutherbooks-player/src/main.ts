@@ -23,7 +23,7 @@ if (!root) {
 const appRoot = root;
 
 let settings = loadSettings();
-let api = new EutherBooksApi(settings.serverUrl);
+let api = new EutherBooksApi(settings.serverUrl, settings.authToken);
 let health: Health | null = null;
 let books: Book[] = [];
 let chapters: Chapter[] = [];
@@ -103,7 +103,7 @@ async function refreshAll(): Promise<void> {
   const candidates = serverCandidates(settings.serverUrl);
   for (const candidate of candidates) {
     try {
-      api = new EutherBooksApi(candidate);
+      api = new EutherBooksApi(candidate, settings.authToken);
       endpointText = candidate;
       const [nextHealth, nextVoices, nextBooks, jobs] = await Promise.all([
         api.health(),
@@ -420,6 +420,33 @@ function selectedBook(): Book | undefined {
   return books.find((book) => book.id === selectedBookId);
 }
 
+async function loginToServer(): Promise<void> {
+  const username = document.querySelector<HTMLInputElement>("#login-username")?.value.trim() ?? "";
+  const password = document.querySelector<HTMLInputElement>("#login-password")?.value ?? "";
+  const serverUrl = cleanServerUrl(document.querySelector<HTMLInputElement>("#server-url")?.value ?? settings.serverUrl);
+  if (!serverUrl || !username || !password) {
+    errorText = "Server, user and password are required";
+    render();
+    return;
+  }
+  statusText = "Logging in";
+  errorText = "";
+  render();
+  try {
+    const login = await EutherBooksApi.login(serverUrl, username, password);
+    updateSettings({
+      ...settings,
+      serverUrl,
+      username: login.user || username,
+      authToken: login.token,
+    });
+    await refreshAll();
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Login failed";
+    render();
+  }
+}
+
 function selectedChapter(): Chapter | undefined {
   return chapters.find((chapter) => chapter.index === selectedChapterIndex);
 }
@@ -431,7 +458,7 @@ function chapterAfter(index: number): Chapter | undefined {
 function updateSettings(next: AppSettings): void {
   settings = next;
   saveSettings(settings);
-  api = new EutherBooksApi(settings.serverUrl);
+  api = new EutherBooksApi(settings.serverUrl, settings.authToken);
   setAudioCacheEnabled(settings.cacheAudio);
 }
 
@@ -555,6 +582,15 @@ function appMarkup(modelVoices: Voice[]): string {
           <span>Server</span>
           <input id="server-url" value="${escapeHtml(settings.serverUrl)}" inputmode="url" />
         </label>
+        <label>
+          <span>User</span>
+          <input id="login-username" value="${escapeHtml(settings.username)}" autocomplete="username" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="login-password" type="password" autocomplete="current-password" />
+        </label>
+        <button id="login" type="button">Login</button>
         <button id="reload" type="button">Retry</button>
       </section>
 
@@ -660,6 +696,7 @@ function appMarkup(modelVoices: Voice[]): string {
 }
 
 function bindUi(): void {
+  document.querySelector<HTMLButtonElement>("#login")?.addEventListener("click", () => void loginToServer());
   document.querySelector<HTMLButtonElement>("#reload")?.addEventListener("click", () => void refreshAll());
   document.querySelector<HTMLInputElement>("#server-url")?.addEventListener("change", (event) => {
     const value = (event.currentTarget as HTMLInputElement).value;

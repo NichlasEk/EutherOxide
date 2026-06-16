@@ -2,7 +2,20 @@ import { AppSettings, Book, Chapter, Health, Job, ModelBackend, Voice } from "./
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 export class EutherBooksApi {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly authToken = "") {}
+
+  static async login(baseUrl: string, username: string, password: string): Promise<{ token: string; user: string; lanServerUrl?: string }> {
+    const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/app/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+    }
+    return response.json() as Promise<{ token: string; user: string; lanServerUrl?: string }>;
+  }
 
   async health(): Promise<Health> {
     return this.json<Health>("/health");
@@ -51,6 +64,7 @@ export class EutherBooksApi {
       ...init,
       headers: {
         "content-type": "application/json",
+        ...(this.authToken ? { "X-Euther-App-Token": this.authToken } : {}),
         ...(init.headers ?? {}),
       },
     };
@@ -61,6 +75,16 @@ export class EutherBooksApi {
     }
     return response.json() as Promise<T>;
   }
+}
+
+function hostBaseUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  if (url.pathname === "/eutherbooks" || url.pathname.startsWith("/eutherbooks/")) {
+    url.pathname = "";
+  }
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 async function requestJson(url: string, init: RequestInit): Promise<Response> {

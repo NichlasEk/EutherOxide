@@ -16,7 +16,13 @@
           "url": "http://192.168.32.186:8080/eutherbooks/**"
         },
         {
+          "url": "http://192.168.32.186:8080/api/app/**"
+        },
+        {
           "url": "https://apothictech.se/eutherbooks/**"
+        },
+        {
+          "url": "https://apothictech.se/api/app/**"
         }
       ]
     }

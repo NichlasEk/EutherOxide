@@ -65,6 +65,8 @@ export type Health = {
 
 export type AppSettings = {
   serverUrl: string;
+  username: string;
+  authToken: string;
   voiceId: string;
   modelBackend: ModelBackend;
   autoPlay: boolean;
