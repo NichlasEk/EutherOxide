@@ -46,10 +46,433 @@ if [[ -f "$ANDROID_APP_GRADLE" ]]; then
 fi
 
 ANDROID_MANIFEST="$ANDROID_DIR/app/src/main/AndroidManifest.xml"
-if [[ -f "$ANDROID_MANIFEST" ]] && ! grep -q 'android.permission.WAKE_LOCK' "$ANDROID_MANIFEST"; then
-  echo "[eutherbooks-player-release-apk] enabling Android wake lock permission"
-  perl -0pi -e 's#(<uses-permission android:name="android.permission.INTERNET" />)#$1\n    <uses-permission android:name="android.permission.WAKE_LOCK" />#' "$ANDROID_MANIFEST"
+ensure_permission() {
+  local permission="$1"
+  if [[ -f "$ANDROID_MANIFEST" ]] && ! grep -q "android.permission.$permission" "$ANDROID_MANIFEST"; then
+    echo "[eutherbooks-player-release-apk] enabling Android permission $permission"
+    perl -0pi -e "s#(<uses-permission android:name=\"android.permission.INTERNET\" />)#\$1\\n    <uses-permission android:name=\"android.permission.$permission\" />#" "$ANDROID_MANIFEST"
+  fi
+}
+
+if [[ -f "$ANDROID_MANIFEST" ]]; then
+  ensure_permission "WAKE_LOCK"
+  ensure_permission "FOREGROUND_SERVICE"
+  ensure_permission "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+  ensure_permission "POST_NOTIFICATIONS"
+  if ! grep -q 'NativeAudioService' "$ANDROID_MANIFEST"; then
+    echo "[eutherbooks-player-release-apk] registering native audio service"
+    perl -0pi -e 's#(\s*</application>)#        <service\n            android:name=".NativeAudioService"\n            android:exported="false"\n            android:foregroundServiceType="mediaPlayback" />\n$1#' "$ANDROID_MANIFEST"
+  fi
 fi
+
+ANDROID_PACKAGE_DIR="$ANDROID_DIR/app/src/main/java/com/nichlasek/eutherbooksplayer"
+mkdir -p "$ANDROID_PACKAGE_DIR"
+cat > "$ANDROID_PACKAGE_DIR/NativeAudioBridge.kt" <<'KOTLIN'
+package com.nichlasek.eutherbooksplayer
+
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.ContextCompat
+
+object NativeAudioBridge {
+    @JvmStatic
+    fun playQueue(context: Context, urlsJson: String, index: Int, positionSeconds: Double, title: String, subtitle: String): String {
+        val intent = Intent(context.applicationContext, NativeAudioService::class.java)
+            .setAction(NativeAudioService.ACTION_PLAY_QUEUE)
+            .putExtra(NativeAudioService.EXTRA_URLS_JSON, urlsJson)
+            .putExtra(NativeAudioService.EXTRA_INDEX, index)
+            .putExtra(NativeAudioService.EXTRA_POSITION_MS, (positionSeconds.coerceAtLeast(0.0) * 1000.0).toLong())
+            .putExtra(NativeAudioService.EXTRA_TITLE, title)
+            .putExtra(NativeAudioService.EXTRA_SUBTITLE, subtitle)
+        ContextCompat.startForegroundService(context.applicationContext, intent)
+        return NativeAudioService.stateJson("Native playback requested")
+    }
+
+    @JvmStatic
+    fun pause(context: Context): String {
+        context.applicationContext.startService(Intent(context.applicationContext, NativeAudioService::class.java).setAction(NativeAudioService.ACTION_PAUSE))
+        return NativeAudioService.stateJson("Native pause requested")
+    }
+
+    @JvmStatic
+    fun stop(context: Context): String {
+        context.applicationContext.startService(Intent(context.applicationContext, NativeAudioService::class.java).setAction(NativeAudioService.ACTION_STOP))
+        return NativeAudioService.stateJson("Native stop requested")
+    }
+
+    @JvmStatic
+    fun seek(context: Context, index: Int, positionSeconds: Double): String {
+        context.applicationContext.startService(
+            Intent(context.applicationContext, NativeAudioService::class.java)
+                .setAction(NativeAudioService.ACTION_SEEK)
+                .putExtra(NativeAudioService.EXTRA_INDEX, index)
+                .putExtra(NativeAudioService.EXTRA_POSITION_MS, (positionSeconds.coerceAtLeast(0.0) * 1000.0).toLong())
+        )
+        return NativeAudioService.stateJson("Native seek requested")
+    }
+
+    @JvmStatic
+    fun status(context: Context): String = NativeAudioService.stateJson("Native audio status")
+}
+KOTLIN
+
+cat > "$ANDROID_PACKAGE_DIR/NativeAudioService.kt" <<'KOTLIN'
+package com.nichlasek.eutherbooksplayer
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.max
+
+class NativeAudioService : Service() {
+    private val binder = Binder()
+    private var player: MediaPlayer? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        currentService = this
+        ensureChannel()
+    }
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_PLAY_QUEUE -> handlePlayQueue(intent)
+            ACTION_PAUSE -> handlePause()
+            ACTION_STOP -> handleStop()
+            ACTION_SEEK -> handleSeek(intent)
+        }
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        releasePlayer()
+        synchronized(lock) {
+            active = false
+            playing = false
+            lastEvent = "Native service stopped"
+        }
+        currentService = null
+        super.onDestroy()
+    }
+
+    private fun handlePlayQueue(intent: Intent) {
+        val urls = parseUrls(intent.getStringExtra(EXTRA_URLS_JSON).orEmpty())
+        val startIndex = intent.getIntExtra(EXTRA_INDEX, 0)
+        val startPositionMs = intent.getLongExtra(EXTRA_POSITION_MS, 0L)
+        synchronized(lock) {
+            queue = urls
+            index = startIndex.coerceIn(0, max(0, urls.size - 1))
+            positionMs = max(0L, startPositionMs)
+            durationMs = 0L
+            active = urls.isNotEmpty()
+            playing = false
+            ended = false
+            title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "EutherBooks" }
+            subtitle = intent.getStringExtra(EXTRA_SUBTITLE).orEmpty().ifBlank { "Audiobook" }
+            error = ""
+            lastEvent = "Native queue loaded"
+        }
+        if (urls.isEmpty()) {
+            handleStop()
+            return
+        }
+        startForeground(NOTIFICATION_ID, notification())
+        playCurrent(positionMs)
+    }
+
+    private fun handlePause() {
+        player?.let {
+            if (it.isPlaying) {
+                it.pause()
+            }
+        }
+        synchronized(lock) {
+            positionMs = currentPositionMs()
+            playing = false
+            lastEvent = "Native playback paused"
+        }
+        updateNotification()
+    }
+
+    private fun handleStop() {
+        releasePlayer()
+        synchronized(lock) {
+            active = false
+            playing = false
+            ended = false
+            positionMs = 0L
+            durationMs = 0L
+            lastEvent = "Native playback stopped"
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun handleSeek(intent: Intent) {
+        val targetIndex = intent.getIntExtra(EXTRA_INDEX, 0)
+        val targetPositionMs = intent.getLongExtra(EXTRA_POSITION_MS, 0L)
+        val shouldStart: Boolean
+        synchronized(lock) {
+            if (queue.isEmpty()) {
+                return
+            }
+            index = targetIndex.coerceIn(0, queue.size - 1)
+            positionMs = max(0L, targetPositionMs)
+            shouldStart = active
+            lastEvent = "Native seek"
+        }
+        if (shouldStart) {
+            playCurrent(positionMs)
+        }
+    }
+
+    private fun playCurrent(startPositionMs: Long) {
+        val url = synchronized(lock) { queue.getOrNull(index) }
+        if (url.isNullOrBlank()) {
+            markEnded()
+            return
+        }
+        releasePlayer()
+        val nextPlayer = MediaPlayer()
+        player = nextPlayer
+        try {
+            nextPlayer.setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
+            nextPlayer.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            nextPlayer.setDataSource(url)
+            nextPlayer.setOnPreparedListener { prepared ->
+                synchronized(lock) {
+                    durationMs = prepared.duration.toLong().coerceAtLeast(0L)
+                    positionMs = startPositionMs.coerceIn(0L, max(0L, durationMs - 250L))
+                    playing = true
+                    active = true
+                    ended = false
+                    error = ""
+                    lastEvent = "Native playback started"
+                }
+                if (positionMs > 0L) {
+                    prepared.seekTo(positionMs.toInt())
+                }
+                prepared.start()
+                updateNotification()
+            }
+            nextPlayer.setOnCompletionListener {
+                advanceAfterCompletion()
+            }
+            nextPlayer.setOnErrorListener { _mp, what, extra ->
+                synchronized(lock) {
+                    error = "MediaPlayer error $what/$extra"
+                    lastEvent = error
+                }
+                advanceAfterCompletion()
+                true
+            }
+            synchronized(lock) {
+                lastEvent = "Native preparing audio"
+            }
+            nextPlayer.prepareAsync()
+            updateNotification()
+        } catch (err: Exception) {
+            releasePlayer()
+            synchronized(lock) {
+                error = err.message ?: err.javaClass.simpleName
+                playing = false
+                lastEvent = "Native playback failed"
+            }
+            updateNotification()
+        }
+    }
+
+    private fun advanceAfterCompletion() {
+        val nextIndex: Int
+        synchronized(lock) {
+            positionMs = durationMs
+            nextIndex = index + 1
+        }
+        if (nextIndex < synchronized(lock) { queue.size }) {
+            synchronized(lock) {
+                index = nextIndex
+                positionMs = 0L
+                durationMs = 0L
+                lastEvent = "Native advancing"
+            }
+            playCurrent(0L)
+        } else {
+            markEnded()
+        }
+    }
+
+    private fun markEnded() {
+        releasePlayer()
+        synchronized(lock) {
+            active = false
+            playing = false
+            ended = true
+            lastEvent = "Native queue ended"
+        }
+        updateNotification()
+        stopForeground(STOP_FOREGROUND_DETACH)
+    }
+
+    private fun releasePlayer() {
+        player?.let {
+            try {
+                it.setOnPreparedListener(null)
+                it.setOnCompletionListener(null)
+                it.setOnErrorListener(null)
+                it.release()
+            } catch (_err: Exception) {
+            }
+        }
+        player = null
+    }
+
+    private fun currentPositionMs(): Long {
+        val current = player
+        return try {
+            if (current != null) current.currentPosition.toLong().coerceAtLeast(0L) else positionMs
+        } catch (_err: Exception) {
+            positionMs
+        }
+    }
+
+    private fun updateNotification() {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, notification())
+    }
+
+    private fun notification(): Notification {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val snapshot = snapshot()
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            Notification.Builder(this)
+        }
+        return builder
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle(snapshot.title.ifBlank { "EutherBooks" })
+            .setContentText(snapshot.subtitle.ifBlank { snapshot.lastEvent })
+            .setOngoing(snapshot.playing)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(pendingIntent)
+            .build()
+    }
+
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "EutherBooks playback", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+    }
+
+    private fun parseUrls(raw: String): List<String> {
+        return try {
+            val array = JSONArray(raw)
+            buildList {
+                for (i in 0 until array.length()) {
+                    val url = array.optString(i)
+                    if (url.isNotBlank()) add(url)
+                }
+            }
+        } catch (_err: Exception) {
+            emptyList()
+        }
+    }
+
+    private data class StateSnapshot(
+        val active: Boolean,
+        val playing: Boolean,
+        val ended: Boolean,
+        val index: Int,
+        val positionMs: Long,
+        val durationMs: Long,
+        val title: String,
+        val subtitle: String,
+        val lastEvent: String,
+        val error: String,
+    )
+
+    companion object {
+        const val ACTION_PLAY_QUEUE = "com.nichlasek.eutherbooksplayer.PLAY_QUEUE"
+        const val ACTION_PAUSE = "com.nichlasek.eutherbooksplayer.PAUSE"
+        const val ACTION_STOP = "com.nichlasek.eutherbooksplayer.STOP"
+        const val ACTION_SEEK = "com.nichlasek.eutherbooksplayer.SEEK"
+        const val EXTRA_URLS_JSON = "urlsJson"
+        const val EXTRA_INDEX = "index"
+        const val EXTRA_POSITION_MS = "positionMs"
+        const val EXTRA_TITLE = "title"
+        const val EXTRA_SUBTITLE = "subtitle"
+
+        private const val CHANNEL_ID = "eutherbooks_playback"
+        private const val NOTIFICATION_ID = 9042
+        private val lock = Any()
+        private var queue: List<String> = emptyList()
+        private var index = 0
+        private var positionMs = 0L
+        private var durationMs = 0L
+        private var active = false
+        private var playing = false
+        private var ended = false
+        private var title = "EutherBooks"
+        private var subtitle = "Audiobook"
+        private var lastEvent = "Native audio idle"
+        private var error = ""
+        @Volatile private var currentService: NativeAudioService? = null
+
+        private fun snapshot(): StateSnapshot = synchronized(lock) {
+            if (active) {
+                positionMs = currentService?.currentPositionMs() ?: positionMs
+            }
+            StateSnapshot(active, playing, ended, index, positionMs, durationMs, title, subtitle, lastEvent, error)
+        }
+
+        @JvmStatic
+        fun stateJson(event: String): String {
+            val snapshot = snapshot()
+            val output = JSONObject()
+                .put("available", true)
+                .put("active", snapshot.active)
+                .put("playing", snapshot.playing)
+                .put("ended", snapshot.ended)
+                .put("index", snapshot.index)
+                .put("positionSeconds", snapshot.positionMs / 1000.0)
+                .put("durationSeconds", snapshot.durationMs / 1000.0)
+                .put("lastEvent", if (event.isNotBlank()) event else snapshot.lastEvent)
+                .put("error", snapshot.error)
+            return output.toString()
+        }
+    }
+}
+KOTLIN
 
 if [[ -d "$TAURI_DIR/icons/android" ]]; then
   echo "[eutherbooks-player-release-apk] syncing Android launcher icons"

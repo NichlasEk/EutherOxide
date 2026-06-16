@@ -10,7 +10,14 @@ pub fn run() {
     startup_info("starting app");
 
     let result = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![set_wake_lock])
+        .invoke_handler(tauri::generate_handler![
+            set_wake_lock,
+            native_audio_play_queue,
+            native_audio_pause,
+            native_audio_seek,
+            native_audio_stop,
+            native_audio_status
+        ])
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
             startup_info("setup: resolving app data dir");
@@ -26,7 +33,49 @@ pub fn run() {
 
 #[tauri::command]
 fn set_wake_lock(enabled: bool) -> Result<String, String> {
-    match panic::catch_unwind(AssertUnwindSafe(|| platform_set_wake_lock(enabled))) {
+    recover_command("wake lock", || platform_set_wake_lock(enabled))
+}
+
+#[tauri::command]
+fn native_audio_play_queue(
+    urls: Vec<String>,
+    index: usize,
+    position_seconds: f64,
+    title: String,
+    subtitle: String,
+) -> Result<String, String> {
+    recover_command("native audio play", || {
+        platform_native_audio_play_queue(urls, index, position_seconds, title, subtitle)
+    })
+}
+
+#[tauri::command]
+fn native_audio_pause() -> Result<String, String> {
+    recover_command("native audio pause", platform_native_audio_pause)
+}
+
+#[tauri::command]
+fn native_audio_seek(index: usize, position_seconds: f64) -> Result<String, String> {
+    recover_command("native audio seek", || {
+        platform_native_audio_seek(index, position_seconds)
+    })
+}
+
+#[tauri::command]
+fn native_audio_stop() -> Result<String, String> {
+    recover_command("native audio stop", platform_native_audio_stop)
+}
+
+#[tauri::command]
+fn native_audio_status() -> Result<String, String> {
+    recover_command("native audio status", platform_native_audio_status)
+}
+
+fn recover_command<F>(label: &str, action: F) -> Result<String, String>
+where
+    F: FnOnce() -> Result<String, String>,
+{
+    match panic::catch_unwind(AssertUnwindSafe(action)) {
         Ok(result) => result,
         Err(err) => {
             let message = if let Some(message) = err.downcast_ref::<&str>() {
@@ -36,10 +85,8 @@ fn set_wake_lock(enabled: bool) -> Result<String, String> {
             } else {
                 "unknown panic"
             };
-            startup_error(&format!(
-                "wake lock command recovered from panic: {message}"
-            ));
-            Err(format!("wake lock failed safely: {message}"))
+            startup_error(&format!("{label} command recovered from panic: {message}"));
+            Err(format!("{label} failed safely: {message}"))
         }
     }
 }
@@ -47,6 +94,37 @@ fn set_wake_lock(enabled: bool) -> Result<String, String> {
 #[cfg(target_os = "android")]
 fn platform_set_wake_lock(enabled: bool) -> Result<String, String> {
     android_wake_lock::set_enabled(enabled)
+}
+
+#[cfg(target_os = "android")]
+fn platform_native_audio_play_queue(
+    urls: Vec<String>,
+    index: usize,
+    position_seconds: f64,
+    title: String,
+    subtitle: String,
+) -> Result<String, String> {
+    android_native_audio::play_queue(urls, index, position_seconds, title, subtitle)
+}
+
+#[cfg(target_os = "android")]
+fn platform_native_audio_pause() -> Result<String, String> {
+    android_native_audio::pause()
+}
+
+#[cfg(target_os = "android")]
+fn platform_native_audio_seek(index: usize, position_seconds: f64) -> Result<String, String> {
+    android_native_audio::seek(index, position_seconds)
+}
+
+#[cfg(target_os = "android")]
+fn platform_native_audio_stop() -> Result<String, String> {
+    android_native_audio::stop()
+}
+
+#[cfg(target_os = "android")]
+fn platform_native_audio_status() -> Result<String, String> {
+    android_native_audio::status()
 }
 
 #[cfg(not(target_os = "android"))]
@@ -57,6 +135,42 @@ fn platform_set_wake_lock(enabled: bool) -> Result<String, String> {
         "wake lock released"
     }
     .to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_native_audio_play_queue(
+    _urls: Vec<String>,
+    _index: usize,
+    _position_seconds: f64,
+    _title: String,
+    _subtitle: String,
+) -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_native_audio_pause() -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_native_audio_seek(_index: usize, _position_seconds: f64) -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_native_audio_stop() -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_native_audio_status() -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(not(target_os = "android"))]
+fn native_audio_unavailable() -> String {
+    r#"{"available":false,"active":false,"playing":false,"ended":false,"index":0,"positionSeconds":0,"durationSeconds":0,"lastEvent":"Native audio unavailable","error":""}"#.to_string()
 }
 
 #[cfg(target_os = "android")]
@@ -164,6 +278,141 @@ mod android_wake_lock {
             Ok::<(), jni::errors::Error>(())
         })
         .map_err(|err| err.to_string())
+    }
+}
+
+#[cfg(target_os = "android")]
+mod android_native_audio {
+    use std::mem::ManuallyDrop;
+    use std::ptr;
+
+    use jni::JavaVM;
+    use jni::objects::{JObject, JValue};
+    use jni::sys::jobject;
+    use jni::{jni_sig, jni_str};
+
+    const BRIDGE_CLASS: &jni::strings::JNIStr =
+        jni_str!("com/nichlasek/eutherbooksplayer/NativeAudioBridge");
+
+    pub fn play_queue(
+        urls: Vec<String>,
+        index: usize,
+        position_seconds: f64,
+        title: String,
+        subtitle: String,
+    ) -> Result<String, String> {
+        let urls_json = serde_json::to_string(&urls).map_err(|err| err.to_string())?;
+        with_context(|env, context| {
+            let urls_json = env.new_string(urls_json)?;
+            let title = env.new_string(title)?;
+            let subtitle = env.new_string(subtitle)?;
+            let result = env
+                .call_static_method(
+                    BRIDGE_CLASS,
+                    jni_str!("playQueue"),
+                    jni_sig!(
+                        "(Landroid/content/Context;Ljava/lang/String;IDLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+                    ),
+                    &[
+                        JValue::Object(context),
+                        JValue::Object(&JObject::from(urls_json)),
+                        JValue::Int(index.min(i32::MAX as usize) as i32),
+                        JValue::Double(position_seconds.max(0.0)),
+                        JValue::Object(&JObject::from(title)),
+                        JValue::Object(&JObject::from(subtitle)),
+                    ],
+                )?
+                .l()?;
+            java_string_to_rust(env, result)
+        })
+    }
+
+    pub fn pause() -> Result<String, String> {
+        context_command(
+            jni_str!("pause"),
+            jni_sig!("(Landroid/content/Context;)Ljava/lang/String;"),
+        )
+    }
+
+    pub fn stop() -> Result<String, String> {
+        context_command(
+            jni_str!("stop"),
+            jni_sig!("(Landroid/content/Context;)Ljava/lang/String;"),
+        )
+    }
+
+    pub fn status() -> Result<String, String> {
+        context_command(
+            jni_str!("status"),
+            jni_sig!("(Landroid/content/Context;)Ljava/lang/String;"),
+        )
+    }
+
+    pub fn seek(index: usize, position_seconds: f64) -> Result<String, String> {
+        with_context(|env, context| {
+            let result = env
+                .call_static_method(
+                    BRIDGE_CLASS,
+                    jni_str!("seek"),
+                    jni_sig!("(Landroid/content/Context;ID)Ljava/lang/String;"),
+                    &[
+                        JValue::Object(context),
+                        JValue::Int(index.min(i32::MAX as usize) as i32),
+                        JValue::Double(position_seconds.max(0.0)),
+                    ],
+                )?
+                .l()?;
+            java_string_to_rust(env, result)
+        })
+    }
+
+    fn context_command(
+        name: impl AsRef<jni::strings::JNIStr>,
+        signature: impl AsRef<jni::signature::MethodSignature<'static, 'static>>,
+    ) -> Result<String, String> {
+        with_context(|env, context| {
+            let result = env
+                .call_static_method(BRIDGE_CLASS, name, signature, &[JValue::Object(context)])?
+                .l()?;
+            java_string_to_rust(env, result)
+        })
+    }
+
+    fn java_vm() -> Result<JavaVM, String> {
+        let ctx = ndk_context::android_context();
+        let vm = ctx.vm();
+        if vm.is_null() {
+            return Err("Android JavaVM pointer is null".to_string());
+        }
+        Ok(unsafe { JavaVM::from_raw(vm.cast()) })
+    }
+
+    fn with_context<T, F>(action: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut jni::Env<'_>, &JObject<'_>) -> Result<T, jni::errors::Error>,
+    {
+        let ctx = ndk_context::android_context();
+        let context = ctx.context();
+        if context.is_null() {
+            return Err("Android context pointer is null".to_string());
+        }
+        let vm = java_vm()?;
+        vm.attach_current_thread(|env| {
+            let context = unsafe { ManuallyDrop::new(JObject::from_raw(env, context as jobject)) };
+            if context.as_raw() == ptr::null_mut() {
+                return Err(jni::errors::Error::NullPtr("android context"));
+            }
+            action(env, &context)
+        })
+        .map_err(|err| err.to_string())
+    }
+
+    fn java_string_to_rust(
+        env: &mut jni::Env<'_>,
+        value: JObject<'_>,
+    ) -> Result<String, jni::errors::Error> {
+        let value = env.cast_local::<jni::objects::JString>(value)?;
+        value.try_to_string(env)
     }
 }
 

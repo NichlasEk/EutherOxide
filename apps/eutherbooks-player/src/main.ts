@@ -10,6 +10,15 @@ import {
 } from "./audio-cache";
 import { EutherBooksApi, voicesForModel } from "./eutherbooks-api";
 import { installMediaSessionControls, updateMediaSession } from "./media-session";
+import {
+  canUseNativeAudio,
+  nativeAudioState,
+  pauseNativeAudio,
+  playNativeAudioQueue,
+  refreshNativeAudioState,
+  seekNativeAudio,
+  stopNativeAudio,
+} from "./native-audio";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
 import { cleanServerUrl, loadSettings, saveSettings, serverCandidates } from "./storage";
 import { AppSettings, Book, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
@@ -49,6 +58,7 @@ let activeSelectControl = false;
 let advancingPlayback = false;
 let playbackWatchTimer: number | null = null;
 let fallbackRefreshRunning = false;
+let nativePlaybackActive = false;
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -92,6 +102,7 @@ void boot();
 
 async function boot(): Promise<void> {
   await refreshAudioCacheState();
+  await refreshNativeAudioState();
   await refreshAll();
   schedulePoll(600);
 }
@@ -212,7 +223,7 @@ async function pollJobs(): Promise<void> {
       currentJob = await api.job(currentJob.id);
       session = sessionFromJob(currentJob, session);
       warmAudioCacheForSession();
-      if (settings.autoPlay && !userPausedPlayback && audio.paused && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
+      if (settings.autoPlay && !userPausedPlayback && isPlaybackPaused() && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
         await playFromSession("auto");
       }
       if (settings.autoNext && currentJob.status === "done") {
@@ -277,6 +288,10 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     lastPlaybackEvent = "No audio part at current position";
     return;
   }
+  if (await canUseNativeAudio()) {
+    await playFromNativeSession(mode);
+    return;
+  }
   const url = await playableAudioUrl(api.audioUrl(path));
   const targetTime = session.currentSeconds;
   const sourceChanged = audio.src !== url;
@@ -297,7 +312,39 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
   render();
 }
 
+async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promise<void> {
+  if (!session || session.audioFiles.length === 0) {
+    return;
+  }
+  const book = selectedBook();
+  const chapter = selectedChapter();
+  const queue = session.audioFiles.map((candidate) => api.audioUrl(candidate));
+  if (mode === "manual") {
+    userPausedPlayback = false;
+  }
+  audio.pause();
+  const state = await playNativeAudioQueue(
+    queue,
+    session.currentIndex,
+    session.currentSeconds,
+    book?.title ?? "EutherBooks",
+    chapter ? chapterLabel(chapter) : "Audiobook",
+  );
+  nativePlaybackActive = state.active;
+  applyNativeAudioState(state);
+  await setPlaybackWakeLock(true);
+  statusText = "Playing";
+  lastPlaybackEvent = mode === "auto" ? "Native auto-play resumed" : "Native manual play";
+  scheduleSleepTimer();
+  startPlaybackWatchdog();
+  updateAppMediaSession();
+  render();
+}
+
 function maybeAdvanceNearPartEnd(): void {
+  if (nativePlaybackActive) {
+    return;
+  }
   if (advancingPlayback || !session || audio.paused || !Number.isFinite(audio.duration) || audio.duration <= 0) {
     return;
   }
@@ -375,13 +422,18 @@ async function playPreviousPart(): Promise<void> {
   if (!session) {
     return;
   }
-  if (audio.currentTime > 4 || session.currentIndex === 0) {
-    audio.currentTime = 0;
+  const currentSeconds = nativePlaybackActive ? session.currentSeconds : audio.currentTime;
+  if (currentSeconds > 4 || session.currentIndex === 0) {
     session.currentSeconds = 0;
+    if (nativePlaybackActive) {
+      await seekNativeAudio(session.currentIndex, 0).then(applyNativeAudioState);
+    } else {
+      audio.currentTime = 0;
+    }
   } else {
     session.currentIndex -= 1;
     session.currentSeconds = 0;
-    await playFromSession(audio.paused ? "manual" : "auto");
+    await playFromSession(isPlaybackPaused() ? "manual" : "auto");
   }
   updateAppMediaSession();
   render();
@@ -402,8 +454,16 @@ function seekToSessionPosition(seconds: number): void {
     if (target <= elapsed + duration || index === session.durations.length - 1) {
       session.currentIndex = index;
       session.currentSeconds = Math.max(0, target - elapsed);
+      if (nativePlaybackActive) {
+        void seekNativeAudio(session.currentIndex, session.currentSeconds)
+          .then((state) => {
+            applyNativeAudioState(state);
+            updatePlayerShell();
+          });
+        return;
+      }
       audio.currentTime = session.currentSeconds;
-      void playFromSession(audio.paused ? "manual" : "auto");
+      void playFromSession(isPlaybackPaused() ? "manual" : "auto");
       return;
     }
     elapsed += duration;
@@ -411,7 +471,7 @@ function seekToSessionPosition(seconds: number): void {
 }
 
 function stopPlayback(savePosition: boolean, manual = false): void {
-  if (savePosition && session) {
+  if (savePosition && session && !nativePlaybackActive) {
     session.currentSeconds = audio.currentTime;
   }
   if (manual) {
@@ -420,7 +480,15 @@ function stopPlayback(savePosition: boolean, manual = false): void {
   } else if (!savePosition) {
     lastPlaybackEvent = "Playback stopped";
   }
-  audio.pause();
+  if (nativePlaybackActive) {
+    const action = savePosition ? pauseNativeAudio : stopNativeAudio;
+    void action().then((state) => {
+      applyNativeAudioState(state);
+      updatePlayerShell();
+    });
+  } else {
+    audio.pause();
+  }
   void setPlaybackWakeLock(false).then(() => {
     updatePlayerShell();
   });
@@ -434,7 +502,11 @@ function startPlaybackWatchdog(): void {
     return;
   }
   playbackWatchTimer = window.setInterval(() => {
-    maybeAdvanceNearPartEnd();
+    if (nativePlaybackActive) {
+      void refreshNativePlayback();
+    } else {
+      maybeAdvanceNearPartEnd();
+    }
   }, 500);
 }
 
@@ -447,6 +519,33 @@ function stopPlaybackWatchdog(): void {
 
 function selectedBook(): Book | undefined {
   return books.find((book) => book.id === selectedBookId);
+}
+
+async function refreshNativePlayback(): Promise<void> {
+  if (!nativePlaybackActive || !session) {
+    return;
+  }
+  const state = await refreshNativeAudioState();
+  applyNativeAudioState(state);
+  if (state.ended) {
+    nativePlaybackActive = false;
+    await playNextPartOrChapter();
+  }
+  updatePlayerShell();
+}
+
+function applyNativeAudioState(state = nativeAudioState()): void {
+  if (!session || !state.active) {
+    nativePlaybackActive = false;
+    return;
+  }
+  nativePlaybackActive = true;
+  session.currentIndex = Math.max(0, Math.min(state.index, Math.max(0, session.audioFiles.length - 1)));
+  session.currentSeconds = Math.max(0, state.positionSeconds);
+}
+
+function isPlaybackPaused(): boolean {
+  return nativePlaybackActive ? !nativeAudioState().playing : audio.paused;
 }
 
 async function loginToServer(): Promise<void> {
@@ -552,7 +651,7 @@ function warmAudioCacheForSession(): void {
 }
 
 function updateAppMediaSession(): void {
-  mediaSessionStatus = updateMediaSession(selectedBook(), selectedChapter(), session, !audio.paused);
+  mediaSessionStatus = updateMediaSession(selectedBook(), selectedChapter(), session, !isPlaybackPaused());
 }
 
 function render(): void {
@@ -602,6 +701,7 @@ function appMarkup(modelVoices: Voice[]): string {
     ? `${settings.sleepTimerMinutes} min${sleepDeadline ? ` · ${Math.max(0, Math.ceil((sleepDeadline - Date.now()) / 60000))} left` : ""}`
     : "Off";
   const cacheState = audioCacheState();
+  const nativeState = nativeAudioState();
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -671,7 +771,7 @@ function appMarkup(modelVoices: Voice[]): string {
           <em>${escapeHtml(chapter ? chapterLabel(chapter) : "No chapter")}</em>
         </div>
         <div class="transport">
-          <button id="play" type="button">${audio.paused ? "Play" : "Pause"}</button>
+          <button id="play" type="button">${isPlaybackPaused() ? "Play" : "Pause"}</button>
           <button id="generate" type="button">Generate</button>
         </div>
         <div class="progress-row">
@@ -712,6 +812,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
         <small>Wake: ${escapeHtml(wakeLockStatus())}</small>
+        <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}
@@ -782,7 +883,7 @@ function bindUi(): void {
   });
   document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => void generateCurrentChapter(true));
   document.querySelector<HTMLButtonElement>("#play")?.addEventListener("click", () => {
-    if (audio.paused) {
+    if (isPlaybackPaused()) {
       void playFromSession("manual");
     } else {
       stopPlayback(true, true);
@@ -808,7 +909,7 @@ function bindUi(): void {
   });
   document.querySelector<HTMLSelectElement>("#sleep-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, sleepTimerMinutes: Number((event.currentTarget as HTMLSelectElement).value) });
-    if (audio.paused) {
+    if (isPlaybackPaused()) {
       clearSleepTimer();
     } else {
       scheduleSleepTimer();
