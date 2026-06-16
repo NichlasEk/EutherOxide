@@ -123,32 +123,54 @@ async function invokeNativeAudio(
   fallbackCommand: string,
   fallbackArgs?: Record<string, unknown>,
 ): Promise<string> {
-  try {
-    return extractState(await invoke<unknown>(`plugin:eutherbooks-native-audio|${pluginCommand}`, pluginArgs));
-  } catch (pluginErr) {
+  const pluginCommands = pluginCommandAliases(pluginCommand);
+  const pluginErrors: string[] = [];
+  for (const command of pluginCommands) {
     try {
-      const fallback = await invoke<string>(fallbackCommand, fallbackArgs);
-      const parsed = JSON.parse(fallback) as Partial<NativeAudioState>;
-      if (parsed.available === false) {
-        return JSON.stringify({
-          ...unavailableState,
-          lastEvent: `Native audio ${pluginCommand} plugin failed`,
-          error: pluginErrorMessage(pluginErr),
-        });
-      }
-      return fallback;
-    } catch (_fallbackErr) {
+      return extractState(await invoke<unknown>(`plugin:eutherbooks-native-audio|${command}`, pluginArgs));
+    } catch (pluginErr) {
+      pluginErrors.push(`${command}: ${pluginErrorMessage(pluginErr)}`);
+    }
+  }
+  try {
+    const fallback = await invoke<string>(fallbackCommand, fallbackArgs);
+    const parsed = JSON.parse(fallback) as Partial<NativeAudioState>;
+    if (parsed.available === false) {
       return JSON.stringify({
         ...unavailableState,
         lastEvent: `Native audio ${pluginCommand} plugin failed`,
-        error: pluginErrorMessage(pluginErr),
+        error: pluginErrors.join(" | "),
       });
     }
+    return fallback;
+  } catch (fallbackErr) {
+    return JSON.stringify({
+      ...unavailableState,
+      lastEvent: `Native audio ${pluginCommand} plugin failed`,
+      error: `${pluginErrors.join(" | ")}; fallback: ${pluginErrorMessage(fallbackErr)}`,
+    });
   }
 }
 
+function pluginCommandAliases(command: string): string[] {
+  if (command === "play_queue") {
+    return ["play_queue", "playQueue"];
+  }
+  return [command];
+}
+
 function pluginErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === "string") {
+    return err;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch (_jsonErr) {
+    return String(err);
+  }
 }
 
 function extractState(value: unknown): string {
@@ -179,10 +201,9 @@ function parseState(raw: string): NativeAudioState {
 }
 
 function failedState(command: string, err: unknown): NativeAudioState {
-  const error = err instanceof Error ? err.message : String(err);
   return {
     ...unavailableState,
     lastEvent: `Native audio ${command} failed`,
-    error,
+    error: pluginErrorMessage(err),
   };
 }

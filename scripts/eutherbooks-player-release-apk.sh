@@ -183,6 +183,11 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     }
 
     @Command
+    fun playQueue(invoke: Invoke) {
+        play_queue(invoke)
+    }
+
+    @Command
     fun pause(invoke: Invoke) {
         try {
             resolveState(invoke, NativeAudioBridge.pause(activity))
@@ -220,6 +225,11 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     }
 
     @Command
+    fun ping(invoke: Invoke) {
+        resolveState(invoke, NativeAudioService.stateJson("Native audio plugin ping"))
+    }
+
+    @Command
     fun set_wake_lock(invoke: Invoke) {
         try {
             val args = invoke.parseArgs(NativeAudioWakeLockArgs::class.java)
@@ -240,6 +250,11 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
         } catch (err: Exception) {
             invoke.reject(err.message ?: err.toString())
         }
+    }
+
+    @Command
+    fun setWakeLock(invoke: Invoke) {
+        set_wake_lock(invoke)
     }
 
     private fun resolveState(invoke: Invoke, state: String) {

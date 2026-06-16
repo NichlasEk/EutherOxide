@@ -11,16 +11,19 @@ export async function setPlaybackWakeLock(enabled: boolean): Promise<void> {
     lastEvent = enabled ? "Browser wake lock unavailable" : "Wake lock released";
     return;
   }
-  try {
-    lastEvent = extractState(await invoke<unknown>("plugin:eutherbooks-native-audio|set_wake_lock", { enabled }));
-  } catch (err) {
+  const pluginErrors: string[] = [];
+  for (const command of ["set_wake_lock", "setWakeLock"]) {
     try {
-      lastEvent = await invoke<string>("set_wake_lock", { enabled });
-    } catch (fallbackErr) {
-      lastEvent = `Wake lock failed: ${err instanceof Error ? err.message : String(err)}; fallback: ${
-        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
-      }`;
+      lastEvent = extractState(await invoke<unknown>(`plugin:eutherbooks-native-audio|${command}`, { enabled }));
+      return;
+    } catch (err) {
+      pluginErrors.push(`${command}: ${errorMessage(err)}`);
     }
+  }
+  try {
+    lastEvent = await invoke<string>("set_wake_lock", { enabled });
+  } catch (fallbackErr) {
+    lastEvent = `Wake lock failed: ${pluginErrors.join(" | ")}; fallback: ${errorMessage(fallbackErr)}`;
   }
 }
 
@@ -35,4 +38,18 @@ function extractState(value: unknown): string {
     }
   }
   return String(value ?? "Wake lock updated");
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === "string") {
+    return err;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch (_jsonErr) {
+    return String(err);
+  }
 }

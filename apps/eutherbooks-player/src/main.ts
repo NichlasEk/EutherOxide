@@ -591,7 +591,7 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
   return {
     event,
     app: "eutherbooks-player",
-    version: "0.1.15",
+    version: "0.1.16",
     endpoint: settings.serverUrl,
     username: settings.username,
     bookId: selectedBookId,
