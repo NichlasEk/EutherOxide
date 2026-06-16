@@ -42,6 +42,11 @@ let sleepDeadline = 0;
 let userPausedPlayback = false;
 let lastPlaybackEvent = "Idle";
 let mediaSessionStatus = "Media Session pending";
+let interactionLockUntil = 0;
+let queuedRender = false;
+let activeSelectControl = false;
+let advancingPlayback = false;
+let playbackWatchTimer: number | null = null;
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -52,10 +57,19 @@ audio.addEventListener("timeupdate", () => {
   }
   session.currentSeconds = audio.currentTime;
   updatePlayerShell();
+  maybeAdvanceNearPartEnd();
 });
 audio.addEventListener("error", () => {
   errorText = audio.error?.message || "Audio playback failed";
   render();
+});
+audio.addEventListener("pause", () => {
+  updateAppMediaSession();
+  updatePlayerShell();
+});
+audio.addEventListener("play", () => {
+  updateAppMediaSession();
+  updatePlayerShell();
 });
 
 render();
@@ -247,8 +261,28 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
   statusText = "Playing";
   lastPlaybackEvent = mode === "auto" ? "Auto-play resumed" : "Manual play";
   scheduleSleepTimer();
+  startPlaybackWatchdog();
   updateAppMediaSession();
   render();
+}
+
+function maybeAdvanceNearPartEnd(): void {
+  if (advancingPlayback || !session || audio.paused || !Number.isFinite(audio.duration) || audio.duration <= 0) {
+    return;
+  }
+  if (audio.duration - audio.currentTime > 0.08) {
+    return;
+  }
+  if (session.currentIndex + 1 >= session.audioFiles.length && currentJob?.status !== "done") {
+    schedulePoll(250);
+    return;
+  }
+  advancingPlayback = true;
+  void playNextPartOrChapter().finally(() => {
+    window.setTimeout(() => {
+      advancingPlayback = false;
+    }, 250);
+  });
 }
 
 function applyAudioOffset(seconds: number, sourceChanged: boolean): void {
@@ -356,8 +390,25 @@ function stopPlayback(savePosition: boolean, manual = false): void {
     lastPlaybackEvent = "Playback stopped";
   }
   audio.pause();
+  stopPlaybackWatchdog();
   clearSleepTimer();
   updateAppMediaSession();
+}
+
+function startPlaybackWatchdog(): void {
+  if (playbackWatchTimer !== null) {
+    return;
+  }
+  playbackWatchTimer = window.setInterval(() => {
+    maybeAdvanceNearPartEnd();
+  }, 500);
+}
+
+function stopPlaybackWatchdog(): void {
+  if (playbackWatchTimer !== null) {
+    window.clearInterval(playbackWatchTimer);
+  }
+  playbackWatchTimer = null;
 }
 
 function selectedBook(): Book | undefined {
@@ -411,6 +462,15 @@ function updatePlayerShell(): void {
   if (position && session) {
     position.textContent = `${formatTime(sessionPosition(session))} / ${formatTime(session.generatedSeconds)}`;
   }
+  const thumb = document.querySelector<HTMLElement>("[data-seek-thumb]");
+  const fill = document.querySelector<HTMLElement>("[data-seek-fill]");
+  const marker = document.querySelector<HTMLElement>("[data-seek-marker]");
+  if (thumb && fill && marker && session) {
+    const percent = seekPercent(sessionPosition(session));
+    thumb.style.left = `${percent}%`;
+    fill.style.width = `${percent}%`;
+    marker.textContent = formatTime(sessionPosition(session));
+  }
   updateAppMediaSession();
 }
 
@@ -426,12 +486,37 @@ function updateAppMediaSession(): void {
 }
 
 function render(): void {
+  if (shouldDeferRender()) {
+    queuedRender = true;
+    return;
+  }
+  queuedRender = false;
   const modelVoices = voicesForModel(voices, settings.modelBackend);
   if (!modelVoices.some((voice) => voice.id === settings.voiceId) && modelVoices[0]) {
     updateSettings({ ...settings, voiceId: modelVoices[0].id });
   }
   appRoot.innerHTML = appMarkup(modelVoices);
   bindUi();
+}
+
+function shouldDeferRender(): boolean {
+  const activeElement = document.activeElement;
+  return activeSelectControl
+    || Date.now() < interactionLockUntil
+    || activeElement instanceof HTMLSelectElement
+    || activeElement instanceof HTMLInputElement;
+}
+
+function deferRendersFor(ms: number): void {
+  interactionLockUntil = Math.max(interactionLockUntil, Date.now() + ms);
+}
+
+function flushDeferredRender(): void {
+  activeSelectControl = false;
+  interactionLockUntil = 0;
+  if (queuedRender) {
+    render();
+  }
 }
 
 function appMarkup(modelVoices: Voice[]): string {
@@ -442,6 +527,7 @@ function appMarkup(modelVoices: Voice[]): string {
   const generated = session ? formatTime(session.generatedSeconds) : "0:00";
   const position = session ? `${formatTime(sessionPosition(session))} / ${generated}` : "0:00 / 0:00";
   const progressPercent = totalParts > 0 ? Math.min(100, Math.round((readyParts / totalParts) * 100)) : 0;
+  const seekProgress = session ? seekPercent(sessionPosition(session)) : 0;
   const sleepLabel = settings.sleepTimerMinutes > 0
     ? `${settings.sleepTimerMinutes} min${sleepDeadline ? ` · ${Math.max(0, Math.ceil((sleepDeadline - Date.now()) / 60000))} left` : ""}`
     : "Off";
@@ -513,6 +599,11 @@ function appMarkup(modelVoices: Voice[]): string {
           <span data-position>${escapeHtml(position)}</span>
           <span>${readyParts}/${Math.max(totalParts, readyParts)} parts · ${progressPercent}%</span>
         </div>
+        <div class="seekbar" data-seekbar role="slider" aria-label="Seek generated audio" aria-valuemin="0" aria-valuemax="${Math.max(0, Math.floor(session?.generatedSeconds ?? 0))}" aria-valuenow="${Math.floor(session ? sessionPosition(session) : 0)}">
+          <i data-seek-fill style="width:${seekProgress}%"></i>
+          <b data-seek-thumb style="left:${seekProgress}%"></b>
+          <span data-seek-marker>${session ? formatTime(sessionPosition(session)) : "0:00"}</span>
+        </div>
         <div class="progress-bar"><i style="width:${progressPercent}%"></i></div>
       </section>
 
@@ -572,6 +663,8 @@ function bindUi(): void {
       void refreshAll();
     }
   });
+  bindStableControls();
+  bindSeekbar();
   document.querySelector<HTMLSelectElement>("#book-select")?.addEventListener("change", (event) => {
     selectedBookId = (event.currentTarget as HTMLSelectElement).value;
     selectedChapterIndex = 0;
@@ -640,6 +733,83 @@ function bindUi(): void {
     }
     render();
   });
+}
+
+function bindStableControls(): void {
+  for (const control of document.querySelectorAll("select, input")) {
+    control.addEventListener("pointerdown", () => {
+      activeSelectControl = control instanceof HTMLSelectElement;
+      deferRendersFor(2500);
+    });
+    control.addEventListener("focus", () => {
+      activeSelectControl = control instanceof HTMLSelectElement;
+      deferRendersFor(control instanceof HTMLSelectElement ? 4000 : 1500);
+    });
+    control.addEventListener("blur", () => window.setTimeout(flushDeferredRender, 80));
+    control.addEventListener("change", () => window.setTimeout(flushDeferredRender, 80));
+  }
+}
+
+function bindSeekbar(): void {
+  const seekbar = document.querySelector<HTMLElement>("[data-seekbar]");
+  if (!seekbar) {
+    return;
+  }
+  let dragging = false;
+  const seek = (event: PointerEvent, commit: boolean) => {
+    if (!session) {
+      return;
+    }
+    const rect = seekbar.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    const seconds = ratio * session.generatedSeconds;
+    const marker = seekbar.querySelector<HTMLElement>("[data-seek-marker]");
+    const thumb = seekbar.querySelector<HTMLElement>("[data-seek-thumb]");
+    const fill = seekbar.querySelector<HTMLElement>("[data-seek-fill]");
+    const percent = ratio * 100;
+    if (marker) {
+      marker.textContent = formatTime(seconds);
+    }
+    if (thumb) {
+      thumb.style.left = `${percent}%`;
+    }
+    if (fill) {
+      fill.style.width = `${percent}%`;
+    }
+    if (commit) {
+      seekToSessionPosition(seconds);
+    }
+  };
+  seekbar.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    seekbar.setPointerCapture(event.pointerId);
+    deferRendersFor(5000);
+    seek(event, false);
+  });
+  seekbar.addEventListener("pointermove", (event) => {
+    if (dragging) {
+      seek(event, false);
+    }
+  });
+  seekbar.addEventListener("pointerup", (event) => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    seek(event, true);
+    flushDeferredRender();
+  });
+  seekbar.addEventListener("pointercancel", () => {
+    dragging = false;
+    flushDeferredRender();
+  });
+}
+
+function seekPercent(position: number): number {
+  if (!session || session.generatedSeconds <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, (position / session.generatedSeconds) * 100));
 }
 
 function modelOption(value: AppSettings["modelBackend"], label: string): string {

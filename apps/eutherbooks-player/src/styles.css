@@ -240,6 +240,50 @@ label {
   background: linear-gradient(90deg, #47f3e8, #ce61ff, #ffe17b);
 }
 
+.seekbar {
+  position: relative;
+  height: 34px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(71, 243, 232, 0.18), rgba(206, 97, 255, 0.13)),
+    #0b171a;
+  border: 1px solid rgba(64, 237, 226, 0.24);
+  touch-action: none;
+  cursor: pointer;
+}
+
+.seekbar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #47f3e8, #ce61ff);
+  opacity: 0.78;
+}
+
+.seekbar b {
+  position: absolute;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  border: 3px solid #fff7d1;
+  border-radius: 999px;
+  background: #231342;
+  box-shadow: 0 0 18px rgba(71, 243, 232, 0.44);
+  transform: translate(-50%, -50%);
+}
+
+.seekbar span {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  z-index: 1;
+  color: #fff7d1;
+  font-size: 0.78rem;
+  font-weight: 950;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
 .backend-panel {
   display: grid;
   gap: 5px;
@@ -360,6 +404,21 @@ label {
   .now-playing em,
   .progress-row {
     color: #315d58;
+  }
+
+  .seekbar {
+    background:
+      linear-gradient(90deg, rgba(39, 109, 104, 0.15), rgba(124, 74, 158, 0.12)),
+      #eff8f5;
+  }
+
+  .seekbar b {
+    background: #ffffff;
+    border-color: #164440;
+  }
+
+  .seekbar span {
+    color: #142421;
   }
 }
 
