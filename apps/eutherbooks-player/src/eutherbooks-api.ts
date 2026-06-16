@@ -1,8 +1,24 @@
 import { AppSettings, Book, Chapter, Health, Job, ModelBackend, Voice } from "./types";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
+const requestTimeoutMs = 3500;
+
 export class EutherBooksApi {
   constructor(private readonly baseUrl: string, private readonly authToken = "") {}
+
+  static async status(baseUrl: string, authToken: string): Promise<{ authenticated: boolean; user: string; lanServerUrl?: string }> {
+    const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/app/status`, {
+      headers: {
+        "content-type": "application/json",
+        "X-Euther-App-Token": authToken,
+      },
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+    }
+    return response.json() as Promise<{ authenticated: boolean; user: string; lanServerUrl?: string }>;
+  }
 
   static async login(baseUrl: string, username: string, password: string): Promise<{ token: string; user: string; lanServerUrl?: string }> {
     const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/app/login`, {
@@ -88,10 +104,23 @@ function hostBaseUrl(baseUrl: string): string {
 }
 
 async function requestJson(url: string, init: RequestInit): Promise<Response> {
-  if (window.__TAURI_INTERNALS__) {
-    return tauriFetch(url, init);
+  const controller = new AbortController();
+  const requestInit = { ...init, signal: controller.signal };
+  const request = window.__TAURI_INTERNALS__
+    ? tauriFetch(url, requestInit)
+    : fetch(url, { ...requestInit, credentials: "include" });
+  let timeoutId = 0;
+  const timeout = new Promise<Response>((_resolve, reject) => {
+    timeoutId = window.setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Request timed out after ${requestTimeoutMs}ms`));
+    }, requestTimeoutMs);
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-  return fetch(url, { ...init, credentials: "include" });
 }
 
 export function voicesForModel(voices: Voice[], modelBackend: ModelBackend): Voice[] {

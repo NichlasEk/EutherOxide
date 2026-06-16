@@ -48,6 +48,7 @@ let queuedRender = false;
 let activeSelectControl = false;
 let advancingPlayback = false;
 let playbackWatchTimer: number | null = null;
+let fallbackRefreshRunning = false;
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -103,6 +104,7 @@ async function refreshAll(): Promise<void> {
   const candidates = serverCandidates(settings.serverUrl);
   for (const candidate of candidates) {
     try {
+      await refreshSavedLogin(candidate);
       api = new EutherBooksApi(candidate, settings.authToken);
       endpointText = candidate;
       const [nextHealth, nextVoices, nextBooks, jobs] = await Promise.all([
@@ -134,6 +136,24 @@ async function refreshAll(): Promise<void> {
   endpointText = "";
   errorText = `All endpoints failed. ${lastEndpointErrors.join(" | ")}`;
   render();
+}
+
+async function refreshSavedLogin(serverUrl: string): Promise<void> {
+  if (!settings.authToken || !serverUrl.includes("/eutherbooks")) {
+    return;
+  }
+  try {
+    const status = await EutherBooksApi.status(serverUrl, settings.authToken);
+    if (status.authenticated && status.user && status.user !== settings.username) {
+      updateSettings({ ...settings, username: status.user });
+    }
+  } catch (err) {
+    if (serverUrl === settings.serverUrl) {
+      updateSettings({ ...settings, authToken: "" });
+      errorText = err instanceof Error ? `Saved login expired: ${err.message}` : "Saved login expired";
+    }
+    throw err;
+  }
 }
 
 async function loadChapters(): Promise<void> {
@@ -205,6 +225,15 @@ async function pollJobs(): Promise<void> {
     statusText = currentJob ? currentJob.progress_label || currentJob.status : "Ready";
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Poll failed";
+    if (!fallbackRefreshRunning) {
+      fallbackRefreshRunning = true;
+      try {
+        await refreshAll();
+      } finally {
+        fallbackRefreshRunning = false;
+      }
+      return;
+    }
   }
   render();
   if (currentJob && currentJob.status !== "done" && currentJob.status !== "failed") {
@@ -455,6 +484,15 @@ function chapterAfter(index: number): Chapter | undefined {
   return chapters.find((chapter) => chapter.index > index);
 }
 
+function chapterNumber(chapter: Chapter): number {
+  const position = chapters.findIndex((candidate) => candidate.index === chapter.index);
+  return position >= 0 ? position + 1 : chapter.index + 1;
+}
+
+function chapterLabel(chapter: Chapter): string {
+  return `Chapter ${String(chapterNumber(chapter)).padStart(2, "0")} - ${chapter.title}`;
+}
+
 function updateSettings(next: AppSettings): void {
   settings = next;
   saveSettings(settings);
@@ -604,7 +642,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <label>
           <span>Chapter</span>
           <select id="chapter-select">
-            ${chapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(candidate.title)}</option>`).join("")}
+            ${chapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(chapterLabel(candidate))}</option>`).join("")}
           </select>
         </label>
       </section>
@@ -630,7 +668,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <div class="now-playing">
           <span>${escapeHtml(book?.author ?? "Audiobook")}</span>
           <strong>${escapeHtml(book?.title ?? "No book selected")}</strong>
-          <em>${escapeHtml(chapter?.title ?? "No chapter")}</em>
+          <em>${escapeHtml(chapter ? chapterLabel(chapter) : "No chapter")}</em>
         </div>
         <div class="transport">
           <button id="play" type="button">${audio.paused ? "Play" : "Pause"}</button>
@@ -669,6 +707,7 @@ function appMarkup(modelVoices: Voice[]): string {
       <section class="backend-panel">
         <strong>${escapeHtml(statusText)}</strong>
         <small>Endpoint: ${escapeHtml(endpointText || settings.serverUrl)}</small>
+        <small>Login: ${settings.authToken ? `saved for ${escapeHtml(settings.username || "current user")}` : "not saved"}</small>
         <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
