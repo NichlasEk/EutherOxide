@@ -1,6 +1,7 @@
-import { AppSettings } from "./types";
+import { AppSettings, Bookmark, ModelBackend } from "./types";
 
 const settingsKey = "eutherbooks-player-settings";
+const bookmarksKey = "eutherbooks-player-bookmarks";
 
 export const defaultSettings: AppSettings = {
   serverUrl: defaultServerUrl(),
@@ -10,6 +11,7 @@ export const defaultSettings: AppSettings = {
   modelBackend: "dots.tts-mf",
   autoPlay: true,
   autoNext: true,
+  autoBookmark: true,
   cacheAudio: true,
   sleepTimerMinutes: 0,
 };
@@ -31,6 +33,25 @@ export function loadSettings(): AppSettings {
 
 export function saveSettings(settings: AppSettings): void {
   localStorage.setItem(settingsKey, JSON.stringify(settings));
+}
+
+export function bookmarkKey(bookId: string, chapterIndex: number, modelBackend: ModelBackend, voiceId: string): string {
+  return `${bookId}::${chapterIndex}::${modelBackend}::${voiceId}`;
+}
+
+export function loadBookmarks(): Record<string, Bookmark> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(bookmarksKey) ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_err) {
+    return {};
+  }
+}
+
+export function saveBookmark(bookmark: Bookmark): void {
+  const bookmarks = loadBookmarks();
+  bookmarks[bookmark.id] = bookmark;
+  localStorage.setItem(bookmarksKey, JSON.stringify(bookmarks));
 }
 
 export function cleanServerUrl(value: string): string {

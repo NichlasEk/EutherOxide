@@ -71,6 +71,7 @@ export type AppSettings = {
   modelBackend: ModelBackend;
   autoPlay: boolean;
   autoNext: boolean;
+  autoBookmark: boolean;
   cacheAudio: boolean;
   sleepTimerMinutes: number;
 };
@@ -85,4 +86,18 @@ export type PlaybackSession = {
   currentSeconds: number;
   generatedSeconds: number;
   totalParts: number;
+};
+
+export type Bookmark = {
+  id: string;
+  bookId: string;
+  chapterIndex: number;
+  modelBackend: ModelBackend;
+  voiceId: string;
+  positionSeconds: number;
+  partIndex: number;
+  partSeconds: number;
+  label: string;
+  auto: boolean;
+  updatedAt: string;
 };

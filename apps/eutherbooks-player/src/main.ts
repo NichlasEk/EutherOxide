@@ -20,8 +20,8 @@ import {
   stopNativeAudio,
 } from "./native-audio";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
-import { cleanServerUrl, loadSettings, saveSettings, serverCandidates } from "./storage";
-import { AppSettings, Book, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
+import { bookmarkKey, cleanServerUrl, loadBookmarks, loadSettings, saveBookmark, saveSettings, serverCandidates } from "./storage";
+import { AppSettings, Book, Bookmark, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
 import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -59,6 +59,7 @@ let advancingPlayback = false;
 let playbackWatchTimer: number | null = null;
 let fallbackRefreshRunning = false;
 let nativePlaybackActive = false;
+let lastAutoBookmarkAt = 0;
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -68,6 +69,7 @@ audio.addEventListener("timeupdate", () => {
     return;
   }
   session.currentSeconds = audio.currentTime;
+  maybeSaveAutoBookmark();
   updatePlayerShell();
   maybeAdvanceNearPartEnd();
 });
@@ -192,6 +194,7 @@ function attachExistingJob(jobs: Job[]): void {
   currentJob = playable ?? matching[0] ?? currentJob;
   if (currentJob) {
     session = sessionFromJob(currentJob, session);
+    applyBookmarkToSession();
     warmAudioCacheForSession();
   }
 }
@@ -208,6 +211,7 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
   try {
     currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, cancelExisting);
     session = currentJob.audio_files.length ? sessionFromJob(currentJob, session) : null;
+    applyBookmarkToSession();
     warmAudioCacheForSession();
     schedulePoll(250);
   } catch (err) {
@@ -474,6 +478,9 @@ function stopPlayback(savePosition: boolean, manual = false): void {
   if (savePosition && session && !nativePlaybackActive) {
     session.currentSeconds = audio.currentTime;
   }
+  if (savePosition) {
+    maybeSaveAutoBookmark(true);
+  }
   if (manual) {
     userPausedPlayback = true;
     lastPlaybackEvent = "Manual pause";
@@ -527,6 +534,7 @@ async function refreshNativePlayback(): Promise<void> {
   }
   const state = await refreshNativeAudioState();
   applyNativeAudioState(state);
+  maybeSaveAutoBookmark();
   if (state.ended) {
     nativePlaybackActive = false;
     await playNextPartOrChapter();
@@ -546,6 +554,71 @@ function applyNativeAudioState(state = nativeAudioState()): void {
 
 function isPlaybackPaused(): boolean {
   return nativePlaybackActive ? !nativeAudioState().playing : audio.paused;
+}
+
+function currentBookmarkId(): string {
+  return bookmarkKey(selectedBookId, selectedChapterIndex, settings.modelBackend, settings.voiceId);
+}
+
+function currentBookmark(): Bookmark | undefined {
+  return loadBookmarks()[currentBookmarkId()];
+}
+
+function saveCurrentBookmark(auto: boolean): void {
+  if (!session || !selectedBookId) {
+    return;
+  }
+  if (!nativePlaybackActive && !audio.paused) {
+    session.currentSeconds = audio.currentTime;
+  }
+  const chapter = selectedChapter();
+  const positionSeconds = sessionPosition(session);
+  saveBookmark({
+    id: currentBookmarkId(),
+    bookId: selectedBookId,
+    chapterIndex: selectedChapterIndex,
+    modelBackend: settings.modelBackend,
+    voiceId: settings.voiceId,
+    positionSeconds,
+    partIndex: session.currentIndex,
+    partSeconds: session.currentSeconds,
+    label: `${chapter ? chapterLabel(chapter) : "Chapter"} · ${formatTime(positionSeconds)}`,
+    auto,
+    updatedAt: new Date().toISOString(),
+  });
+  lastAutoBookmarkAt = Date.now();
+}
+
+function maybeSaveAutoBookmark(force = false): void {
+  if (!settings.autoBookmark || !session) {
+    return;
+  }
+  const now = Date.now();
+  if (!force && now - lastAutoBookmarkAt < 5000) {
+    return;
+  }
+  saveCurrentBookmark(true);
+}
+
+function applyBookmarkToSession(): void {
+  const bookmark = currentBookmark();
+  if (!session || !bookmark || bookmark.bookId !== selectedBookId || bookmark.chapterIndex !== selectedChapterIndex) {
+    return;
+  }
+  session.currentIndex = Math.max(0, Math.min(bookmark.partIndex, Math.max(0, session.audioFiles.length - 1)));
+  session.currentSeconds = Math.max(0, bookmark.partSeconds);
+}
+
+function resumeBookmark(): void {
+  const bookmark = currentBookmark();
+  if (!bookmark || !session) {
+    lastPlaybackEvent = "No bookmark for this voice";
+    render();
+    return;
+  }
+  applyBookmarkToSession();
+  userPausedPlayback = false;
+  void playFromSession("manual");
 }
 
 async function loginToServer(): Promise<void> {
@@ -702,6 +775,7 @@ function appMarkup(modelVoices: Voice[]): string {
     : "Off";
   const cacheState = audioCacheState();
   const nativeState = nativeAudioState();
+  const bookmark = currentBookmark();
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -773,6 +847,8 @@ function appMarkup(modelVoices: Voice[]): string {
         <div class="transport">
           <button id="play" type="button">${isPlaybackPaused() ? "Play" : "Pause"}</button>
           <button id="generate" type="button">Generate</button>
+          <button id="bookmark" type="button">Bookmark</button>
+          <button id="resume-bookmark" type="button" ${bookmark ? "" : "disabled"}>Resume bookmark</button>
         </div>
         <div class="progress-row">
           <span data-position>${escapeHtml(position)}</span>
@@ -789,6 +865,7 @@ function appMarkup(modelVoices: Voice[]): string {
       <section class="options-row">
         <button id="auto-play" class="${settings.autoPlay ? "is-selected" : ""}" type="button">Auto-play</button>
         <button id="auto-next" class="${settings.autoNext ? "is-selected" : ""}" type="button">Auto-next</button>
+        <button id="auto-bookmark" class="${settings.autoBookmark ? "is-selected" : ""}" type="button">Auto-bookmark</button>
         <button id="cache-audio" class="${settings.cacheAudio ? "is-selected" : ""}" type="button">Cache</button>
         <label>
           <span>Sleep</span>
@@ -811,6 +888,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
+        <small>Bookmark: ${bookmark ? `${escapeHtml(bookmark.label)} · ${bookmark.auto ? "auto" : "manual"}` : "none for this voice"}</small>
         <small>Wake: ${escapeHtml(wakeLockStatus())}</small>
         <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
@@ -882,6 +960,12 @@ function bindUi(): void {
     void refreshAll();
   });
   document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => void generateCurrentChapter(true));
+  document.querySelector<HTMLButtonElement>("#bookmark")?.addEventListener("click", () => {
+    saveCurrentBookmark(false);
+    lastPlaybackEvent = "Bookmark saved";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#resume-bookmark")?.addEventListener("click", () => resumeBookmark());
   document.querySelector<HTMLButtonElement>("#play")?.addEventListener("click", () => {
     if (isPlaybackPaused()) {
       void playFromSession("manual");
@@ -897,6 +981,10 @@ function bindUi(): void {
   });
   document.querySelector<HTMLButtonElement>("#auto-next")?.addEventListener("click", () => {
     updateSettings({ ...settings, autoNext: !settings.autoNext });
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#auto-bookmark")?.addEventListener("click", () => {
+    updateSettings({ ...settings, autoBookmark: !settings.autoBookmark });
     render();
   });
   document.querySelector<HTMLButtonElement>("#cache-audio")?.addEventListener("click", () => {
