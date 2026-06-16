@@ -210,8 +210,12 @@ label {
 }
 
 .options-row {
-  grid-template-columns: 1fr 1fr minmax(110px, 0.8fr);
+  grid-template-columns: 1fr 1fr;
   padding: 10px;
+}
+
+.options-row label {
+  grid-column: 1 / -1;
 }
 
 .progress-row {
@@ -245,6 +249,10 @@ label {
 
 .backend-panel strong {
   color: #f7f0c8;
+}
+
+.backend-panel button {
+  margin-top: 4px;
 }
 
 .beta-panel {
@@ -323,6 +331,12 @@ label {
   .player-panel,
   .options-row,
   .backend-panel {
+    border-color: rgba(45, 139, 139, 0.25);
+    background: rgba(255, 255, 252, 0.9);
+    box-shadow: 0 12px 28px rgba(42, 47, 70, 0.12);
+  }
+
+  .beta-panel {
     border-color: rgba(45, 139, 139, 0.25);
     background: rgba(255, 255, 252, 0.9);
     box-shadow: 0 12px 28px rgba(42, 47, 70, 0.12);

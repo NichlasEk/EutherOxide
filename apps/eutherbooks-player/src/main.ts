@@ -1,6 +1,15 @@
 import "./styles.css";
 
+import {
+  audioCacheState,
+  clearAudioCache,
+  playableAudioUrl,
+  prefetchAudio,
+  refreshAudioCacheState,
+  setAudioCacheEnabled,
+} from "./audio-cache";
 import { EutherBooksApi, voicesForModel } from "./eutherbooks-api";
+import { installMediaSessionControls, updateMediaSession } from "./media-session";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
 import { cleanServerUrl, loadSettings, saveSettings, serverCandidates } from "./storage";
 import { AppSettings, Book, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
@@ -32,6 +41,7 @@ let sleepTimer: number | null = null;
 let sleepDeadline = 0;
 let userPausedPlayback = false;
 let lastPlaybackEvent = "Idle";
+let mediaSessionStatus = "Media Session pending";
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -49,9 +59,23 @@ audio.addEventListener("error", () => {
 });
 
 render();
+mediaSessionStatus = installMediaSessionControls({
+  play: () => void playFromSession("manual"),
+  pause: () => {
+    stopPlayback(true, true);
+    statusText = "Paused";
+    render();
+  },
+  next: () => void playNextPartOrChapter(),
+  previous: () => void playPreviousPart(),
+  seekBy,
+  seekTo: seekToSessionPosition,
+});
+setAudioCacheEnabled(settings.cacheAudio);
 void boot();
 
 async function boot(): Promise<void> {
+  await refreshAudioCacheState();
   await refreshAll();
   schedulePoll(600);
 }
@@ -122,6 +146,7 @@ function attachExistingJob(jobs: Job[]): void {
   currentJob = playable ?? matching[0] ?? currentJob;
   if (currentJob) {
     session = sessionFromJob(currentJob, session);
+    warmAudioCacheForSession();
   }
 }
 
@@ -137,6 +162,7 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
   try {
     currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, cancelExisting);
     session = currentJob.audio_files.length ? sessionFromJob(currentJob, session) : null;
+    warmAudioCacheForSession();
     schedulePoll(250);
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Could not create job";
@@ -150,6 +176,7 @@ async function pollJobs(): Promise<void> {
     if (currentJob) {
       currentJob = await api.job(currentJob.id);
       session = sessionFromJob(currentJob, session);
+      warmAudioCacheForSession();
       if (settings.autoPlay && !userPausedPlayback && audio.paused && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
         await playFromSession("auto");
       }
@@ -206,10 +233,13 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     lastPlaybackEvent = "No audio part at current position";
     return;
   }
-  const url = api.audioUrl(path);
-  if (audio.src !== url) {
+  const url = await playableAudioUrl(api.audioUrl(path));
+  const targetTime = session.currentSeconds;
+  const sourceChanged = audio.src !== url;
+  if (sourceChanged) {
     audio.src = url;
   }
+  applyAudioOffset(targetTime, sourceChanged);
   if (mode === "manual") {
     userPausedPlayback = false;
   }
@@ -217,7 +247,25 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
   statusText = "Playing";
   lastPlaybackEvent = mode === "auto" ? "Auto-play resumed" : "Manual play";
   scheduleSleepTimer();
+  updateAppMediaSession();
   render();
+}
+
+function applyAudioOffset(seconds: number, sourceChanged: boolean): void {
+  if (seconds <= 0) {
+    return;
+  }
+  const apply = () => {
+    try {
+      audio.currentTime = seconds;
+    } catch (_err) {
+      // Some WebView builds reject seeks until metadata is available.
+    }
+  };
+  if (sourceChanged) {
+    audio.addEventListener("loadedmetadata", apply, { once: true });
+  }
+  apply();
 }
 
 async function playNextPartOrChapter(): Promise<void> {
@@ -258,6 +306,45 @@ async function playNextPartOrChapter(): Promise<void> {
   render();
 }
 
+async function playPreviousPart(): Promise<void> {
+  if (!session) {
+    return;
+  }
+  if (audio.currentTime > 4 || session.currentIndex === 0) {
+    audio.currentTime = 0;
+    session.currentSeconds = 0;
+  } else {
+    session.currentIndex -= 1;
+    session.currentSeconds = 0;
+    await playFromSession(audio.paused ? "manual" : "auto");
+  }
+  updateAppMediaSession();
+  render();
+}
+
+function seekBy(seconds: number): void {
+  seekToSessionPosition((session ? sessionPosition(session) : 0) + seconds);
+}
+
+function seekToSessionPosition(seconds: number): void {
+  if (!session) {
+    return;
+  }
+  const target = Math.max(0, Math.min(seconds, Math.max(0, session.generatedSeconds - 0.25)));
+  let elapsed = 0;
+  for (let index = 0; index < session.durations.length; index += 1) {
+    const duration = session.durations[index] || 0;
+    if (target <= elapsed + duration || index === session.durations.length - 1) {
+      session.currentIndex = index;
+      session.currentSeconds = Math.max(0, target - elapsed);
+      audio.currentTime = session.currentSeconds;
+      void playFromSession(audio.paused ? "manual" : "auto");
+      return;
+    }
+    elapsed += duration;
+  }
+}
+
 function stopPlayback(savePosition: boolean, manual = false): void {
   if (savePosition && session) {
     session.currentSeconds = audio.currentTime;
@@ -270,6 +357,7 @@ function stopPlayback(savePosition: boolean, manual = false): void {
   }
   audio.pause();
   clearSleepTimer();
+  updateAppMediaSession();
 }
 
 function selectedBook(): Book | undefined {
@@ -288,6 +376,7 @@ function updateSettings(next: AppSettings): void {
   settings = next;
   saveSettings(settings);
   api = new EutherBooksApi(settings.serverUrl);
+  setAudioCacheEnabled(settings.cacheAudio);
 }
 
 function persistSelection(): void {
@@ -322,6 +411,18 @@ function updatePlayerShell(): void {
   if (position && session) {
     position.textContent = `${formatTime(sessionPosition(session))} / ${formatTime(session.generatedSeconds)}`;
   }
+  updateAppMediaSession();
+}
+
+function warmAudioCacheForSession(): void {
+  if (!session || !settings.cacheAudio) {
+    return;
+  }
+  prefetchAudio(session.audioFiles.map((path) => api.audioUrl(path)));
+}
+
+function updateAppMediaSession(): void {
+  mediaSessionStatus = updateMediaSession(selectedBook(), selectedChapter(), session, !audio.paused);
 }
 
 function render(): void {
@@ -344,6 +445,7 @@ function appMarkup(modelVoices: Voice[]): string {
   const sleepLabel = settings.sleepTimerMinutes > 0
     ? `${settings.sleepTimerMinutes} min${sleepDeadline ? ` · ${Math.max(0, Math.ceil((sleepDeadline - Date.now()) / 60000))} left` : ""}`
     : "Off";
+  const cacheState = audioCacheState();
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -417,6 +519,7 @@ function appMarkup(modelVoices: Voice[]): string {
       <section class="options-row">
         <button id="auto-play" class="${settings.autoPlay ? "is-selected" : ""}" type="button">Auto-play</button>
         <button id="auto-next" class="${settings.autoNext ? "is-selected" : ""}" type="button">Auto-next</button>
+        <button id="cache-audio" class="${settings.cacheAudio ? "is-selected" : ""}" type="button">Cache</button>
         <label>
           <span>Sleep</span>
           <select id="sleep-select">
@@ -437,7 +540,10 @@ function appMarkup(modelVoices: Voice[]): string {
         <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
+        <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
+        <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}
+        <button id="clear-cache" type="button">Clear audio cache</button>
       </section>
 
       <section class="beta-panel">
@@ -445,8 +551,8 @@ function appMarkup(modelVoices: Voice[]): string {
         <ul>
           <li><span class="done">Live</span> Endpoint failover, native HTTP, signed APK pipeline</li>
           <li><span class="done">Live</span> Manual pause lock, sleep timer hold, auto-next generation</li>
-          <li><span class="beta">Beta</span> Managed queue, generated-part playback, buffer diagnostics</li>
-          <li><span class="next">Next</span> Local chapter cache, media notification, lockscreen controls</li>
+          <li><span class="beta">Beta</span> Media Session controls, local audio cache, buffer diagnostics</li>
+          <li><span class="next">Next</span> Native media notification, lockscreen polish, deeper queue controls</li>
           <li><span class="next">Later</span> Native audio backend for stronger background and gapless playback</li>
         </ul>
       </section>
@@ -516,6 +622,14 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#auto-next")?.addEventListener("click", () => {
     updateSettings({ ...settings, autoNext: !settings.autoNext });
     render();
+  });
+  document.querySelector<HTMLButtonElement>("#cache-audio")?.addEventListener("click", () => {
+    updateSettings({ ...settings, cacheAudio: !settings.cacheAudio });
+    warmAudioCacheForSession();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#clear-cache")?.addEventListener("click", () => {
+    void clearAudioCache().then(() => render());
   });
   document.querySelector<HTMLSelectElement>("#sleep-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, sleepTimerMinutes: Number((event.currentTarget as HTMLSelectElement).value) });

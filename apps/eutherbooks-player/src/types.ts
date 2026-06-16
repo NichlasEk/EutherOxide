@@ -69,6 +69,7 @@ export type AppSettings = {
   modelBackend: ModelBackend;
   autoPlay: boolean;
   autoNext: boolean;
+  cacheAudio: boolean;
   sleepTimerMinutes: number;
 };
 

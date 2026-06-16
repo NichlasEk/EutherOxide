@@ -8,6 +8,7 @@ export const defaultSettings: AppSettings = {
   modelBackend: "dots.tts-mf",
   autoPlay: true,
   autoNext: true,
+  cacheAudio: true,
   sleepTimerMinutes: 0,
 };
 

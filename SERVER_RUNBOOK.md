@@ -128,7 +128,10 @@ The release script also syncs `apps/eutherbooks-player/src-tauri/icons/android` 
 
 The EutherBooks Player Android app tries LAN EutherBooks first
 (`http://192.168.32.186:8088`) and then the hosted EutherOxide proxy
-(`https://apothictech.se/eutherbooks`). Native Android media notifications, lockscreen controls, and a deeper native audio backend are planned after the beta player stabilizes; the current build keeps playback in the Tauri webview while the queue, endpoint, and release pipeline harden.
+(`https://apothictech.se/eutherbooks`). The beta player uses WebView Media
+Session controls plus a Cache Storage audio cache for generated parts. Native
+Android media notifications, lockscreen polish, and a deeper native audio
+backend remain the next step after the beta player stabilizes.
 
 For LAN installs, keep
 `eutherbooks.service` bound to `0.0.0.0:8088`; otherwise Android cannot reach
