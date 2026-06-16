@@ -901,10 +901,11 @@ function appMarkup(modelVoices: Voice[]): string {
         <strong>Beta roadmap</strong>
         <ul>
           <li><span class="done">Live</span> Endpoint failover, native HTTP, signed APK pipeline</li>
-          <li><span class="done">Live</span> Manual pause lock, sleep timer hold, auto-next generation</li>
-          <li><span class="beta">Beta</span> Media Session controls, local audio cache, buffer diagnostics</li>
-          <li><span class="next">Next</span> Native media notification, lockscreen polish, deeper queue controls</li>
-          <li><span class="next">Later</span> Native audio backend for stronger background and gapless playback</li>
+          <li><span class="done">Live</span> Native Android audio service, foreground playback, wake lock</li>
+          <li><span class="done">Live</span> Manual bookmarks, auto-bookmark, resume per voice and model</li>
+          <li><span class="done">Live</span> Sleep timer hold, auto-next generation, local audio cache</li>
+          <li><span class="beta">Beta</span> Media Session controls, native queue status, buffer diagnostics</li>
+          <li><span class="next">Next</span> Lockscreen notification controls, richer queue controls, playback telemetry</li>
         </ul>
       </section>
 
