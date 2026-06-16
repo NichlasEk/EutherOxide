@@ -12,12 +12,14 @@ export async function setPlaybackWakeLock(enabled: boolean): Promise<void> {
     return;
   }
   try {
-    lastEvent = extractState(await invoke<unknown>("plugin:eutherbooks-native-audio|setWakeLock", { enabled }));
+    lastEvent = extractState(await invoke<unknown>("plugin:eutherbooks-native-audio|set_wake_lock", { enabled }));
   } catch (err) {
     try {
       lastEvent = await invoke<string>("set_wake_lock", { enabled });
     } catch (fallbackErr) {
-      lastEvent = `Wake lock failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`;
+      lastEvent = `Wake lock failed: ${err instanceof Error ? err.message : String(err)}; fallback: ${
+        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
+      }`;
     }
   }
 }

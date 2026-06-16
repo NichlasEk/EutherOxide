@@ -163,7 +163,7 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     }
 
     @Command
-    fun playQueue(invoke: Invoke) {
+    fun play_queue(invoke: Invoke) {
         try {
             val args = invoke.parseArgs(NativeAudioPlayQueueArgs::class.java)
             resolveState(
@@ -220,7 +220,7 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     }
 
     @Command
-    fun setWakeLock(invoke: Invoke) {
+    fun set_wake_lock(invoke: Invoke) {
         try {
             val args = invoke.parseArgs(NativeAudioWakeLockArgs::class.java)
             if (args.enabled) {

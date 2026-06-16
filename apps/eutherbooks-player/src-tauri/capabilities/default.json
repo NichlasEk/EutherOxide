@@ -6,6 +6,7 @@
     "main"
   ],
   "permissions": [
+    "eutherbooks-native-audio:default",
     {
       "identifier": "http:default",
       "allow": [

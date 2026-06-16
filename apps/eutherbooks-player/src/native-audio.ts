@@ -61,7 +61,7 @@ export async function playNativeAudioQueue(
   subtitle: string,
 ): Promise<NativeAudioState> {
   try {
-    const raw = await invokeNativeAudio("playQueue", {
+    const raw = await invokeNativeAudio("play_queue", {
       urlsJson: JSON.stringify(urls),
       index,
       positionSeconds,
@@ -125,9 +125,30 @@ async function invokeNativeAudio(
 ): Promise<string> {
   try {
     return extractState(await invoke<unknown>(`plugin:eutherbooks-native-audio|${pluginCommand}`, pluginArgs));
-  } catch (_pluginErr) {
-    return invoke<string>(fallbackCommand, fallbackArgs);
+  } catch (pluginErr) {
+    try {
+      const fallback = await invoke<string>(fallbackCommand, fallbackArgs);
+      const parsed = JSON.parse(fallback) as Partial<NativeAudioState>;
+      if (parsed.available === false) {
+        return JSON.stringify({
+          ...unavailableState,
+          lastEvent: `Native audio ${pluginCommand} plugin failed`,
+          error: pluginErrorMessage(pluginErr),
+        });
+      }
+      return fallback;
+    } catch (_fallbackErr) {
+      return JSON.stringify({
+        ...unavailableState,
+        lastEvent: `Native audio ${pluginCommand} plugin failed`,
+        error: pluginErrorMessage(pluginErr),
+      });
+    }
   }
+}
+
+function pluginErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function extractState(value: unknown): string {
