@@ -123,6 +123,133 @@ object NativeAudioBridge {
 }
 KOTLIN
 
+cat > "$ANDROID_PACKAGE_DIR/NativeAudioPlugin.kt" <<'KOTLIN'
+package com.nichlasek.eutherbooksplayer
+
+import android.app.Activity
+import android.content.Context
+import android.os.PowerManager
+import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSObject
+import app.tauri.plugin.Plugin
+
+@InvokeArg
+class NativeAudioPlayQueueArgs {
+    lateinit var urlsJson: String
+    var index: Int = 0
+    var positionSeconds: Double = 0.0
+    var title: String = ""
+    var subtitle: String = ""
+}
+
+@InvokeArg
+class NativeAudioSeekArgs {
+    var index: Int = 0
+    var positionSeconds: Double = 0.0
+}
+
+@InvokeArg
+class NativeAudioWakeLockArgs {
+    var enabled: Boolean = false
+}
+
+@TauriPlugin
+class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
+    companion object {
+        private var wakeLock: PowerManager.WakeLock? = null
+    }
+
+    @Command
+    fun playQueue(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(NativeAudioPlayQueueArgs::class.java)
+            resolveState(
+                invoke,
+                NativeAudioBridge.playQueue(
+                    activity,
+                    args.urlsJson,
+                    args.index,
+                    args.positionSeconds,
+                    args.title,
+                    args.subtitle
+                )
+            )
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun pause(invoke: Invoke) {
+        try {
+            resolveState(invoke, NativeAudioBridge.pause(activity))
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun stop(invoke: Invoke) {
+        try {
+            resolveState(invoke, NativeAudioBridge.stop(activity))
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun seek(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(NativeAudioSeekArgs::class.java)
+            resolveState(invoke, NativeAudioBridge.seek(activity, args.index, args.positionSeconds))
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun status(invoke: Invoke) {
+        try {
+            resolveState(invoke, NativeAudioBridge.status(activity))
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun setWakeLock(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(NativeAudioWakeLockArgs::class.java)
+            if (args.enabled) {
+                if (wakeLock?.isHeld != true) {
+                    val powerManager = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    wakeLock = powerManager.newWakeLock(
+                        PowerManager.PARTIAL_WAKE_LOCK,
+                        "EutherBooksPlayer:AudioPlayback"
+                    ).apply { acquire() }
+                }
+                resolveState(invoke, "partial wake lock acquired")
+            } else {
+                wakeLock?.takeIf { it.isHeld }?.release()
+                wakeLock = null
+                resolveState(invoke, "wake lock released")
+            }
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    private fun resolveState(invoke: Invoke, state: String) {
+        val obj = JSObject()
+        obj.put("state", state)
+        invoke.resolve(obj)
+    }
+}
+KOTLIN
+
 cat > "$ANDROID_PACKAGE_DIR/NativeAudioService.kt" <<'KOTLIN'
 package com.nichlasek.eutherbooksplayer
 

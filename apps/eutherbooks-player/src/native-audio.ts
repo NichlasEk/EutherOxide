@@ -38,7 +38,7 @@ export async function refreshNativeAudioState(): Promise<NativeAudioState> {
     return lastState;
   }
   try {
-    lastState = parseState(await invoke<string>("native_audio_status"));
+    lastState = parseState(await invokeNativeAudio("status", {}, "native_audio_status"));
   } catch (err) {
     lastState = failedState("status", err);
   }
@@ -61,7 +61,13 @@ export async function playNativeAudioQueue(
   subtitle: string,
 ): Promise<NativeAudioState> {
   try {
-    const raw = await invoke<string>("native_audio_play_queue", {
+    const raw = await invokeNativeAudio("playQueue", {
+      urlsJson: JSON.stringify(urls),
+      index,
+      positionSeconds,
+      title,
+      subtitle,
+    }, "native_audio_play_queue", {
       urls,
       index,
       positionSeconds,
@@ -78,7 +84,7 @@ export async function playNativeAudioQueue(
 
 export async function pauseNativeAudio(): Promise<NativeAudioState> {
   try {
-    lastState = parseState(await invoke<string>("native_audio_pause"));
+    lastState = parseState(await invokeNativeAudio("pause", {}, "native_audio_pause"));
   } catch (err) {
     lastState = failedState("pause", err);
   }
@@ -88,7 +94,12 @@ export async function pauseNativeAudio(): Promise<NativeAudioState> {
 
 export async function seekNativeAudio(index: number, positionSeconds: number): Promise<NativeAudioState> {
   try {
-    lastState = parseState(await invoke<string>("native_audio_seek", { index, positionSeconds }));
+    lastState = parseState(await invokeNativeAudio(
+      "seek",
+      { index, positionSeconds },
+      "native_audio_seek",
+      { index, positionSeconds },
+    ));
   } catch (err) {
     lastState = failedState("seek", err);
   }
@@ -98,12 +109,38 @@ export async function seekNativeAudio(index: number, positionSeconds: number): P
 
 export async function stopNativeAudio(): Promise<NativeAudioState> {
   try {
-    lastState = parseState(await invoke<string>("native_audio_stop"));
+    lastState = parseState(await invokeNativeAudio("stop", {}, "native_audio_stop"));
   } catch (err) {
     lastState = failedState("stop", err);
   }
   checked = true;
   return lastState;
+}
+
+async function invokeNativeAudio(
+  pluginCommand: string,
+  pluginArgs: Record<string, unknown>,
+  fallbackCommand: string,
+  fallbackArgs?: Record<string, unknown>,
+): Promise<string> {
+  try {
+    return extractState(await invoke<unknown>(`plugin:eutherbooks-native-audio|${pluginCommand}`, pluginArgs));
+  } catch (_pluginErr) {
+    return invoke<string>(fallbackCommand, fallbackArgs);
+  }
+}
+
+function extractState(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value && typeof value === "object" && "state" in value) {
+    const state = (value as { state?: unknown }).state;
+    if (typeof state === "string") {
+      return state;
+    }
+  }
+  return JSON.stringify(value ?? {});
 }
 
 function parseState(raw: string): NativeAudioState {
