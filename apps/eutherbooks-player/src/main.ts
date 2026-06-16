@@ -1,0 +1,483 @@
+import "./styles.css";
+
+import { EutherBooksApi, voicesForModel } from "./eutherbooks-api";
+import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
+import { cleanServerUrl, loadSettings, saveSettings } from "./storage";
+import { AppSettings, Book, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
+
+const root = document.querySelector<HTMLDivElement>("#app");
+
+if (!root) {
+  throw new Error("Missing #app root");
+}
+const appRoot = root;
+
+let settings = loadSettings();
+let api = new EutherBooksApi(settings.serverUrl);
+let health: Health | null = null;
+let books: Book[] = [];
+let chapters: Chapter[] = [];
+let voices: Voice[] = [];
+let selectedBookId = localStorage.getItem("eutherbooks-player-book") ?? "";
+let selectedChapterIndex = Number(localStorage.getItem("eutherbooks-player-chapter") ?? 0);
+let currentJob: Job | null = null;
+let nextJob: Job | null = null;
+let session: PlaybackSession | null = null;
+let statusText = "Ready";
+let errorText = "";
+let pollTimer: number | null = null;
+let sleepTimer: number | null = null;
+let sleepDeadline = 0;
+const audio = new Audio();
+
+audio.preload = "auto";
+audio.addEventListener("ended", () => void playNextPartOrChapter());
+audio.addEventListener("timeupdate", () => {
+  if (!session) {
+    return;
+  }
+  session.currentSeconds = audio.currentTime;
+  updatePlayerShell();
+});
+audio.addEventListener("error", () => {
+  errorText = audio.error?.message || "Audio playback failed";
+  render();
+});
+
+render();
+void boot();
+
+async function boot(): Promise<void> {
+  await refreshAll();
+  schedulePoll(600);
+}
+
+async function refreshAll(): Promise<void> {
+  try {
+    errorText = "";
+    api = new EutherBooksApi(settings.serverUrl);
+    const [nextHealth, nextVoices, nextBooks, jobs] = await Promise.all([
+      api.health(),
+      api.voices(),
+      api.books(),
+      api.jobs(),
+    ]);
+    health = nextHealth;
+    voices = nextVoices;
+    books = nextBooks;
+    selectedBookId ||= books[0]?.id ?? "";
+    await loadChapters();
+    attachExistingJob(jobs);
+    statusText = "Connected";
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Could not load EutherBooks";
+  }
+  render();
+}
+
+async function loadChapters(): Promise<void> {
+  if (!selectedBookId) {
+    chapters = [];
+    return;
+  }
+  chapters = await api.chapters(selectedBookId);
+  if (!chapters.some((chapter) => chapter.index === selectedChapterIndex)) {
+    selectedChapterIndex = chapters[0]?.index ?? 0;
+  }
+}
+
+function attachExistingJob(jobs: Job[]): void {
+  const matching = jobs
+    .filter((job) =>
+      job.book_id === selectedBookId
+      && job.chapter_indexes.includes(selectedChapterIndex)
+      && job.voice === settings.voiceId
+      && job.tts_options?.model_backend === settings.modelBackend
+      && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
+    )
+    .reverse();
+  const playable = matching.find((job) => job.audio_files.length > 0);
+  currentJob = playable ?? matching[0] ?? currentJob;
+  if (currentJob) {
+    session = sessionFromJob(currentJob, session);
+  }
+}
+
+async function generateCurrentChapter(cancelExisting = true): Promise<void> {
+  if (!selectedBookId) {
+    return;
+  }
+  stopPlayback(false);
+  statusText = "Starting generation";
+  render();
+  try {
+    currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, cancelExisting);
+    session = currentJob.audio_files.length ? sessionFromJob(currentJob, session) : null;
+    schedulePoll(250);
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Could not create job";
+  }
+  render();
+}
+
+async function pollJobs(): Promise<void> {
+  pollTimer = null;
+  try {
+    if (currentJob) {
+      currentJob = await api.job(currentJob.id);
+      session = sessionFromJob(currentJob, session);
+      if (settings.autoPlay && audio.paused && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
+        await playFromSession();
+      }
+      if (settings.autoNext && currentJob.status === "done") {
+        void ensureNextJob();
+      }
+    }
+    if (nextJob) {
+      nextJob = await api.job(nextJob.id);
+    }
+    statusText = currentJob ? currentJob.progress_label || currentJob.status : "Ready";
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Poll failed";
+  }
+  render();
+  if (currentJob && currentJob.status !== "done" && currentJob.status !== "failed") {
+    schedulePoll(900);
+  } else if (nextJob && nextJob.status !== "done" && nextJob.status !== "failed") {
+    schedulePoll(1400);
+  }
+}
+
+function schedulePoll(delayMs: number): void {
+  if (pollTimer !== null) {
+    window.clearTimeout(pollTimer);
+  }
+  pollTimer = window.setTimeout(() => void pollJobs(), delayMs);
+}
+
+async function ensureNextJob(): Promise<void> {
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  if (!selectedBookId || !nextChapter || nextJob) {
+    return;
+  }
+  try {
+    nextJob = await api.createJob(selectedBookId, nextChapter.index, settings, false);
+    schedulePoll(1000);
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Could not queue next chapter";
+  }
+}
+
+async function playFromSession(): Promise<void> {
+  if (!session || session.audioFiles.length === 0) {
+    return;
+  }
+  const path = session.audioFiles[session.currentIndex];
+  if (!path) {
+    return;
+  }
+  const url = api.audioUrl(path);
+  if (audio.src !== url) {
+    audio.src = url;
+  }
+  await audio.play();
+  statusText = "Playing";
+  scheduleSleepTimer();
+  render();
+}
+
+async function playNextPartOrChapter(): Promise<void> {
+  if (!session) {
+    return;
+  }
+  if (session.currentIndex + 1 < session.audioFiles.length) {
+    session.currentIndex += 1;
+    session.currentSeconds = 0;
+    await playFromSession();
+    return;
+  }
+  if (currentJob?.status !== "done") {
+    statusText = "Buffering final audio";
+    schedulePoll(300);
+    render();
+    return;
+  }
+  if (!settings.autoNext) {
+    statusText = "Chapter complete";
+    render();
+    return;
+  }
+  if (!nextJob) {
+    await ensureNextJob();
+  }
+  if (nextJob?.audio_files.length) {
+    selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
+    persistSelection();
+    currentJob = nextJob;
+    nextJob = null;
+    session = sessionFromJob(currentJob);
+    await playFromSession();
+    return;
+  }
+  statusText = "Waiting for next chapter";
+  schedulePoll(1000);
+  render();
+}
+
+function stopPlayback(savePosition: boolean): void {
+  if (savePosition && session) {
+    session.currentSeconds = audio.currentTime;
+  }
+  audio.pause();
+  clearSleepTimer();
+}
+
+function selectedBook(): Book | undefined {
+  return books.find((book) => book.id === selectedBookId);
+}
+
+function selectedChapter(): Chapter | undefined {
+  return chapters.find((chapter) => chapter.index === selectedChapterIndex);
+}
+
+function chapterAfter(index: number): Chapter | undefined {
+  return chapters.find((chapter) => chapter.index > index);
+}
+
+function updateSettings(next: AppSettings): void {
+  settings = next;
+  saveSettings(settings);
+  api = new EutherBooksApi(settings.serverUrl);
+}
+
+function persistSelection(): void {
+  localStorage.setItem("eutherbooks-player-book", selectedBookId);
+  localStorage.setItem("eutherbooks-player-chapter", String(selectedChapterIndex));
+}
+
+function scheduleSleepTimer(): void {
+  clearSleepTimer();
+  if (settings.sleepTimerMinutes <= 0) {
+    return;
+  }
+  sleepDeadline = Date.now() + settings.sleepTimerMinutes * 60_000;
+  sleepTimer = window.setTimeout(() => {
+    stopPlayback(true);
+    statusText = "Sleep timer paused playback";
+    render();
+  }, settings.sleepTimerMinutes * 60_000);
+}
+
+function clearSleepTimer(): void {
+  if (sleepTimer !== null) {
+    window.clearTimeout(sleepTimer);
+  }
+  sleepTimer = null;
+  sleepDeadline = 0;
+}
+
+function updatePlayerShell(): void {
+  const position = document.querySelector<HTMLSpanElement>("[data-position]");
+  if (position && session) {
+    position.textContent = `${formatTime(sessionPosition(session))} / ${formatTime(session.generatedSeconds)}`;
+  }
+}
+
+function render(): void {
+  const modelVoices = voicesForModel(voices, settings.modelBackend);
+  if (!modelVoices.some((voice) => voice.id === settings.voiceId) && modelVoices[0]) {
+    updateSettings({ ...settings, voiceId: modelVoices[0].id });
+  }
+  appRoot.innerHTML = appMarkup(modelVoices);
+  bindUi();
+}
+
+function appMarkup(modelVoices: Voice[]): string {
+  const book = selectedBook();
+  const chapter = selectedChapter();
+  const readyParts = session?.audioFiles.length ?? currentJob?.audio_files.length ?? 0;
+  const totalParts = session?.totalParts ?? currentJob?.total_audio_files ?? 0;
+  const generated = session ? formatTime(session.generatedSeconds) : "0:00";
+  const position = session ? `${formatTime(sessionPosition(session))} / ${generated}` : "0:00 / 0:00";
+  const progressPercent = totalParts > 0 ? Math.min(100, Math.round((readyParts / totalParts) * 100)) : 0;
+  const sleepLabel = settings.sleepTimerMinutes > 0
+    ? `${settings.sleepTimerMinutes} min${sleepDeadline ? ` · ${Math.max(0, Math.ceil((sleepDeadline - Date.now()) / 60000))} left` : ""}`
+    : "Off";
+  return `
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">EutherBooks</span>
+          <h1>Player</h1>
+        </div>
+        <strong class="status-pill ${health?.status === "ok" ? "is-ok" : "is-warn"}">${escapeHtml(health?.status ?? "offline")}</strong>
+      </header>
+
+      <section class="server-panel">
+        <label>
+          <span>Server</span>
+          <input id="server-url" value="${escapeHtml(settings.serverUrl)}" inputmode="url" />
+        </label>
+        <button id="reload" type="button">Reload</button>
+      </section>
+
+      <section class="library-grid">
+        <label>
+          <span>Book</span>
+          <select id="book-select">
+            ${books.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${candidate.id === selectedBookId ? "selected" : ""}>${escapeHtml(candidate.title)}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Chapter</span>
+          <select id="chapter-select">
+            ${chapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(candidate.title)}</option>`).join("")}
+          </select>
+        </label>
+      </section>
+
+      <section class="voice-grid">
+        <label>
+          <span>Model</span>
+          <select id="model-select">
+            ${modelOption("dots.tts-mf", "Dots MF")}
+            ${modelOption("dots.tts-soar", "Dots SOAR")}
+            ${modelOption("voxcpm2", "VoxCPM2")}
+          </select>
+        </label>
+        <label>
+          <span>Voice</span>
+          <select id="voice-select">
+            ${modelVoices.map((voice) => `<option value="${escapeHtml(voice.id)}" ${voice.id === settings.voiceId ? "selected" : ""}>${escapeHtml(voice.label)}</option>`).join("")}
+          </select>
+        </label>
+      </section>
+
+      <section class="player-panel">
+        <div class="now-playing">
+          <span>${escapeHtml(book?.author ?? "Audiobook")}</span>
+          <strong>${escapeHtml(book?.title ?? "No book selected")}</strong>
+          <em>${escapeHtml(chapter?.title ?? "No chapter")}</em>
+        </div>
+        <div class="transport">
+          <button id="play" type="button">${audio.paused ? "Play" : "Pause"}</button>
+          <button id="generate" type="button">Generate</button>
+        </div>
+        <div class="progress-row">
+          <span data-position>${escapeHtml(position)}</span>
+          <span>${readyParts}/${Math.max(totalParts, readyParts)} parts · ${progressPercent}%</span>
+        </div>
+        <div class="progress-bar"><i style="width:${progressPercent}%"></i></div>
+      </section>
+
+      <section class="options-row">
+        <button id="auto-play" class="${settings.autoPlay ? "is-selected" : ""}" type="button">Auto-play</button>
+        <button id="auto-next" class="${settings.autoNext ? "is-selected" : ""}" type="button">Auto-next</button>
+        <label>
+          <span>Sleep</span>
+          <select id="sleep-select">
+            ${sleepOption(0, "Off")}
+            ${sleepOption(5, "5 min")}
+            ${sleepOption(10, "10 min")}
+            ${sleepOption(15, "15 min")}
+            ${sleepOption(30, "30 min")}
+            ${sleepOption(45, "45 min")}
+            ${sleepOption(60, "60 min")}
+          </select>
+        </label>
+      </section>
+
+      <section class="backend-panel">
+        <strong>${escapeHtml(statusText)}</strong>
+        <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
+        <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
+        ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}
+      </section>
+
+      ${errorText ? `<p class="error">${escapeHtml(errorText)}</p>` : ""}
+    </main>
+  `;
+}
+
+function bindUi(): void {
+  document.querySelector<HTMLButtonElement>("#reload")?.addEventListener("click", () => void refreshAll());
+  document.querySelector<HTMLInputElement>("#server-url")?.addEventListener("change", (event) => {
+    const value = (event.currentTarget as HTMLInputElement).value;
+    const serverUrl = cleanServerUrl(value);
+    if (serverUrl) {
+      updateSettings({ ...settings, serverUrl });
+      void refreshAll();
+    }
+  });
+  document.querySelector<HTMLSelectElement>("#book-select")?.addEventListener("change", (event) => {
+    selectedBookId = (event.currentTarget as HTMLSelectElement).value;
+    selectedChapterIndex = 0;
+    currentJob = null;
+    nextJob = null;
+    session = null;
+    persistSelection();
+    void loadChapters().then(() => refreshAll());
+  });
+  document.querySelector<HTMLSelectElement>("#chapter-select")?.addEventListener("change", (event) => {
+    selectedChapterIndex = Number((event.currentTarget as HTMLSelectElement).value);
+    currentJob = null;
+    nextJob = null;
+    session = null;
+    persistSelection();
+    void refreshAll();
+  });
+  document.querySelector<HTMLSelectElement>("#model-select")?.addEventListener("change", (event) => {
+    updateSettings({ ...settings, modelBackend: (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"] });
+    currentJob = null;
+    session = null;
+    render();
+  });
+  document.querySelector<HTMLSelectElement>("#voice-select")?.addEventListener("change", (event) => {
+    updateSettings({ ...settings, voiceId: (event.currentTarget as HTMLSelectElement).value });
+    currentJob = null;
+    session = null;
+    void refreshAll();
+  });
+  document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => void generateCurrentChapter(true));
+  document.querySelector<HTMLButtonElement>("#play")?.addEventListener("click", () => {
+    if (audio.paused) {
+      void playFromSession();
+    } else {
+      stopPlayback(true);
+      render();
+    }
+  });
+  document.querySelector<HTMLButtonElement>("#auto-play")?.addEventListener("click", () => {
+    updateSettings({ ...settings, autoPlay: !settings.autoPlay });
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#auto-next")?.addEventListener("click", () => {
+    updateSettings({ ...settings, autoNext: !settings.autoNext });
+    render();
+  });
+  document.querySelector<HTMLSelectElement>("#sleep-select")?.addEventListener("change", (event) => {
+    updateSettings({ ...settings, sleepTimerMinutes: Number((event.currentTarget as HTMLSelectElement).value) });
+    if (audio.paused) {
+      clearSleepTimer();
+    } else {
+      scheduleSleepTimer();
+    }
+    render();
+  });
+}
+
+function modelOption(value: AppSettings["modelBackend"], label: string): string {
+  return `<option value="${value}" ${settings.modelBackend === value ? "selected" : ""}>${label}</option>`;
+}
+
+function sleepOption(value: number, label: string): string {
+  return `<option value="${value}" ${settings.sleepTimerMinutes === value ? "selected" : ""}>${label}</option>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
