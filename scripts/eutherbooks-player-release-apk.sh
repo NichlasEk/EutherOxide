@@ -77,6 +77,13 @@ import androidx.core.content.ContextCompat
 object NativeAudioBridge {
     @JvmStatic
     fun playQueue(context: Context, urlsJson: String, index: Int, positionSeconds: Double, title: String, subtitle: String): String {
+        NativeAudioService.prepareQueueState(
+            urlsJson,
+            index,
+            (positionSeconds.coerceAtLeast(0.0) * 1000.0).toLong(),
+            title,
+            subtitle
+        )
         val intent = Intent(context.applicationContext, NativeAudioService::class.java)
             .setAction(NativeAudioService.ACTION_PLAY_QUEUE)
             .putExtra(NativeAudioService.EXTRA_URLS_JSON, urlsJson)
@@ -125,8 +132,12 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.media.AudioFocusRequest
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -138,11 +149,14 @@ import kotlin.math.max
 class NativeAudioService : Service() {
     private val binder = Binder()
     private var player: MediaPlayer? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var mediaSession: MediaSession? = null
 
     override fun onCreate() {
         super.onCreate()
         currentService = this
         ensureChannel()
+        ensureMediaSession()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -151,6 +165,7 @@ class NativeAudioService : Service() {
         when (intent?.action) {
             ACTION_PLAY_QUEUE -> handlePlayQueue(intent)
             ACTION_PAUSE -> handlePause()
+            ACTION_RESUME -> handleResume()
             ACTION_STOP -> handleStop()
             ACTION_SEEK -> handleSeek(intent)
         }
@@ -159,6 +174,10 @@ class NativeAudioService : Service() {
 
     override fun onDestroy() {
         releasePlayer()
+        releaseAudioFocus()
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
         synchronized(lock) {
             active = false
             playing = false
@@ -189,7 +208,10 @@ class NativeAudioService : Service() {
             handleStop()
             return
         }
+        requestAudioFocus()
+        ensureMediaSession()
         startForeground(NOTIFICATION_ID, notification())
+        updatePlaybackState()
         playCurrent(positionMs)
     }
 
@@ -204,6 +226,7 @@ class NativeAudioService : Service() {
             playing = false
             lastEvent = "Native playback paused"
         }
+        updatePlaybackState()
         updateNotification()
     }
 
@@ -217,6 +240,8 @@ class NativeAudioService : Service() {
             durationMs = 0L
             lastEvent = "Native playback stopped"
         }
+        releaseAudioFocus()
+        updatePlaybackState()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -271,6 +296,7 @@ class NativeAudioService : Service() {
                     prepared.seekTo(positionMs.toInt())
                 }
                 prepared.start()
+                updatePlaybackState()
                 updateNotification()
             }
             nextPlayer.setOnCompletionListener {
@@ -288,6 +314,7 @@ class NativeAudioService : Service() {
                 lastEvent = "Native preparing audio"
             }
             nextPlayer.prepareAsync()
+            updatePlaybackState()
             updateNotification()
         } catch (err: Exception) {
             releasePlayer()
@@ -296,6 +323,7 @@ class NativeAudioService : Service() {
                 playing = false
                 lastEvent = "Native playback failed"
             }
+            updatePlaybackState()
             updateNotification()
         }
     }
@@ -327,6 +355,8 @@ class NativeAudioService : Service() {
             ended = true
             lastEvent = "Native queue ended"
         }
+        releaseAudioFocus()
+        updatePlaybackState()
         updateNotification()
         stopForeground(STOP_FOREGROUND_DETACH)
     }
@@ -367,19 +397,151 @@ class NativeAudioService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val snapshot = snapshot()
+        val playPauseIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, NativeAudioService::class.java).setAction(if (snapshot.playing) ACTION_PAUSE else ACTION_RESUME),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val stopIntent = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, NativeAudioService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
             Notification.Builder(this)
         }
-        return builder
+        builder
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(snapshot.title.ifBlank { "EutherBooks" })
             .setContentText(snapshot.subtitle.ifBlank { snapshot.lastEvent })
             .setOngoing(snapshot.playing)
             .setOnlyAlertOnce(true)
             .setContentIntent(pendingIntent)
-            .build()
+            .addAction(
+                if (snapshot.playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (snapshot.playing) "Pause" else "Play",
+                playPauseIntent
+            )
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
+            .setStyle(Notification.MediaStyle().setMediaSession(mediaSession?.sessionToken))
+        return builder.build()
+    }
+
+    private fun ensureMediaSession() {
+        if (mediaSession != null) {
+            mediaSession?.isActive = true
+            return
+        }
+        mediaSession = MediaSession(this, "EutherBooksPlayback").apply {
+            setCallback(object : MediaSession.Callback() {
+                override fun onPlay() {
+                    handleResume()
+                }
+
+                override fun onPause() {
+                    handlePause()
+                }
+
+                override fun onStop() {
+                    handleStop()
+                }
+
+                override fun onSeekTo(pos: Long) {
+                    handleSeek(Intent(this@NativeAudioService, NativeAudioService::class.java).putExtra(EXTRA_INDEX, index).putExtra(EXTRA_POSITION_MS, pos))
+                }
+            })
+            isActive = true
+        }
+    }
+
+    private fun handleResume() {
+        val current = player
+        if (current != null) {
+            try {
+                current.start()
+                synchronized(lock) {
+                    active = true
+                    playing = true
+                    ended = false
+                    lastEvent = "Native playback resumed"
+                }
+                updatePlaybackState()
+                updateNotification()
+                return
+            } catch (_err: Exception) {
+            }
+        }
+        synchronized(lock) {
+            if (queue.isEmpty()) {
+                return
+            }
+            active = true
+            ended = false
+            lastEvent = "Native playback resumed"
+        }
+        requestAudioFocus()
+        startForeground(NOTIFICATION_ID, notification())
+        playCurrent(positionMs)
+    }
+
+    private fun updatePlaybackState() {
+        val snapshot = snapshot()
+        val state = when {
+            snapshot.ended -> PlaybackState.STATE_STOPPED
+            snapshot.playing -> PlaybackState.STATE_PLAYING
+            snapshot.active -> PlaybackState.STATE_PAUSED
+            else -> PlaybackState.STATE_STOPPED
+        }
+        mediaSession?.setPlaybackState(
+            PlaybackState.Builder()
+                .setActions(
+                    PlaybackState.ACTION_PLAY or
+                        PlaybackState.ACTION_PAUSE or
+                        PlaybackState.ACTION_STOP or
+                        PlaybackState.ACTION_SEEK_TO
+                )
+                .setState(state, snapshot.positionMs, if (snapshot.playing) 1.0f else 0.0f)
+                .build()
+        )
+    }
+
+    private fun requestAudioFocus() {
+        val manager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setOnAudioFocusChangeListener { change ->
+                    if (change == AudioManager.AUDIOFOCUS_LOSS) {
+                        handlePause()
+                    }
+                }
+                .build()
+            audioFocusRequest = request
+            manager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+        }
+    }
+
+    private fun releaseAudioFocus() {
+        val manager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { manager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            manager.abandonAudioFocus(null)
+        }
     }
 
     private fun ensureChannel() {
@@ -424,6 +586,7 @@ class NativeAudioService : Service() {
     companion object {
         const val ACTION_PLAY_QUEUE = "com.nichlasek.eutherbooksplayer.PLAY_QUEUE"
         const val ACTION_PAUSE = "com.nichlasek.eutherbooksplayer.PAUSE"
+        const val ACTION_RESUME = "com.nichlasek.eutherbooksplayer.RESUME"
         const val ACTION_STOP = "com.nichlasek.eutherbooksplayer.STOP"
         const val ACTION_SEEK = "com.nichlasek.eutherbooksplayer.SEEK"
         const val EXTRA_URLS_JSON = "urlsJson"
@@ -448,11 +611,43 @@ class NativeAudioService : Service() {
         private var error = ""
         @Volatile private var currentService: NativeAudioService? = null
 
+        @JvmStatic
+        fun prepareQueueState(urlsJson: String, startIndex: Int, startPositionMs: Long, nextTitle: String, nextSubtitle: String) {
+            val urls = parseUrlsFromJson(urlsJson)
+            synchronized(lock) {
+                queue = urls
+                index = startIndex.coerceIn(0, max(0, urls.size - 1))
+                positionMs = max(0L, startPositionMs)
+                durationMs = 0L
+                active = urls.isNotEmpty()
+                playing = false
+                ended = false
+                title = nextTitle.ifBlank { "EutherBooks" }
+                subtitle = nextSubtitle.ifBlank { "Audiobook" }
+                error = ""
+                lastEvent = "Native queue requested"
+            }
+        }
+
         private fun snapshot(): StateSnapshot = synchronized(lock) {
             if (active) {
                 positionMs = currentService?.currentPositionMs() ?: positionMs
             }
             StateSnapshot(active, playing, ended, index, positionMs, durationMs, title, subtitle, lastEvent, error)
+        }
+
+        private fun parseUrlsFromJson(raw: String): List<String> {
+            return try {
+                val array = JSONArray(raw)
+                buildList {
+                    for (i in 0 until array.length()) {
+                        val url = array.optString(i)
+                        if (url.isNotBlank()) add(url)
+                    }
+                }
+            } catch (_err: Exception) {
+                emptyList()
+            }
         }
 
         @JvmStatic

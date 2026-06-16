@@ -334,7 +334,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     book?.title ?? "EutherBooks",
     chapter ? chapterLabel(chapter) : "Audiobook",
   );
-  nativePlaybackActive = state.active;
+  nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
   applyNativeAudioState(state);
   await setPlaybackWakeLock(true);
   statusText = "Playing";
@@ -543,11 +543,14 @@ async function refreshNativePlayback(): Promise<void> {
 }
 
 function applyNativeAudioState(state = nativeAudioState()): void {
-  if (!session || !state.active) {
+  if (!session || !state.available) {
     nativePlaybackActive = false;
     return;
   }
-  nativePlaybackActive = true;
+  nativePlaybackActive = state.active || state.playing || nativePlaybackActive;
+  if (!nativePlaybackActive) {
+    return;
+  }
   session.currentIndex = Math.max(0, Math.min(state.index, Math.max(0, session.audioFiles.length - 1)));
   session.currentSeconds = Math.max(0, state.positionSeconds);
 }
