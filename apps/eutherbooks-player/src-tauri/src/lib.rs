@@ -1,5 +1,5 @@
 use std::fs;
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 
 use tauri::Manager;
@@ -26,7 +26,22 @@ pub fn run() {
 
 #[tauri::command]
 fn set_wake_lock(enabled: bool) -> Result<String, String> {
-    platform_set_wake_lock(enabled)
+    match panic::catch_unwind(AssertUnwindSafe(|| platform_set_wake_lock(enabled))) {
+        Ok(result) => result,
+        Err(err) => {
+            let message = if let Some(message) = err.downcast_ref::<&str>() {
+                *message
+            } else if let Some(message) = err.downcast_ref::<String>() {
+                message.as_str()
+            } else {
+                "unknown panic"
+            };
+            startup_error(&format!(
+                "wake lock command recovered from panic: {message}"
+            ));
+            Err(format!("wake lock failed safely: {message}"))
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -47,6 +62,7 @@ fn platform_set_wake_lock(enabled: bool) -> Result<String, String> {
 #[cfg(target_os = "android")]
 mod android_wake_lock {
     use std::mem::ManuallyDrop;
+    use std::ptr;
     use std::sync::{Mutex, OnceLock};
 
     use jni::JavaVM;
@@ -76,17 +92,27 @@ mod android_wake_lock {
         }
     }
 
-    fn java_vm() -> JavaVM {
+    fn java_vm() -> Result<JavaVM, String> {
         let ctx = ndk_context::android_context();
-        unsafe { JavaVM::from_raw(ctx.vm().cast()) }
+        let vm = ctx.vm();
+        if vm.is_null() {
+            return Err("Android JavaVM pointer is null".to_string());
+        }
+        Ok(unsafe { JavaVM::from_raw(vm.cast()) })
     }
 
     fn acquire_partial_wake_lock() -> Result<WakeLock, String> {
         let ctx = ndk_context::android_context();
-        let vm = java_vm();
+        let context = ctx.context();
+        if context.is_null() {
+            return Err("Android context pointer is null".to_string());
+        }
+        let vm = java_vm()?;
         vm.attach_current_thread(|env| {
-            let context =
-                unsafe { ManuallyDrop::new(JObject::from_raw(env, ctx.context() as jobject)) };
+            let context = unsafe { ManuallyDrop::new(JObject::from_raw(env, context as jobject)) };
+            if context.as_raw() == ptr::null_mut() {
+                return Err(jni::errors::Error::NullPtr("android context"));
+            }
             let context_class = env.find_class(jni_str!("android/content/Context"))?;
             let power_service = env
                 .get_static_field(
@@ -122,7 +148,7 @@ mod android_wake_lock {
     }
 
     fn release_wake_lock(wake_lock: &WakeLock) -> Result<(), String> {
-        let vm = java_vm();
+        let vm = java_vm()?;
         vm.attach_current_thread(|env| {
             let held = env
                 .call_method(wake_lock.as_ref(), jni_str!("isHeld"), jni_sig!("()Z"), &[])?
