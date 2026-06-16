@@ -13,6 +13,7 @@ import { installMediaSessionControls, updateMediaSession } from "./media-session
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
 import { cleanServerUrl, loadSettings, saveSettings, serverCandidates } from "./storage";
 import { AppSettings, Book, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
+import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 
@@ -258,6 +259,7 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     userPausedPlayback = false;
   }
   await audio.play();
+  await setPlaybackWakeLock(true);
   statusText = "Playing";
   lastPlaybackEvent = mode === "auto" ? "Auto-play resumed" : "Manual play";
   scheduleSleepTimer();
@@ -390,6 +392,9 @@ function stopPlayback(savePosition: boolean, manual = false): void {
     lastPlaybackEvent = "Playback stopped";
   }
   audio.pause();
+  void setPlaybackWakeLock(false).then(() => {
+    updatePlayerShell();
+  });
   stopPlaybackWatchdog();
   clearSleepTimer();
   updateAppMediaSession();
@@ -631,6 +636,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
+        <small>Wake: ${escapeHtml(wakeLockStatus())}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}

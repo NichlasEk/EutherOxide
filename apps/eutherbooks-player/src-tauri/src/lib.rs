@@ -10,6 +10,7 @@ pub fn run() {
     startup_info("starting app");
 
     let result = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![set_wake_lock])
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
             startup_info("setup: resolving app data dir");
@@ -20,6 +21,123 @@ pub fn run() {
 
     if let Err(err) = result {
         startup_error(&format!("tauri runtime returned error: {err}"));
+    }
+}
+
+#[tauri::command]
+fn set_wake_lock(enabled: bool) -> Result<String, String> {
+    platform_set_wake_lock(enabled)
+}
+
+#[cfg(target_os = "android")]
+fn platform_set_wake_lock(enabled: bool) -> Result<String, String> {
+    android_wake_lock::set_enabled(enabled)
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_set_wake_lock(enabled: bool) -> Result<String, String> {
+    Ok(if enabled {
+        "wake lock unsupported on this platform"
+    } else {
+        "wake lock released"
+    }
+    .to_string())
+}
+
+#[cfg(target_os = "android")]
+mod android_wake_lock {
+    use std::mem::ManuallyDrop;
+    use std::sync::{Mutex, OnceLock};
+
+    use jni::JavaVM;
+    use jni::objects::{Global, JObject, JValue};
+    use jni::sys::jobject;
+    use jni::{jni_sig, jni_str};
+
+    type WakeLock = Global<JObject<'static>>;
+
+    static WAKE_LOCK: OnceLock<Mutex<Option<WakeLock>>> = OnceLock::new();
+
+    pub fn set_enabled(enabled: bool) -> Result<String, String> {
+        let store = WAKE_LOCK.get_or_init(|| Mutex::new(None));
+        let mut guard = store.lock().map_err(|err| err.to_string())?;
+        if enabled {
+            if guard.is_some() {
+                return Ok("wake lock already held".to_string());
+            }
+            let wake_lock = acquire_partial_wake_lock()?;
+            *guard = Some(wake_lock);
+            Ok("partial wake lock acquired".to_string())
+        } else {
+            if let Some(wake_lock) = guard.take() {
+                release_wake_lock(&wake_lock)?;
+            }
+            Ok("wake lock released".to_string())
+        }
+    }
+
+    fn java_vm() -> JavaVM {
+        let ctx = ndk_context::android_context();
+        unsafe { JavaVM::from_raw(ctx.vm().cast()) }
+    }
+
+    fn acquire_partial_wake_lock() -> Result<WakeLock, String> {
+        let ctx = ndk_context::android_context();
+        let vm = java_vm();
+        vm.attach_current_thread(|env| {
+            let context =
+                unsafe { ManuallyDrop::new(JObject::from_raw(env, ctx.context() as jobject)) };
+            let context_class = env.find_class(jni_str!("android/content/Context"))?;
+            let power_service = env
+                .get_static_field(
+                    &context_class,
+                    jni_str!("POWER_SERVICE"),
+                    jni_sig!("Ljava/lang/String;"),
+                )?
+                .l()?;
+            let power_manager = env
+                .call_method(
+                    &*context,
+                    jni_str!("getSystemService"),
+                    jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
+                    &[JValue::Object(&power_service)],
+                )?
+                .l()?;
+
+            let tag = env.new_string("EutherBooksPlayer:AudioPlayback")?;
+            let tag = JObject::from(tag);
+            let wake_lock = env
+                .call_method(
+                    &power_manager,
+                    jni_str!("newWakeLock"),
+                    jni_sig!("(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;"),
+                    &[JValue::Int(1), JValue::Object(&tag)],
+                )?
+                .l()?;
+
+            env.call_method(&wake_lock, jni_str!("acquire"), jni_sig!("()V"), &[])?;
+            env.new_global_ref(wake_lock)
+        })
+        .map_err(|err| err.to_string())
+    }
+
+    fn release_wake_lock(wake_lock: &WakeLock) -> Result<(), String> {
+        let vm = java_vm();
+        vm.attach_current_thread(|env| {
+            let held = env
+                .call_method(wake_lock.as_ref(), jni_str!("isHeld"), jni_sig!("()Z"), &[])?
+                .z()?;
+            if held {
+                env.call_method(
+                    wake_lock.as_ref(),
+                    jni_str!("release"),
+                    jni_sig!("()V"),
+                    &[],
+                )?;
+            }
+            Ok::<(), jni::errors::Error>(())
+        })
+        .map_err(|err| err.to_string())
     }
 }
 
@@ -112,7 +230,11 @@ fn platform_log(priority: i32, message: &str) {
     let clean = message.replace('\0', "\\0");
     if let Ok(text) = CString::new(clean) {
         unsafe {
-            __android_log_write(priority as c_int, c"EutherBooksPlayer".as_ptr(), text.as_ptr());
+            __android_log_write(
+                priority as c_int,
+                c"EutherBooksPlayer".as_ptr(),
+                text.as_ptr(),
+            );
         }
     }
 }
