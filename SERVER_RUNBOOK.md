@@ -124,9 +124,13 @@ The download route `/downloads/EutherBooksPlayer-release-signed.apk` uses
 release copy. The shorter aliases `/downloads/eutherbooksplayer.apk` and
 `/downloads/EutherBooksPlayer.apk` are also accepted.
 
+The release script also syncs `apps/eutherbooks-player/src-tauri/icons/android` into the generated Android project before each build, so launcher icons stay deterministic.
+
 The EutherBooks Player Android app tries LAN EutherBooks first
 (`http://192.168.32.186:8088`) and then the hosted EutherOxide proxy
-(`https://apothictech.se/eutherbooks`). For LAN installs, keep
+(`https://apothictech.se/eutherbooks`). Native Android media notifications, lockscreen controls, and a deeper native audio backend are planned after the beta player stabilizes; the current build keeps playback in the Tauri webview while the queue, endpoint, and release pipeline harden.
+
+For LAN installs, keep
 `eutherbooks.service` bound to `0.0.0.0:8088`; otherwise Android cannot reach
 the API directly and browser CORS rules may block the fallback.
 

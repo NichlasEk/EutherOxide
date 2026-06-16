@@ -80,6 +80,7 @@ label {
 .player-panel,
 .options-row,
 .backend-panel,
+.beta-panel,
 .error {
   border: 1px solid rgba(70, 236, 224, 0.2);
   border-radius: 8px;
@@ -244,6 +245,59 @@ label {
 
 .backend-panel strong {
   color: #f7f0c8;
+}
+
+.beta-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  color: #c6d8bc;
+}
+
+.beta-panel strong {
+  color: #f7f0c8;
+}
+
+.beta-panel ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.beta-panel li {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 0.9rem;
+}
+
+.beta-panel span {
+  display: inline-grid;
+  place-items: center;
+  min-height: 24px;
+  border-radius: 7px;
+  border: 1px solid rgba(64, 237, 226, 0.34);
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.beta-panel .done {
+  background: rgba(20, 92, 70, 0.84);
+  color: #cbfff0;
+}
+
+.beta-panel .beta {
+  background: rgba(74, 39, 125, 0.84);
+  color: #ffe8ff;
+}
+
+.beta-panel .next {
+  background: rgba(87, 69, 26, 0.84);
+  color: #fff0b8;
 }
 
 .error {

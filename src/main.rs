@@ -56,8 +56,7 @@ const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
     "/home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
-const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str =
-    "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
+const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -7260,7 +7259,11 @@ fn send_android_apk(
         200,
         "application/vnd.android.package-archive",
         &bytes,
-        &[("Content-Disposition", disposition.as_str())],
+        &[
+            ("Content-Disposition", disposition.as_str()),
+            ("Cache-Control", "no-store, max-age=0"),
+            ("Pragma", "no-cache"),
+        ],
     )
 }
 
@@ -11290,12 +11293,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             1500.0,
             700.0,
         ),
-        eutherbooks_seed: clamp_f64(
-            preferences.eutherbooks_seed.round(),
-            0.0,
-            2147483647.0,
-            0.0,
-        ),
+        eutherbooks_seed: clamp_f64(preferences.eutherbooks_seed.round(), 0.0, 2147483647.0, 0.0),
         eutherbooks_last_book_id: clean_eutherbooks_book_id(&preferences.eutherbooks_last_book_id),
         eutherbooks_last_chapter_index: clamp_f64(
             preferences.eutherbooks_last_chapter_index.round(),
@@ -11473,7 +11471,6 @@ fn send_host_eutherbooks_voice_sample_wav(
     );
     send_response(stream, 200, "audio/wav", &bytes)
 }
-
 
 fn is_supported_eutherbooks_voice_sample_content_type(content_type: &str, file_name: &str) -> bool {
     content_type.starts_with("audio/webm")

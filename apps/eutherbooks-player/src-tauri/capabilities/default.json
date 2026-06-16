@@ -2,6 +2,23 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default EutherBooks Player capabilities",
-  "windows": ["main"],
-  "permissions": ["http:default"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "http://192.168.32.186:8088/**"
+        },
+        {
+          "url": "http://192.168.32.186:8080/eutherbooks/**"
+        },
+        {
+          "url": "https://apothictech.se/eutherbooks/**"
+        }
+      ]
+    }
+  ]
 }

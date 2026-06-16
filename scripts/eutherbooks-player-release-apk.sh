@@ -45,6 +45,12 @@ if [[ -f "$ANDROID_APP_GRADLE" ]]; then
   perl -0pi -e 's/manifestPlaceholders\["usesCleartextTraffic"\] = "false"/manifestPlaceholders["usesCleartextTraffic"] = "true"/' "$ANDROID_APP_GRADLE"
 fi
 
+if [[ -d "$TAURI_DIR/icons/android" ]]; then
+  echo "[eutherbooks-player-release-apk] syncing Android launcher icons"
+  mkdir -p "$ANDROID_DIR/app/src/main/res"
+  cp -R "$TAURI_DIR/icons/android/." "$ANDROID_DIR/app/src/main/res/"
+fi
+
 echo "[eutherbooks-player-release-apk] building unsigned APK"
 npm run android:build -- --target "$ANDROID_TARGET"
 

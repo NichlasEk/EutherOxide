@@ -30,6 +30,8 @@ let lastEndpointErrors: string[] = [];
 let pollTimer: number | null = null;
 let sleepTimer: number | null = null;
 let sleepDeadline = 0;
+let userPausedPlayback = false;
+let lastPlaybackEvent = "Idle";
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -127,8 +129,10 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
   if (!selectedBookId) {
     return;
   }
+  userPausedPlayback = false;
   stopPlayback(false);
   statusText = "Starting generation";
+  lastPlaybackEvent = "Generating current chapter";
   render();
   try {
     currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, cancelExisting);
@@ -146,8 +150,8 @@ async function pollJobs(): Promise<void> {
     if (currentJob) {
       currentJob = await api.job(currentJob.id);
       session = sessionFromJob(currentJob, session);
-      if (settings.autoPlay && audio.paused && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
-        await playFromSession();
+      if (settings.autoPlay && !userPausedPlayback && audio.paused && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
+        await playFromSession("auto");
       }
       if (settings.autoNext && currentJob.status === "done") {
         void ensureNextJob();
@@ -188,20 +192,30 @@ async function ensureNextJob(): Promise<void> {
   }
 }
 
-async function playFromSession(): Promise<void> {
+async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void> {
+  if (mode === "auto" && userPausedPlayback) {
+    lastPlaybackEvent = "Auto-play held by manual pause";
+    return;
+  }
   if (!session || session.audioFiles.length === 0) {
+    lastPlaybackEvent = "No playable audio loaded";
     return;
   }
   const path = session.audioFiles[session.currentIndex];
   if (!path) {
+    lastPlaybackEvent = "No audio part at current position";
     return;
   }
   const url = api.audioUrl(path);
   if (audio.src !== url) {
     audio.src = url;
   }
+  if (mode === "manual") {
+    userPausedPlayback = false;
+  }
   await audio.play();
   statusText = "Playing";
+  lastPlaybackEvent = mode === "auto" ? "Auto-play resumed" : "Manual play";
   scheduleSleepTimer();
   render();
 }
@@ -213,7 +227,7 @@ async function playNextPartOrChapter(): Promise<void> {
   if (session.currentIndex + 1 < session.audioFiles.length) {
     session.currentIndex += 1;
     session.currentSeconds = 0;
-    await playFromSession();
+    await playFromSession("auto");
     return;
   }
   if (currentJob?.status !== "done") {
@@ -236,7 +250,7 @@ async function playNextPartOrChapter(): Promise<void> {
     currentJob = nextJob;
     nextJob = null;
     session = sessionFromJob(currentJob);
-    await playFromSession();
+    await playFromSession("auto");
     return;
   }
   statusText = "Waiting for next chapter";
@@ -244,9 +258,15 @@ async function playNextPartOrChapter(): Promise<void> {
   render();
 }
 
-function stopPlayback(savePosition: boolean): void {
+function stopPlayback(savePosition: boolean, manual = false): void {
   if (savePosition && session) {
     session.currentSeconds = audio.currentTime;
+  }
+  if (manual) {
+    userPausedPlayback = true;
+    lastPlaybackEvent = "Manual pause";
+  } else if (!savePosition) {
+    lastPlaybackEvent = "Playback stopped";
   }
   audio.pause();
   clearSleepTimer();
@@ -282,8 +302,9 @@ function scheduleSleepTimer(): void {
   }
   sleepDeadline = Date.now() + settings.sleepTimerMinutes * 60_000;
   sleepTimer = window.setTimeout(() => {
-    stopPlayback(true);
+    stopPlayback(true, true);
     statusText = "Sleep timer paused playback";
+    lastPlaybackEvent = "Sleep timer paused playback";
     render();
   }, settings.sleepTimerMinutes * 60_000);
 }
@@ -415,7 +436,19 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Endpoint: ${escapeHtml(endpointText || settings.serverUrl)}</small>
         <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
+        <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}
+      </section>
+
+      <section class="beta-panel">
+        <strong>Beta roadmap</strong>
+        <ul>
+          <li><span class="done">Live</span> Endpoint failover, native HTTP, signed APK pipeline</li>
+          <li><span class="done">Live</span> Manual pause lock, sleep timer hold, auto-next generation</li>
+          <li><span class="beta">Beta</span> Managed queue, generated-part playback, buffer diagnostics</li>
+          <li><span class="next">Next</span> Local chapter cache, media notification, lockscreen controls</li>
+          <li><span class="next">Later</span> Native audio backend for stronger background and gapless playback</li>
+        </ul>
       </section>
 
       ${errorText ? `<p class="error">${escapeHtml(errorText)}</p>` : ""}
@@ -436,6 +469,7 @@ function bindUi(): void {
   document.querySelector<HTMLSelectElement>("#book-select")?.addEventListener("change", (event) => {
     selectedBookId = (event.currentTarget as HTMLSelectElement).value;
     selectedChapterIndex = 0;
+    userPausedPlayback = false;
     currentJob = null;
     nextJob = null;
     session = null;
@@ -444,6 +478,7 @@ function bindUi(): void {
   });
   document.querySelector<HTMLSelectElement>("#chapter-select")?.addEventListener("change", (event) => {
     selectedChapterIndex = Number((event.currentTarget as HTMLSelectElement).value);
+    userPausedPlayback = false;
     currentJob = null;
     nextJob = null;
     session = null;
@@ -452,12 +487,14 @@ function bindUi(): void {
   });
   document.querySelector<HTMLSelectElement>("#model-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, modelBackend: (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"] });
+    userPausedPlayback = false;
     currentJob = null;
     session = null;
     render();
   });
   document.querySelector<HTMLSelectElement>("#voice-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, voiceId: (event.currentTarget as HTMLSelectElement).value });
+    userPausedPlayback = false;
     currentJob = null;
     session = null;
     void refreshAll();
@@ -465,9 +502,10 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => void generateCurrentChapter(true));
   document.querySelector<HTMLButtonElement>("#play")?.addEventListener("click", () => {
     if (audio.paused) {
-      void playFromSession();
+      void playFromSession("manual");
     } else {
-      stopPlayback(true);
+      stopPlayback(true, true);
+      statusText = "Paused";
       render();
     }
   });
