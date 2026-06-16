@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default EutherBooks Player capabilities",
   "windows": ["main"],
-  "permissions": []
+  "permissions": ["http:default"]
 }

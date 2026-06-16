@@ -14,7 +14,8 @@
     "android:release": "../../scripts/eutherbooks-player-release-apk.sh"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-http": "^2.5.9"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

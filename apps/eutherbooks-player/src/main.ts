@@ -2,7 +2,7 @@ import "./styles.css";
 
 import { EutherBooksApi, voicesForModel } from "./eutherbooks-api";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
-import { cleanServerUrl, loadSettings, saveSettings } from "./storage";
+import { cleanServerUrl, loadSettings, saveSettings, serverCandidates } from "./storage";
 import { AppSettings, Book, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -24,7 +24,9 @@ let currentJob: Job | null = null;
 let nextJob: Job | null = null;
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
+let endpointText = "";
 let errorText = "";
+let lastEndpointErrors: string[] = [];
 let pollTimer: number | null = null;
 let sleepTimer: number | null = null;
 let sleepDeadline = 0;
@@ -53,25 +55,43 @@ async function boot(): Promise<void> {
 }
 
 async function refreshAll(): Promise<void> {
-  try {
-    errorText = "";
-    api = new EutherBooksApi(settings.serverUrl);
-    const [nextHealth, nextVoices, nextBooks, jobs] = await Promise.all([
-      api.health(),
-      api.voices(),
-      api.books(),
-      api.jobs(),
-    ]);
-    health = nextHealth;
-    voices = nextVoices;
-    books = nextBooks;
-    selectedBookId ||= books[0]?.id ?? "";
-    await loadChapters();
-    attachExistingJob(jobs);
-    statusText = "Connected";
-  } catch (err) {
-    errorText = err instanceof Error ? err.message : "Could not load EutherBooks";
+  statusText = "Connecting";
+  errorText = "";
+  lastEndpointErrors = [];
+  render();
+  const candidates = serverCandidates(settings.serverUrl);
+  for (const candidate of candidates) {
+    try {
+      api = new EutherBooksApi(candidate);
+      endpointText = candidate;
+      const [nextHealth, nextVoices, nextBooks, jobs] = await Promise.all([
+        api.health(),
+        api.voices(),
+        api.books(),
+        api.jobs(),
+      ]);
+      health = nextHealth;
+      voices = nextVoices;
+      books = nextBooks;
+      if (settings.serverUrl !== candidate) {
+        updateSettings({ ...settings, serverUrl: candidate });
+      }
+      selectedBookId ||= books[0]?.id ?? "";
+      await loadChapters();
+      attachExistingJob(jobs);
+      statusText = "Connected";
+      errorText = "";
+      lastEndpointErrors = [];
+      render();
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "failed";
+      lastEndpointErrors.push(`${candidate}: ${message}`);
+    }
   }
+  health = null;
+  endpointText = "";
+  errorText = `All endpoints failed. ${lastEndpointErrors.join(" | ")}`;
   render();
 }
 
@@ -306,9 +326,12 @@ function appMarkup(modelVoices: Voice[]): string {
   return `
     <main class="app-shell">
       <header class="topbar">
-        <div>
-          <span class="eyebrow">EutherBooks</span>
-          <h1>Player</h1>
+        <div class="brand-lockup">
+          <span class="brand-glyph" aria-hidden="true"></span>
+          <div>
+            <span class="eyebrow">EutherBooks</span>
+            <h1>Player</h1>
+          </div>
         </div>
         <strong class="status-pill ${health?.status === "ok" ? "is-ok" : "is-warn"}">${escapeHtml(health?.status ?? "offline")}</strong>
       </header>
@@ -318,7 +341,7 @@ function appMarkup(modelVoices: Voice[]): string {
           <span>Server</span>
           <input id="server-url" value="${escapeHtml(settings.serverUrl)}" inputmode="url" />
         </label>
-        <button id="reload" type="button">Reload</button>
+        <button id="reload" type="button">Retry</button>
       </section>
 
       <section class="library-grid">
@@ -389,6 +412,7 @@ function appMarkup(modelVoices: Voice[]): string {
 
       <section class="backend-panel">
         <strong>${escapeHtml(statusText)}</strong>
+        <small>Endpoint: ${escapeHtml(endpointText || settings.serverUrl)}</small>
         <span>${escapeHtml(currentJob?.progress_detail || "No active job")}</span>
         <small>Sleep timer: ${escapeHtml(sleepLabel)}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}

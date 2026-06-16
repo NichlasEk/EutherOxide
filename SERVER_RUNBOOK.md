@@ -124,6 +124,12 @@ The download route `/downloads/EutherBooksPlayer-release-signed.apk` uses
 release copy. The shorter aliases `/downloads/eutherbooksplayer.apk` and
 `/downloads/EutherBooksPlayer.apk` are also accepted.
 
+The EutherBooks Player Android app tries LAN EutherBooks first
+(`http://192.168.32.186:8088`) and then the hosted EutherOxide proxy
+(`https://apothictech.se/eutherbooks`). For LAN installs, keep
+`eutherbooks.service` bound to `0.0.0.0:8088`; otherwise Android cannot reach
+the API directly and browser CORS rules may block the fallback.
+
 To build the EutherSync wrapper against another endpoint:
 
 ```sh

@@ -10,6 +10,7 @@ pub fn run() {
     startup_info("starting app");
 
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_http::init())
         .setup(|app| {
             startup_info("setup: resolving app data dir");
             log_startup_diagnostics(app);

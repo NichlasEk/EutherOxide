@@ -1,4 +1,5 @@
 import { AppSettings, Book, Chapter, Health, Job, ModelBackend, Voice } from "./types";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 export class EutherBooksApi {
   constructor(private readonly baseUrl: string) {}
@@ -46,19 +47,27 @@ export class EutherBooksApi {
   }
 
   private async json<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const requestInit = {
       ...init,
       headers: {
         "content-type": "application/json",
         ...(init.headers ?? {}),
       },
-    });
+    };
+    const response = await requestJson(`${this.baseUrl}${path}`, requestInit);
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
     }
     return response.json() as Promise<T>;
   }
+}
+
+async function requestJson(url: string, init: RequestInit): Promise<Response> {
+  if (window.__TAURI_INTERNALS__) {
+    return tauriFetch(url, init);
+  }
+  return fetch(url, { ...init, credentials: "include" });
 }
 
 export function voicesForModel(voices: Voice[], modelBackend: ModelBackend): Voice[] {
