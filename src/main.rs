@@ -2462,7 +2462,9 @@ fn host_eutherbooks_player_log(
     state: &HostState,
     request: &HttpRequest,
 ) -> io::Result<()> {
-    let user = require_host_user_or_app(state, request)?;
+    let user = authenticated_user(state, request)?
+        .or_else(|| authenticated_app_user(state, request).ok().flatten())
+        .unwrap_or_else(|| "anonymous".to_string());
     append_eutherbooks_player_log(stream, &user, request)?;
     send_json(stream, &serde_json::json!({ "ok": true, "logged": true }))
 }
