@@ -71,6 +71,30 @@ export class EutherBooksApi {
     });
   }
 
+  async reportPlayerLog(payload: Record<string, unknown>): Promise<void> {
+    const errors: string[] = [];
+    for (const baseUrl of hostReportCandidates(this.baseUrl)) {
+      try {
+        const response = await requestJson(`${baseUrl}/api/eutherbooks-player/log`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(this.authToken ? { "X-Euther-App-Token": this.authToken } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        if (response.ok) {
+          return;
+        }
+        const text = await response.text().catch(() => "");
+        errors.push(`${baseUrl}: ${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+      } catch (err) {
+        errors.push(`${baseUrl}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    throw new Error(errors.join(" | ") || "No report endpoint available");
+  }
+
   audioUrl(path: string): string {
     return `${this.baseUrl}/audio/${path.split("/").map(encodeURIComponent).join("/")}`;
   }
@@ -101,6 +125,24 @@ function hostBaseUrl(baseUrl: string): string {
   url.search = "";
   url.hash = "";
   return url.toString().replace(/\/+$/, "");
+}
+
+function hostReportCandidates(baseUrl: string): string[] {
+  const candidates: string[] = [];
+  try {
+    const url = new URL(hostBaseUrl(baseUrl));
+    candidates.push(url.toString().replace(/\/+$/, ""));
+    if (url.hostname === "192.168.32.186" && url.port === "8088") {
+      url.port = "8080";
+      candidates.push(url.toString().replace(/\/+$/, ""));
+    }
+  } catch (_err) {
+  }
+  candidates.push("http://192.168.32.186:8080", "https://apothictech.se");
+  if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
+    candidates.push(window.location.origin.replace(/\/+$/, ""));
+  }
+  return [...new Set(candidates.filter(Boolean))];
 }
 
 async function requestJson(url: string, init: RequestInit): Promise<Response> {

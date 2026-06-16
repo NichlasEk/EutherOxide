@@ -19,6 +19,7 @@ import {
   seekNativeAudio,
   stopNativeAudio,
 } from "./native-audio";
+import type { NativeAudioState } from "./native-audio";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
 import { bookmarkKey, cleanServerUrl, loadBookmarks, loadSettings, saveBookmark, saveSettings, serverCandidates } from "./storage";
 import { AppSettings, Book, Bookmark, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
@@ -60,6 +61,7 @@ let playbackWatchTimer: number | null = null;
 let fallbackRefreshRunning = false;
 let nativePlaybackActive = false;
 let lastAutoBookmarkAt = 0;
+let lastBugReportKey = "";
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -296,6 +298,7 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     await playFromNativeSession(mode);
     return;
   }
+  await maybeReportNativeAudioIssue("native-unavailable-before-play");
   const url = await playableAudioUrl(api.audioUrl(path));
   const targetTime = session.currentSeconds;
   const sourceChanged = audio.src !== url;
@@ -336,9 +339,19 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   );
   nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
   applyNativeAudioState(state);
+  await maybeReportNativeAudioIssue("native-play-request");
+  if (state.error || !nativePlaybackActive) {
+    const url = await playableAudioUrl(api.audioUrl(session.audioFiles[session.currentIndex]));
+    audio.src = url;
+    applyAudioOffset(session.currentSeconds, true);
+    await audio.play();
+    lastPlaybackEvent = "Native failed; browser fallback playing";
+  }
   await setPlaybackWakeLock(true);
   statusText = "Playing";
-  lastPlaybackEvent = mode === "auto" ? "Native auto-play resumed" : "Native manual play";
+  if (!lastPlaybackEvent.includes("fallback")) {
+    lastPlaybackEvent = mode === "auto" ? "Native auto-play resumed" : "Native manual play";
+  }
   scheduleSleepTimer();
   startPlaybackWatchdog();
   updateAppMediaSession();
@@ -534,6 +547,7 @@ async function refreshNativePlayback(): Promise<void> {
   }
   const state = await refreshNativeAudioState();
   applyNativeAudioState(state);
+  await maybeReportNativeAudioIssue("native-refresh");
   maybeSaveAutoBookmark();
   if (state.ended) {
     nativePlaybackActive = false;
@@ -553,6 +567,56 @@ function applyNativeAudioState(state = nativeAudioState()): void {
   }
   session.currentIndex = Math.max(0, Math.min(state.index, Math.max(0, session.audioFiles.length - 1)));
   session.currentSeconds = Math.max(0, state.positionSeconds);
+}
+
+async function maybeReportNativeAudioIssue(event: string, force = false): Promise<void> {
+  const state = nativeAudioState();
+  if (!window.__TAURI_INTERNALS__ || (!force && !state.error)) {
+    return;
+  }
+  const key = `${event}:${state.lastEvent}:${state.error}:${selectedBookId}:${selectedChapterIndex}`;
+  if (!force && key === lastBugReportKey) {
+    return;
+  }
+  lastBugReportKey = key;
+  try {
+    await api.reportPlayerLog(playerBugPayload(event, state));
+    lastPlaybackEvent = state.error ? "Native bug report sent" : lastPlaybackEvent;
+  } catch (err) {
+    lastPlaybackEvent = `Bug report failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+function playerBugPayload(event: string, state: NativeAudioState): Record<string, unknown> {
+  return {
+    event,
+    app: "eutherbooks-player",
+    version: "0.1.12",
+    endpoint: settings.serverUrl,
+    username: settings.username,
+    bookId: selectedBookId,
+    chapterIndex: selectedChapterIndex,
+    modelBackend: settings.modelBackend,
+    voiceId: settings.voiceId,
+    jobId: currentJob?.id ?? session?.jobId ?? "",
+    session: session
+      ? {
+          partIndex: session.currentIndex,
+          partSeconds: session.currentSeconds,
+          generatedSeconds: session.generatedSeconds,
+          parts: session.audioFiles.length,
+          totalParts: session.totalParts,
+        }
+      : null,
+    nativeAudio: state,
+    wakeLock: wakeLockStatus(),
+    mediaSession: mediaSessionStatus,
+    playback: lastPlaybackEvent,
+    userAgent: navigator.userAgent,
+    visible: document.visibilityState,
+    online: navigator.onLine,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 function isPlaybackPaused(): boolean {
@@ -898,6 +962,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}
         <button id="clear-cache" type="button">Clear audio cache</button>
+        <button id="report-native-bug" type="button">Report native bug</button>
       </section>
 
       <section class="beta-panel">
@@ -998,6 +1063,9 @@ function bindUi(): void {
   });
   document.querySelector<HTMLButtonElement>("#clear-cache")?.addEventListener("click", () => {
     void clearAudioCache().then(() => render());
+  });
+  document.querySelector<HTMLButtonElement>("#report-native-bug")?.addEventListener("click", () => {
+    void maybeReportNativeAudioIssue("manual-native-report", true).then(() => render());
   });
   document.querySelector<HTMLSelectElement>("#sleep-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, sleepTimerMinutes: Number((event.currentTarget as HTMLSelectElement).value) });

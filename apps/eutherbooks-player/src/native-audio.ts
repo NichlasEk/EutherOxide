@@ -40,11 +40,7 @@ export async function refreshNativeAudioState(): Promise<NativeAudioState> {
   try {
     lastState = parseState(await invoke<string>("native_audio_status"));
   } catch (err) {
-    lastState = {
-      ...unavailableState,
-      lastEvent: "Native audio command failed",
-      error: err instanceof Error ? err.message : String(err),
-    };
+    lastState = failedState("status", err);
   }
   checked = true;
   return lastState;
@@ -64,32 +60,48 @@ export async function playNativeAudioQueue(
   title: string,
   subtitle: string,
 ): Promise<NativeAudioState> {
-  const raw = await invoke<string>("native_audio_play_queue", {
-    urls,
-    index,
-    positionSeconds,
-    title,
-    subtitle,
-  });
-  lastState = parseState(raw);
+  try {
+    const raw = await invoke<string>("native_audio_play_queue", {
+      urls,
+      index,
+      positionSeconds,
+      title,
+      subtitle,
+    });
+    lastState = parseState(raw);
+  } catch (err) {
+    lastState = failedState("play_queue", err);
+  }
   checked = true;
   return lastState;
 }
 
 export async function pauseNativeAudio(): Promise<NativeAudioState> {
-  lastState = parseState(await invoke<string>("native_audio_pause"));
+  try {
+    lastState = parseState(await invoke<string>("native_audio_pause"));
+  } catch (err) {
+    lastState = failedState("pause", err);
+  }
   checked = true;
   return lastState;
 }
 
 export async function seekNativeAudio(index: number, positionSeconds: number): Promise<NativeAudioState> {
-  lastState = parseState(await invoke<string>("native_audio_seek", { index, positionSeconds }));
+  try {
+    lastState = parseState(await invoke<string>("native_audio_seek", { index, positionSeconds }));
+  } catch (err) {
+    lastState = failedState("seek", err);
+  }
   checked = true;
   return lastState;
 }
 
 export async function stopNativeAudio(): Promise<NativeAudioState> {
-  lastState = parseState(await invoke<string>("native_audio_stop"));
+  try {
+    lastState = parseState(await invoke<string>("native_audio_stop"));
+  } catch (err) {
+    lastState = failedState("stop", err);
+  }
   checked = true;
   return lastState;
 }
@@ -106,4 +118,13 @@ function parseState(raw: string): NativeAudioState {
       lastEvent: raw || "Native audio returned invalid state",
     };
   }
+}
+
+function failedState(command: string, err: unknown): NativeAudioState {
+  const error = err instanceof Error ? err.message : String(err);
+  return {
+    ...unavailableState,
+    lastEvent: `Native audio ${command} failed`,
+    error,
+  };
 }

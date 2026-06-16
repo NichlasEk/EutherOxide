@@ -58,7 +58,9 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
+const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
+static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static RESPONSE_CORS_ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -1447,6 +1449,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/login"
         && path != "/api/app/login"
         && path != "/api/eutherduke/log"
+        && path != "/api/eutherbooks-player/log"
         && !is_eutherbooks_proxy_path(path)
         && !app_token_request
         && !valid_csrf_token(state, &request)?
@@ -1477,6 +1480,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/logout") => host_logout(stream, state, &request),
         ("POST", "/api/eutherduke/log") => host_eutherduke_log(stream, state, &request),
+        ("POST", "/api/eutherbooks-player/log") => {
+            host_eutherbooks_player_log(stream, state, &request)
+        }
         ("GET", path) if is_eutherlist_apk_download_path(path) => {
             require_host_user(state, &request)?;
             send_eutherlist_apk(stream)
@@ -2451,6 +2457,16 @@ fn host_eutherduke_log(
     send_json(stream, &serde_json::json!({ "ok": true, "logged": true }))
 }
 
+fn host_eutherbooks_player_log(
+    stream: &mut TcpStream,
+    state: &HostState,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let user = require_host_user_or_app(state, request)?;
+    append_eutherbooks_player_log(stream, &user, request)?;
+    send_json(stream, &serde_json::json!({ "ok": true, "logged": true }))
+}
+
 fn host_eutherduke_log_message(request: &HttpRequest) -> String {
     let message = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&request.body) {
         value
@@ -2499,6 +2515,65 @@ fn append_eutherduke_browser_log(stream: &TcpStream, user: &str, message: &str) 
         message
     )?;
     Ok(())
+}
+
+fn append_eutherbooks_player_log(
+    stream: &TcpStream,
+    user: &str,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let remote_addr = stream
+        .peer_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let user_agent = header_value(request, "user-agent").unwrap_or_default();
+    let payload = serde_json::from_slice::<serde_json::Value>(&request.body)
+        .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&request.body) }));
+    let entry = serde_json::json!({
+        "unix_ms": unix_ms_now(),
+        "user": user,
+        "ip": remote_addr,
+        "user_agent": user_agent.chars().take(300).collect::<String>(),
+        "payload": clamp_json_log_value(payload, 3000),
+    });
+    let _log_guard = EUTHERBOOKS_PLAYER_LOG_LOCK.lock().ok();
+    if let Some(parent) = Path::new(EUTHERBOOKS_PLAYER_LOG_PATH).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(EUTHERBOOKS_PLAYER_LOG_PATH)?;
+    serde_json::to_writer(&mut file, &entry).map_err(|err| io::Error::other(err.to_string()))?;
+    file.write_all(b"\n")
+}
+
+fn clamp_json_log_value(value: serde_json::Value, max_string_len: usize) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) => {
+            serde_json::Value::String(text.chars().take(max_string_len).collect())
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .take(40)
+                .map(|value| clamp_json_log_value(value, max_string_len))
+                .collect(),
+        ),
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .take(80)
+                .map(|(key, value)| {
+                    (
+                        key.chars().take(80).collect(),
+                        clamp_json_log_value(value, max_string_len),
+                    )
+                })
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
