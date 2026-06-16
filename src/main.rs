@@ -54,6 +54,10 @@ const DEFAULT_EUTHERLIST_REPO_APK_PATH: &str =
 const DEFAULT_EUTHERSYNC_APK_PATH: &str = "/home/nichlas/EutherSync-release-signed.apk";
 const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
     "/home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk";
+const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
+    "/home/nichlas/EutherBooksPlayer-release-signed.apk";
+const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str =
+    "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1432,10 +1436,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
     if request.method == "OPTIONS" {
         return send_empty(stream, 204);
     }
-    if let Some(location) = host_canonical_redirect(state, &request) {
-        return send_redirect(stream, 308, &location);
-    }
     let path = request.path.split('?').next().unwrap_or(&request.path);
+    if !is_android_apk_download_path(path) {
+        if let Some(location) = host_canonical_redirect(state, &request) {
+            return send_redirect(stream, 308, &location);
+        }
+    }
     let app_token_request =
         host_app_token_path(path) && authenticated_app_user(state, &request)?.is_some();
     if request.method != "GET"
@@ -1479,6 +1485,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_euthersync_apk_download_path(path) => {
             require_host_user(state, &request)?;
             send_euthersync_apk(stream)
+        }
+        ("GET", path) if is_eutherbooks_player_apk_download_path(path) => {
+            require_host_user(state, &request)?;
+            send_eutherbooks_player_apk(stream)
         }
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
@@ -7194,6 +7204,41 @@ fn is_euthersync_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSync-release-signed.apk"
             | "/downloads/euthersync-release-signed.apk"
     )
+}
+
+fn send_eutherbooks_player_apk(stream: &mut TcpStream) -> io::Result<()> {
+    let apk_path = env::var("EUTHERBOOKS_PLAYER_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home_apk = PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH);
+            if home_apk.is_file() {
+                home_apk
+            } else {
+                PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH)
+            }
+        });
+    send_android_apk(
+        stream,
+        &apk_path,
+        "EutherBooksPlayer-release-signed.apk",
+        "EutherBooks Player APK is not available",
+    )
+}
+
+fn is_eutherbooks_player_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherbooksplayer.apk"
+            | "/downloads/EutherBooksPlayer.apk"
+            | "/downloads/EutherBooksPlayer-release-signed.apk"
+            | "/downloads/eutherbooksplayer-release-signed.apk"
+    )
+}
+
+fn is_android_apk_download_path(path: &str) -> bool {
+    is_eutherlist_apk_download_path(path)
+        || is_euthersync_apk_download_path(path)
+        || is_eutherbooks_player_apk_download_path(path)
 }
 
 fn send_android_apk(

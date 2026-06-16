@@ -2326,6 +2326,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
       <button data-user-menu-action="audiobooks" type="button" role="menuitem">Audiobooks</button>
+      <button data-user-menu-action="get-books-player-app" type="button" role="menuitem">Get the audiobook player app</button>
       <button data-user-menu-action="eutherium" type="button" role="menuitem">Eutherium</button>
       <button data-user-menu-action="get-list-app" type="button" role="menuitem">Get the list app</button>
       <button data-user-menu-action="admin" type="button" role="menuitem" hidden>Admin</button>
@@ -12502,6 +12503,9 @@ async function handleUserMenuAction(action: string): Promise<void> {
       return;
     case "get-sync-app":
       window.location.href = "/downloads/EutherSync-release-signed.apk";
+      return;
+    case "get-books-player-app":
+      window.location.href = "/downloads/EutherBooksPlayer-release-signed.apk";
       return;
     case "friends":
       openWorkspaceWindow("friends");

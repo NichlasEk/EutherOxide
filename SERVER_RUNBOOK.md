@@ -92,6 +92,7 @@ Or build one APK at a time:
 ```sh
 npm run android:eutherlist
 npm run android:euthersync
+npm run android:eutherbooks-player
 ```
 
 Default outputs:
@@ -101,6 +102,8 @@ Default outputs:
 /home/nichlas/EutherOxide/apps/eutherlist/releases/EutherList-release-signed.apk
 /home/nichlas/EutherSync-release-signed.apk
 /home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk
+/home/nichlas/EutherBooksPlayer-release-signed.apk
+/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk
 ```
 
 The download route `/downloads/EutherList-release-signed.apk` uses
@@ -114,6 +117,12 @@ The download route `/downloads/EutherSync-release-signed.apk` uses
 `/home/nichlas/EutherSync-release-signed.apk`, otherwise the repo release copy.
 The shorter aliases `/downloads/euthersync.apk` and `/downloads/EutherSync.apk`
 are also accepted.
+
+The download route `/downloads/EutherBooksPlayer-release-signed.apk` uses
+`EUTHERBOOKS_PLAYER_APK_PATH` when set, otherwise
+`/home/nichlas/EutherBooksPlayer-release-signed.apk`, otherwise the repo
+release copy. The shorter aliases `/downloads/eutherbooksplayer.apk` and
+`/downloads/EutherBooksPlayer.apk` are also accepted.
 
 To build the EutherSync wrapper against another endpoint:
 

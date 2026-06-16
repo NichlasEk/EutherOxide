@@ -12,7 +12,7 @@
     "dev:eutherbooks-player": "npm --prefix apps/eutherbooks-player run dev",
     "build:eutherbooks-player": "npm --prefix apps/eutherbooks-player run build",
     "tauri:eutherbooks-player": "npm --prefix apps/eutherbooks-player run tauri",
-    "android:eutherbooks-player": "npm --prefix apps/eutherbooks-player run android:build",
+    "android:eutherbooks-player": "bash scripts/eutherbooks-player-release-apk.sh",
     "android:euthersync": "bash scripts/euthersync-release-apk.sh",
     "android:release-apks": "bash scripts/android-release-apks.sh",
     "build:release": "bash scripts/build-release.sh",
