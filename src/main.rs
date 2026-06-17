@@ -939,6 +939,7 @@ struct HostUser {
     can_award_eutherium: bool,
     can_camera_admin: bool,
     camera_rotation_degrees: u16,
+    camera_refresh_ms: u16,
     euthersync_media_backup: Option<bool>,
     euthersync_feed_post: Option<bool>,
 }
@@ -1541,14 +1542,16 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
             let form =
                 parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
-            let rotation_degrees = form_value(&form, "rotation_degrees")
-                .or_else(|| form_value(&form, "rotationDegrees"))
-                .unwrap_or("0")
-                .parse::<i32>()
-                .map_err(|_| invalid_request("invalid camera rotation"))?;
+            let rotation_degrees = optional_form_i32(
+                &form,
+                "rotation_degrees",
+                form_value(&form, "rotationDegrees"),
+            )?;
+            let refresh_ms =
+                optional_form_u16(&form, "refresh_ms", form_value(&form, "refreshMs"))?;
             send_json(
                 stream,
-                &set_host_camera_rotation(state, &user, rotation_degrees)?,
+                &set_host_camera_settings(state, &user, rotation_degrees, refresh_ms)?,
             )
         }
         ("POST", "/api/user/eutherbooks/voice-sample") => {
@@ -6917,6 +6920,7 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         can_award_eutherium: false,
         can_camera_admin: false,
         camera_rotation_degrees: 0,
+        camera_refresh_ms: 500,
         euthersync_media_backup: Some(false),
         euthersync_feed_post: Some(true),
     });
@@ -7559,19 +7563,25 @@ fn host_camera_settings(state: &HostState, username: &str) -> io::Result<serde_j
     let rotation_degrees = users
         .iter()
         .find(|user| user.name == username)
-        .map(|user| normalize_camera_rotation(user.camera_rotation_degrees as i32))
-        .unwrap_or(0);
+        .map(|user| {
+            (
+                normalize_camera_rotation(user.camera_rotation_degrees as i32),
+                normalize_camera_refresh_ms(user.camera_refresh_ms),
+            )
+        })
+        .unwrap_or((0, 500));
     Ok(serde_json::json!({
-        "rotationDegrees": rotation_degrees,
+        "rotationDegrees": rotation_degrees.0,
+        "refreshMs": rotation_degrees.1,
     }))
 }
 
-fn set_host_camera_rotation(
+fn set_host_camera_settings(
     state: &HostState,
     username: &str,
-    rotation_degrees: i32,
+    rotation_degrees: Option<i32>,
+    refresh_ms: Option<u16>,
 ) -> io::Result<serde_json::Value> {
-    let rotation_degrees = normalize_camera_rotation(rotation_degrees);
     let mut users = state
         .users
         .lock()
@@ -7580,10 +7590,18 @@ fn set_host_camera_rotation(
         .iter_mut()
         .find(|user| user.name == username)
         .ok_or_else(|| invalid_request("unknown user"))?;
-    user.camera_rotation_degrees = rotation_degrees;
+    if let Some(rotation_degrees) = rotation_degrees {
+        user.camera_rotation_degrees = normalize_camera_rotation(rotation_degrees);
+    }
+    if let Some(refresh_ms) = refresh_ms {
+        user.camera_refresh_ms = normalize_camera_refresh_ms(refresh_ms);
+    }
+    let rotation_degrees = user.camera_rotation_degrees;
+    let refresh_ms = user.camera_refresh_ms;
     save_host_users(&users)?;
     Ok(serde_json::json!({
         "rotationDegrees": rotation_degrees,
+        "refreshMs": refresh_ms,
     }))
 }
 
@@ -7597,6 +7615,18 @@ fn normalize_camera_rotation(rotation_degrees: i32) -> u16 {
     }
 }
 
+fn normalize_camera_refresh_ms(refresh_ms: u16) -> u16 {
+    match refresh_ms {
+        0..=124 => 125,
+        125..=249 => 125,
+        250..=499 => 250,
+        500..=999 => 500,
+        1000..=1999 => 1000,
+        2000..=4999 => 2000,
+        _ => 5000,
+    }
+}
+
 fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let body = r#"<!doctype html>
 <html lang="sv">
@@ -7607,20 +7637,25 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
   <style>
     :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #090b0f; color: #eef3f5; }
     body { margin: 0; min-height: 100vh; background: #090b0f; }
+    body.camera-fullscreen { overflow: hidden; }
     main { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 32px; display: grid; gap: 16px; }
     header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
     h1 { margin: 0; font-size: clamp(1.4rem, 3vw, 2.1rem); }
     p { margin: 0; color: #a9b8c2; }
     a { color: #96d7ff; font-weight: 800; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .panel { border: 1px solid rgba(180,205,218,.22); border-radius: 8px; background: #111820; overflow: hidden; }
     .panel > div { padding: 12px 14px; display: flex; justify-content: space-between; gap: 12px; align-items: center; border-bottom: 1px solid rgba(180,205,218,.16); }
     .panel-head { flex-wrap: wrap; }
     .camera-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-    button, .launch-card a { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); background: #101722; color: #bfe8ff; font: inherit; font-weight: 800; text-decoration: none; }
+    button, select, .launch-card a { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); background: #101722; color: #bfe8ff; font: inherit; font-weight: 800; text-decoration: none; }
     button:active { transform: translateY(1px); }
-    .snapshot-frame { display: grid; place-items: center; min-height: min(70vh, 720px); overflow: hidden; background: #05070a; }
-    img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; transform: rotate(var(--camera-rotation, 0deg)); transition: transform .16s ease; }
-    .snapshot-frame[data-rotation="90"] img, .snapshot-frame[data-rotation="270"] img { max-width: 70vh; max-height: calc(100vw - 48px); }
+    .snapshot-frame { box-sizing: border-box; display: grid; place-items: center; width: 100%; min-height: min(70vh, 720px); margin: 0; overflow: hidden; background: #05070a; cursor: zoom-in; touch-action: manipulation; }
+    .snapshot-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; min-height: 100dvh; border: 0; cursor: zoom-out; }
+    img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; transform: rotate(var(--camera-rotation, 0deg)); transform-origin: center center; transition: transform .16s ease; }
+    .snapshot-frame[data-rotation="90"] img, .snapshot-frame[data-rotation="270"] img { max-width: min(70vh, 100vw); max-height: calc(100vw - 48px); }
+    .snapshot-frame.is-fullscreen img { max-width: 100vw; max-height: 100dvh; }
+    .snapshot-frame.is-fullscreen[data-rotation="90"] img, .snapshot-frame.is-fullscreen[data-rotation="270"] img { max-width: 100dvh; max-height: 100vw; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
     .launch-card { padding: 18px; display: grid; gap: 10px; }
@@ -7648,9 +7683,20 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     <section class="panel">
       <div class="panel-head">
         <strong>yard</strong>
-        <span>Snapshot refresh varannan sekund</span>
+        <span>Snapshot refresh</span>
         <span class="camera-toolbar">
           <span id="rotation-status">Rotation 0 grader</span>
+          <label>
+            <span class="sr-only">Refresh</span>
+            <select id="refresh-rate">
+              <option value="125">8 fps</option>
+              <option value="250">4 fps</option>
+              <option value="500">2 fps</option>
+              <option value="1000">1 fps</option>
+              <option value="2000">0.5 fps</option>
+              <option value="5000">0.2 fps</option>
+            </select>
+          </label>
           <button id="rotate-camera" type="button">Rotera 90 grader</button>
         </span>
       </div>
@@ -7670,15 +7716,40 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const live = document.getElementById("yard-live");
     const frame = document.getElementById("snapshot-frame");
     const rotate = document.getElementById("rotate-camera");
+    const refreshRate = document.getElementById("refresh-rate");
     const rotationStatus = document.getElementById("rotation-status");
     let csrfToken = "";
     let rotationDegrees = 0;
+    let refreshMs = 500;
+    let refreshTimer = 0;
+    let fallbackFullscreen = false;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
       frame.dataset.rotation = String(rotationDegrees);
       frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
+    }
+
+    function normalizeRefresh(value) {
+      const requested = Number(value) || 500;
+      if (requested <= 125) return 125;
+      if (requested <= 250) return 250;
+      if (requested <= 500) return 500;
+      if (requested <= 1000) return 1000;
+      if (requested <= 2000) return 2000;
+      return 5000;
+    }
+
+    function refreshSnapshot() {
+      live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
+    }
+
+    function applyRefresh(value) {
+      refreshMs = normalizeRefresh(value);
+      refreshRate.value = String(refreshMs);
+      window.clearInterval(refreshTimer);
+      refreshTimer = window.setInterval(refreshSnapshot, refreshMs);
     }
 
     async function loadCameraSettings() {
@@ -7691,6 +7762,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       if (!response.ok) return;
       const settings = await response.json();
       applyRotation(settings.rotationDegrees);
+      applyRefresh(settings.refreshMs);
     }
 
     rotate.addEventListener("click", async () => {
@@ -7712,9 +7784,65 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       }
     });
 
-    setInterval(() => {
-      live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
-    }, 2000);
+    refreshRate.addEventListener("change", async () => {
+      const nextRefresh = normalizeRefresh(refreshRate.value);
+      applyRefresh(nextRefresh);
+      const body = new URLSearchParams({ refresh_ms: String(nextRefresh) });
+      const response = await fetch("/api/camera/settings", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-CSRF-Token": csrfToken,
+        },
+        body,
+      });
+      if (response.ok) {
+        const settings = await response.json();
+        applyRefresh(settings.refreshMs);
+      }
+    });
+
+    function fullscreenActive() {
+      return document.fullscreenElement === frame || fallbackFullscreen;
+    }
+
+    async function exitCameraFullscreen() {
+      fallbackFullscreen = false;
+      frame.classList.remove("is-fullscreen");
+      document.body.classList.remove("camera-fullscreen");
+      if (document.fullscreenElement) {
+        await document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    async function enterCameraFullscreen() {
+      frame.classList.add("is-fullscreen");
+      document.body.classList.add("camera-fullscreen");
+      if (frame.requestFullscreen) {
+        await frame.requestFullscreen().catch(() => {
+          fallbackFullscreen = true;
+        });
+      } else {
+        fallbackFullscreen = true;
+      }
+    }
+
+    frame.addEventListener("click", async () => {
+      if (fullscreenActive()) {
+        await exitCameraFullscreen();
+      } else {
+        await enterCameraFullscreen();
+      }
+    });
+
+    document.addEventListener("fullscreenchange", () => {
+      const active = document.fullscreenElement === frame || fallbackFullscreen;
+      frame.classList.toggle("is-fullscreen", active);
+      document.body.classList.toggle("camera-fullscreen", active);
+    });
+
+    applyRefresh(refreshMs);
     loadCameraSettings().catch(() => {});
   </script>
 </body>
@@ -10856,6 +10984,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut can_award_eutherium = false;
     let mut can_camera_admin = false;
     let mut camera_rotation_degrees = 0;
+    let mut camera_refresh_ms = 500;
     let mut euthersync_media_backup = None;
     let mut euthersync_feed_post = None;
     for line in contents.lines().map(str::trim) {
@@ -10880,6 +11009,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_award_eutherium,
                     can_camera_admin,
                     camera_rotation_degrees,
+                    camera_refresh_ms,
                     euthersync_media_backup,
                     euthersync_feed_post,
                 });
@@ -10895,6 +11025,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_award_eutherium = false;
             can_camera_admin = false;
             camera_rotation_degrees = 0;
+            camera_refresh_ms = 500;
             euthersync_media_backup = None;
             euthersync_feed_post = None;
             continue;
@@ -10928,6 +11059,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_camera_admin = value;
         } else if let Some(value) = parse_toml_u16_assignment(line, "camera_rotation_degrees") {
             camera_rotation_degrees = normalize_camera_rotation(value as i32);
+        } else if let Some(value) = parse_toml_u16_assignment(line, "camera_refresh_ms") {
+            camera_refresh_ms = normalize_camera_refresh_ms(value);
         } else if let Some(value) = parse_toml_bool_assignment(line, "euthersync_media_backup") {
             euthersync_media_backup = Some(value);
         } else if let Some(value) = parse_toml_bool_assignment(line, "euthersync_feed_post") {
@@ -10950,6 +11083,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_award_eutherium,
             can_camera_admin,
             camera_rotation_degrees,
+            camera_refresh_ms,
             euthersync_media_backup,
             euthersync_feed_post,
         });
@@ -11005,6 +11139,7 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
             "camera_rotation_degrees = {}\n",
             user.camera_rotation_degrees
         ));
+        contents.push_str(&format!("camera_refresh_ms = {}\n", user.camera_refresh_ms));
         if let Some(euthersync_media_backup) = user.euthersync_media_backup {
             contents.push_str(&format!(
                 "euthersync_media_backup = {}\n",
@@ -11535,6 +11670,36 @@ fn form_value<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
 
 fn form_bool(form: &[(String, String)], name: &str) -> bool {
     form_value(form, name).is_some_and(|value| value == "true" || value == "1")
+}
+
+fn optional_form_i32(
+    form: &[(String, String)],
+    snake_name: &str,
+    camel_value: Option<&str>,
+) -> io::Result<Option<i32>> {
+    form_value(form, snake_name)
+        .or(camel_value)
+        .map(|value| {
+            value
+                .parse::<i32>()
+                .map_err(|_| invalid_request(format!("invalid {snake_name}")))
+        })
+        .transpose()
+}
+
+fn optional_form_u16(
+    form: &[(String, String)],
+    snake_name: &str,
+    camel_value: Option<&str>,
+) -> io::Result<Option<u16>> {
+    form_value(form, snake_name)
+        .or(camel_value)
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| invalid_request(format!("invalid {snake_name}")))
+        })
+        .transpose()
 }
 
 fn html_escape(value: &str) -> String {
