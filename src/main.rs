@@ -7704,7 +7704,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .snapshot-frame[hidden], .live-panel[hidden] { display: none; }
     .snapshot-frame.is-fullscreen, .live-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100dvh; min-height: 100dvh; border: 0; border-radius: 0; cursor: zoom-out; }
     img, video { position: absolute; left: 50%; top: 50%; display: block; width: auto; height: auto; max-width: none; max-height: none; object-fit: contain; transform: translate(-50%, -50%) translate(var(--camera-pan-x), var(--camera-pan-y)) rotate(var(--camera-rotation, 0deg)) scale(var(--camera-zoom)); transform-origin: center center; transition: transform .08s ease; will-change: transform; }
-    .live-tools { padding: 12px 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid rgba(180,205,218,.16); }
+    .live-tools { position: sticky; top: 0; z-index: 2; padding: 12px 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid rgba(180,205,218,.16); background: #111820; }
     .live-tools label { display: inline-flex; align-items: center; gap: 8px; color: #a9b8c2; font-weight: 700; }
     input[type="range"] { width: 140px; accent-color: #96d7ff; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -7758,9 +7758,6 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         <img id="yard-live" alt="yard camera snapshot" src="/api/camera/frigate/api/yard/latest.jpg" />
       </figure>
       <section id="live-panel" class="live-panel" hidden>
-        <figure id="live-frame" class="live-frame" data-rotation="0">
-          <video id="yard-video" playsinline autoplay muted></video>
-        </figure>
         <div class="live-tools">
           <button id="live-connect" type="button">Starta live</button>
           <button id="live-audio" type="button">Ljud av</button>
@@ -7770,6 +7767,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
           </label>
           <span id="live-status">WebRTC redo</span>
         </div>
+        <figure id="live-frame" class="live-frame" data-rotation="0">
+          <video id="yard-video" playsinline autoplay muted></video>
+        </figure>
       </section>
     </section>
     <section class="panel">
@@ -7810,6 +7810,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let cameraPanX = 0;
     let cameraPanY = 0;
     let suppressFullscreenUntil = 0;
+    let liveTrackCount = 0;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
@@ -7862,6 +7863,12 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     function layoutCameraMedia() {
       fitMediaIntoFrame(frame, live);
       fitMediaIntoFrame(liveFrame, video);
+    }
+
+    function updateLiveStatus(text) {
+      const dimensions = video.videoWidth && video.videoHeight ? ` ${video.videoWidth}x${video.videoHeight}` : "";
+      const tracks = liveTrackCount ? ` tracks:${liveTrackCount}` : "";
+      liveStatus.textContent = `${text}${tracks}${dimensions}`;
     }
 
     function normalizeRefresh(value) {
@@ -8100,6 +8107,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     function stopLive() {
       liveEnabled = false;
+      liveTrackCount = 0;
       if (liveSocket) liveSocket.close();
       liveSocket = null;
       if (peer) peer.close();
@@ -8109,14 +8117,14 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       }
       video.srcObject = null;
       liveConnect.textContent = "Starta live";
-      liveStatus.textContent = "WebRTC stoppad";
+      updateLiveStatus("WebRTC stoppad");
     }
 
     async function startLive() {
       stopLive();
       liveEnabled = true;
       liveConnect.textContent = "Stoppa live";
-      liveStatus.textContent = "Ansluter WebRTC...";
+      updateLiveStatus("Ansluter WebRTC...");
       const stream = new MediaStream();
       video.srcObject = stream;
       video.muted = !audioEnabled;
@@ -8125,17 +8133,27 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       peer.addTransceiver("video", { direction: "recvonly" });
       peer.addTransceiver("audio", { direction: "recvonly" });
       peer.addEventListener("track", (event) => {
-        stream.addTrack(event.track);
-        liveStatus.textContent = "Live";
+        if (event.streams && event.streams[0]) {
+          video.srcObject = event.streams[0];
+          liveTrackCount = event.streams[0].getTracks().length;
+        } else {
+          stream.addTrack(event.track);
+          liveTrackCount = stream.getTracks().length;
+        }
+        updateLiveStatus(`Live ${event.track.kind}`);
         requestAnimationFrame(layoutCameraMedia);
         video.play().catch(() => {});
       });
       peer.addEventListener("connectionstatechange", () => {
-        liveStatus.textContent = `WebRTC ${peer.connectionState}`;
+        updateLiveStatus(`WebRTC ${peer.connectionState}`);
+      });
+      peer.addEventListener("iceconnectionstatechange", () => {
+        updateLiveStatus(`ICE ${peer.iceConnectionState}`);
       });
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       liveSocket = new WebSocket(`${proto}://${window.location.host}/api/camera/frigate/live/webrtc/api/ws?src=yard_main`);
       liveSocket.addEventListener("open", async () => {
+        updateLiveStatus("WS öppen");
         peer.addEventListener("icecandidate", (event) => {
           if (!event.candidate || liveSocket.readyState !== WebSocket.OPEN) return;
           liveSocket.send(JSON.stringify({ type: "webrtc/candidate", value: event.candidate.candidate }));
@@ -8143,20 +8161,22 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         const offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
         liveSocket.send(JSON.stringify({ type: "webrtc/offer", value: peer.localDescription.sdp }));
+        updateLiveStatus("Offer skickad");
       });
       liveSocket.addEventListener("message", async (event) => {
         const message = JSON.parse(event.data);
         if (message.type === "webrtc/answer") {
           await peer.setRemoteDescription({ type: "answer", sdp: message.value });
+          updateLiveStatus("Answer mottagen");
         } else if (message.type === "webrtc/candidate") {
           await peer.addIceCandidate({ candidate: message.value, sdpMid: "0" }).catch(() => {});
         }
       });
       liveSocket.addEventListener("close", () => {
-        if (liveEnabled) liveStatus.textContent = "WebRTC stängd";
+        if (liveEnabled) updateLiveStatus("WebRTC stängd");
       });
       liveSocket.addEventListener("error", () => {
-        liveStatus.textContent = "WebRTC fel";
+        updateLiveStatus("WebRTC fel");
       });
     }
 
@@ -8176,7 +8196,15 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       video.volume = Number(liveVolume.value) / 100;
     });
     live.addEventListener("load", layoutCameraMedia);
-    video.addEventListener("loadedmetadata", layoutCameraMedia);
+    video.addEventListener("loadedmetadata", () => {
+      layoutCameraMedia();
+      updateLiveStatus("Video metadata");
+    });
+    video.addEventListener("playing", () => updateLiveStatus("Video spelar"));
+    video.addEventListener("resize", () => {
+      layoutCameraMedia();
+      updateLiveStatus("Video storlek");
+    });
     window.addEventListener("resize", layoutCameraMedia);
     installFrameGestures(frame);
     installFrameGestures(liveFrame);
