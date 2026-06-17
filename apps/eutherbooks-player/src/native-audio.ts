@@ -37,6 +37,12 @@ const unavailableState: NativeAudioState = {
 let lastState: NativeAudioState = unavailableState;
 let checked = false;
 
+export type NativeQueueManifest = {
+  manifestUrl: string;
+  audioBaseUrl: string;
+  startIndex: number;
+};
+
 export function nativeAudioState(): NativeAudioState {
   return lastState;
 }
@@ -69,6 +75,7 @@ export async function playNativeAudioQueue(
   positionSeconds: number,
   title: string,
   subtitle: string,
+  manifest?: NativeQueueManifest | null,
 ): Promise<NativeAudioState> {
   try {
     const raw = await invokeNativeAudio("play_queue", {
@@ -77,6 +84,9 @@ export async function playNativeAudioQueue(
       positionSeconds,
       title,
       subtitle,
+      manifestUrl: manifest?.manifestUrl ?? "",
+      audioBaseUrl: manifest?.audioBaseUrl ?? "",
+      manifestStartIndex: manifest?.startIndex ?? urls.length,
     }, "native_audio_play_queue", {
       urls,
       index,
@@ -92,10 +102,13 @@ export async function playNativeAudioQueue(
   return lastState;
 }
 
-export async function updateNativeAudioQueue(urls: string[]): Promise<NativeAudioState> {
+export async function updateNativeAudioQueue(urls: string[], manifest?: NativeQueueManifest | null): Promise<NativeAudioState> {
   try {
     const raw = await invokeNativeAudio("update_queue", {
       urlsJson: JSON.stringify(urls),
+      manifestUrl: manifest?.manifestUrl ?? "",
+      audioBaseUrl: manifest?.audioBaseUrl ?? "",
+      manifestStartIndex: manifest?.startIndex ?? urls.length,
     }, "native_audio_status");
     lastState = parseState(raw);
   } catch (err) {

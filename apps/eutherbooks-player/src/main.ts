@@ -20,7 +20,7 @@ import {
   stopNativeAudio,
   updateNativeAudioQueue,
 } from "./native-audio";
-import type { NativeAudioState } from "./native-audio";
+import type { NativeAudioState, NativeQueueManifest } from "./native-audio";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
 import {
   bookmarkKey,
@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.22";
-const appBuild = "0.1.22-beta";
+const appVersion = "0.1.23";
+const appBuild = "0.1.23-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -475,6 +475,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     session.currentSeconds,
     book?.title ?? "EutherBooks",
     chapter ? chapterLabel(chapter) : "Audiobook",
+    nativeQueueManifest(),
   );
   nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
   applyNativeAudioState(state);
@@ -781,6 +782,25 @@ function nativeQueueUrlsWithNext(): string[] {
   return [...currentUrls, ...nextUrls];
 }
 
+function nativeQueueManifest(): NativeQueueManifest | null {
+  if (!session || !nextJob || nextJobKey !== selectedNextPlaybackKey()) {
+    return null;
+  }
+  const baseUrl = currentApiBaseUrl();
+  if (!baseUrl) {
+    return null;
+  }
+  return {
+    manifestUrl: `${baseUrl}/jobs/${encodeURIComponent(nextJob.id)}`,
+    audioBaseUrl: `${baseUrl}/audio/`,
+    startIndex: session.audioFiles.length,
+  };
+}
+
+function currentApiBaseUrl(): string {
+  return (endpointText || settings.serverUrl).replace(/\/+$/, "");
+}
+
 function selectedNextPlaybackKey(): string {
   const nextChapter = chapterAfter(selectedChapterIndex);
   return nextChapter ? selectedPlaybackKey(nextChapter.index) : "";
@@ -799,7 +819,7 @@ async function updateNativeQueue(reason: string): Promise<void> {
     return;
   }
   nativeQueuedUrlsKey = key;
-  const state = await updateNativeAudioQueue(urls);
+  const state = await updateNativeAudioQueue(urls, nativeQueueManifest());
   applyNativeAudioState(state);
   setPlaybackEvent(`Native queue updated: ${reason}`);
   updatePlayerShell();
