@@ -211,7 +211,7 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
   lastPlaybackEvent = "Generating current chapter";
   render();
   try {
-    currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, cancelExisting);
+    currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, selectedVoice(), cancelExisting);
     session = currentJob.audio_files.length ? sessionFromJob(currentJob, session) : null;
     applyBookmarkToSession();
     warmAudioCacheForSession();
@@ -273,7 +273,7 @@ async function ensureNextJob(): Promise<void> {
     return;
   }
   try {
-    nextJob = await api.createJob(selectedBookId, nextChapter.index, settings, false);
+    nextJob = await api.createJob(selectedBookId, nextChapter.index, settings, selectedVoice(), false, false);
     schedulePoll(1000);
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Could not queue next chapter";
@@ -591,7 +591,7 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
   return {
     event,
     app: "eutherbooks-player",
-    version: "0.1.16",
+    version: "0.1.17",
     endpoint: settings.serverUrl,
     username: settings.username,
     bookId: selectedBookId,
@@ -792,6 +792,10 @@ function warmAudioCacheForSession(): void {
 
 function updateAppMediaSession(): void {
   mediaSessionStatus = updateMediaSession(selectedBook(), selectedChapter(), session, !isPlaybackPaused());
+}
+
+function selectedVoice(): Voice | null {
+  return voices.find((voice) => voice.id === settings.voiceId) ?? null;
 }
 
 function render(): void {

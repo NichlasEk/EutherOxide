@@ -57,7 +57,15 @@ export class EutherBooksApi {
     return this.json<Job>(`/jobs/${encodeURIComponent(jobId)}`);
   }
 
-  async createJob(bookId: string, chapterIndex: number, settings: AppSettings, cancelExisting = true): Promise<Job> {
+  async createJob(
+    bookId: string,
+    chapterIndex: number,
+    settings: AppSettings,
+    voice: Voice | null,
+    cancelExisting = true,
+    forceRegenerate = true,
+  ): Promise<Job> {
+    const options = jobOptions(settings, voice);
     return this.json<Job>(`/books/${encodeURIComponent(bookId)}/tts`, {
       method: "POST",
       body: JSON.stringify({
@@ -67,6 +75,8 @@ export class EutherBooksApi {
         model_backend: settings.modelBackend,
         owner: "eutherbooks-player",
         cancel_existing: cancelExisting,
+        force_regenerate: forceRegenerate,
+        ...options,
       }),
     });
   }
@@ -125,6 +135,28 @@ function hostBaseUrl(baseUrl: string): string {
   url.search = "";
   url.hash = "";
   return url.toString().replace(/\/+$/, "");
+}
+
+function jobOptions(settings: AppSettings, voice: Voice | null): Record<string, number | string> {
+  const options: Record<string, number | string> = {};
+  if (typeof voice?.default_length_scale === "number") {
+    options.length_scale = voice.default_length_scale;
+  }
+  if (typeof voice?.default_seed === "number") {
+    options.seed = voice.default_seed;
+  }
+  if (settings.modelBackend === "dots.tts-mf" || settings.modelBackend === "dots.tts-soar") {
+    options.cfg_value = 2.8;
+    options.inference_timesteps = 13;
+    options.dots_template_name = "tts";
+    options.dots_ode_method = "euler";
+    options.dots_num_steps = settings.modelBackend === "dots.tts-mf" ? 4 : 10;
+    options.dots_guidance_scale = 1.2;
+    options.dots_speaker_scale = 1.5;
+    options.dots_max_generate_length = 500;
+    options.max_chunk_chars = 520;
+  }
+  return options;
 }
 
 function hostReportCandidates(baseUrl: string): string[] {
