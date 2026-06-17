@@ -59,6 +59,8 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
+const CAMERA_ADMIN_PATH: &str = "/camera-admin";
+const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -935,6 +937,8 @@ struct HostUser {
     can_upload_roms: bool,
     can_manage_library: bool,
     can_award_eutherium: bool,
+    can_camera_admin: bool,
+    camera_rotation_degrees: u16,
     euthersync_media_backup: Option<bool>,
     euthersync_feed_post: Option<bool>,
 }
@@ -947,6 +951,7 @@ struct HostPermissions {
     can_upload_roms: bool,
     can_manage_library: bool,
     can_award_eutherium: bool,
+    can_camera_admin: bool,
 }
 
 struct HostSession {
@@ -1454,6 +1459,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
         && !is_eutherbooks_proxy_path(path)
+        && !is_camera_frigate_proxy_path(path)
         && !app_token_request
         && !valid_csrf_token(state, &request)?
     {
@@ -1520,6 +1526,30 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|err| invalid_request(err.to_string()))?;
             save_host_user_preferences(&user, preferences)?;
             send_json(stream, &read_host_user_preferences(&user)?)
+        }
+        ("GET", "/api/camera/settings") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &host_camera_settings(state, &user)?)
+        }
+        ("POST", "/api/camera/settings") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let form =
+                parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
+            let rotation_degrees = form_value(&form, "rotation_degrees")
+                .or_else(|| form_value(&form, "rotationDegrees"))
+                .unwrap_or("0")
+                .parse::<i32>()
+                .map_err(|_| invalid_request("invalid camera rotation"))?;
+            send_json(
+                stream,
+                &set_host_camera_rotation(state, &user, rotation_degrees)?,
+            )
         }
         ("POST", "/api/user/eutherbooks/voice-sample") => {
             let user = require_host_user(state, &request)?;
@@ -2113,6 +2143,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 can_upload_roms: form_bool(&form, "can_upload_roms"),
                 can_manage_library: form_bool(&form, "can_manage_library"),
                 can_award_eutherium: form_bool(&form, "can_award_eutherium"),
+                can_camera_admin: form_bool(&form, "can_camera_admin"),
             };
             set_host_user_permissions(state, &username, permissions)?;
             send_json(stream, &host_user_list(state)?)
@@ -2136,7 +2167,24 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherbooks_audio_stream_path(path) => {
             proxy_eutherbooks_request(stream, &request)
         }
+        ("GET", CAMERA_ADMIN_PATH) => {
+            let Some(user) = authenticated_user(state, &request)? else {
+                return send_login_page(stream, None);
+            };
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_camera_admin_page(stream)
+        }
         _ => {
+            if is_camera_frigate_proxy_path(path) {
+                let user = require_host_user(state, &request)?;
+                if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin)
+                {
+                    return send_error(stream, 403, &err.to_string());
+                }
+                return proxy_camera_frigate_request(stream, &request);
+            }
             if is_eutherbooks_proxy_path(path) {
                 let user = require_host_user_or_app(state, &request)?;
                 if eutherbooks_route_requires_manage_library(path, &request.method) {
@@ -2157,6 +2205,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             };
             if request.method != "GET"
                 && !is_eutherbooks_proxy_path(path)
+                && !is_camera_frigate_proxy_path(path)
                 && !valid_csrf_token(state, &request)?
             {
                 return send_error(stream, 403, "csrf token required");
@@ -2749,6 +2798,7 @@ enum HostPermission {
     LaunchRoms,
     UploadRoms,
     ManageLibrary,
+    CameraAdmin,
 }
 
 fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermissions> {
@@ -2766,6 +2816,7 @@ fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermiss
             can_upload_roms: false,
             can_manage_library: false,
             can_award_eutherium: false,
+            can_camera_admin: false,
         });
     };
     Ok(host_permissions_for_user(user))
@@ -2779,6 +2830,7 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
             can_upload_roms: true,
             can_manage_library: true,
             can_award_eutherium: true,
+            can_camera_admin: true,
         };
     }
     HostPermissions {
@@ -2787,6 +2839,7 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
         can_upload_roms: user.can_upload_roms,
         can_manage_library: user.can_manage_library,
         can_award_eutherium: user.can_award_eutherium,
+        can_camera_admin: user.can_camera_admin,
     }
 }
 
@@ -2801,6 +2854,7 @@ fn require_host_permission(
         HostPermission::LaunchRoms => permissions.can_launch_roms,
         HostPermission::UploadRoms => permissions.can_upload_roms,
         HostPermission::ManageLibrary => permissions.can_manage_library,
+        HostPermission::CameraAdmin => permissions.can_camera_admin,
     };
     if allowed {
         Ok(())
@@ -3007,6 +3061,13 @@ fn eutherbooks_route_requires_manage_library(path: &str, method: &str) -> bool {
 
 fn is_eutherbooks_proxy_path(path: &str) -> bool {
     path == "/eutherbooks" || path.starts_with("/eutherbooks/")
+}
+
+fn is_camera_frigate_proxy_path(path: &str) -> bool {
+    path == CAMERA_FRIGATE_PROXY_PREFIX
+        || path
+            .strip_prefix(CAMERA_FRIGATE_PROXY_PREFIX)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn is_eutherbooks_audio_stream_path(path: &str) -> bool {
@@ -6854,6 +6915,8 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         can_upload_roms: false,
         can_manage_library: false,
         can_award_eutherium: false,
+        can_camera_admin: false,
+        camera_rotation_degrees: 0,
         euthersync_media_backup: Some(false),
         euthersync_feed_post: Some(true),
     });
@@ -6930,6 +6993,7 @@ fn set_host_user_permissions(
     user.can_upload_roms = permissions.can_upload_roms;
     user.can_manage_library = permissions.can_manage_library;
     user.can_award_eutherium = permissions.can_award_eutherium;
+    user.can_camera_admin = permissions.can_camera_admin;
     save_host_users(&users)
 }
 
@@ -7434,6 +7498,228 @@ fn eutherbooks_upstream_path(path: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("/");
     stripped.to_string()
+}
+
+fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if !matches!(
+        request.method.as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+    ) {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_base =
+        env::var("EUTHERSIGHT_FRIGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15000".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherSight camera upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let upstream_path = camera_frigate_upstream_path(&request.path);
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, upstream_path, upstream_base
+    )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    io::copy(&mut upstream, stream)?;
+    Ok(())
+}
+
+fn camera_frigate_upstream_path(path: &str) -> String {
+    let stripped = path
+        .strip_prefix(CAMERA_FRIGATE_PROXY_PREFIX)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/");
+    stripped.to_string()
+}
+
+fn host_camera_settings(state: &HostState, username: &str) -> io::Result<serde_json::Value> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let rotation_degrees = users
+        .iter()
+        .find(|user| user.name == username)
+        .map(|user| normalize_camera_rotation(user.camera_rotation_degrees as i32))
+        .unwrap_or(0);
+    Ok(serde_json::json!({
+        "rotationDegrees": rotation_degrees,
+    }))
+}
+
+fn set_host_camera_rotation(
+    state: &HostState,
+    username: &str,
+    rotation_degrees: i32,
+) -> io::Result<serde_json::Value> {
+    let rotation_degrees = normalize_camera_rotation(rotation_degrees);
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let user = users
+        .iter_mut()
+        .find(|user| user.name == username)
+        .ok_or_else(|| invalid_request("unknown user"))?;
+    user.camera_rotation_degrees = rotation_degrees;
+    save_host_users(&users)?;
+    Ok(serde_json::json!({
+        "rotationDegrees": rotation_degrees,
+    }))
+}
+
+fn normalize_camera_rotation(rotation_degrees: i32) -> u16 {
+    match rotation_degrees.rem_euclid(360) {
+        0 => 0,
+        90 => 90,
+        180 => 180,
+        270 => 270,
+        other => ((other + 45) / 90 * 90).rem_euclid(360) as u16,
+    }
+}
+
+fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
+    let body = r#"<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EutherSight Camera Admin</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #090b0f; color: #eef3f5; }
+    body { margin: 0; min-height: 100vh; background: #090b0f; }
+    main { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 32px; display: grid; gap: 16px; }
+    header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+    h1 { margin: 0; font-size: clamp(1.4rem, 3vw, 2.1rem); }
+    p { margin: 0; color: #a9b8c2; }
+    a { color: #96d7ff; font-weight: 800; }
+    .panel { border: 1px solid rgba(180,205,218,.22); border-radius: 8px; background: #111820; overflow: hidden; }
+    .panel > div { padding: 12px 14px; display: flex; justify-content: space-between; gap: 12px; align-items: center; border-bottom: 1px solid rgba(180,205,218,.16); }
+    .panel-head { flex-wrap: wrap; }
+    .camera-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+    button, .launch-card a { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); background: #101722; color: #bfe8ff; font: inherit; font-weight: 800; text-decoration: none; }
+    button:active { transform: translateY(1px); }
+    .snapshot-frame { display: grid; place-items: center; min-height: min(70vh, 720px); overflow: hidden; background: #05070a; }
+    img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; transform: rotate(var(--camera-rotation, 0deg)); transition: transform .16s ease; }
+    .snapshot-frame[data-rotation="90"] img, .snapshot-frame[data-rotation="270"] img { max-width: 70vh; max-height: calc(100vw - 48px); }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
+    .launch-card { padding: 18px; display: grid; gap: 10px; }
+    .launch-card p { max-width: 68ch; }
+    @media (max-width: 640px) {
+      main { width: min(100vw - 24px, 1180px); padding-top: 18px; }
+      header { align-items: flex-start; }
+      .panel > div { align-items: flex-start; }
+      .camera-toolbar { width: 100%; justify-content: space-between; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>EutherSight Camera Admin</h1>
+        <p>Skyddad via EutherHost-behörigheten camera_admin.</p>
+      </div>
+      <nav class="actions">
+        <a href="/">EutherHost</a>
+        <a href="/api/camera/frigate/" target="_blank" rel="noreferrer">Frigate</a>
+      </nav>
+    </header>
+    <section class="panel">
+      <div class="panel-head">
+        <strong>yard</strong>
+        <span>Snapshot refresh varannan sekund</span>
+        <span class="camera-toolbar">
+          <span id="rotation-status">Rotation 0 grader</span>
+          <button id="rotate-camera" type="button">Rotera 90 grader</button>
+        </span>
+      </div>
+      <figure id="snapshot-frame" class="snapshot-frame" data-rotation="0">
+        <img id="yard-live" alt="yard camera snapshot" src="/api/camera/frigate/api/yard/latest.jpg" />
+      </figure>
+    </section>
+    <section class="panel">
+      <div><strong>Frigate admin</strong><span>Proxy via serverns lokala tunnel</span></div>
+      <section class="launch-card">
+        <p>Frigate-webben öppnas separat. Kamerabilden ovan är EutherHost-vyn som fungerar direkt i mobilen.</p>
+        <a href="/api/camera/frigate/" target="_blank" rel="noreferrer">Öppna Frigate</a>
+      </section>
+    </section>
+  </main>
+  <script>
+    const live = document.getElementById("yard-live");
+    const frame = document.getElementById("snapshot-frame");
+    const rotate = document.getElementById("rotate-camera");
+    const rotationStatus = document.getElementById("rotation-status");
+    let csrfToken = "";
+    let rotationDegrees = 0;
+
+    function applyRotation(value) {
+      rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
+      frame.dataset.rotation = String(rotationDegrees);
+      frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
+      rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
+    }
+
+    async function loadCameraSettings() {
+      const auth = await fetch("/api/auth/status", { credentials: "same-origin" });
+      if (auth.ok) {
+        const authPayload = await auth.json();
+        csrfToken = authPayload.csrfToken || "";
+      }
+      const response = await fetch("/api/camera/settings", { credentials: "same-origin" });
+      if (!response.ok) return;
+      const settings = await response.json();
+      applyRotation(settings.rotationDegrees);
+    }
+
+    rotate.addEventListener("click", async () => {
+      const nextRotation = (rotationDegrees + 90) % 360;
+      applyRotation(nextRotation);
+      const body = new URLSearchParams({ rotation_degrees: String(nextRotation) });
+      const response = await fetch("/api/camera/settings", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-CSRF-Token": csrfToken,
+        },
+        body,
+      });
+      if (response.ok) {
+        const settings = await response.json();
+        applyRotation(settings.rotationDegrees);
+      }
+    });
+
+    setInterval(() => {
+      live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
+    }, 2000);
+    loadCameraSettings().catch(() => {});
+  </script>
+</body>
+</html>"#;
+    send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
 }
 
 fn resolve_host_static_path(path: &str) -> io::Result<PathBuf> {
@@ -10568,6 +10854,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut can_upload_roms = false;
     let mut can_manage_library = false;
     let mut can_award_eutherium = false;
+    let mut can_camera_admin = false;
+    let mut camera_rotation_degrees = 0;
     let mut euthersync_media_backup = None;
     let mut euthersync_feed_post = None;
     for line in contents.lines().map(str::trim) {
@@ -10590,6 +10878,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_upload_roms,
                     can_manage_library,
                     can_award_eutherium,
+                    can_camera_admin,
+                    camera_rotation_degrees,
                     euthersync_media_backup,
                     euthersync_feed_post,
                 });
@@ -10603,6 +10893,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_upload_roms = false;
             can_manage_library = false;
             can_award_eutherium = false;
+            can_camera_admin = false;
+            camera_rotation_degrees = 0;
             euthersync_media_backup = None;
             euthersync_feed_post = None;
             continue;
@@ -10632,6 +10924,10 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_manage_library = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "can_award_eutherium") {
             can_award_eutherium = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_camera_admin") {
+            can_camera_admin = value;
+        } else if let Some(value) = parse_toml_u16_assignment(line, "camera_rotation_degrees") {
+            camera_rotation_degrees = normalize_camera_rotation(value as i32);
         } else if let Some(value) = parse_toml_bool_assignment(line, "euthersync_media_backup") {
             euthersync_media_backup = Some(value);
         } else if let Some(value) = parse_toml_bool_assignment(line, "euthersync_feed_post") {
@@ -10652,6 +10948,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_upload_roms,
             can_manage_library,
             can_award_eutherium,
+            can_camera_admin,
+            camera_rotation_degrees,
             euthersync_media_backup,
             euthersync_feed_post,
         });
@@ -10701,6 +10999,11 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
         contents.push_str(&format!(
             "can_award_eutherium = {}\n",
             user.can_award_eutherium
+        ));
+        contents.push_str(&format!("can_camera_admin = {}\n", user.can_camera_admin));
+        contents.push_str(&format!(
+            "camera_rotation_degrees = {}\n",
+            user.camera_rotation_degrees
         ));
         if let Some(euthersync_media_backup) = user.euthersync_media_backup {
             contents.push_str(&format!(
@@ -11254,6 +11557,11 @@ fn parse_toml_assignment(line: &str, key: &str) -> Option<String> {
 fn parse_toml_bool_assignment(line: &str, key: &str) -> Option<bool> {
     let (name, value) = line.split_once('=')?;
     (name.trim() == key).then(|| matches!(value.trim(), "true" | "1"))
+}
+
+fn parse_toml_u16_assignment(line: &str, key: &str) -> Option<u16> {
+    let (name, value) = line.split_once('=')?;
+    (name.trim() == key).then(|| value.trim().parse::<u16>().ok())?
 }
 
 fn parse_toml_u64(contents: &str, key: &str) -> Option<u64> {
