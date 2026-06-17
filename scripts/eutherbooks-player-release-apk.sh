@@ -96,6 +96,16 @@ object NativeAudioBridge {
     }
 
     @JvmStatic
+    fun updateQueue(context: Context, urlsJson: String): String {
+        context.applicationContext.startService(
+            Intent(context.applicationContext, NativeAudioService::class.java)
+                .setAction(NativeAudioService.ACTION_UPDATE_QUEUE)
+                .putExtra(NativeAudioService.EXTRA_URLS_JSON, urlsJson)
+        )
+        return NativeAudioService.stateJson("Native queue update requested")
+    }
+
+    @JvmStatic
     fun pause(context: Context): String {
         context.applicationContext.startService(Intent(context.applicationContext, NativeAudioService::class.java).setAction(NativeAudioService.ACTION_PAUSE))
         return NativeAudioService.stateJson("Native pause requested")
@@ -152,6 +162,11 @@ class NativeAudioSeekArgs {
 }
 
 @InvokeArg
+class NativeAudioUpdateQueueArgs {
+    lateinit var urlsJson: String
+}
+
+@InvokeArg
 class NativeAudioWakeLockArgs {
     var enabled: Boolean = false
 }
@@ -185,6 +200,21 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     @Command
     fun playQueue(invoke: Invoke) {
         play_queue(invoke)
+    }
+
+    @Command
+    fun update_queue(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(NativeAudioUpdateQueueArgs::class.java)
+            resolveState(invoke, NativeAudioBridge.updateQueue(activity, args.urlsJson))
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun updateQueue(invoke: Invoke) {
+        update_queue(invoke)
     }
 
     @Command
@@ -310,6 +340,7 @@ class NativeAudioService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_PLAY_QUEUE -> handlePlayQueue(intent)
+            ACTION_UPDATE_QUEUE -> handleUpdateQueue(intent)
             ACTION_PAUSE -> handlePause()
             ACTION_RESUME -> handleResume()
             ACTION_STOP -> handleStop()
@@ -375,6 +406,30 @@ class NativeAudioService : Service() {
             lastEvent = "Native playback paused"
         }
         releasePlaybackLocks()
+        updatePlaybackState()
+        updateNotification()
+    }
+
+    private fun handleUpdateQueue(intent: Intent) {
+        val urls = parseUrls(intent.getStringExtra(EXTRA_URLS_JSON).orEmpty())
+        synchronized(lock) {
+            if (urls.isEmpty() || !active) {
+                lastEvent = "Native queue update ignored"
+                return
+            }
+            val currentUrl = queue.getOrNull(index)
+            val replacementUrl = urls.getOrNull(index)
+            if (!currentUrl.isNullOrBlank() && currentUrl != replacementUrl) {
+                lastEvent = "Native queue update rejected"
+                return
+            }
+            if (urls.size >= queue.size) {
+                queue = urls
+                lastEvent = "Native queue extended to ${urls.size} parts"
+            } else {
+                lastEvent = "Native queue update ignored"
+            }
+        }
         updatePlaybackState()
         updateNotification()
     }
@@ -788,6 +843,7 @@ class NativeAudioService : Service() {
 
     companion object {
         const val ACTION_PLAY_QUEUE = "com.nichlasek.eutherbooksplayer.PLAY_QUEUE"
+        const val ACTION_UPDATE_QUEUE = "com.nichlasek.eutherbooksplayer.UPDATE_QUEUE"
         const val ACTION_PAUSE = "com.nichlasek.eutherbooksplayer.PAUSE"
         const val ACTION_RESUME = "com.nichlasek.eutherbooksplayer.RESUME"
         const val ACTION_STOP = "com.nichlasek.eutherbooksplayer.STOP"

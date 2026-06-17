@@ -6,6 +6,8 @@ fn main() {
                 .commands(&[
                     "play_queue",
                     "playQueue",
+                    "update_queue",
+                    "updateQueue",
                     "pause",
                     "stop",
                     "seek",

@@ -82,6 +82,19 @@ export async function playNativeAudioQueue(
   return lastState;
 }
 
+export async function updateNativeAudioQueue(urls: string[]): Promise<NativeAudioState> {
+  try {
+    const raw = await invokeNativeAudio("update_queue", {
+      urlsJson: JSON.stringify(urls),
+    }, "native_audio_status");
+    lastState = parseState(raw);
+  } catch (err) {
+    lastState = failedState("update_queue", err);
+  }
+  checked = true;
+  return lastState;
+}
+
 export async function pauseNativeAudio(): Promise<NativeAudioState> {
   try {
     lastState = parseState(await invokeNativeAudio("pause", {}, "native_audio_pause"));
@@ -155,6 +168,9 @@ async function invokeNativeAudio(
 function pluginCommandAliases(command: string): string[] {
   if (command === "play_queue") {
     return ["play_queue", "playQueue"];
+  }
+  if (command === "update_queue") {
+    return ["update_queue", "updateQueue"];
   }
   return [command];
 }
