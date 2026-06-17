@@ -428,11 +428,14 @@ class NativeAudioService : Service() {
 
     private fun handleUpdateQueue(intent: Intent) {
         val urls = parseUrls(intent.getStringExtra(EXTRA_URLS_JSON).orEmpty())
+        var shouldResumeFromBufferedEnd = false
         synchronized(lock) {
             if (urls.isEmpty() || !active) {
                 lastEvent = "Native queue update ignored"
                 return
             }
+            val oldSize = queue.size
+            val waitingAtEnd = !playing && !ended && index >= oldSize
             val currentUrl = queue.getOrNull(index)
             val replacementUrl = urls.getOrNull(index)
             if (!currentUrl.isNullOrBlank() && currentUrl != replacementUrl) {
@@ -442,9 +445,19 @@ class NativeAudioService : Service() {
             if (urls.size >= queue.size) {
                 queue = urls
                 lastEvent = "Native queue extended to ${urls.size} parts"
+                if (waitingAtEnd && urls.size > oldSize) {
+                    index = oldSize
+                    positionMs = 0L
+                    durationMs = 0L
+                    shouldResumeFromBufferedEnd = true
+                }
             } else {
                 lastEvent = "Native queue update ignored"
             }
+        }
+        if (shouldResumeFromBufferedEnd) {
+            playCurrent(0L)
+            return
         }
         updatePlaybackState()
         updateNotification()
@@ -565,8 +578,24 @@ class NativeAudioService : Service() {
             }
             playCurrent(0L)
         } else {
-            markEnded()
+            bufferAtQueueEnd(nextIndex)
         }
+    }
+
+    private fun bufferAtQueueEnd(nextIndex: Int) {
+        releasePlayer()
+        synchronized(lock) {
+            index = nextIndex
+            positionMs = 0L
+            durationMs = 0L
+            active = true
+            playing = false
+            ended = false
+            lastEvent = "Native buffering for more audio"
+        }
+        acquirePlaybackLocks()
+        updatePlaybackState()
+        updateNotification()
     }
 
     private fun markEnded() {

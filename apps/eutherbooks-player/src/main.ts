@@ -238,6 +238,7 @@ async function pollJobs(): Promise<void> {
       currentJob = await api.job(currentJob.id);
       session = sessionFromJob(currentJob, session);
       warmAudioCacheForSession();
+      void updateNativeQueue("poll-current");
       if (settings.autoPlay && !userPausedPlayback && isPlaybackPaused() && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
         await playFromSession("auto");
       }
@@ -246,7 +247,7 @@ async function pollJobs(): Promise<void> {
     if (nextJob) {
       nextJob = await api.job(nextJob.id);
       warmAudioCacheForJob(nextJob);
-      void updateNativeQueueForNextJob("poll-next");
+      void updateNativeQueue("poll-next");
     }
     statusText = currentJob ? currentJob.progress_label || currentJob.status : "Ready";
   } catch (err) {
@@ -308,7 +309,7 @@ async function ensureNextJob(): Promise<void> {
     nextJob = await api.createJob(selectedBookId, nextChapter.index, settings, selectedVoice(), false, false);
     nextJobKey = targetKey;
     warmAudioCacheForJob(nextJob);
-    void updateNativeQueueForNextJob("queue-next");
+    void updateNativeQueue("queue-next");
     lastPlaybackEvent = `Queued next: ${chapterLabel(nextChapter)}`;
     schedulePoll(1000);
   } catch (err) {
@@ -679,12 +680,12 @@ function selectedNextPlaybackKey(): string {
   return nextChapter ? selectedPlaybackKey(nextChapter.index) : "";
 }
 
-async function updateNativeQueueForNextJob(reason: string): Promise<void> {
-  if (!nativePlaybackActive || !session || !nextJob || nextJob.audio_files.length === 0 || nextJobKey !== selectedNextPlaybackKey()) {
+async function updateNativeQueue(reason: string): Promise<void> {
+  if (!nativePlaybackActive || !session) {
     return;
   }
   const urls = nativeQueueUrlsWithNext();
-  if (urls.length <= session.audioFiles.length) {
+  if (urls.length === 0) {
     return;
   }
   const key = urls.join("\n");
@@ -694,7 +695,7 @@ async function updateNativeQueueForNextJob(reason: string): Promise<void> {
   nativeQueuedUrlsKey = key;
   const state = await updateNativeAudioQueue(urls);
   applyNativeAudioState(state);
-  lastPlaybackEvent = `Native queue extended: ${reason}`;
+  lastPlaybackEvent = `Native queue updated: ${reason}`;
   updatePlayerShell();
 }
 
