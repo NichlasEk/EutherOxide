@@ -38,7 +38,7 @@ let lastState: NativeAudioState = unavailableState;
 let checked = false;
 
 export type NativeQueueManifest = {
-  manifestUrl: string;
+  manifestUrls: string[];
   audioBaseUrl: string;
   startIndex: number;
 };
@@ -84,7 +84,7 @@ export async function playNativeAudioQueue(
       positionSeconds,
       title,
       subtitle,
-      manifestUrl: manifest?.manifestUrl ?? "",
+      manifestUrlsJson: JSON.stringify(manifest?.manifestUrls ?? []),
       audioBaseUrl: manifest?.audioBaseUrl ?? "",
       manifestStartIndex: manifest?.startIndex ?? urls.length,
     }, "native_audio_play_queue", {
@@ -106,7 +106,7 @@ export async function updateNativeAudioQueue(urls: string[], manifest?: NativeQu
   try {
     const raw = await invokeNativeAudio("update_queue", {
       urlsJson: JSON.stringify(urls),
-      manifestUrl: manifest?.manifestUrl ?? "",
+      manifestUrlsJson: JSON.stringify(manifest?.manifestUrls ?? []),
       audioBaseUrl: manifest?.audioBaseUrl ?? "",
       manifestStartIndex: manifest?.startIndex ?? urls.length,
     }, "native_audio_status");

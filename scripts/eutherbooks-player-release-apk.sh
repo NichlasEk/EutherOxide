@@ -76,14 +76,14 @@ import androidx.core.content.ContextCompat
 
 object NativeAudioBridge {
     @JvmStatic
-    fun playQueue(context: Context, urlsJson: String, index: Int, positionSeconds: Double, title: String, subtitle: String, manifestUrl: String, audioBaseUrl: String, manifestStartIndex: Int): String {
+    fun playQueue(context: Context, urlsJson: String, index: Int, positionSeconds: Double, title: String, subtitle: String, manifestUrlsJson: String, audioBaseUrl: String, manifestStartIndex: Int): String {
         NativeAudioService.prepareQueueState(
             urlsJson,
             index,
             (positionSeconds.coerceAtLeast(0.0) * 1000.0).toLong(),
             title,
             subtitle,
-            manifestUrl,
+            manifestUrlsJson,
             audioBaseUrl,
             manifestStartIndex
         )
@@ -94,7 +94,7 @@ object NativeAudioBridge {
             .putExtra(NativeAudioService.EXTRA_POSITION_MS, (positionSeconds.coerceAtLeast(0.0) * 1000.0).toLong())
             .putExtra(NativeAudioService.EXTRA_TITLE, title)
             .putExtra(NativeAudioService.EXTRA_SUBTITLE, subtitle)
-            .putExtra(NativeAudioService.EXTRA_MANIFEST_URL, manifestUrl)
+            .putExtra(NativeAudioService.EXTRA_MANIFEST_URLS_JSON, manifestUrlsJson)
             .putExtra(NativeAudioService.EXTRA_AUDIO_BASE_URL, audioBaseUrl)
             .putExtra(NativeAudioService.EXTRA_MANIFEST_START_INDEX, manifestStartIndex)
         ContextCompat.startForegroundService(context.applicationContext, intent)
@@ -102,12 +102,12 @@ object NativeAudioBridge {
     }
 
     @JvmStatic
-    fun updateQueue(context: Context, urlsJson: String, manifestUrl: String, audioBaseUrl: String, manifestStartIndex: Int): String {
+    fun updateQueue(context: Context, urlsJson: String, manifestUrlsJson: String, audioBaseUrl: String, manifestStartIndex: Int): String {
         context.applicationContext.startService(
             Intent(context.applicationContext, NativeAudioService::class.java)
                 .setAction(NativeAudioService.ACTION_UPDATE_QUEUE)
                 .putExtra(NativeAudioService.EXTRA_URLS_JSON, urlsJson)
-                .putExtra(NativeAudioService.EXTRA_MANIFEST_URL, manifestUrl)
+                .putExtra(NativeAudioService.EXTRA_MANIFEST_URLS_JSON, manifestUrlsJson)
                 .putExtra(NativeAudioService.EXTRA_AUDIO_BASE_URL, audioBaseUrl)
                 .putExtra(NativeAudioService.EXTRA_MANIFEST_START_INDEX, manifestStartIndex)
         )
@@ -162,7 +162,7 @@ class NativeAudioPlayQueueArgs {
     var positionSeconds: Double = 0.0
     var title: String = ""
     var subtitle: String = ""
-    var manifestUrl: String = ""
+    var manifestUrlsJson: String = ""
     var audioBaseUrl: String = ""
     var manifestStartIndex: Int = 0
 }
@@ -176,7 +176,7 @@ class NativeAudioSeekArgs {
 @InvokeArg
 class NativeAudioUpdateQueueArgs {
     lateinit var urlsJson: String
-    var manifestUrl: String = ""
+    var manifestUrlsJson: String = ""
     var audioBaseUrl: String = ""
     var manifestStartIndex: Int = 0
 }
@@ -205,7 +205,7 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
                     args.positionSeconds,
                     args.title,
                     args.subtitle,
-                    args.manifestUrl,
+                    args.manifestUrlsJson,
                     args.audioBaseUrl,
                     args.manifestStartIndex
                 )
@@ -224,7 +224,7 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     fun update_queue(invoke: Invoke) {
         try {
             val args = invoke.parseArgs(NativeAudioUpdateQueueArgs::class.java)
-            resolveState(invoke, NativeAudioBridge.updateQueue(activity, args.urlsJson, args.manifestUrl, args.audioBaseUrl, args.manifestStartIndex))
+            resolveState(invoke, NativeAudioBridge.updateQueue(activity, args.urlsJson, args.manifestUrlsJson, args.audioBaseUrl, args.manifestStartIndex))
         } catch (err: Exception) {
             invoke.reject(err.message ?: err.toString())
         }
@@ -704,31 +704,31 @@ class NativeAudioService : Service() {
 
     private fun rememberManifest(intent: Intent, defaultStartIndex: Int) {
         synchronized(lock) {
-            manifestUrl = intent.getStringExtra(EXTRA_MANIFEST_URL).orEmpty()
+            manifestUrls = parseUrlsFromJson(intent.getStringExtra(EXTRA_MANIFEST_URLS_JSON).orEmpty())
             audioBaseUrl = intent.getStringExtra(EXTRA_AUDIO_BASE_URL).orEmpty()
             manifestStartIndex = intent.getIntExtra(EXTRA_MANIFEST_START_INDEX, defaultStartIndex).coerceAtLeast(0)
         }
     }
 
     private fun startManifestPoll(waitingIndex: Int) {
-        val manifest: String
+        val manifests: List<String>
         val audioBase: String
         val startIndex: Int
         synchronized(lock) {
-            if (manifestPollActive || manifestUrl.isBlank() || audioBaseUrl.isBlank()) {
+            if (manifestPollActive || manifestUrls.isEmpty() || audioBaseUrl.isBlank()) {
                 return
             }
-            manifest = manifestUrl
+            manifests = manifestUrls
             audioBase = audioBaseUrl
             startIndex = manifestStartIndex.coerceAtLeast(0)
             manifestPollActive = true
-            lastEvent = "Native polling next chapter"
+            lastEvent = "Native polling next chapters"
             rememberEvent(lastEvent)
         }
         Thread {
             try {
                 repeat(120) {
-                    val fetched = fetchManifestAudioUrls(manifest, audioBase)
+                    val fetched = fetchMergedManifestAudioUrls(manifests, audioBase)
                     var shouldResume = false
                     synchronized(lock) {
                         val prefix = queue.take(startIndex.coerceAtMost(queue.size))
@@ -779,6 +779,18 @@ class NativeAudioService : Service() {
                 updateNotification()
             }
         }.start()
+    }
+
+    private fun fetchMergedManifestAudioUrls(manifests: List<String>, audioBase: String): List<String> {
+        val merged = mutableListOf<String>()
+        for (manifest in manifests) {
+            val fetched = fetchManifestAudioUrls(manifest, audioBase)
+            if (fetched.isEmpty()) {
+                break
+            }
+            merged.addAll(fetched)
+        }
+        return merged
     }
 
     private fun fetchManifestAudioUrls(manifest: String, audioBase: String): List<String> {
@@ -1180,7 +1192,7 @@ class NativeAudioService : Service() {
         const val EXTRA_POSITION_MS = "positionMs"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SUBTITLE = "subtitle"
-        const val EXTRA_MANIFEST_URL = "manifestUrl"
+        const val EXTRA_MANIFEST_URLS_JSON = "manifestUrlsJson"
         const val EXTRA_AUDIO_BASE_URL = "audioBaseUrl"
         const val EXTRA_MANIFEST_START_INDEX = "manifestStartIndex"
 
@@ -1196,7 +1208,7 @@ class NativeAudioService : Service() {
         private var ended = false
         private var title = "EutherBooks"
         private var subtitle = "Audiobook"
-        private var manifestUrl = ""
+        private var manifestUrls: List<String> = emptyList()
         private var audioBaseUrl = ""
         private var manifestStartIndex = 0
         private var manifestPollActive = false
@@ -1206,7 +1218,7 @@ class NativeAudioService : Service() {
         @Volatile private var currentService: NativeAudioService? = null
 
         @JvmStatic
-        fun prepareQueueState(urlsJson: String, startIndex: Int, startPositionMs: Long, nextTitle: String, nextSubtitle: String, nextManifestUrl: String, nextAudioBaseUrl: String, nextManifestStartIndex: Int) {
+        fun prepareQueueState(urlsJson: String, startIndex: Int, startPositionMs: Long, nextTitle: String, nextSubtitle: String, nextManifestUrlsJson: String, nextAudioBaseUrl: String, nextManifestStartIndex: Int) {
             val urls = parseUrlsFromJson(urlsJson)
             synchronized(lock) {
                 queue = urls
@@ -1218,7 +1230,7 @@ class NativeAudioService : Service() {
                 ended = false
                 title = nextTitle.ifBlank { "EutherBooks" }
                 subtitle = nextSubtitle.ifBlank { "Audiobook" }
-                manifestUrl = nextManifestUrl
+                manifestUrls = parseUrlsFromJson(nextManifestUrlsJson)
                 audioBaseUrl = nextAudioBaseUrl
                 manifestStartIndex = nextManifestStartIndex.coerceAtLeast(0)
                 manifestPollActive = false

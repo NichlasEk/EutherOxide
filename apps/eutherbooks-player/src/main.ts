@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.23";
-const appBuild = "0.1.23-beta";
+const appVersion = "0.1.24";
+const appBuild = "0.1.24-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -61,6 +61,8 @@ let chapterQuery = "";
 let currentJob: Job | null = null;
 let nextJob: Job | null = null;
 let nextJobKey = "";
+let secondNextJob: Job | null = null;
+let secondNextJobKey = "";
 let nextJobRequestInFlight = false;
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
@@ -82,6 +84,8 @@ let playbackWatchTimer: number | null = null;
 let fallbackRefreshRunning = false;
 let nativePlaybackActive = false;
 let nativeQueuedUrlsKey = "";
+let nativeQueueSessionStartIndex = 0;
+let nativeServiceQueuePrefix: string[] = [];
 let lastAutoBookmarkAt = 0;
 let lastBugReportKey = "";
 const audio = new Audio();
@@ -253,26 +257,28 @@ function attachExistingNextJob(jobs: Job[]): void {
   }
   const targetKey = playbackKey(selectedBookId, nextChapter.index, settings.modelBackend, settings.voiceId);
   if (nextJob && nextJobKey === targetKey && nextJob.status !== "failed") {
+    void ensureSecondNextJob("existing-next");
     return;
   }
-  const matching = jobs
-    .filter((job) =>
-      job.book_id === selectedBookId
-      && job.chapter_indexes.includes(nextChapter.index)
-      && job.voice === settings.voiceId
-      && job.tts_options?.model_backend === settings.modelBackend
-      && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
-    )
-    .reverse();
-  const playable = matching.find((job) => job.audio_files.length > 0);
-  const candidate = playable ?? matching[0];
+  const candidate = matchingJobForChapter(jobs, nextChapter.index);
   if (!candidate) {
     return;
   }
   nextJob = candidate;
   nextJobKey = targetKey;
   warmAudioCacheForJob(nextJob);
+  void ensureSecondNextJob("attach-next");
   void updateNativeQueue("attach-next");
+}
+
+function clearLookaheadQueue(): void {
+  nextJob = null;
+  nextJobKey = "";
+  secondNextJob = null;
+  secondNextJobKey = "";
+  nativeQueuedUrlsKey = "";
+  nativeQueueSessionStartIndex = 0;
+  nativeServiceQueuePrefix = [];
 }
 
 async function generateCurrentChapter(cancelExisting = true): Promise<void> {
@@ -280,8 +286,7 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
     return;
   }
   userPausedPlayback = false;
-  nextJob = null;
-  nextJobKey = "";
+  clearLookaheadQueue();
   stopPlayback(false);
   statusText = "Starting generation";
   setPlaybackEvent("Generating current chapter");
@@ -315,6 +320,12 @@ async function pollJobs(): Promise<void> {
       nextJob = await api.job(nextJob.id);
       warmAudioCacheForJob(nextJob);
       void updateNativeQueue("poll-next");
+      void ensureSecondNextJob("poll-next");
+    }
+    if (secondNextJob) {
+      secondNextJob = await api.job(secondNextJob.id);
+      warmAudioCacheForJob(secondNextJob);
+      void updateNativeQueue("poll-second-next");
     } else if (currentJob?.status === "done" && settings.autoNext) {
       void maybeEnsureNextAhead("poll-ready");
     }
@@ -334,7 +345,7 @@ async function pollJobs(): Promise<void> {
   render();
   if (currentJob && currentJob.status !== "done" && currentJob.status !== "failed") {
     schedulePoll(900);
-  } else if (nextJob && nextJob.status !== "done" && nextJob.status !== "failed") {
+  } else if ((nextJob && nextJob.status !== "done" && nextJob.status !== "failed") || (secondNextJob && secondNextJob.status !== "done" && secondNextJob.status !== "failed")) {
     schedulePoll(1400);
   }
 }
@@ -358,11 +369,11 @@ async function ensureNextJob(force = false): Promise<void> {
     return;
   }
   if (nextJob && nextJobKey === targetKey && nextJob.status !== "failed") {
+    void ensureSecondNextJob("existing-next");
     return;
   }
   if (nextJob && nextJobKey !== targetKey) {
-    nextJob = null;
-    nextJobKey = "";
+    clearLookaheadQueue();
   }
   if (currentJob.status !== "done") {
     if (force) {
@@ -390,12 +401,43 @@ async function ensureNextJob(force = false): Promise<void> {
     nextJobKey = targetKey;
     warmAudioCacheForJob(nextJob);
     void updateNativeQueue("queue-next");
+    void ensureSecondNextJob("queue-next");
     setPlaybackEvent(`Queued next: ${chapterLabel(nextChapter)}`);
     schedulePoll(1000);
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Could not queue next chapter";
   } finally {
     nextJobRequestInFlight = false;
+  }
+}
+
+async function ensureSecondNextJob(reason: string): Promise<void> {
+  if (!settings.autoNext || !selectedBookId || !nextJob || nextJob.status === "failed") {
+    return;
+  }
+  const nextChapterIndex = nextJob.chapter_indexes[0] ?? -1;
+  const secondChapter = chapterAfter(nextChapterIndex);
+  if (!secondChapter) {
+    return;
+  }
+  const targetKey = playbackKey(selectedBookId, secondChapter.index, settings.modelBackend, settings.voiceId);
+  if (secondNextJob && secondNextJobKey === targetKey && secondNextJob.status !== "failed") {
+    return;
+  }
+  if (secondNextJob && secondNextJobKey !== targetKey) {
+    secondNextJob = null;
+    secondNextJobKey = "";
+  }
+  try {
+    const jobs = await api.jobs();
+    allJobs = jobs;
+    const existing = matchingJobForChapter(jobs, secondChapter.index);
+    secondNextJob = existing ?? await api.createJob(selectedBookId, secondChapter.index, settings, selectedVoice(), false, false);
+    secondNextJobKey = targetKey;
+    warmAudioCacheForJob(secondNextJob);
+    void updateNativeQueue(`queue-second-next:${reason}`);
+  } catch (err) {
+    setPlaybackEvent(`Second prefetch held: ${err instanceof Error ? err.message : "failed"}`);
   }
 }
 
@@ -463,8 +505,10 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   await maybeEnsureNextAhead("native-play-start");
   const book = selectedBook();
   const chapter = selectedChapter();
-  const queue = nativeQueueUrlsWithNext();
+  nativeServiceQueuePrefix = [];
+  const queue = nativeQueueUrlsForService();
   nativeQueuedUrlsKey = queue.join("\n");
+  nativeQueueSessionStartIndex = 0;
   if (mode === "manual") {
     userPausedPlayback = false;
   }
@@ -566,8 +610,12 @@ async function playNextPartOrChapter(): Promise<void> {
     selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
     persistSelection();
     currentJob = nextJob;
-    nextJob = null;
+    nextJob = secondNextJob;
+    nextJobKey = secondNextJobKey;
+    secondNextJob = null;
+    secondNextJobKey = "";
     session = sessionFromJob(currentJob);
+    void ensureSecondNextJob("chapter-advanced");
     await playFromSession("auto");
     return;
   }
@@ -584,9 +632,7 @@ function selectChapter(index: number): void {
   selectedChapterIndex = index;
   userPausedPlayback = false;
   currentJob = null;
-  nextJob = null;
-  nextJobKey = "";
-  nativeQueuedUrlsKey = "";
+  clearLookaheadQueue();
   session = null;
   persistSelection();
   void refreshAll();
@@ -675,6 +721,7 @@ function stopPlayback(savePosition: boolean, manual = false): void {
   }
   if (!savePosition) {
     nativeQueuedUrlsKey = "";
+    nativeQueueSessionStartIndex = 0;
   }
   void setPlaybackWakeLock(false).then(() => {
     updatePlayerShell();
@@ -752,7 +799,7 @@ function hasEnoughDiskForAutoNext(): boolean {
 }
 
 function hasMoreImportantActiveJob(jobs: Job[]): boolean {
-  const allowedIds = new Set([currentJob?.id, nextJob?.id].filter(Boolean));
+  const allowedIds = new Set([currentJob?.id, nextJob?.id, secondNextJob?.id].filter(Boolean));
   const targetNextChapter = chapterAfter(selectedChapterIndex);
   const targetNextKey = targetNextChapter
     ? playbackKey(selectedBookId, targetNextChapter.index, settings.modelBackend, settings.voiceId)
@@ -779,7 +826,14 @@ function nativeQueueUrlsWithNext(): string[] {
   const nextUrls = nextJob && nextJobKey === selectedNextPlaybackKey()
     ? nextJob.audio_files.map((candidate) => api.audioUrl(candidate))
     : [];
-  return [...currentUrls, ...nextUrls];
+  const secondNextUrls = secondNextJob && secondNextJobKey === selectedSecondNextPlaybackKey()
+    ? secondNextJob.audio_files.map((candidate) => api.audioUrl(candidate))
+    : [];
+  return [...currentUrls, ...nextUrls, ...secondNextUrls];
+}
+
+function nativeQueueUrlsForService(): string[] {
+  return [...nativeServiceQueuePrefix, ...nativeQueueUrlsWithNext()];
 }
 
 function nativeQueueManifest(): NativeQueueManifest | null {
@@ -790,10 +844,14 @@ function nativeQueueManifest(): NativeQueueManifest | null {
   if (!baseUrl) {
     return null;
   }
+  const manifestUrls = [`${baseUrl}/jobs/${encodeURIComponent(nextJob.id)}`];
+  if (secondNextJob && secondNextJobKey === selectedSecondNextPlaybackKey()) {
+    manifestUrls.push(`${baseUrl}/jobs/${encodeURIComponent(secondNextJob.id)}`);
+  }
   return {
-    manifestUrl: `${baseUrl}/jobs/${encodeURIComponent(nextJob.id)}`,
+    manifestUrls,
     audioBaseUrl: `${baseUrl}/audio/`,
-    startIndex: session.audioFiles.length,
+    startIndex: nativeServiceQueuePrefix.length + session.audioFiles.length,
   };
 }
 
@@ -806,11 +864,30 @@ function selectedNextPlaybackKey(): string {
   return nextChapter ? selectedPlaybackKey(nextChapter.index) : "";
 }
 
+function selectedSecondNextPlaybackKey(): string {
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  const secondChapter = nextChapter ? chapterAfter(nextChapter.index) : undefined;
+  return secondChapter ? selectedPlaybackKey(secondChapter.index) : "";
+}
+
+function matchingJobForChapter(jobs: Job[], chapterIndex: number): Job | null {
+  const matching = jobs
+    .filter((job) =>
+      job.book_id === selectedBookId
+      && job.chapter_indexes.includes(chapterIndex)
+      && job.voice === settings.voiceId
+      && job.tts_options?.model_backend === settings.modelBackend
+      && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
+    )
+    .reverse();
+  return matching.find((job) => job.audio_files.length > 0) ?? matching[0] ?? null;
+}
+
 async function updateNativeQueue(reason: string): Promise<void> {
   if (!nativePlaybackActive || !session) {
     return;
   }
-  const urls = nativeQueueUrlsWithNext();
+  const urls = nativeQueueUrlsForService();
   if (urls.length === 0) {
     return;
   }
@@ -850,21 +927,26 @@ function applyNativeAudioState(state = nativeAudioState()): void {
     return;
   }
   const currentPartCount = session.audioFiles.length;
-  if (state.index >= currentPartCount && nextJob?.audio_files.length && nextJobKey === selectedNextPlaybackKey()) {
-    const nextIndex = Math.max(0, state.index - currentPartCount);
+  const relativeIndex = Math.max(0, state.index - nativeQueueSessionStartIndex);
+  if (relativeIndex >= currentPartCount && nextJob?.audio_files.length && nextJobKey === selectedNextPlaybackKey()) {
+    const nextIndex = Math.max(0, relativeIndex - currentPartCount);
+    nativeServiceQueuePrefix = nativeServiceQueuePrefix.concat(session.audioFiles.map((candidate) => api.audioUrl(candidate)));
+    nativeQueueSessionStartIndex += currentPartCount;
     selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
     persistSelection();
     currentJob = nextJob;
-    nextJob = null;
-    nextJobKey = "";
-    nativeQueuedUrlsKey = "";
+    nextJob = secondNextJob;
+    nextJobKey = secondNextJobKey;
+    secondNextJob = null;
+    secondNextJobKey = "";
     session = sessionFromJob(currentJob);
     session.currentIndex = Math.max(0, Math.min(nextIndex, Math.max(0, session.audioFiles.length - 1)));
     session.currentSeconds = Math.max(0, state.positionSeconds);
     setPlaybackEvent("Native advanced to next chapter");
+    void ensureSecondNextJob("native-advanced");
     return;
   }
-  session.currentIndex = Math.max(0, Math.min(state.index, Math.max(0, session.audioFiles.length - 1)));
+  session.currentIndex = Math.max(0, Math.min(relativeIndex, Math.max(0, session.audioFiles.length - 1)));
   session.currentSeconds = Math.max(0, state.positionSeconds);
 }
 
@@ -1400,9 +1482,7 @@ function bindUi(): void {
     chapterQuery = "";
     userPausedPlayback = false;
     currentJob = null;
-    nextJob = null;
-    nextJobKey = "";
-    nativeQueuedUrlsKey = "";
+    clearLookaheadQueue();
     session = null;
     persistSelection();
     void loadChapters().then(() => refreshAll());
@@ -1421,9 +1501,7 @@ function bindUi(): void {
     updateSettings({ ...settings, modelBackend: (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"] });
     userPausedPlayback = false;
     currentJob = null;
-    nextJob = null;
-    nextJobKey = "";
-    nativeQueuedUrlsKey = "";
+    clearLookaheadQueue();
     session = null;
     render();
   });
@@ -1431,9 +1509,7 @@ function bindUi(): void {
     updateSettings({ ...settings, voiceId: (event.currentTarget as HTMLSelectElement).value });
     userPausedPlayback = false;
     currentJob = null;
-    nextJob = null;
-    nextJobKey = "";
-    nativeQueuedUrlsKey = "";
+    clearLookaheadQueue();
     session = null;
     void refreshAll();
   });
