@@ -303,8 +303,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioFocusRequest
 import android.media.AudioAttributes
 import android.media.AudioManager
@@ -327,6 +329,17 @@ class NativeAudioService : Service() {
     private var mediaSession: MediaSession? = null
     private var playbackWakeLock: PowerManager.WakeLock? = null
     private var playbackWifiLock: WifiManager.WifiLock? = null
+    private var noisyReceiverRegistered = false
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                synchronized(lock) {
+                    lastEvent = "Paused because headphones disconnected"
+                }
+                handlePause()
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -352,6 +365,7 @@ class NativeAudioService : Service() {
     override fun onDestroy() {
         releasePlayer()
         releasePlaybackLocks()
+        unregisterNoisyReceiver()
         releaseAudioFocus()
         mediaSession?.isActive = false
         mediaSession?.release()
@@ -387,6 +401,7 @@ class NativeAudioService : Service() {
             return
         }
         acquirePlaybackLocks()
+        registerNoisyReceiver()
         requestAudioFocus()
         ensureMediaSession()
         startForeground(NOTIFICATION_ID, notification())
@@ -406,6 +421,7 @@ class NativeAudioService : Service() {
             lastEvent = "Native playback paused"
         }
         releasePlaybackLocks()
+        unregisterNoisyReceiver()
         updatePlaybackState()
         updateNotification()
     }
@@ -437,6 +453,7 @@ class NativeAudioService : Service() {
     private fun handleStop() {
         releasePlayer()
         releasePlaybackLocks()
+        unregisterNoisyReceiver()
         synchronized(lock) {
             active = false
             playing = false
@@ -561,6 +578,7 @@ class NativeAudioService : Service() {
             lastEvent = "Native queue ended"
         }
         releasePlaybackLocks()
+        unregisterNoisyReceiver()
         releaseAudioFocus()
         updatePlaybackState()
         updateNotification()
@@ -669,6 +687,7 @@ class NativeAudioService : Service() {
         if (current != null) {
             try {
                 acquirePlaybackLocks()
+                registerNoisyReceiver()
                 current.start()
                 synchronized(lock) {
                     active = true
@@ -692,6 +711,7 @@ class NativeAudioService : Service() {
         }
         requestAudioFocus()
         acquirePlaybackLocks()
+        registerNoisyReceiver()
         startForeground(NOTIFICATION_ID, notification())
         playCurrent(positionMs)
     }
@@ -800,6 +820,37 @@ class NativeAudioService : Service() {
         } catch (_err: Exception) {
         }
         playbackWakeLock = null
+    }
+
+    private fun registerNoisyReceiver() {
+        if (noisyReceiverRegistered) {
+            return
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(noisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(noisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+            }
+            noisyReceiverRegistered = true
+        } catch (err: Exception) {
+            synchronized(lock) {
+                error = "Noisy receiver failed: ${err.message ?: err.javaClass.simpleName}"
+                lastEvent = error
+            }
+        }
+    }
+
+    private fun unregisterNoisyReceiver() {
+        if (!noisyReceiverRegistered) {
+            return
+        }
+        try {
+            unregisterReceiver(noisyReceiver)
+        } catch (_err: Exception) {
+        }
+        noisyReceiverRegistered = false
     }
 
     private fun ensureChannel() {
