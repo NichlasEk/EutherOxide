@@ -1366,6 +1366,7 @@ function appMarkup(modelVoices: Voice[]): string {
             ${modelOption("dots.tts-mf", "Dots MF")}
             ${modelOption("dots.tts-soar", "Dots SOAR")}
             ${modelOption("voxcpm2", "VoxCPM2")}
+            ${modelOption("grapheneos-matcha-en", "GrapheneOS Matcha EN")}
           </select>
         </label>
         <label>

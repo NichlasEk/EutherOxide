@@ -22,7 +22,7 @@ export type Voice = {
   default_seed?: number | null;
 };
 
-export type ModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf";
+export type ModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf" | "grapheneos-matcha-en";
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | string;
 

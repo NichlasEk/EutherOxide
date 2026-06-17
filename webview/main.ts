@@ -539,7 +539,7 @@ type EutherBooksBookmark = {
   updated_at: number;
 };
 
-type EutherBooksModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf";
+type EutherBooksModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf" | "grapheneos-matcha-en";
 
 type EutherBooksVoice = {
   id: string;
@@ -8069,6 +8069,7 @@ function eutherBooksVoiceGroups(): Array<[string, EutherBooksVoice[]]> {
         { id: "dots-mf-own-en", label: "Dots MF own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-mf" },
         { id: "dots-soar-own-sv", label: "Dots SOAR own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "dots.tts-soar" },
         { id: "dots-soar-own-en", label: "Dots SOAR own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-soar" },
+        { id: "grapheneos-matcha-en", label: "GrapheneOS Matcha EN fallback", language: "en", backend: "eutherlink", path: "preset:grapheneos-matcha-en", model_backend: "grapheneos-matcha-en", default_length_scale: 1.0 },
         { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2" },
       ];
   const activeModel = selectedEutherBooksModelBackend;
@@ -8095,7 +8096,21 @@ function eutherBooksModelOptions(): string {
     `<option value="voxcpm2" ${active === "voxcpm2" ? "selected" : ""}>VoxCPM2</option>`,
     `<option value="dots.tts-mf" ${active === "dots.tts-mf" ? "selected" : ""}>Dots MF fast</option>`,
     `<option value="dots.tts-soar" ${active === "dots.tts-soar" ? "selected" : ""}>Dots SOAR quality</option>`,
+    `<option value="grapheneos-matcha-en" ${active === "grapheneos-matcha-en" ? "selected" : ""}>GrapheneOS Matcha EN</option>`,
   ].join("");
+}
+
+function eutherBooksModelLabel(modelBackend: EutherBooksModelBackend): string {
+  if (modelBackend === "dots.tts-mf") {
+    return "Dots MF";
+  }
+  if (modelBackend === "dots.tts-soar") {
+    return "Dots SOAR";
+  }
+  if (modelBackend === "grapheneos-matcha-en") {
+    return "GrapheneOS Matcha EN";
+  }
+  return "VoxCPM2";
 }
 
 function eutherBooksModelReadyMarkup(): string {
@@ -8104,7 +8119,7 @@ function eutherBooksModelReadyMarkup(): string {
     return `
       <div class="eutherbooks-model-ready">
         <span>Model</span>
-        <strong>VoxCPM2 selected</strong>
+        <strong>${escapeHtml(eutherBooksModelLabel(active))} selected</strong>
       </div>
     `;
   }
@@ -8143,7 +8158,7 @@ function eutherBooksLoadedDotsModelBackend(): EutherBooksModelBackend | null {
 
 function normalizeEutherBooksModelBackend(value: string): EutherBooksModelBackend {
   const normalized = value.trim().toLowerCase();
-  return normalized === "dots.tts-mf" || normalized === "dots.tts-soar" ? normalized : "voxcpm2";
+  return normalized === "dots.tts-mf" || normalized === "dots.tts-soar" || normalized === "grapheneos-matcha-en" ? normalized : "voxcpm2";
 }
 
 function eutherBooksIsDotsModel(value: string): boolean {
@@ -8170,10 +8185,16 @@ function eutherBooksBaseVoiceId(voiceId: string): string {
   if (lower.startsWith("dots-soar-")) {
     return normalized.slice("dots-soar-".length);
   }
+  if (lower.startsWith("grapheneos-matcha-")) {
+    return "grapheneos-matcha-en";
+  }
   return normalized;
 }
 
 function eutherBooksVoiceIdForModelBackend(baseVoiceId: string, modelBackend: EutherBooksModelBackend, language: string): string {
+  if (modelBackend === "grapheneos-matcha-en") {
+    return "grapheneos-matcha-en";
+  }
   const ownVoiceId = language === "en" ? "own-en" : "own-sv";
   const ownDotsVoiceId =
     modelBackend === "dots.tts-mf"
