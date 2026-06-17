@@ -8162,7 +8162,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         video.src = sourceObjectUrl;
       }
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      liveSocket = new WebSocket(`${proto}://${window.location.host}/api/camera/frigate/live/mse/api/ws?src=yard_main`);
+      liveSocket = new WebSocket(`${proto}://${window.location.host}/api/camera/frigate/live/mse/api/ws?src=yard_main_aac`);
       liveSocket.binaryType = "arraybuffer";
       let mseCodecsSent = false;
       const requestMseStream = () => {
@@ -8194,7 +8194,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
             sourceBuffer = mediaSource.addSourceBuffer(message.value);
             if (sourceBuffer.mode) sourceBuffer.mode = "segments";
             sourceBuffer.addEventListener("updateend", appendNextSegment);
-            updateLiveStatus("MSE buffer klar");
+            updateLiveStatus(`MSE ${message.value}`);
             video.play().catch(() => {});
           } catch {
             updateLiveStatus("MSE codec fel");
