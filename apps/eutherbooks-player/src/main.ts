@@ -26,6 +26,7 @@ import { AppSettings, Book, Bookmark, Chapter, Health, Job, PlaybackSession, Voi
 import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
+const minAutoNextFreeBytes = 512 * 1024 * 1024;
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -42,6 +43,8 @@ let selectedBookId = localStorage.getItem("eutherbooks-player-book") ?? "";
 let selectedChapterIndex = Number(localStorage.getItem("eutherbooks-player-chapter") ?? 0);
 let currentJob: Job | null = null;
 let nextJob: Job | null = null;
+let nextJobKey = "";
+let nextJobRequestInFlight = false;
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
 let endpointText = "";
@@ -74,6 +77,7 @@ audio.addEventListener("timeupdate", () => {
   maybeSaveAutoBookmark();
   updatePlayerShell();
   maybeAdvanceNearPartEnd();
+  void maybeEnsureNextAhead("timeupdate");
 });
 audio.addEventListener("error", () => {
   errorText = audio.error?.message || "Audio playback failed";
@@ -198,6 +202,7 @@ function attachExistingJob(jobs: Job[]): void {
     session = sessionFromJob(currentJob, session);
     applyBookmarkToSession();
     warmAudioCacheForSession();
+    void maybeEnsureNextAhead("attach");
   }
 }
 
@@ -206,6 +211,8 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
     return;
   }
   userPausedPlayback = false;
+  nextJob = null;
+  nextJobKey = "";
   stopPlayback(false);
   statusText = "Starting generation";
   lastPlaybackEvent = "Generating current chapter";
@@ -232,12 +239,11 @@ async function pollJobs(): Promise<void> {
       if (settings.autoPlay && !userPausedPlayback && isPlaybackPaused() && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
         await playFromSession("auto");
       }
-      if (settings.autoNext && currentJob.status === "done") {
-        void ensureNextJob();
-      }
+      void maybeEnsureNextAhead("poll-current");
     }
     if (nextJob) {
       nextJob = await api.job(nextJob.id);
+      warmAudioCacheForJob(nextJob);
     }
     statusText = currentJob ? currentJob.progress_label || currentJob.status : "Ready";
   } catch (err) {
@@ -269,15 +275,58 @@ function schedulePoll(delayMs: number): void {
 
 async function ensureNextJob(): Promise<void> {
   const nextChapter = chapterAfter(selectedChapterIndex);
-  if (!selectedBookId || !nextChapter || nextJob) {
+  const targetKey = playbackKey(selectedBookId, nextChapter?.index ?? -1, settings.modelBackend, settings.voiceId);
+  if (nextJobRequestInFlight || !settings.autoNext || !selectedBookId || !nextChapter || !currentJob || !sessionMatchesCurrentSelection()) {
     return;
   }
+  if (nextJob && nextJobKey === targetKey && nextJob.status !== "failed") {
+    return;
+  }
+  if (nextJob && nextJobKey !== targetKey) {
+    nextJob = null;
+    nextJobKey = "";
+  }
+  if (currentJob.status !== "done") {
+    return;
+  }
+  nextJobRequestInFlight = true;
   try {
+    health = await api.health();
+    if (!hasEnoughDiskForAutoNext()) {
+      statusText = "Auto-next held: low audio disk space";
+      return;
+    }
+    const jobs = await api.jobs();
+    if (hasMoreImportantActiveJob(jobs)) {
+      statusText = "Auto-next waiting for active speech job";
+      schedulePoll(1500);
+      return;
+    }
     nextJob = await api.createJob(selectedBookId, nextChapter.index, settings, selectedVoice(), false, false);
+    nextJobKey = targetKey;
+    warmAudioCacheForJob(nextJob);
+    lastPlaybackEvent = `Queued next: ${chapterLabel(nextChapter)}`;
     schedulePoll(1000);
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Could not queue next chapter";
+  } finally {
+    nextJobRequestInFlight = false;
   }
+}
+
+async function maybeEnsureNextAhead(reason: string): Promise<void> {
+  if (!settings.autoNext || !currentJob || currentJob.status !== "done" || !sessionMatchesCurrentSelection()) {
+    return;
+  }
+  if (!session || session.audioFiles.length === 0) {
+    return;
+  }
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  if (!nextChapter) {
+    return;
+  }
+  lastPlaybackEvent = lastPlaybackEvent === "Idle" ? `Auto-next check: ${reason}` : lastPlaybackEvent;
+  await ensureNextJob();
 }
 
 async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void> {
@@ -310,6 +359,7 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     userPausedPlayback = false;
   }
   await audio.play();
+  void maybeEnsureNextAhead("play");
   await setPlaybackWakeLock(true);
   statusText = "Playing";
   lastPlaybackEvent = mode === "auto" ? "Auto-play resumed" : "Manual play";
@@ -352,6 +402,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   if (!lastPlaybackEvent.includes("fallback")) {
     lastPlaybackEvent = mode === "auto" ? "Native auto-play resumed" : "Native manual play";
   }
+  void maybeEnsureNextAhead("native-play");
   scheduleSleepTimer();
   startPlaybackWatchdog();
   updateAppMediaSession();
@@ -539,6 +590,69 @@ function stopPlaybackWatchdog(): void {
 
 function selectedBook(): Book | undefined {
   return books.find((book) => book.id === selectedBookId);
+}
+
+function playbackKey(bookId: string, chapterIndex: number, modelBackend: string, voiceId: string): string {
+  return `${bookId}::${chapterIndex}::${modelBackend}::${voiceId}`;
+}
+
+function selectedPlaybackKey(chapterIndex = selectedChapterIndex): string {
+  return playbackKey(selectedBookId, chapterIndex, settings.modelBackend, settings.voiceId);
+}
+
+function jobPlaybackKey(job: Job): string {
+  return playbackKey(
+    job.book_id,
+    job.chapter_indexes[0] ?? -1,
+    String(job.tts_options?.model_backend || settings.modelBackend),
+    job.voice,
+  );
+}
+
+function sessionMatchesCurrentSelection(): boolean {
+  return Boolean(
+    session
+    && currentJob
+    && session.bookId === selectedBookId
+    && session.chapterIndex === selectedChapterIndex
+    && currentJob.book_id === selectedBookId
+    && currentJob.chapter_indexes.includes(selectedChapterIndex)
+    && currentJob.voice === settings.voiceId
+    && currentJob.tts_options?.model_backend === settings.modelBackend,
+  );
+}
+
+function selectedChapterHasAudio(): boolean {
+  return Boolean(
+    currentJob
+    && jobPlaybackKey(currentJob) === selectedPlaybackKey()
+    && currentJob.audio_files.length > 0,
+  );
+}
+
+function hasEnoughDiskForAutoNext(): boolean {
+  const freeBytes = health?.storage?.audio_free_bytes;
+  return typeof freeBytes !== "number" || freeBytes >= minAutoNextFreeBytes;
+}
+
+function hasMoreImportantActiveJob(jobs: Job[]): boolean {
+  const allowedIds = new Set([currentJob?.id, nextJob?.id].filter(Boolean));
+  const targetNextChapter = chapterAfter(selectedChapterIndex);
+  const targetNextKey = targetNextChapter
+    ? playbackKey(selectedBookId, targetNextChapter.index, settings.modelBackend, settings.voiceId)
+    : "";
+  return jobs.some((job) => {
+    if (job.status !== "queued" && job.status !== "running") {
+      return false;
+    }
+    if (allowedIds.has(job.id)) {
+      return false;
+    }
+    if (job.owner !== "eutherbooks-player") {
+      return true;
+    }
+    return jobPlaybackKey(job) !== targetNextKey;
+  });
 }
 
 async function refreshNativePlayback(): Promise<void> {
@@ -790,6 +904,13 @@ function warmAudioCacheForSession(): void {
   prefetchAudio(session.audioFiles.map((path) => api.audioUrl(path)));
 }
 
+function warmAudioCacheForJob(job: Job | null): void {
+  if (!job || !settings.cacheAudio || job.audio_files.length === 0) {
+    return;
+  }
+  prefetchAudio(job.audio_files.map((path) => api.audioUrl(path)));
+}
+
 function updateAppMediaSession(): void {
   mediaSessionStatus = updateMediaSession(selectedBook(), selectedChapter(), session, !isPlaybackPaused());
 }
@@ -847,6 +968,7 @@ function appMarkup(modelVoices: Voice[]): string {
   const cacheState = audioCacheState();
   const nativeState = nativeAudioState();
   const bookmark = currentBookmark();
+  const freeAudioDisk = typeof health?.storage?.audio_free_bytes === "number" ? formatBytes(health.storage.audio_free_bytes) : "unknown";
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -964,7 +1086,8 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
-        ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : ""}
+        <small>Audio disk free: ${escapeHtml(freeAudioDisk)}</small>
+        ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : settings.autoNext ? `<small>Next: waiting for current chapter to be ready</small>` : ""}
         <button id="clear-cache" type="button">Clear audio cache</button>
         <button id="report-native-bug" type="button">Report native bug</button>
       </section>
@@ -1005,6 +1128,7 @@ function bindUi(): void {
     userPausedPlayback = false;
     currentJob = null;
     nextJob = null;
+    nextJobKey = "";
     session = null;
     persistSelection();
     void loadChapters().then(() => refreshAll());
@@ -1014,6 +1138,7 @@ function bindUi(): void {
     userPausedPlayback = false;
     currentJob = null;
     nextJob = null;
+    nextJobKey = "";
     session = null;
     persistSelection();
     void refreshAll();
@@ -1022,6 +1147,8 @@ function bindUi(): void {
     updateSettings({ ...settings, modelBackend: (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"] });
     userPausedPlayback = false;
     currentJob = null;
+    nextJob = null;
+    nextJobKey = "";
     session = null;
     render();
   });
@@ -1029,10 +1156,22 @@ function bindUi(): void {
     updateSettings({ ...settings, voiceId: (event.currentTarget as HTMLSelectElement).value });
     userPausedPlayback = false;
     currentJob = null;
+    nextJob = null;
+    nextJobKey = "";
     session = null;
     void refreshAll();
   });
-  document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => void generateCurrentChapter(true));
+  document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => {
+    if (selectedChapterHasAudio()) {
+      const confirmed = window.confirm("This chapter already has generated audio for the selected voice and model. Regenerate it now?");
+      if (!confirmed) {
+        lastPlaybackEvent = "Generate cancelled";
+        render();
+        return;
+      }
+    }
+    void generateCurrentChapter(true);
+  });
   document.querySelector<HTMLButtonElement>("#bookmark")?.addEventListener("click", () => {
     saveCurrentBookmark(false);
     lastPlaybackEvent = "Bookmark saved";
@@ -1063,6 +1202,7 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#cache-audio")?.addEventListener("click", () => {
     updateSettings({ ...settings, cacheAudio: !settings.cacheAudio });
     warmAudioCacheForSession();
+    warmAudioCacheForJob(nextJob);
     render();
   });
   document.querySelector<HTMLButtonElement>("#clear-cache")?.addEventListener("click", () => {
@@ -1165,6 +1305,20 @@ function modelOption(value: AppSettings["modelBackend"], label: string): string 
 
 function sleepOption(value: number, label: string): string {
   return `<option value="${value}" ${settings.sleepTimerMinutes === value ? "selected" : ""}>${label}</option>`;
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) {
+    return "unknown";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  return `${amount >= 10 || unitIndex === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function escapeHtml(value: string): string {

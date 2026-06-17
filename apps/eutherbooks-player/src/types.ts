@@ -50,6 +50,12 @@ export type Job = {
 export type Health = {
   status: string;
   tts_backend: string;
+  storage?: {
+    audio_dir: string;
+    audio_free_bytes: number;
+    audio_total_bytes: number;
+    audio_used_bytes: number;
+  };
   eutherlink?: {
     ok: boolean;
     queued_or_running?: number;
