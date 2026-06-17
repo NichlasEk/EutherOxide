@@ -7511,6 +7511,9 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
     ) {
         return send_error(stream, 405, "method not allowed");
     }
+    if is_websocket_upgrade(request) {
+        return proxy_camera_frigate_websocket_request(stream, request);
+    }
     let upstream_base =
         env::var("EUTHERSIGHT_FRIGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15000".to_string());
     let mut upstream = match TcpStream::connect(&upstream_base) {
@@ -7545,6 +7548,51 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
     }
     io::copy(&mut upstream, stream)?;
     Ok(())
+}
+
+fn proxy_camera_frigate_websocket_request(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    if request.method != "GET" {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_base =
+        env::var("EUTHERSIGHT_FRIGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15000".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherSight camera upstream unavailable"),
+    };
+    let upstream_path = camera_frigate_upstream_path(&request.path);
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\n",
+        request.method, upstream_path, upstream_base
+    )?;
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+
+    let mut upstream_to_client = upstream.try_clone()?;
+    let mut client_writer = stream.try_clone()?;
+    let to_client = thread::spawn(move || io::copy(&mut upstream_to_client, &mut client_writer));
+    let to_upstream = io::copy(stream, &mut upstream);
+    let _ = to_client.join();
+    to_upstream.map(|_| ())
+}
+
+fn is_websocket_upgrade(request: &HttpRequest) -> bool {
+    header_value(request, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        && header_value(request, "connection")
+            .is_some_and(|value| value.to_ascii_lowercase().contains("upgrade"))
 }
 
 fn camera_frigate_upstream_path(path: &str) -> String {
@@ -7650,12 +7698,22 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .camera-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
     button, select, .launch-card a { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); background: #101722; color: #bfe8ff; font: inherit; font-weight: 800; text-decoration: none; }
     button:active { transform: translateY(1px); }
-    .snapshot-frame { box-sizing: border-box; display: grid; place-items: center; width: 100%; min-height: min(70vh, 720px); margin: 0; overflow: hidden; background: #05070a; cursor: zoom-in; touch-action: manipulation; }
+    .mode-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .mode-tabs button.is-active { background: #1d3346; color: #fff; }
+    .snapshot-frame, .live-frame { box-sizing: border-box; display: grid; place-items: center; width: 100%; min-height: min(70vh, 720px); margin: 0; overflow: hidden; background: #05070a; cursor: zoom-in; touch-action: manipulation; }
     .snapshot-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; min-height: 100dvh; border: 0; cursor: zoom-out; }
-    img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; transform: rotate(var(--camera-rotation, 0deg)); transform-origin: center center; transition: transform .16s ease; }
+    .live-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; min-height: 100dvh; border: 0; cursor: zoom-out; }
+    img, video { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; transform: rotate(var(--camera-rotation, 0deg)); transform-origin: center center; transition: transform .16s ease; }
     .snapshot-frame[data-rotation="90"] img, .snapshot-frame[data-rotation="270"] img { max-width: min(70vh, 100vw); max-height: calc(100vw - 48px); }
     .snapshot-frame.is-fullscreen img { max-width: 100vw; max-height: 100dvh; }
     .snapshot-frame.is-fullscreen[data-rotation="90"] img, .snapshot-frame.is-fullscreen[data-rotation="270"] img { max-width: 100dvh; max-height: 100vw; }
+    .live-frame[data-rotation="90"] video, .live-frame[data-rotation="270"] video { max-width: min(70vh, 100vw); max-height: calc(100vw - 48px); }
+    .live-frame.is-fullscreen video { max-width: 100vw; max-height: 100dvh; }
+    .live-frame.is-fullscreen[data-rotation="90"] video, .live-frame.is-fullscreen[data-rotation="270"] video { max-width: 100dvh; max-height: 100vw; }
+    .live-panel[hidden], .snapshot-panel[hidden] { display: none; }
+    .live-tools { padding: 12px 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid rgba(180,205,218,.16); }
+    .live-tools label { display: inline-flex; align-items: center; gap: 8px; color: #a9b8c2; font-weight: 700; }
+    input[type="range"] { width: 140px; accent-color: #96d7ff; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
     .launch-card { padding: 18px; display: grid; gap: 10px; }
@@ -7683,7 +7741,10 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     <section class="panel">
       <div class="panel-head">
         <strong>yard</strong>
-        <span>Snapshot refresh</span>
+        <span class="mode-tabs">
+          <button id="snapshot-mode" type="button" class="is-active">Snapshot</button>
+          <button id="live-mode" type="button">Live WebRTC</button>
+        </span>
         <span class="camera-toolbar">
           <span id="rotation-status">Rotation 0 grader</span>
           <label>
@@ -7703,6 +7764,20 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       <figure id="snapshot-frame" class="snapshot-frame" data-rotation="0">
         <img id="yard-live" alt="yard camera snapshot" src="/api/camera/frigate/api/yard/latest.jpg" />
       </figure>
+      <section id="live-panel" class="live-panel" hidden>
+        <figure id="live-frame" class="live-frame" data-rotation="0">
+          <video id="yard-video" playsinline autoplay muted></video>
+        </figure>
+        <div class="live-tools">
+          <button id="live-connect" type="button">Starta live</button>
+          <button id="live-audio" type="button">Ljud av</button>
+          <label>
+            Volym
+            <input id="live-volume" type="range" min="0" max="100" value="60" />
+          </label>
+          <span id="live-status">WebRTC redo</span>
+        </div>
+      </section>
     </section>
     <section class="panel">
       <div><strong>Frigate admin</strong><span>Proxy via serverns lokala tunnel</span></div>
@@ -7715,6 +7790,15 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
   <script>
     const live = document.getElementById("yard-live");
     const frame = document.getElementById("snapshot-frame");
+    const livePanel = document.getElementById("live-panel");
+    const video = document.getElementById("yard-video");
+    const liveFrame = document.getElementById("live-frame");
+    const snapshotMode = document.getElementById("snapshot-mode");
+    const liveMode = document.getElementById("live-mode");
+    const liveConnect = document.getElementById("live-connect");
+    const liveAudio = document.getElementById("live-audio");
+    const liveVolume = document.getElementById("live-volume");
+    const liveStatus = document.getElementById("live-status");
     const rotate = document.getElementById("rotate-camera");
     const refreshRate = document.getElementById("refresh-rate");
     const rotationStatus = document.getElementById("rotation-status");
@@ -7723,11 +7807,18 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let refreshMs = 500;
     let refreshTimer = 0;
     let fallbackFullscreen = false;
+    let liveFullscreen = false;
+    let peer = null;
+    let liveSocket = null;
+    let liveEnabled = false;
+    let audioEnabled = false;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
       frame.dataset.rotation = String(rotationDegrees);
+      liveFrame.dataset.rotation = String(rotationDegrees);
       frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
+      liveFrame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
     }
 
@@ -7809,7 +7900,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     async function exitCameraFullscreen() {
       fallbackFullscreen = false;
+      liveFullscreen = false;
       frame.classList.remove("is-fullscreen");
+      liveFrame.classList.remove("is-fullscreen");
       document.body.classList.remove("camera-fullscreen");
       if (document.fullscreenElement) {
         await document.exitFullscreen().catch(() => {});
@@ -7836,10 +7929,116 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       }
     });
 
+    liveFrame.addEventListener("click", async () => {
+      if (document.fullscreenElement === liveFrame || liveFullscreen) {
+        await exitCameraFullscreen();
+      } else {
+        liveFullscreen = true;
+        liveFrame.classList.add("is-fullscreen");
+        document.body.classList.add("camera-fullscreen");
+        if (liveFrame.requestFullscreen) {
+          await liveFrame.requestFullscreen().catch(() => {});
+        }
+      }
+    });
+
     document.addEventListener("fullscreenchange", () => {
+      if (!document.fullscreenElement) {
+        fallbackFullscreen = false;
+        liveFullscreen = false;
+      }
       const active = document.fullscreenElement === frame || fallbackFullscreen;
       frame.classList.toggle("is-fullscreen", active);
-      document.body.classList.toggle("camera-fullscreen", active);
+      const liveActive = document.fullscreenElement === liveFrame || liveFullscreen;
+      liveFrame.classList.toggle("is-fullscreen", liveActive);
+      document.body.classList.toggle("camera-fullscreen", active || liveActive);
+    });
+
+    function setMode(mode) {
+      const isLive = mode === "live";
+      frame.hidden = isLive;
+      livePanel.hidden = !isLive;
+      snapshotMode.classList.toggle("is-active", !isLive);
+      liveMode.classList.toggle("is-active", isLive);
+      if (isLive && !liveEnabled) startLive();
+      if (!isLive) refreshSnapshot();
+    }
+
+    function stopLive() {
+      liveEnabled = false;
+      if (liveSocket) liveSocket.close();
+      liveSocket = null;
+      if (peer) peer.close();
+      peer = null;
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach((track) => track.stop());
+      }
+      video.srcObject = null;
+      liveConnect.textContent = "Starta live";
+      liveStatus.textContent = "WebRTC stoppad";
+    }
+
+    async function startLive() {
+      stopLive();
+      liveEnabled = true;
+      liveConnect.textContent = "Stoppa live";
+      liveStatus.textContent = "Ansluter WebRTC...";
+      const stream = new MediaStream();
+      video.srcObject = stream;
+      video.muted = !audioEnabled;
+      video.volume = Number(liveVolume.value) / 100;
+      peer = new RTCPeerConnection();
+      peer.addTransceiver("video", { direction: "recvonly" });
+      peer.addTransceiver("audio", { direction: "recvonly" });
+      peer.addEventListener("track", (event) => {
+        stream.addTrack(event.track);
+        liveStatus.textContent = "Live";
+        video.play().catch(() => {});
+      });
+      peer.addEventListener("connectionstatechange", () => {
+        liveStatus.textContent = `WebRTC ${peer.connectionState}`;
+      });
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      liveSocket = new WebSocket(`${proto}://${window.location.host}/api/camera/frigate/live/webrtc/api/ws?src=yard_main`);
+      liveSocket.addEventListener("open", async () => {
+        peer.addEventListener("icecandidate", (event) => {
+          if (!event.candidate || liveSocket.readyState !== WebSocket.OPEN) return;
+          liveSocket.send(JSON.stringify({ type: "webrtc/candidate", value: event.candidate.candidate }));
+        });
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        liveSocket.send(JSON.stringify({ type: "webrtc/offer", value: peer.localDescription.sdp }));
+      });
+      liveSocket.addEventListener("message", async (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === "webrtc/answer") {
+          await peer.setRemoteDescription({ type: "answer", sdp: message.value });
+        } else if (message.type === "webrtc/candidate") {
+          await peer.addIceCandidate({ candidate: message.value, sdpMid: "0" }).catch(() => {});
+        }
+      });
+      liveSocket.addEventListener("close", () => {
+        if (liveEnabled) liveStatus.textContent = "WebRTC stängd";
+      });
+      liveSocket.addEventListener("error", () => {
+        liveStatus.textContent = "WebRTC fel";
+      });
+    }
+
+    snapshotMode.addEventListener("click", () => setMode("snapshot"));
+    liveMode.addEventListener("click", () => setMode("live"));
+    liveConnect.addEventListener("click", () => {
+      if (liveEnabled) stopLive();
+      else startLive();
+    });
+    liveAudio.addEventListener("click", () => {
+      audioEnabled = !audioEnabled;
+      video.muted = !audioEnabled;
+      liveAudio.textContent = audioEnabled ? "Ljud på" : "Ljud av";
+      video.play().catch(() => {});
+    });
+    liveVolume.addEventListener("input", () => {
+      video.volume = Number(liveVolume.value) / 100;
     });
 
     applyRefresh(refreshMs);
