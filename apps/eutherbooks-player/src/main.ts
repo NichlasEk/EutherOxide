@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.20";
-const appBuild = "0.1.20-beta";
+const appVersion = "0.1.21";
+const appBuild = "0.1.21-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -54,8 +54,10 @@ let health: Health | null = null;
 let books: Book[] = [];
 let chapters: Chapter[] = [];
 let voices: Voice[] = [];
+let allJobs: Job[] = [];
 let selectedBookId = localStorage.getItem("eutherbooks-player-book") ?? "";
 let selectedChapterIndex = Number(localStorage.getItem("eutherbooks-player-chapter") ?? 0);
+let chapterQuery = "";
 let currentJob: Job | null = null;
 let nextJob: Job | null = null;
 let nextJobKey = "";
@@ -171,6 +173,7 @@ async function refreshAll(): Promise<void> {
       health = nextHealth;
       voices = nextVoices;
       books = nextBooks;
+      allJobs = jobs;
       if (settings.serverUrl !== candidate) {
         updateSettings({ ...settings, serverUrl: candidate });
       }
@@ -311,10 +314,15 @@ function schedulePoll(delayMs: number): void {
   pollTimer = window.setTimeout(() => void pollJobs(), delayMs);
 }
 
-async function ensureNextJob(): Promise<void> {
+async function ensureNextJob(force = false): Promise<void> {
   const nextChapter = chapterAfter(selectedChapterIndex);
   const targetKey = playbackKey(selectedBookId, nextChapter?.index ?? -1, settings.modelBackend, settings.voiceId);
-  if (nextJobRequestInFlight || !settings.autoNext || !selectedBookId || !nextChapter || !currentJob || !sessionMatchesCurrentSelection()) {
+  if (nextJobRequestInFlight || (!force && !settings.autoNext) || !selectedBookId || !nextChapter || !currentJob || !sessionMatchesCurrentSelection()) {
+    if (force) {
+      statusText = !nextChapter ? "Queue: no later chapter" : "Queue: play or generate this chapter first";
+      setPlaybackEvent(statusText);
+      render();
+    }
     return;
   }
   if (nextJob && nextJobKey === targetKey && nextJob.status !== "failed") {
@@ -325,6 +333,11 @@ async function ensureNextJob(): Promise<void> {
     nextJobKey = "";
   }
   if (currentJob.status !== "done") {
+    if (force) {
+      statusText = "Queue: current chapter must finish first";
+      setPlaybackEvent(statusText);
+      render();
+    }
     return;
   }
   nextJobRequestInFlight = true;
@@ -335,6 +348,7 @@ async function ensureNextJob(): Promise<void> {
       return;
     }
     const jobs = await api.jobs();
+    allJobs = jobs;
     if (hasMoreImportantActiveJob(jobs)) {
       statusText = "Auto-next waiting for active speech job";
       schedulePoll(1500);
@@ -526,6 +540,29 @@ async function playNextPartOrChapter(): Promise<void> {
   statusText = "Waiting for next chapter";
   schedulePoll(1000);
   render();
+}
+
+function selectChapter(index: number): void {
+  if (!chapters.some((chapter) => chapter.index === index)) {
+    return;
+  }
+  stopPlayback(true, true);
+  selectedChapterIndex = index;
+  userPausedPlayback = false;
+  currentJob = null;
+  nextJob = null;
+  nextJobKey = "";
+  nativeQueuedUrlsKey = "";
+  session = null;
+  persistSelection();
+  void refreshAll();
+}
+
+function selectRelativeChapter(direction: -1 | 1): void {
+  const target = direction < 0 ? chapterBefore(selectedChapterIndex) : chapterAfter(selectedChapterIndex);
+  if (target) {
+    selectChapter(target.index);
+  }
 }
 
 async function playPreviousPart(): Promise<void> {
@@ -993,6 +1030,10 @@ function selectedChapter(): Chapter | undefined {
   return chapters.find((chapter) => chapter.index === selectedChapterIndex);
 }
 
+function chapterBefore(index: number): Chapter | undefined {
+  return chapters.slice().reverse().find((chapter) => chapter.index < index);
+}
+
 function chapterAfter(index: number): Chapter | undefined {
   return chapters.find((chapter) => chapter.index > index);
 }
@@ -1128,6 +1169,7 @@ function appMarkup(modelVoices: Voice[]): string {
   const cacheState = audioCacheState();
   const nativeState = nativeAudioState();
   const bookmark = currentBookmark();
+  const visibleChapters = filteredChapters();
   const freeAudioDisk = typeof health?.storage?.audio_free_bytes === "number" ? formatBytes(health.storage.audio_free_bytes) : "unknown";
   return `
     <main class="app-shell">
@@ -1169,9 +1211,17 @@ function appMarkup(modelVoices: Voice[]): string {
         <label>
           <span>Chapter</span>
           <select id="chapter-select">
-            ${chapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(chapterLabel(candidate))}</option>`).join("")}
+            ${visibleChapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(chapterLabel(candidate))}</option>`).join("")}
           </select>
         </label>
+        <label>
+          <span>Find chapter</span>
+          <input id="chapter-search" value="${escapeHtml(chapterQuery)}" placeholder="Title or number" />
+        </label>
+        <div class="chapter-actions">
+          <button id="prev-chapter" type="button" ${chapterBefore(selectedChapterIndex) ? "" : "disabled"}>Previous chapter</button>
+          <button id="next-chapter" type="button" ${chapterAfter(selectedChapterIndex) ? "" : "disabled"}>Next chapter</button>
+        </div>
       </section>
 
       <section class="voice-grid">
@@ -1200,6 +1250,8 @@ function appMarkup(modelVoices: Voice[]): string {
         <div class="transport">
           <button id="play" type="button">${isPlaybackPaused() ? "Play" : "Pause"}</button>
           <button id="generate" type="button">Generate</button>
+          <button id="back-30" type="button">-30s</button>
+          <button id="forward-30" type="button">+30s</button>
           <button id="bookmark" type="button">Bookmark</button>
           <button id="resume-bookmark" type="button" ${bookmark ? "" : "disabled"}>Resume bookmark</button>
         </div>
@@ -1252,6 +1304,8 @@ function appMarkup(modelVoices: Voice[]): string {
         <button id="report-native-bug" type="button">Report native bug</button>
       </section>
 
+      ${queuePanelMarkup()}
+
       <section class="beta-panel">
         <strong>Beta roadmap · ${escapeHtml(appBuild)}</strong>
         <ul>
@@ -1262,12 +1316,14 @@ function appMarkup(modelVoices: Voice[]): string {
           <li><span class="done">Live</span> Media Session controls, native queue status, buffer diagnostics</li>
           <li><span class="beta">Beta</span> Versioned APK reports with lock, queue, cache and job telemetry</li>
           <li><span class="done">Live</span> Lockscreen notification controls for previous, play/pause, next and stop</li>
-          <li><span class="beta">Beta</span> Richer queue diagnostics and playback telemetry</li>
-          <li><span class="next">Next</span> Dedicated queue screen with chapter prefetch controls</li>
+          <li><span class="done">Live</span> Chapter search, previous/next chapter controls and sticky mini-player</li>
+          <li><span class="beta">Beta</span> Queue diagnostics with auto-next visibility</li>
+          <li><span class="next">Next</span> Batch chapter queue editor and smarter generated-audio search</li>
         </ul>
       </section>
 
       ${errorText ? `<p class="error">${escapeHtml(errorText)}</p>` : ""}
+      ${miniPlayerMarkup()}
     </main>
   `;
 }
@@ -1288,6 +1344,7 @@ function bindUi(): void {
   document.querySelector<HTMLSelectElement>("#book-select")?.addEventListener("change", (event) => {
     selectedBookId = (event.currentTarget as HTMLSelectElement).value;
     selectedChapterIndex = 0;
+    chapterQuery = "";
     userPausedPlayback = false;
     currentJob = null;
     nextJob = null;
@@ -1297,17 +1354,16 @@ function bindUi(): void {
     persistSelection();
     void loadChapters().then(() => refreshAll());
   });
-  document.querySelector<HTMLSelectElement>("#chapter-select")?.addEventListener("change", (event) => {
-    selectedChapterIndex = Number((event.currentTarget as HTMLSelectElement).value);
-    userPausedPlayback = false;
-    currentJob = null;
-    nextJob = null;
-    nextJobKey = "";
-    nativeQueuedUrlsKey = "";
-    session = null;
-    persistSelection();
-    void refreshAll();
+  document.querySelector<HTMLInputElement>("#chapter-search")?.addEventListener("input", (event) => {
+    chapterQuery = (event.currentTarget as HTMLInputElement).value;
+    deferRendersFor(900);
+    render();
   });
+  document.querySelector<HTMLSelectElement>("#chapter-select")?.addEventListener("change", (event) => {
+    selectChapter(Number((event.currentTarget as HTMLSelectElement).value));
+  });
+  document.querySelector<HTMLButtonElement>("#prev-chapter")?.addEventListener("click", () => selectRelativeChapter(-1));
+  document.querySelector<HTMLButtonElement>("#next-chapter")?.addEventListener("click", () => selectRelativeChapter(1));
   document.querySelector<HTMLSelectElement>("#model-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, modelBackend: (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"] });
     userPausedPlayback = false;
@@ -1354,6 +1410,25 @@ function bindUi(): void {
       render();
     }
   });
+  document.querySelector<HTMLButtonElement>("#mini-play")?.addEventListener("click", () => {
+    if (isPlaybackPaused()) {
+      void playFromSession("manual");
+    } else {
+      stopPlayback(true, true);
+      statusText = "Paused";
+      render();
+    }
+  });
+  document.querySelector<HTMLButtonElement>("#mini-prev-chapter")?.addEventListener("click", () => selectRelativeChapter(-1));
+  document.querySelector<HTMLButtonElement>("#mini-next-chapter")?.addEventListener("click", () => selectRelativeChapter(1));
+  document.querySelector<HTMLButtonElement>("#back-30")?.addEventListener("click", () => {
+    seekBy(-30);
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#forward-30")?.addEventListener("click", () => {
+    seekBy(30);
+    render();
+  });
   document.querySelector<HTMLButtonElement>("#auto-play")?.addEventListener("click", () => {
     updateSettings({ ...settings, autoPlay: !settings.autoPlay });
     render();
@@ -1378,6 +1453,12 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#report-native-bug")?.addEventListener("click", () => {
     void maybeReportNativeAudioIssue("manual-native-report", true).then(() => render());
   });
+  document.querySelector<HTMLButtonElement>("#prefetch-next")?.addEventListener("click", () => {
+    void ensureNextJob(true);
+  });
+  document.querySelector<HTMLButtonElement>("#sync-native-queue")?.addEventListener("click", () => {
+    void updateNativeQueue("manual").then(() => render());
+  });
   document.querySelector<HTMLSelectElement>("#sleep-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, sleepTimerMinutes: Number((event.currentTarget as HTMLSelectElement).value) });
     if (isPlaybackPaused()) {
@@ -1387,6 +1468,88 @@ function bindUi(): void {
     }
     render();
   });
+}
+
+function queuePanelMarkup(): string {
+  const nativeState = nativeAudioState();
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  const queueUrls = nativeQueueUrlsWithNext();
+  const relevantJobs = allJobs
+    .filter((job) => job.book_id === selectedBookId && job.owner === "eutherbooks-player")
+    .slice()
+    .reverse()
+    .slice(0, 5);
+  const currentParts = currentJob
+    ? `${currentJob.audio_files.length}/${Math.max(currentJob.total_audio_files, currentJob.audio_files.length)}`
+    : "0/0";
+  const nextParts = nextJob
+    ? `${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)}`
+    : "0/0";
+  return `
+      <section class="queue-panel">
+        <div class="queue-head">
+          <strong>Queue</strong>
+          <span>${queueUrls.length} audio parts · native ${nativeState.index}/${nativeState.queueSize}</span>
+        </div>
+        <div class="queue-actions">
+          <button id="prefetch-next" type="button" ${nextChapter && currentJob ? "" : "disabled"}>Prefetch next</button>
+          <button id="sync-native-queue" type="button" ${nativePlaybackActive && session ? "" : "disabled"}>Sync native queue</button>
+        </div>
+        <div class="queue-grid">
+          <span>Current</span>
+          <strong>${escapeHtml(currentJob ? chapterLabel(selectedChapter() ?? { index: selectedChapterIndex, title: "Selected chapter" }) : "No current job")}</strong>
+          <em>${escapeHtml(currentJob?.status ?? "idle")} · ${currentParts} parts</em>
+          <span>Next</span>
+          <strong>${escapeHtml(nextChapter ? chapterLabel(nextChapter) : "End of book")}</strong>
+          <em>${escapeHtml(nextJob?.status ?? (settings.autoNext ? "waiting" : "manual"))} · ${nextParts} parts</em>
+        </div>
+        <div class="job-list">
+          ${relevantJobs.length
+            ? relevantJobs.map((job) => `<small>${escapeHtml(jobSummary(job))}</small>`).join("")
+            : "<small>No recent jobs for this book</small>"}
+        </div>
+      </section>
+  `;
+}
+
+function miniPlayerMarkup(): string {
+  const book = selectedBook();
+  const chapter = selectedChapter();
+  const position = session ? `${formatTime(sessionPosition(session))} / ${formatTime(session.generatedSeconds)}` : "0:00 / 0:00";
+  return `
+      <section class="mini-player">
+        <div>
+          <strong>${escapeHtml(book?.title ?? "EutherBooks")}</strong>
+          <small>${escapeHtml(chapter ? chapterLabel(chapter) : statusText)} · ${escapeHtml(position)}</small>
+        </div>
+        <button id="mini-prev-chapter" type="button" aria-label="Previous chapter" ${chapterBefore(selectedChapterIndex) ? "" : "disabled"}>Prev</button>
+        <button id="mini-play" type="button">${isPlaybackPaused() ? "Play" : "Pause"}</button>
+        <button id="mini-next-chapter" type="button" aria-label="Next chapter" ${chapterAfter(selectedChapterIndex) ? "" : "disabled"}>Next</button>
+      </section>
+  `;
+}
+
+function filteredChapters(): Chapter[] {
+  const query = chapterQuery.trim().toLowerCase();
+  if (!query) {
+    return chapters;
+  }
+  const selected = selectedChapter();
+  const matches = chapters.filter((chapter) => {
+    const label = chapterLabel(chapter).toLowerCase();
+    return label.includes(query) || String(chapterNumber(chapter)).includes(query) || String(chapter.index + 1).includes(query);
+  });
+  if (selected && !matches.some((chapter) => chapter.index === selected.index)) {
+    return [selected, ...matches];
+  }
+  return matches;
+}
+
+function jobSummary(job: Job): string {
+  const chapter = chapters.find((candidate) => candidate.index === (job.chapter_indexes[0] ?? -1));
+  const label = chapter ? chapterLabel(chapter) : `Chapter ${job.chapter_indexes.join(", ") || "?"}`;
+  const ready = `${job.audio_files.length}/${Math.max(job.total_audio_files, job.audio_files.length)}`;
+  return `${job.status} · ${label} · ${ready} parts · ${job.voice}`;
 }
 
 function bindStableControls(): void {
