@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.21";
-const appBuild = "0.1.21-beta";
+const appVersion = "0.1.22";
+const appBuild = "0.1.22-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -241,8 +241,38 @@ function attachExistingJob(jobs: Job[]): void {
     session = sessionFromJob(currentJob, session);
     applyBookmarkToSession();
     warmAudioCacheForSession();
+    attachExistingNextJob(jobs);
     void maybeEnsureNextAhead("attach");
   }
+}
+
+function attachExistingNextJob(jobs: Job[]): void {
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  if (!nextChapter || !currentJob || currentJob.status !== "done") {
+    return;
+  }
+  const targetKey = playbackKey(selectedBookId, nextChapter.index, settings.modelBackend, settings.voiceId);
+  if (nextJob && nextJobKey === targetKey && nextJob.status !== "failed") {
+    return;
+  }
+  const matching = jobs
+    .filter((job) =>
+      job.book_id === selectedBookId
+      && job.chapter_indexes.includes(nextChapter.index)
+      && job.voice === settings.voiceId
+      && job.tts_options?.model_backend === settings.modelBackend
+      && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
+    )
+    .reverse();
+  const playable = matching.find((job) => job.audio_files.length > 0);
+  const candidate = playable ?? matching[0];
+  if (!candidate) {
+    return;
+  }
+  nextJob = candidate;
+  nextJobKey = targetKey;
+  warmAudioCacheForJob(nextJob);
+  void updateNativeQueue("attach-next");
 }
 
 async function generateCurrentChapter(cancelExisting = true): Promise<void> {
@@ -285,6 +315,8 @@ async function pollJobs(): Promise<void> {
       nextJob = await api.job(nextJob.id);
       warmAudioCacheForJob(nextJob);
       void updateNativeQueue("poll-next");
+    } else if (currentJob?.status === "done" && settings.autoNext) {
+      void maybeEnsureNextAhead("poll-ready");
     }
     statusText = currentJob ? currentJob.progress_label || currentJob.status : "Ready";
   } catch (err) {
@@ -428,6 +460,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   if (!session || session.audioFiles.length === 0) {
     return;
   }
+  await maybeEnsureNextAhead("native-play-start");
   const book = selectedBook();
   const chapter = selectedChapter();
   const queue = nativeQueueUrlsWithNext();
