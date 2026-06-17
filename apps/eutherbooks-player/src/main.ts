@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.24";
-const appBuild = "0.1.24-beta";
+const appVersion = "0.1.25";
+const appBuild = "0.1.25-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -476,6 +476,13 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     await playFromNativeSession(mode);
     return;
   }
+  if (document.visibilityState === "hidden" && foregroundServiceBlocked(nativeAudioState())) {
+    await maybeReportNativeAudioIssue("native-hidden-start-blocked");
+    statusText = "Native playback needs foreground start";
+    setPlaybackEvent("Native foreground start blocked while hidden");
+    render();
+    return;
+  }
   await maybeReportNativeAudioIssue("native-unavailable-before-play");
   const url = await playableAudioUrl(api.audioUrl(path));
   const targetTime = session.currentSeconds;
@@ -525,6 +532,12 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   applyNativeAudioState(state);
   await maybeReportNativeAudioIssue("native-play-request");
   if (state.error || !nativePlaybackActive) {
+    if (document.visibilityState === "hidden" && foregroundServiceBlocked(state)) {
+      statusText = "Native playback needs foreground start";
+      setPlaybackEvent("Native foreground start blocked while hidden");
+      render();
+      return;
+    }
     const url = await playableAudioUrl(api.audioUrl(session.audioFiles[session.currentIndex]));
     audio.src = url;
     applyAudioOffset(session.currentSeconds, true);
@@ -541,6 +554,11 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   startPlaybackWatchdog();
   updateAppMediaSession();
   render();
+}
+
+function foregroundServiceBlocked(state: NativeAudioState): boolean {
+  return state.error.includes("startForegroundService() not allowed")
+    || state.error.includes("mAllowStartForeground false");
 }
 
 function maybeAdvanceNearPartEnd(): void {
