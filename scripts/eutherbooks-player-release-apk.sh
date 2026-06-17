@@ -273,6 +273,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.media.AudioFocusRequest
 import android.media.AudioAttributes
@@ -280,6 +281,7 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -293,6 +295,8 @@ class NativeAudioService : Service() {
     private var player: MediaPlayer? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private var mediaSession: MediaSession? = null
+    private var playbackWakeLock: PowerManager.WakeLock? = null
+    private var playbackWifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -316,6 +320,7 @@ class NativeAudioService : Service() {
 
     override fun onDestroy() {
         releasePlayer()
+        releasePlaybackLocks()
         releaseAudioFocus()
         mediaSession?.isActive = false
         mediaSession?.release()
@@ -350,6 +355,7 @@ class NativeAudioService : Service() {
             handleStop()
             return
         }
+        acquirePlaybackLocks()
         requestAudioFocus()
         ensureMediaSession()
         startForeground(NOTIFICATION_ID, notification())
@@ -368,12 +374,14 @@ class NativeAudioService : Service() {
             playing = false
             lastEvent = "Native playback paused"
         }
+        releasePlaybackLocks()
         updatePlaybackState()
         updateNotification()
     }
 
     private fun handleStop() {
         releasePlayer()
+        releasePlaybackLocks()
         synchronized(lock) {
             active = false
             playing = false
@@ -497,6 +505,7 @@ class NativeAudioService : Service() {
             ended = true
             lastEvent = "Native queue ended"
         }
+        releasePlaybackLocks()
         releaseAudioFocus()
         updatePlaybackState()
         updateNotification()
@@ -604,6 +613,7 @@ class NativeAudioService : Service() {
         val current = player
         if (current != null) {
             try {
+                acquirePlaybackLocks()
                 current.start()
                 synchronized(lock) {
                     active = true
@@ -626,6 +636,7 @@ class NativeAudioService : Service() {
             lastEvent = "Native playback resumed"
         }
         requestAudioFocus()
+        acquirePlaybackLocks()
         startForeground(NOTIFICATION_ID, notification())
         playCurrent(positionMs)
     }
@@ -684,6 +695,56 @@ class NativeAudioService : Service() {
             @Suppress("DEPRECATION")
             manager.abandonAudioFocus(null)
         }
+    }
+
+    private fun acquirePlaybackLocks() {
+        try {
+            if (playbackWakeLock?.isHeld != true) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                playbackWakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "EutherBooksPlayer:NativeAudioService"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (err: Exception) {
+            synchronized(lock) {
+                error = "Wake lock failed: ${err.message ?: err.javaClass.simpleName}"
+                lastEvent = error
+            }
+        }
+        try {
+            if (playbackWifiLock?.isHeld != true) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                playbackWifiLock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "EutherBooksPlayer:NativeAudioWifi"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (err: Exception) {
+            synchronized(lock) {
+                error = "Wi-Fi lock failed: ${err.message ?: err.javaClass.simpleName}"
+                lastEvent = error
+            }
+        }
+    }
+
+    private fun releasePlaybackLocks() {
+        try {
+            playbackWifiLock?.takeIf { it.isHeld }?.release()
+        } catch (_err: Exception) {
+        }
+        playbackWifiLock = null
+        try {
+            playbackWakeLock?.takeIf { it.isHeld }?.release()
+        } catch (_err: Exception) {
+        }
+        playbackWakeLock = null
     }
 
     private fun ensureChannel() {
