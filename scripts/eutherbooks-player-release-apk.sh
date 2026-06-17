@@ -332,12 +332,13 @@ class NativeAudioService : Service() {
     private var noisyReceiverRegistered = false
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                synchronized(lock) {
-                    lastEvent = "Paused because headphones disconnected"
-                }
-                handlePause()
+        if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+            synchronized(lock) {
+                lastEvent = "Paused because headphones disconnected"
+                rememberEvent(lastEvent)
             }
+            handlePause()
+        }
         }
     }
 
@@ -395,6 +396,7 @@ class NativeAudioService : Service() {
             subtitle = intent.getStringExtra(EXTRA_SUBTITLE).orEmpty().ifBlank { "Audiobook" }
             error = ""
             lastEvent = "Native queue loaded"
+            rememberEvent(lastEvent)
         }
         if (urls.isEmpty()) {
             handleStop()
@@ -419,6 +421,7 @@ class NativeAudioService : Service() {
             positionMs = currentPositionMs()
             playing = false
             lastEvent = "Native playback paused"
+            rememberEvent(lastEvent)
         }
         releasePlaybackLocks()
         unregisterNoisyReceiver()
@@ -432,6 +435,7 @@ class NativeAudioService : Service() {
         synchronized(lock) {
             if (urls.isEmpty() || !active) {
                 lastEvent = "Native queue update ignored"
+                rememberEvent(lastEvent)
                 return
             }
             val oldSize = queue.size
@@ -440,11 +444,13 @@ class NativeAudioService : Service() {
             val replacementUrl = urls.getOrNull(index)
             if (!currentUrl.isNullOrBlank() && currentUrl != replacementUrl) {
                 lastEvent = "Native queue update rejected"
+                rememberEvent(lastEvent)
                 return
             }
             if (urls.size >= queue.size) {
                 queue = urls
                 lastEvent = "Native queue extended to ${urls.size} parts"
+                rememberEvent(lastEvent)
                 if (waitingAtEnd && urls.size > oldSize) {
                     index = oldSize
                     positionMs = 0L
@@ -453,6 +459,7 @@ class NativeAudioService : Service() {
                 }
             } else {
                 lastEvent = "Native queue update ignored"
+                rememberEvent(lastEvent)
             }
         }
         if (shouldResumeFromBufferedEnd) {
@@ -474,6 +481,7 @@ class NativeAudioService : Service() {
             positionMs = 0L
             durationMs = 0L
             lastEvent = "Native playback stopped"
+            rememberEvent(lastEvent)
         }
         releaseAudioFocus()
         updatePlaybackState()
@@ -493,6 +501,7 @@ class NativeAudioService : Service() {
             positionMs = max(0L, targetPositionMs)
             shouldStart = active
             lastEvent = "Native seek"
+            rememberEvent(lastEvent)
         }
         if (shouldStart) {
             playCurrent(positionMs)
@@ -526,6 +535,7 @@ class NativeAudioService : Service() {
                     ended = false
                     error = ""
                     lastEvent = "Native playback started"
+                    rememberEvent(lastEvent)
                 }
                 if (positionMs > 0L) {
                     prepared.seekTo(positionMs.toInt())
@@ -541,12 +551,14 @@ class NativeAudioService : Service() {
                 synchronized(lock) {
                     error = "MediaPlayer error $what/$extra"
                     lastEvent = error
+                    rememberEvent(lastEvent)
                 }
                 advanceAfterCompletion()
                 true
             }
             synchronized(lock) {
                 lastEvent = "Native preparing audio"
+                rememberEvent(lastEvent)
             }
             nextPlayer.prepareAsync()
             updatePlaybackState()
@@ -557,6 +569,7 @@ class NativeAudioService : Service() {
                 error = err.message ?: err.javaClass.simpleName
                 playing = false
                 lastEvent = "Native playback failed"
+                rememberEvent(lastEvent)
             }
             updatePlaybackState()
             updateNotification()
@@ -575,6 +588,7 @@ class NativeAudioService : Service() {
                 positionMs = 0L
                 durationMs = 0L
                 lastEvent = "Native advancing"
+                rememberEvent(lastEvent)
             }
             playCurrent(0L)
         } else {
@@ -592,6 +606,7 @@ class NativeAudioService : Service() {
             playing = false
             ended = false
             lastEvent = "Native buffering for more audio"
+            rememberEvent(lastEvent)
         }
         acquirePlaybackLocks()
         updatePlaybackState()
@@ -605,6 +620,7 @@ class NativeAudioService : Service() {
             playing = false
             ended = true
             lastEvent = "Native queue ended"
+            rememberEvent(lastEvent)
         }
         releasePlaybackLocks()
         unregisterNoisyReceiver()
@@ -712,36 +728,44 @@ class NativeAudioService : Service() {
     }
 
     private fun handleResume() {
+        requestAudioFocus()
+        acquirePlaybackLocks()
+        registerNoisyReceiver()
+        ensureMediaSession()
+        startForeground(NOTIFICATION_ID, notification())
         val current = player
         if (current != null) {
             try {
-                acquirePlaybackLocks()
-                registerNoisyReceiver()
                 current.start()
                 synchronized(lock) {
                     active = true
                     playing = true
                     ended = false
                     lastEvent = "Native playback resumed"
+                    rememberEvent(lastEvent)
                 }
                 updatePlaybackState()
                 updateNotification()
                 return
-            } catch (_err: Exception) {
+            } catch (err: Exception) {
+                synchronized(lock) {
+                    error = "Native resume failed: ${err.message ?: err.javaClass.simpleName}"
+                    lastEvent = error
+                    rememberEvent(lastEvent)
+                }
             }
         }
         synchronized(lock) {
             if (queue.isEmpty()) {
+                lastEvent = "Native resume ignored: empty queue"
+                rememberEvent(lastEvent)
                 return
             }
             active = true
             ended = false
             lastEvent = "Native playback resumed"
+            rememberEvent(lastEvent)
         }
-        requestAudioFocus()
-        acquirePlaybackLocks()
-        registerNoisyReceiver()
-        startForeground(NOTIFICATION_ID, notification())
         playCurrent(positionMs)
     }
 
@@ -817,6 +841,7 @@ class NativeAudioService : Service() {
             synchronized(lock) {
                 error = "Wake lock failed: ${err.message ?: err.javaClass.simpleName}"
                 lastEvent = error
+                rememberEvent(lastEvent)
             }
         }
         try {
@@ -834,6 +859,7 @@ class NativeAudioService : Service() {
             synchronized(lock) {
                 error = "Wi-Fi lock failed: ${err.message ?: err.javaClass.simpleName}"
                 lastEvent = error
+                rememberEvent(lastEvent)
             }
         }
     }
@@ -867,6 +893,7 @@ class NativeAudioService : Service() {
             synchronized(lock) {
                 error = "Noisy receiver failed: ${err.message ?: err.javaClass.simpleName}"
                 lastEvent = error
+                rememberEvent(lastEvent)
             }
         }
     }
@@ -913,12 +940,17 @@ class NativeAudioService : Service() {
         val playing: Boolean,
         val ended: Boolean,
         val index: Int,
+        val queueSize: Int,
         val positionMs: Long,
         val durationMs: Long,
         val title: String,
         val subtitle: String,
         val lastEvent: String,
         val error: String,
+        val wakeLockHeld: Boolean,
+        val wifiLockHeld: Boolean,
+        val noisyReceiverRegistered: Boolean,
+        val recentEvents: List<String>,
     )
 
     companion object {
@@ -948,6 +980,7 @@ class NativeAudioService : Service() {
         private var subtitle = "Audiobook"
         private var lastEvent = "Native audio idle"
         private var error = ""
+        private var recentEvents: List<String> = listOf("Native audio idle")
         @Volatile private var currentService: NativeAudioService? = null
 
         @JvmStatic
@@ -965,6 +998,7 @@ class NativeAudioService : Service() {
                 subtitle = nextSubtitle.ifBlank { "Audiobook" }
                 error = ""
                 lastEvent = "Native queue requested"
+                rememberEvent(lastEvent)
             }
         }
 
@@ -972,7 +1006,34 @@ class NativeAudioService : Service() {
             if (active) {
                 positionMs = currentService?.currentPositionMs() ?: positionMs
             }
-            StateSnapshot(active, playing, ended, index, positionMs, durationMs, title, subtitle, lastEvent, error)
+            val service = currentService
+            StateSnapshot(
+                active,
+                playing,
+                ended,
+                index,
+                queue.size,
+                positionMs,
+                durationMs,
+                title,
+                subtitle,
+                lastEvent,
+                error,
+                service?.playbackWakeLock?.isHeld == true,
+                service?.playbackWifiLock?.isHeld == true,
+                service?.noisyReceiverRegistered == true,
+                recentEvents,
+            )
+        }
+
+        private fun rememberEvent(event: String) {
+            if (event.isBlank()) {
+                return
+            }
+            if (recentEvents.lastOrNull() == event) {
+                return
+            }
+            recentEvents = (recentEvents + event).takeLast(12)
         }
 
         private fun parseUrlsFromJson(raw: String): List<String> {
@@ -992,16 +1053,27 @@ class NativeAudioService : Service() {
         @JvmStatic
         fun stateJson(event: String): String {
             val snapshot = snapshot()
+            val eventText = if (event.isNotBlank()) event else snapshot.lastEvent
+            synchronized(lock) {
+                rememberEvent(eventText)
+            }
+            val recent = JSONArray()
+            snapshot().recentEvents.forEach { recent.put(it) }
             val output = JSONObject()
                 .put("available", true)
                 .put("active", snapshot.active)
                 .put("playing", snapshot.playing)
                 .put("ended", snapshot.ended)
                 .put("index", snapshot.index)
+                .put("queueSize", snapshot.queueSize)
                 .put("positionSeconds", snapshot.positionMs / 1000.0)
                 .put("durationSeconds", snapshot.durationMs / 1000.0)
-                .put("lastEvent", if (event.isNotBlank()) event else snapshot.lastEvent)
+                .put("lastEvent", eventText)
                 .put("error", snapshot.error)
+                .put("wakeLockHeld", snapshot.wakeLockHeld)
+                .put("wifiLockHeld", snapshot.wifiLockHeld)
+                .put("noisyReceiverRegistered", snapshot.noisyReceiverRegistered)
+                .put("recentEvents", recent)
             return output.toString()
         }
     }

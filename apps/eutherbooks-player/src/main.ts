@@ -28,6 +28,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
+const appVersion = "0.1.18";
+const appBuild = "0.1.18-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -761,17 +763,33 @@ async function maybeReportNativeAudioIssue(event: string, force = false): Promis
 }
 
 function playerBugPayload(event: string, state: NativeAudioState): Record<string, unknown> {
+  const cacheState = audioCacheState();
   return {
     event,
     app: "eutherbooks-player",
-    version: "0.1.17",
+    version: appVersion,
+    build: appBuild,
     endpoint: settings.serverUrl,
     username: settings.username,
     bookId: selectedBookId,
     chapterIndex: selectedChapterIndex,
-    modelBackend: settings.modelBackend,
-    voiceId: settings.voiceId,
+    settings: {
+      modelBackend: settings.modelBackend,
+      voiceId: settings.voiceId,
+      autoPlay: settings.autoPlay,
+      autoNext: settings.autoNext,
+      autoBookmark: settings.autoBookmark,
+      cacheAudio: settings.cacheAudio,
+      sleepTimerMinutes: settings.sleepTimerMinutes,
+    },
     jobId: currentJob?.id ?? session?.jobId ?? "",
+    currentJob: summarizeJob(currentJob),
+    nextJob: summarizeJob(nextJob),
+    nativeQueue: {
+      queuedUrls: nativeQueuedUrlsKey ? nativeQueuedUrlsKey.split("\n").filter(Boolean).length : 0,
+      stateQueueSize: state.queueSize,
+      index: state.index,
+    },
     session: session
       ? {
           partIndex: session.currentIndex,
@@ -781,6 +799,21 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
           totalParts: session.totalParts,
         }
       : null,
+    health: {
+      status: health?.status ?? "unknown",
+      ttsBackend: health?.tts_backend ?? "unknown",
+      audioFreeBytes: health?.storage?.audio_free_bytes ?? null,
+      audioDir: health?.storage?.audio_dir ?? null,
+      eutherlinkQueuedOrRunning: health?.eutherlink?.queued_or_running ?? null,
+      dotsLoadedModel: health?.eutherlink?.dots_tts?.loaded_model ?? null,
+      dotsStatus: health?.eutherlink?.dots_tts?.status ?? null,
+    },
+    cache: {
+      enabled: cacheState.enabled,
+      cached: cacheState.cached,
+      pending: cacheState.pending,
+      lastEvent: cacheState.lastEvent,
+    },
     nativeAudio: state,
     wakeLock: wakeLockStatus(),
     mediaSession: mediaSessionStatus,
@@ -789,6 +822,30 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
     visible: document.visibilityState,
     online: navigator.onLine,
     timestamp: new Date().toISOString(),
+  };
+}
+
+function summarizeJob(job: Job | null): Record<string, unknown> | null {
+  if (!job) {
+    return null;
+  }
+  return {
+    id: job.id,
+    status: job.status,
+    owner: job.owner,
+    bookId: job.book_id,
+    chapters: job.chapter_indexes,
+    voice: job.voice,
+    modelBackend: job.tts_options?.model_backend ?? null,
+    audioFiles: job.audio_files.length,
+    totalAudioFiles: job.total_audio_files,
+    currentChapterIndex: job.current_chapter_index,
+    currentChunkIndex: job.current_chunk_index,
+    totalChunks: job.total_chunks,
+    workerProgress: job.worker_progress,
+    progressLabel: job.progress_label,
+    progressDetail: job.progress_detail,
+    error: job.error,
   };
 }
 
@@ -1142,7 +1199,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
         <small>Bookmark: ${bookmark ? `${escapeHtml(bookmark.label)} · ${bookmark.auto ? "auto" : "manual"}` : "none for this voice"}</small>
         <small>Wake: ${escapeHtml(wakeLockStatus())}</small>
-        <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
+        <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · queue ${nativeState.index}/${nativeState.queueSize} · wake ${nativeState.wakeLockHeld ? "on" : "off"} · wifi ${nativeState.wifiLockHeld ? "on" : "off"} · headset ${nativeState.noisyReceiverRegistered ? "watching" : "off"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
         <small>Audio disk free: ${escapeHtml(freeAudioDisk)}</small>
@@ -1152,13 +1209,14 @@ function appMarkup(modelVoices: Voice[]): string {
       </section>
 
       <section class="beta-panel">
-        <strong>Beta roadmap</strong>
+        <strong>Beta roadmap · ${escapeHtml(appBuild)}</strong>
         <ul>
           <li><span class="done">Live</span> Endpoint failover, native HTTP, signed APK pipeline</li>
           <li><span class="done">Live</span> Native Android audio service, foreground playback, wake lock</li>
           <li><span class="done">Live</span> Manual bookmarks, auto-bookmark, resume per voice and model</li>
           <li><span class="done">Live</span> Sleep timer hold, auto-next generation, local audio cache</li>
-          <li><span class="beta">Beta</span> Media Session controls, native queue status, buffer diagnostics</li>
+          <li><span class="done">Live</span> Media Session controls, native queue status, buffer diagnostics</li>
+          <li><span class="beta">Beta</span> Versioned APK reports with lock, queue, cache and job telemetry</li>
           <li><span class="next">Next</span> Lockscreen notification controls, richer queue controls, playback telemetry</li>
         </ul>
       </section>

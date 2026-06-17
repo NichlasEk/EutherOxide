@@ -6,10 +6,15 @@ export type NativeAudioState = {
   playing: boolean;
   ended: boolean;
   index: number;
+  queueSize: number;
   positionSeconds: number;
   durationSeconds: number;
   lastEvent: string;
   error: string;
+  wakeLockHeld: boolean;
+  wifiLockHeld: boolean;
+  noisyReceiverRegistered: boolean;
+  recentEvents: string[];
 };
 
 const unavailableState: NativeAudioState = {
@@ -18,10 +23,15 @@ const unavailableState: NativeAudioState = {
   playing: false,
   ended: false,
   index: 0,
+  queueSize: 0,
   positionSeconds: 0,
   durationSeconds: 0,
   lastEvent: "Native audio unavailable",
   error: "",
+  wakeLockHeld: false,
+  wifiLockHeld: false,
+  noisyReceiverRegistered: false,
+  recentEvents: [],
 };
 
 let lastState: NativeAudioState = unavailableState;
