@@ -615,7 +615,6 @@ class NativeAudioService : Service() {
             )
             nextPlayer.setDataSource(url)
             nextPlayer.setOnPreparedListener { prepared ->
-                ensurePlaybackCanContinue()
                 synchronized(lock) {
                     durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                     positionMs = startPositionMs.coerceIn(0L, max(0L, durationMs - 250L))
@@ -812,22 +811,6 @@ class NativeAudioService : Service() {
                         audioBase.trimEnd('/') + "/" + value.trimStart('/')
                     }
                 }
-        }
-    }
-
-    private fun ensurePlaybackCanContinue() {
-        requestAudioFocus()
-        acquirePlaybackLocks()
-        registerNoisyReceiver()
-        ensureMediaSession()
-        try {
-            startForeground(NOTIFICATION_ID, notification())
-        } catch (err: Exception) {
-            synchronized(lock) {
-                error = "Native foreground refresh failed: ${err.message ?: err.javaClass.simpleName}"
-                lastEvent = error
-                rememberEvent(lastEvent)
-            }
         }
     }
 
