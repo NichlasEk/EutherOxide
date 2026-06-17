@@ -7736,7 +7736,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         <strong>yard</strong>
         <span class="mode-tabs">
           <button id="snapshot-mode" type="button" class="is-active">Snapshot</button>
-          <button id="live-mode" type="button">Live WebRTC</button>
+          <button id="live-mode" type="button">Live MSE</button>
         </span>
         <span class="camera-toolbar">
           <span id="rotation-status">Rotation 0 grader</span>
@@ -7765,7 +7765,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
             Volym
             <input id="live-volume" type="range" min="0" max="100" value="60" />
           </label>
-          <span id="live-status">WebRTC redo</span>
+          <span id="live-status">MSE redo</span>
         </div>
         <figure id="live-frame" class="live-frame" data-rotation="0">
           <video id="yard-video" playsinline autoplay muted></video>
@@ -7801,8 +7801,11 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let refreshTimer = 0;
     let fallbackFullscreen = false;
     let liveFullscreen = false;
-    let peer = null;
     let liveSocket = null;
+    let mediaSource = null;
+    let sourceBuffer = null;
+    let sourceObjectUrl = "";
+    let pendingSegments = [];
     let liveEnabled = false;
     let audioEnabled = false;
     let cameraMode = "snapshot";
@@ -7810,7 +7813,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let cameraPanX = 0;
     let cameraPanY = 0;
     let suppressFullscreenUntil = 0;
-    let liveTrackCount = 0;
+    let liveBytes = 0;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
@@ -7867,8 +7870,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     function updateLiveStatus(text) {
       const dimensions = video.videoWidth && video.videoHeight ? ` ${video.videoWidth}x${video.videoHeight}` : "";
-      const tracks = liveTrackCount ? ` tracks:${liveTrackCount}` : "";
-      liveStatus.textContent = `${text}${tracks}${dimensions}`;
+      const kb = liveBytes ? ` ${Math.round(liveBytes / 1024)} KB` : "";
+      liveStatus.textContent = `${text}${dimensions}${kb}`;
     }
 
     function normalizeRefresh(value) {
@@ -8107,76 +8110,110 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     function stopLive() {
       liveEnabled = false;
-      liveTrackCount = 0;
+      liveBytes = 0;
       if (liveSocket) liveSocket.close();
       liveSocket = null;
-      if (peer) peer.close();
-      peer = null;
+      sourceBuffer = null;
+      pendingSegments = [];
       if (video.srcObject) {
         video.srcObject.getTracks().forEach((track) => track.stop());
       }
       video.srcObject = null;
+      video.removeAttribute("src");
+      if (mediaSource && mediaSource.readyState === "open") {
+        try {
+          mediaSource.endOfStream();
+        } catch {}
+      }
+      mediaSource = null;
+      if (sourceObjectUrl) {
+        URL.revokeObjectURL(sourceObjectUrl);
+        sourceObjectUrl = "";
+      }
       liveConnect.textContent = "Starta live";
-      updateLiveStatus("WebRTC stoppad");
+      updateLiveStatus("MSE stoppad");
     }
 
     async function startLive() {
       stopLive();
       liveEnabled = true;
       liveConnect.textContent = "Stoppa live";
-      updateLiveStatus("Ansluter WebRTC...");
-      const stream = new MediaStream();
-      video.srcObject = stream;
+      updateLiveStatus("Ansluter MSE...");
       video.muted = !audioEnabled;
       video.volume = Number(liveVolume.value) / 100;
-      peer = new RTCPeerConnection();
-      peer.addTransceiver("video", { direction: "recvonly" });
-      peer.addTransceiver("audio", { direction: "recvonly" });
-      peer.addEventListener("track", (event) => {
-        if (event.streams && event.streams[0]) {
-          video.srcObject = event.streams[0];
-          liveTrackCount = event.streams[0].getTracks().length;
-        } else {
-          stream.addTrack(event.track);
-          liveTrackCount = stream.getTracks().length;
+      const MediaSourceCtor = window.ManagedMediaSource || window.MediaSource;
+      if (!MediaSourceCtor) {
+        updateLiveStatus("MSE saknas i browsern");
+        return;
+      }
+      const supportedCodecs = ["avc1.640029", "avc1.64002A", "avc1.640033", "hvc1.1.6.L153.B0", "mp4a.40.2", "mp4a.40.5", "flac", "opus"]
+        .filter((codec) => MediaSourceCtor.isTypeSupported(`video/mp4; codecs="${codec}"`))
+        .join();
+      if (!supportedCodecs) {
+        updateLiveStatus("Inga MSE-codecs stöds");
+        return;
+      }
+      mediaSource = new MediaSourceCtor();
+      if (window.ManagedMediaSource && mediaSource instanceof window.ManagedMediaSource) {
+        video.disableRemotePlayback = true;
+        video.srcObject = mediaSource;
+      } else {
+        sourceObjectUrl = URL.createObjectURL(mediaSource);
+        video.src = sourceObjectUrl;
+      }
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      liveSocket = new WebSocket(`${proto}://${window.location.host}/api/camera/frigate/live/mse/api/ws?src=yard_main`);
+      liveSocket.binaryType = "arraybuffer";
+      let mseCodecsSent = false;
+      const requestMseStream = () => {
+        if (mseCodecsSent || !liveSocket || liveSocket.readyState !== WebSocket.OPEN || !mediaSource || mediaSource.readyState !== "open") return;
+        mseCodecsSent = true;
+        liveSocket.send(JSON.stringify({ type: "mse", value: supportedCodecs }));
+        updateLiveStatus("MSE codecs skickade");
+      };
+      const appendNextSegment = () => {
+        if (!sourceBuffer || sourceBuffer.updating || pendingSegments.length === 0) return;
+        try {
+          sourceBuffer.appendBuffer(pendingSegments.shift());
+        } catch {
+          updateLiveStatus("MSE append fel");
         }
-        updateLiveStatus(`Live ${event.track.kind}`);
-        requestAnimationFrame(layoutCameraMedia);
+      };
+      liveSocket.addEventListener("open", () => {
+        updateLiveStatus("MSE WS öppen");
+        requestMseStream();
+      });
+      mediaSource.addEventListener("sourceopen", () => {
+        requestMseStream();
+      }, { once: true });
+      liveSocket.addEventListener("message", (event) => {
+        if (typeof event.data === "string") {
+          const message = JSON.parse(event.data);
+          if (message.type !== "mse") return;
+          try {
+            sourceBuffer = mediaSource.addSourceBuffer(message.value);
+            if (sourceBuffer.mode) sourceBuffer.mode = "segments";
+            sourceBuffer.addEventListener("updateend", appendNextSegment);
+            updateLiveStatus("MSE buffer klar");
+            video.play().catch(() => {});
+          } catch {
+            updateLiveStatus("MSE codec fel");
+          }
+          return;
+        }
+        liveBytes += event.data.byteLength || 0;
+        pendingSegments.push(event.data);
+        appendNextSegment();
+        if (liveBytes < 1024 * 1024 || liveBytes % (1024 * 1024) < 65536) {
+          updateLiveStatus("MSE data");
+        }
         video.play().catch(() => {});
       });
-      peer.addEventListener("connectionstatechange", () => {
-        updateLiveStatus(`WebRTC ${peer.connectionState}`);
-      });
-      peer.addEventListener("iceconnectionstatechange", () => {
-        updateLiveStatus(`ICE ${peer.iceConnectionState}`);
-      });
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      liveSocket = new WebSocket(`${proto}://${window.location.host}/api/camera/frigate/live/webrtc/api/ws?src=yard_main`);
-      liveSocket.addEventListener("open", async () => {
-        updateLiveStatus("WS öppen");
-        peer.addEventListener("icecandidate", (event) => {
-          if (!event.candidate || liveSocket.readyState !== WebSocket.OPEN) return;
-          liveSocket.send(JSON.stringify({ type: "webrtc/candidate", value: event.candidate.candidate }));
-        });
-        const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        liveSocket.send(JSON.stringify({ type: "webrtc/offer", value: peer.localDescription.sdp }));
-        updateLiveStatus("Offer skickad");
-      });
-      liveSocket.addEventListener("message", async (event) => {
-        const message = JSON.parse(event.data);
-        if (message.type === "webrtc/answer") {
-          await peer.setRemoteDescription({ type: "answer", sdp: message.value });
-          updateLiveStatus("Answer mottagen");
-        } else if (message.type === "webrtc/candidate") {
-          await peer.addIceCandidate({ candidate: message.value, sdpMid: "0" }).catch(() => {});
-        }
-      });
       liveSocket.addEventListener("close", () => {
-        if (liveEnabled) updateLiveStatus("WebRTC stängd");
+        if (liveEnabled) updateLiveStatus("MSE stängd");
       });
       liveSocket.addEventListener("error", () => {
-        updateLiveStatus("WebRTC fel");
+        updateLiveStatus("MSE fel");
       });
     }
 
