@@ -265,6 +265,7 @@ type HostPermissions = {
   canUploadRoms: boolean;
   canManageLibrary: boolean;
   canAwardEutherium: boolean;
+  canCameraAdmin: boolean;
 };
 
 type AuthStatus = {
@@ -1327,6 +1328,7 @@ let hostPermissions: HostPermissions = {
   canUploadRoms: false,
   canManageLibrary: false,
   canAwardEutherium: false,
+  canCameraAdmin: false,
 };
 let lobbyStatus: LobbyStatus | null = null;
 let doomStatus: DoomStatus | null = null;
@@ -1859,6 +1861,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-workspace-window="books" type="button">Audiobooks</button>
             <button data-workspace-window="shopping" type="button">Shopping</button>
             <button data-workspace-window="interaction" type="button">Social Desk</button>
+            <button data-camera-admin-link type="button" hidden>EutherSight</button>
           </div>
         </div>
       </nav>
@@ -2482,6 +2485,7 @@ const userSettingsToggle = document.querySelector<HTMLButtonElement>("#user-sett
 const userMenuName = document.querySelector<HTMLElement>("#user-menu-name")!;
 const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-dropdown")!;
 const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu-action="admin"]')!;
+const cameraAdminLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-camera-admin-link]"));
 const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
 const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
 const workspaceWindowEyebrow = document.querySelector<HTMLElement>("#workspace-window-eyebrow")!;
@@ -3556,6 +3560,12 @@ adminOpen.addEventListener("click", async () => {
   await openAdminModal();
 });
 
+cameraAdminLinks.forEach((button) => {
+  button.addEventListener("click", () => {
+    window.location.href = "/camera-admin";
+  });
+});
+
 adminClose.addEventListener("click", () => {
   adminModal.classList.remove("is-open");
   adminModal.setAttribute("aria-hidden", "true");
@@ -3637,6 +3647,7 @@ adminUsers.addEventListener("click", async (event) => {
         can_upload_roms: String(next.canUploadRoms),
         can_manage_library: String(next.canManageLibrary),
         can_award_eutherium: String(next.canAwardEutherium),
+        can_camera_admin: String(next.canCameraAdmin),
       }),
     },
     1200,
@@ -6238,6 +6249,7 @@ async function refreshAuthStatus(): Promise<void> {
           canUploadRoms: false,
           canManageLibrary: false,
           canAwardEutherium: false,
+          canCameraAdmin: false,
         };
     updateChatPolling(status.authenticated);
     if (!status.authenticated) {
@@ -6253,6 +6265,7 @@ async function refreshAuthStatus(): Promise<void> {
       canUploadRoms: false,
       canManageLibrary: false,
       canAwardEutherium: false,
+      canCameraAdmin: false,
     };
     updateChatPolling(false);
     void leaveVideoChat(false);
@@ -13915,6 +13928,9 @@ function canHostManageLibrary(): boolean {
 
 function renderAdminAccess(): void {
   adminOpen.hidden = !hostIsAdmin;
+  cameraAdminLinks.forEach((button) => {
+    button.hidden = !hostPermissions.canCameraAdmin;
+  });
   if (!hostIsAdmin) {
     adminModal.classList.remove("is-open");
     adminModal.setAttribute("aria-hidden", "true");
@@ -13954,6 +13970,7 @@ function renderHostUsers(): void {
                 ${hostPermissionButton(user, "canUploadRoms", "Upload")}
                 ${hostPermissionButton(user, "canManageLibrary", "Library")}
                 ${hostPermissionButton(user, "canAwardEutherium", "Eutherium")}
+                ${hostPermissionButton(user, "canCameraAdmin", "Camera")}
               </div>
             </div>
           `,
@@ -13969,6 +13986,7 @@ function hostPermissionSummary(permissions: HostPermissions): string {
     permissions.canUploadRoms ? "Upload" : "",
     permissions.canManageLibrary ? "Library" : "",
     permissions.canAwardEutherium ? "Eutherium" : "",
+    permissions.canCameraAdmin ? "Camera" : "",
   ].filter(Boolean);
   return labels.length ? labels.join(", ") : "Read-only";
 }
