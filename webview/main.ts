@@ -539,7 +539,7 @@ type EutherBooksBookmark = {
   updated_at: number;
 };
 
-type EutherBooksModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf" | "grapheneos-matcha-en";
+type EutherBooksModelBackend = "voxcpm2" | "dots.tts-soar" | "dots.tts-mf" | "grapheneos-matcha-en" | "auto-fallback";
 
 type EutherBooksVoice = {
   id: string;
@@ -8069,6 +8069,8 @@ function eutherBooksVoiceGroups(): Array<[string, EutherBooksVoice[]]> {
         { id: "dots-mf-own-en", label: "Dots MF own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-mf" },
         { id: "dots-soar-own-sv", label: "Dots SOAR own voice SV", language: "sv", backend: "eutherlink", path: "user:own-sv", model_backend: "dots.tts-soar" },
         { id: "dots-soar-own-en", label: "Dots SOAR own voice EN", language: "en", backend: "eutherlink", path: "user:own-en", model_backend: "dots.tts-soar" },
+        { id: "auto-sv-female-warm", label: "Auto fallback warm female narrator", language: "sv", backend: "eutherlink", path: "preset:sv-female-warm", model_backend: "auto-fallback", default_length_scale: 1.15, default_seed: 774928057 },
+        { id: "auto-en-female-warm", label: "Auto fallback English warm female narrator", language: "en", backend: "eutherlink", path: "preset:en-female-warm", model_backend: "auto-fallback", default_length_scale: 1.15, default_seed: 2073739982 },
         { id: "grapheneos-matcha-en", label: "GrapheneOS Matcha EN fallback", language: "en", backend: "eutherlink", path: "preset:grapheneos-matcha-en", model_backend: "grapheneos-matcha-en", default_length_scale: 1.0 },
         { id: "custom", label: "Custom voice prompt", language: "sv", backend: "eutherlink", path: "", model_backend: "voxcpm2" },
       ];
@@ -8096,6 +8098,7 @@ function eutherBooksModelOptions(): string {
     `<option value="voxcpm2" ${active === "voxcpm2" ? "selected" : ""}>VoxCPM2</option>`,
     `<option value="dots.tts-mf" ${active === "dots.tts-mf" ? "selected" : ""}>Dots MF fast</option>`,
     `<option value="dots.tts-soar" ${active === "dots.tts-soar" ? "selected" : ""}>Dots SOAR quality</option>`,
+    `<option value="auto-fallback" ${active === "auto-fallback" ? "selected" : ""}>Auto fallback</option>`,
     `<option value="grapheneos-matcha-en" ${active === "grapheneos-matcha-en" ? "selected" : ""}>GrapheneOS Matcha EN</option>`,
   ].join("");
 }
@@ -8109,6 +8112,9 @@ function eutherBooksModelLabel(modelBackend: EutherBooksModelBackend): string {
   }
   if (modelBackend === "grapheneos-matcha-en") {
     return "GrapheneOS Matcha EN";
+  }
+  if (modelBackend === "auto-fallback") {
+    return "Auto fallback";
   }
   return "VoxCPM2";
 }
@@ -8158,7 +8164,7 @@ function eutherBooksLoadedDotsModelBackend(): EutherBooksModelBackend | null {
 
 function normalizeEutherBooksModelBackend(value: string): EutherBooksModelBackend {
   const normalized = value.trim().toLowerCase();
-  return normalized === "dots.tts-mf" || normalized === "dots.tts-soar" || normalized === "grapheneos-matcha-en" ? normalized : "voxcpm2";
+  return normalized === "dots.tts-mf" || normalized === "dots.tts-soar" || normalized === "grapheneos-matcha-en" || normalized === "auto-fallback" ? normalized : "voxcpm2";
 }
 
 function eutherBooksIsDotsModel(value: string): boolean {
@@ -8188,12 +8194,18 @@ function eutherBooksBaseVoiceId(voiceId: string): string {
   if (lower.startsWith("grapheneos-matcha-")) {
     return "grapheneos-matcha-en";
   }
+  if (lower.startsWith("auto-")) {
+    return normalized.slice("auto-".length);
+  }
   return normalized;
 }
 
 function eutherBooksVoiceIdForModelBackend(baseVoiceId: string, modelBackend: EutherBooksModelBackend, language: string): string {
   if (modelBackend === "grapheneos-matcha-en") {
     return "grapheneos-matcha-en";
+  }
+  if (modelBackend === "auto-fallback") {
+    return `auto-${baseVoiceId === "own-en" || baseVoiceId === "own-sv" ? language === "en" ? "en-female-warm" : "sv-female-warm" : baseVoiceId}`;
   }
   const ownVoiceId = language === "en" ? "own-en" : "own-sv";
   const ownDotsVoiceId =
