@@ -7700,17 +7700,10 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     button:active { transform: translateY(1px); }
     .mode-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
     .mode-tabs button.is-active { background: #1d3346; color: #fff; }
-    .snapshot-frame, .live-frame { box-sizing: border-box; display: grid; place-items: center; width: 100%; min-height: min(70vh, 720px); margin: 0; overflow: hidden; background: #05070a; cursor: zoom-in; touch-action: manipulation; }
-    .snapshot-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; min-height: 100dvh; border: 0; cursor: zoom-out; }
-    .live-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; min-height: 100dvh; border: 0; cursor: zoom-out; }
-    img, video { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; transform: rotate(var(--camera-rotation, 0deg)); transform-origin: center center; transition: transform .16s ease; }
-    .snapshot-frame[data-rotation="90"] img, .snapshot-frame[data-rotation="270"] img { max-width: min(70vh, 100vw); max-height: calc(100vw - 48px); }
-    .snapshot-frame.is-fullscreen img { max-width: 100vw; max-height: 100dvh; }
-    .snapshot-frame.is-fullscreen[data-rotation="90"] img, .snapshot-frame.is-fullscreen[data-rotation="270"] img { max-width: 100dvh; max-height: 100vw; }
-    .live-frame[data-rotation="90"] video, .live-frame[data-rotation="270"] video { max-width: min(70vh, 100vw); max-height: calc(100vw - 48px); }
-    .live-frame.is-fullscreen video { max-width: 100vw; max-height: 100dvh; }
-    .live-frame.is-fullscreen[data-rotation="90"] video, .live-frame.is-fullscreen[data-rotation="270"] video { max-width: 100dvh; max-height: 100vw; }
-    .live-panel[hidden], .snapshot-panel[hidden] { display: none; }
+    .snapshot-frame, .live-frame { --camera-zoom: 1; --camera-pan-x: 0px; --camera-pan-y: 0px; box-sizing: border-box; position: relative; width: 100%; height: min(70vh, 720px); min-height: 360px; margin: 0; overflow: hidden; background: #05070a; cursor: zoom-in; touch-action: none; user-select: none; }
+    .snapshot-frame[hidden], .live-panel[hidden] { display: none; }
+    .snapshot-frame.is-fullscreen, .live-frame.is-fullscreen { position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100dvh; min-height: 100dvh; border: 0; border-radius: 0; cursor: zoom-out; }
+    img, video { position: absolute; left: 50%; top: 50%; display: block; width: auto; height: auto; max-width: none; max-height: none; object-fit: contain; transform: translate(-50%, -50%) translate(var(--camera-pan-x), var(--camera-pan-y)) rotate(var(--camera-rotation, 0deg)) scale(var(--camera-zoom)); transform-origin: center center; transition: transform .08s ease; will-change: transform; }
     .live-tools { padding: 12px 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid rgba(180,205,218,.16); }
     .live-tools label { display: inline-flex; align-items: center; gap: 8px; color: #a9b8c2; font-weight: 700; }
     input[type="range"] { width: 140px; accent-color: #96d7ff; }
@@ -7812,6 +7805,11 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let liveSocket = null;
     let liveEnabled = false;
     let audioEnabled = false;
+    let cameraMode = "snapshot";
+    let cameraZoom = 1;
+    let cameraPanX = 0;
+    let cameraPanY = 0;
+    let suppressFullscreenUntil = 0;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
@@ -7820,6 +7818,50 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       liveFrame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
+      layoutCameraMedia();
+    }
+
+    function applyCameraZoom() {
+      const zoom = String(cameraZoom);
+      const panX = `${cameraPanX}px`;
+      const panY = `${cameraPanY}px`;
+      for (const target of [frame, liveFrame]) {
+        target.style.setProperty("--camera-zoom", zoom);
+        target.style.setProperty("--camera-pan-x", panX);
+        target.style.setProperty("--camera-pan-y", panY);
+      }
+    }
+
+    function mediaAspect(element) {
+      if (element instanceof HTMLVideoElement && element.videoWidth > 0 && element.videoHeight > 0) {
+        return element.videoWidth / element.videoHeight;
+      }
+      if (element instanceof HTMLImageElement && element.naturalWidth > 0 && element.naturalHeight > 0) {
+        return element.naturalWidth / element.naturalHeight;
+      }
+      return 16 / 9;
+    }
+
+    function fitMediaIntoFrame(frameElement, mediaElement) {
+      const bounds = frameElement.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return;
+      const aspect = mediaAspect(mediaElement);
+      const rotated = rotationDegrees === 90 || rotationDegrees === 270;
+      const maxWidth = rotated ? bounds.height : bounds.width;
+      const maxHeight = rotated ? bounds.width : bounds.height;
+      let width = maxWidth;
+      let height = width / aspect;
+      if (height > maxHeight) {
+        height = maxHeight;
+        width = height * aspect;
+      }
+      mediaElement.style.width = `${Math.max(1, width)}px`;
+      mediaElement.style.height = `${Math.max(1, height)}px`;
+    }
+
+    function layoutCameraMedia() {
+      fitMediaIntoFrame(frame, live);
+      fitMediaIntoFrame(liveFrame, video);
     }
 
     function normalizeRefresh(value) {
@@ -7836,11 +7878,18 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
     }
 
+    function scheduleSnapshotRefresh() {
+      window.clearInterval(refreshTimer);
+      refreshTimer = 0;
+      if (cameraMode === "snapshot") {
+        refreshTimer = window.setInterval(refreshSnapshot, refreshMs);
+      }
+    }
+
     function applyRefresh(value) {
       refreshMs = normalizeRefresh(value);
       refreshRate.value = String(refreshMs);
-      window.clearInterval(refreshTimer);
-      refreshTimer = window.setInterval(refreshSnapshot, refreshMs);
+      scheduleSnapshotRefresh();
     }
 
     async function loadCameraSettings() {
@@ -7894,6 +7943,85 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       }
     });
 
+    const activePointers = new Map();
+    let gestureStart = null;
+
+    function pointerDistance(points) {
+      const dx = points[0].clientX - points[1].clientX;
+      const dy = points[0].clientY - points[1].clientY;
+      return Math.max(1, Math.hypot(dx, dy));
+    }
+
+    function pointerMidpoint(points) {
+      return {
+        x: (points[0].clientX + points[1].clientX) / 2,
+        y: (points[0].clientY + points[1].clientY) / 2,
+      };
+    }
+
+    function beginGesture() {
+      const points = [...activePointers.values()];
+      if (points.length === 0) return;
+      const midpoint = points.length >= 2 ? pointerMidpoint(points) : { x: points[0].clientX, y: points[0].clientY };
+      gestureStart = {
+        points: points.length,
+        zoom: cameraZoom,
+        panX: cameraPanX,
+        panY: cameraPanY,
+        distance: points.length >= 2 ? pointerDistance(points) : 1,
+        midpoint,
+      };
+    }
+
+    function clampPan() {
+      const limit = 900 * cameraZoom;
+      cameraPanX = Math.max(-limit, Math.min(limit, cameraPanX));
+      cameraPanY = Math.max(-limit, Math.min(limit, cameraPanY));
+      if (cameraZoom <= 1.01) {
+        cameraZoom = 1;
+        cameraPanX = 0;
+        cameraPanY = 0;
+      }
+    }
+
+    function updateGesture() {
+      const points = [...activePointers.values()];
+      if (!gestureStart || points.length === 0) return;
+      suppressFullscreenUntil = Date.now() + 350;
+      if (points.length >= 2) {
+        const distance = pointerDistance(points);
+        const midpoint = pointerMidpoint(points);
+        cameraZoom = Math.max(1, Math.min(5, gestureStart.zoom * (distance / gestureStart.distance)));
+        cameraPanX = gestureStart.panX + midpoint.x - gestureStart.midpoint.x;
+        cameraPanY = gestureStart.panY + midpoint.y - gestureStart.midpoint.y;
+      } else if (cameraZoom > 1) {
+        const point = points[0];
+        cameraPanX = gestureStart.panX + point.clientX - gestureStart.midpoint.x;
+        cameraPanY = gestureStart.panY + point.clientY - gestureStart.midpoint.y;
+      }
+      clampPan();
+      applyCameraZoom();
+    }
+
+    function installFrameGestures(frameElement) {
+      frameElement.addEventListener("pointerdown", (event) => {
+        activePointers.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+        frameElement.setPointerCapture(event.pointerId);
+        beginGesture();
+      });
+      frameElement.addEventListener("pointermove", (event) => {
+        if (!activePointers.has(event.pointerId)) return;
+        activePointers.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+        updateGesture();
+      });
+      for (const eventName of ["pointerup", "pointercancel", "pointerleave"]) {
+        frameElement.addEventListener(eventName, (event) => {
+          activePointers.delete(event.pointerId);
+          beginGesture();
+        });
+      }
+    }
+
     function fullscreenActive() {
       return document.fullscreenElement === frame || fallbackFullscreen;
     }
@@ -7922,6 +8050,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     }
 
     frame.addEventListener("click", async () => {
+      if (Date.now() < suppressFullscreenUntil) return;
       if (fullscreenActive()) {
         await exitCameraFullscreen();
       } else {
@@ -7930,6 +8059,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     });
 
     liveFrame.addEventListener("click", async () => {
+      if (Date.now() < suppressFullscreenUntil) return;
       if (document.fullscreenElement === liveFrame || liveFullscreen) {
         await exitCameraFullscreen();
       } else {
@@ -7952,16 +8082,20 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       const liveActive = document.fullscreenElement === liveFrame || liveFullscreen;
       liveFrame.classList.toggle("is-fullscreen", liveActive);
       document.body.classList.toggle("camera-fullscreen", active || liveActive);
+      requestAnimationFrame(layoutCameraMedia);
     });
 
     function setMode(mode) {
       const isLive = mode === "live";
+      cameraMode = isLive ? "live" : "snapshot";
       frame.hidden = isLive;
       livePanel.hidden = !isLive;
       snapshotMode.classList.toggle("is-active", !isLive);
       liveMode.classList.toggle("is-active", isLive);
+      scheduleSnapshotRefresh();
       if (isLive && !liveEnabled) startLive();
       if (!isLive) refreshSnapshot();
+      requestAnimationFrame(layoutCameraMedia);
     }
 
     function stopLive() {
@@ -7993,6 +8127,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       peer.addEventListener("track", (event) => {
         stream.addTrack(event.track);
         liveStatus.textContent = "Live";
+        requestAnimationFrame(layoutCameraMedia);
         video.play().catch(() => {});
       });
       peer.addEventListener("connectionstatechange", () => {
@@ -8040,7 +8175,13 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     liveVolume.addEventListener("input", () => {
       video.volume = Number(liveVolume.value) / 100;
     });
+    live.addEventListener("load", layoutCameraMedia);
+    video.addEventListener("loadedmetadata", layoutCameraMedia);
+    window.addEventListener("resize", layoutCameraMedia);
+    installFrameGestures(frame);
+    installFrameGestures(liveFrame);
 
+    applyCameraZoom();
     applyRefresh(refreshMs);
     loadCameraSettings().catch(() => {});
   </script>
