@@ -78,7 +78,7 @@ mkdir -p /home/nichlas/roms
 
 ### 2b. Android Download APKs
 
-The EutherHost UI exposes Android downloads under `/downloads/*.apk`.
+The EutherHost UI exposes public Android downloads under `/downloads/*.apk`.
 Build both fronted Android APKs after app/frontend changes that should ship to
 phones:
 
@@ -184,6 +184,9 @@ login_rate_limit_max_attempts = 8
 secure_cookies = true
 allowed_origins = "https://apothictech.se,https://play.apothictech.se,http://192.168.32.186:8080"
 library_read_only = true
+app_public_server_url = "https://apothictech.se"
+app_lan_server_url = "http://192.168.32.186:8080"
+eutherbooks_server_urls = "http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks"
 ```
 
 Create users with:

@@ -917,6 +917,9 @@ struct HostConfig {
     secure_cookies: bool,
     allowed_origins: Vec<String>,
     library_read_only: bool,
+    app_public_server_url: Option<String>,
+    app_lan_server_url: Option<String>,
+    eutherbooks_server_urls: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -1466,6 +1469,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", "/login") => send_login_page(stream, None),
         ("POST", "/api/login") => host_login(stream, state, &request),
         ("POST", "/api/app/login") => host_app_login(stream, state, &request),
+        ("GET", "/api/app/config") => send_json(stream, &host_app_config(state)),
         ("GET", "/api/app/status") => {
             let user = require_host_user_or_app(state, &request)?;
             let lan_server_url = host_app_lan_server_url(state, &user)?;
@@ -1475,6 +1479,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     "authenticated": true,
                     "user": user,
                     "lanServerUrl": lan_server_url,
+                    "config": host_app_config(state),
                 }),
             )
         }
@@ -1483,16 +1488,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/eutherbooks-player/log") => {
             host_eutherbooks_player_log(stream, state, &request)
         }
-        ("GET", path) if is_eutherlist_apk_download_path(path) => {
-            require_host_user(state, &request)?;
-            send_eutherlist_apk(stream)
-        }
-        ("GET", path) if is_euthersync_apk_download_path(path) => {
-            require_host_user(state, &request)?;
-            send_euthersync_apk(stream)
-        }
+        ("GET", path) if is_eutherlist_apk_download_path(path) => send_eutherlist_apk(stream),
+        ("GET", path) if is_euthersync_apk_download_path(path) => send_euthersync_apk(stream),
         ("GET", path) if is_eutherbooks_player_apk_download_path(path) => {
-            require_host_user(state, &request)?;
             send_eutherbooks_player_apk(stream)
         }
         ("GET", "/api/auth/status") => {
@@ -2421,6 +2419,7 @@ fn host_app_login(
             "user": users[index].name,
             "token": token,
             "lanServerUrl": users[index].app_lan_server_url.as_deref().unwrap_or(""),
+            "config": host_app_config(state),
         }),
     )
 }
@@ -2651,6 +2650,50 @@ fn host_app_lan_server_url(state: &HostState, username: &str) -> io::Result<Stri
         .and_then(|user| user.app_lan_server_url.as_deref())
         .unwrap_or("")
         .to_string())
+}
+
+fn host_app_config(state: &HostState) -> serde_json::Value {
+    let public_server_url = state.config.app_public_server_url.as_deref().unwrap_or("");
+    let lan_server_url = state.config.app_lan_server_url.as_deref().unwrap_or("");
+    let mut server_urls = Vec::new();
+    push_unique_url(&mut server_urls, lan_server_url);
+    push_unique_url(&mut server_urls, public_server_url);
+
+    let mut eutherbooks_urls = Vec::new();
+    for url in &state.config.eutherbooks_server_urls {
+        push_unique_url(&mut eutherbooks_urls, url);
+    }
+    if eutherbooks_urls.is_empty() {
+        if let Some(url) = eutherbooks_url_from_host(lan_server_url) {
+            push_unique_url(&mut eutherbooks_urls, &url);
+        }
+        if let Some(url) = eutherbooks_url_from_host(public_server_url) {
+            push_unique_url(&mut eutherbooks_urls, &url);
+        }
+    }
+
+    serde_json::json!({
+        "publicServerUrl": public_server_url,
+        "lanServerUrl": lan_server_url,
+        "serverUrls": server_urls,
+        "eutherbooksUrls": eutherbooks_urls,
+    })
+}
+
+fn eutherbooks_url_from_host(host_url: &str) -> Option<String> {
+    let clean = host_url.trim().trim_end_matches('/');
+    if clean.is_empty() {
+        return None;
+    }
+    Some(format!("{clean}/eutherbooks"))
+}
+
+fn push_unique_url(urls: &mut Vec<String>, url: &str) {
+    let clean = url.trim().trim_end_matches('/');
+    if clean.is_empty() || urls.iter().any(|known| known == clean) {
+        return;
+    }
+    urls.push(clean.to_string());
 }
 
 fn host_app_token_path(path: &str) -> bool {
@@ -10444,7 +10487,10 @@ fn load_host_config() -> io::Result<HostConfig> {
              login_rate_limit_max_attempts = 8\n\
              secure_cookies = false\n\
              allowed_origins = \"\"\n\
-             library_read_only = true\n",
+             library_read_only = true\n\
+             app_public_server_url = \"https://apothictech.se\"\n\
+             app_lan_server_url = \"http://192.168.32.186:8080\"\n\
+             eutherbooks_server_urls = \"http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks\"\n",
         )?;
     }
     let contents = fs::read_to_string(&path)?;
@@ -10471,6 +10517,17 @@ fn load_host_config() -> io::Result<HostConfig> {
         .map(str::to_string)
         .collect();
     let library_read_only = parse_toml_bool(&contents, "library_read_only").unwrap_or(true);
+    let app_public_server_url =
+        parse_toml_string(&contents, "app_public_server_url").filter(|value| !value.is_empty());
+    let app_lan_server_url =
+        parse_toml_string(&contents, "app_lan_server_url").filter(|value| !value.is_empty());
+    let eutherbooks_server_urls = parse_toml_string(&contents, "eutherbooks_server_urls")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url| url.trim_end_matches('/').to_string())
+        .collect();
     Ok(HostConfig {
         bind,
         rom_dir,
@@ -10480,6 +10537,9 @@ fn load_host_config() -> io::Result<HostConfig> {
         secure_cookies,
         allowed_origins,
         library_read_only,
+        app_public_server_url,
+        app_lan_server_url,
+        eutherbooks_server_urls,
     })
 }
 

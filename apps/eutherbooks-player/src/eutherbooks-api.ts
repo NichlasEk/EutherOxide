@@ -1,10 +1,21 @@
-import { AppSettings, Book, Chapter, Health, Job, ModelBackend, Voice } from "./types";
+import { AppSettings, Book, Chapter, Health, Job, ModelBackend, ServerRouteConfig, Voice } from "./types";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 const requestTimeoutMs = 3500;
 
 export class EutherBooksApi {
   constructor(private readonly baseUrl: string, private readonly authToken = "") {}
+
+  static async appConfig(baseUrl: string): Promise<ServerRouteConfig> {
+    const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/app/config`, {
+      headers: { "content-type": "application/json" },
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+    }
+    return response.json() as Promise<ServerRouteConfig>;
+  }
 
   static async status(baseUrl: string, authToken: string): Promise<{ authenticated: boolean; user: string; lanServerUrl?: string }> {
     const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/app/status`, {

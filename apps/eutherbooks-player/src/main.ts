@@ -22,14 +22,25 @@ import {
 } from "./native-audio";
 import type { NativeAudioState } from "./native-audio";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
-import { bookmarkKey, cleanServerUrl, loadBookmarks, loadSettings, saveBookmark, saveSettings, serverCandidates } from "./storage";
-import { AppSettings, Book, Bookmark, Chapter, Health, Job, PlaybackSession, Voice } from "./types";
+import {
+  bookmarkKey,
+  cleanServerUrl,
+  hostConfigCandidates,
+  loadBookmarks,
+  loadServerRouteConfig,
+  loadSettings,
+  saveBookmark,
+  saveServerRouteConfig,
+  saveSettings,
+  serverCandidates,
+} from "./storage";
+import { AppSettings, Book, Bookmark, Chapter, Health, Job, PlaybackSession, ServerRouteConfig, Voice } from "./types";
 import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.18";
-const appBuild = "0.1.18-beta";
+const appVersion = "0.1.20";
+const appBuild = "0.1.20-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -37,6 +48,7 @@ if (!root) {
 const appRoot = root;
 
 let settings = loadSettings();
+let routeConfig: ServerRouteConfig = loadServerRouteConfig();
 let api = new EutherBooksApi(settings.serverUrl, settings.authToken);
 let health: Health | null = null;
 let books: Book[] = [];
@@ -58,6 +70,7 @@ let sleepTimer: number | null = null;
 let sleepDeadline = 0;
 let userPausedPlayback = false;
 let lastPlaybackEvent = "Idle";
+let playbackEvents: string[] = ["Idle"];
 let mediaSessionStatus = "Media Session pending";
 let interactionLockUntil = 0;
 let queuedRender = false;
@@ -115,8 +128,26 @@ void boot();
 async function boot(): Promise<void> {
   await refreshAudioCacheState();
   await refreshNativeAudioState();
+  await refreshServerRouteConfig();
   await refreshAll();
   schedulePoll(600);
+}
+
+async function refreshServerRouteConfig(): Promise<void> {
+  const errors: string[] = [];
+  for (const candidate of hostConfigCandidates(settings.serverUrl, routeConfig)) {
+    try {
+      routeConfig = saveServerRouteConfig(await EutherBooksApi.appConfig(candidate));
+      endpointText = routeConfig.publicServerUrl || routeConfig.lanServerUrl || candidate;
+      setPlaybackEvent(`Route config loaded from ${candidate}`);
+      return;
+    } catch (err) {
+      errors.push(`${candidate}: ${err instanceof Error ? err.message : "failed"}`);
+    }
+  }
+  if (errors.length > 0 && !routeConfig.eutherbooksUrls.length) {
+    lastEndpointErrors = errors;
+  }
 }
 
 async function refreshAll(): Promise<void> {
@@ -124,7 +155,8 @@ async function refreshAll(): Promise<void> {
   errorText = "";
   lastEndpointErrors = [];
   render();
-  const candidates = serverCandidates(settings.serverUrl);
+  await refreshServerRouteConfig();
+  const candidates = serverCandidates(settings.serverUrl, routeConfig);
   for (const candidate of candidates) {
     try {
       await refreshSavedLogin(candidate);
@@ -219,7 +251,7 @@ async function generateCurrentChapter(cancelExisting = true): Promise<void> {
   nextJobKey = "";
   stopPlayback(false);
   statusText = "Starting generation";
-  lastPlaybackEvent = "Generating current chapter";
+  setPlaybackEvent("Generating current chapter");
   render();
   try {
     currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, selectedVoice(), cancelExisting);
@@ -312,7 +344,7 @@ async function ensureNextJob(): Promise<void> {
     nextJobKey = targetKey;
     warmAudioCacheForJob(nextJob);
     void updateNativeQueue("queue-next");
-    lastPlaybackEvent = `Queued next: ${chapterLabel(nextChapter)}`;
+    setPlaybackEvent(`Queued next: ${chapterLabel(nextChapter)}`);
     schedulePoll(1000);
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Could not queue next chapter";
@@ -332,22 +364,24 @@ async function maybeEnsureNextAhead(reason: string): Promise<void> {
   if (!nextChapter) {
     return;
   }
-  lastPlaybackEvent = lastPlaybackEvent === "Idle" ? `Auto-next check: ${reason}` : lastPlaybackEvent;
+  if (lastPlaybackEvent === "Idle") {
+    setPlaybackEvent(`Auto-next check: ${reason}`);
+  }
   await ensureNextJob();
 }
 
 async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void> {
   if (mode === "auto" && userPausedPlayback) {
-    lastPlaybackEvent = "Auto-play held by manual pause";
+    setPlaybackEvent("Auto-play held by manual pause");
     return;
   }
   if (!session || session.audioFiles.length === 0) {
-    lastPlaybackEvent = "No playable audio loaded";
+    setPlaybackEvent("No playable audio loaded");
     return;
   }
   const path = session.audioFiles[session.currentIndex];
   if (!path) {
-    lastPlaybackEvent = "No audio part at current position";
+    setPlaybackEvent("No audio part at current position");
     return;
   }
   if (await canUseNativeAudio()) {
@@ -369,7 +403,7 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
   void maybeEnsureNextAhead("play");
   await setPlaybackWakeLock(true);
   statusText = "Playing";
-  lastPlaybackEvent = mode === "auto" ? "Auto-play resumed" : "Manual play";
+  setPlaybackEvent(mode === "auto" ? "Auto-play resumed" : "Manual play");
   scheduleSleepTimer();
   startPlaybackWatchdog();
   updateAppMediaSession();
@@ -403,12 +437,12 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     audio.src = url;
     applyAudioOffset(session.currentSeconds, true);
     await audio.play();
-    lastPlaybackEvent = "Native failed; browser fallback playing";
+    setPlaybackEvent("Native failed; browser fallback playing");
   }
   await setPlaybackWakeLock(true);
   statusText = "Playing";
   if (!lastPlaybackEvent.includes("fallback")) {
-    lastPlaybackEvent = mode === "auto" ? "Native auto-play resumed" : "Native manual play";
+    setPlaybackEvent(mode === "auto" ? "Native auto-play resumed" : "Native manual play");
   }
   void maybeEnsureNextAhead("native-play");
   scheduleSleepTimer();
@@ -555,9 +589,9 @@ function stopPlayback(savePosition: boolean, manual = false): void {
   }
   if (manual) {
     userPausedPlayback = true;
-    lastPlaybackEvent = "Manual pause";
+    setPlaybackEvent("Manual pause");
   } else if (!savePosition) {
-    lastPlaybackEvent = "Playback stopped";
+    setPlaybackEvent("Playback stopped");
   }
   if (nativePlaybackActive) {
     const action = savePosition ? pauseNativeAudio : stopNativeAudio;
@@ -697,7 +731,7 @@ async function updateNativeQueue(reason: string): Promise<void> {
   nativeQueuedUrlsKey = key;
   const state = await updateNativeAudioQueue(urls);
   applyNativeAudioState(state);
-  lastPlaybackEvent = `Native queue updated: ${reason}`;
+  setPlaybackEvent(`Native queue updated: ${reason}`);
   updatePlayerShell();
 }
 
@@ -737,7 +771,7 @@ function applyNativeAudioState(state = nativeAudioState()): void {
     session = sessionFromJob(currentJob);
     session.currentIndex = Math.max(0, Math.min(nextIndex, Math.max(0, session.audioFiles.length - 1)));
     session.currentSeconds = Math.max(0, state.positionSeconds);
-    lastPlaybackEvent = "Native advanced to next chapter";
+    setPlaybackEvent("Native advanced to next chapter");
     return;
   }
   session.currentIndex = Math.max(0, Math.min(state.index, Math.max(0, session.audioFiles.length - 1)));
@@ -756,9 +790,11 @@ async function maybeReportNativeAudioIssue(event: string, force = false): Promis
   lastBugReportKey = key;
   try {
     await api.reportPlayerLog(playerBugPayload(event, state));
-    lastPlaybackEvent = state.error ? "Native bug report sent" : lastPlaybackEvent;
+    if (state.error) {
+      setPlaybackEvent("Native bug report sent");
+    }
   } catch (err) {
-    lastPlaybackEvent = `Bug report failed: ${err instanceof Error ? err.message : String(err)}`;
+    setPlaybackEvent(`Bug report failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -818,11 +854,19 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
     wakeLock: wakeLockStatus(),
     mediaSession: mediaSessionStatus,
     playback: lastPlaybackEvent,
+    playbackEvents,
     userAgent: navigator.userAgent,
     visible: document.visibilityState,
     online: navigator.onLine,
     timestamp: new Date().toISOString(),
   };
+}
+
+function setPlaybackEvent(event: string): void {
+  lastPlaybackEvent = event;
+  if (event && playbackEvents[playbackEvents.length - 1] !== event) {
+    playbackEvents = [...playbackEvents, `${new Date().toISOString()} ${event}`].slice(-16);
+  }
 }
 
 function summarizeJob(job: Job | null): Record<string, unknown> | null {
@@ -909,7 +953,7 @@ function applyBookmarkToSession(): void {
 function resumeBookmark(): void {
   const bookmark = currentBookmark();
   if (!bookmark || !session) {
-    lastPlaybackEvent = "No bookmark for this voice";
+    setPlaybackEvent("No bookmark for this voice");
     render();
     return;
   }
@@ -983,7 +1027,7 @@ function scheduleSleepTimer(): void {
   sleepTimer = window.setTimeout(() => {
     stopPlayback(true, true);
     statusText = "Sleep timer paused playback";
-    lastPlaybackEvent = "Sleep timer paused playback";
+    setPlaybackEvent("Sleep timer paused playback");
     render();
   }, settings.sleepTimerMinutes * 60_000);
 }
@@ -1217,7 +1261,9 @@ function appMarkup(modelVoices: Voice[]): string {
           <li><span class="done">Live</span> Sleep timer hold, auto-next generation, local audio cache</li>
           <li><span class="done">Live</span> Media Session controls, native queue status, buffer diagnostics</li>
           <li><span class="beta">Beta</span> Versioned APK reports with lock, queue, cache and job telemetry</li>
-          <li><span class="next">Next</span> Lockscreen notification controls, richer queue controls, playback telemetry</li>
+          <li><span class="done">Live</span> Lockscreen notification controls for previous, play/pause, next and stop</li>
+          <li><span class="beta">Beta</span> Richer queue diagnostics and playback telemetry</li>
+          <li><span class="next">Next</span> Dedicated queue screen with chapter prefetch controls</li>
         </ul>
       </section>
 
@@ -1286,7 +1332,7 @@ function bindUi(): void {
     if (selectedChapterHasAudio()) {
       const confirmed = window.confirm("This chapter already has generated audio for the selected voice and model. Regenerate it now?");
       if (!confirmed) {
-        lastPlaybackEvent = "Generate cancelled";
+        setPlaybackEvent("Generate cancelled");
         render();
         return;
       }
@@ -1295,7 +1341,7 @@ function bindUi(): void {
   });
   document.querySelector<HTMLButtonElement>("#bookmark")?.addEventListener("click", () => {
     saveCurrentBookmark(false);
-    lastPlaybackEvent = "Bookmark saved";
+    setPlaybackEvent("Bookmark saved");
     render();
   });
   document.querySelector<HTMLButtonElement>("#resume-bookmark")?.addEventListener("click", () => resumeBookmark());

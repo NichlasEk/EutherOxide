@@ -357,6 +357,8 @@ class NativeAudioService : Service() {
             ACTION_UPDATE_QUEUE -> handleUpdateQueue(intent)
             ACTION_PAUSE -> handlePause()
             ACTION_RESUME -> handleResume()
+            ACTION_PREVIOUS -> handlePrevious()
+            ACTION_NEXT -> handleNext()
             ACTION_STOP -> handleStop()
             ACTION_SEEK -> handleSeek(intent)
         }
@@ -505,6 +507,70 @@ class NativeAudioService : Service() {
         }
         if (shouldStart) {
             playCurrent(positionMs)
+        }
+    }
+
+    private fun handlePrevious() {
+        val targetIndex: Int
+        val targetPositionMs: Long
+        synchronized(lock) {
+            if (queue.isEmpty()) {
+                lastEvent = "Native previous ignored: empty queue"
+                rememberEvent(lastEvent)
+                return
+            }
+            val currentPosition = currentPositionMs()
+            if (currentPosition > 3500L || index <= 0) {
+                targetIndex = index.coerceIn(0, queue.size - 1)
+                targetPositionMs = 0L
+            } else {
+                targetIndex = (index - 1).coerceIn(0, queue.size - 1)
+                targetPositionMs = 0L
+            }
+            index = targetIndex
+            positionMs = targetPositionMs
+            durationMs = 0L
+            active = true
+            ended = false
+            lastEvent = "Native previous"
+            rememberEvent(lastEvent)
+        }
+        requestAudioFocus()
+        acquirePlaybackLocks()
+        registerNoisyReceiver()
+        ensureMediaSession()
+        startForeground(NOTIFICATION_ID, notification())
+        playCurrent(targetPositionMs)
+    }
+
+    private fun handleNext() {
+        val targetIndex: Int
+        synchronized(lock) {
+            if (queue.isEmpty()) {
+                lastEvent = "Native next ignored: empty queue"
+                rememberEvent(lastEvent)
+                return
+            }
+            targetIndex = index + 1
+        }
+        if (targetIndex < synchronized(lock) { queue.size }) {
+            synchronized(lock) {
+                index = targetIndex
+                positionMs = 0L
+                durationMs = 0L
+                active = true
+                ended = false
+                lastEvent = "Native next"
+                rememberEvent(lastEvent)
+            }
+            requestAudioFocus()
+            acquirePlaybackLocks()
+            registerNoisyReceiver()
+            ensureMediaSession()
+            startForeground(NOTIFICATION_ID, notification())
+            playCurrent(0L)
+        } else {
+            bufferAtQueueEnd(targetIndex)
         }
     }
 
@@ -672,9 +738,21 @@ class NativeAudioService : Service() {
             Intent(this, NativeAudioService::class.java).setAction(if (snapshot.playing) ACTION_PAUSE else ACTION_RESUME),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val stopIntent = PendingIntent.getService(
+        val previousIntent = PendingIntent.getService(
             this,
             2,
+            Intent(this, NativeAudioService::class.java).setAction(ACTION_PREVIOUS),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val nextIntent = PendingIntent.getService(
+            this,
+            3,
+            Intent(this, NativeAudioService::class.java).setAction(ACTION_NEXT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val stopIntent = PendingIntent.getService(
+            this,
+            4,
             Intent(this, NativeAudioService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -690,13 +768,15 @@ class NativeAudioService : Service() {
             .setOngoing(snapshot.playing)
             .setOnlyAlertOnce(true)
             .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_media_previous, "Previous", previousIntent)
             .addAction(
                 if (snapshot.playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
                 if (snapshot.playing) "Pause" else "Play",
                 playPauseIntent
             )
+            .addAction(android.R.drawable.ic_media_next, "Next", nextIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
-            .setStyle(Notification.MediaStyle().setMediaSession(mediaSession?.sessionToken))
+            .setStyle(Notification.MediaStyle().setMediaSession(mediaSession?.sessionToken).setShowActionsInCompactView(0, 1, 2))
         return builder.build()
     }
 
@@ -713,6 +793,14 @@ class NativeAudioService : Service() {
 
                 override fun onPause() {
                     handlePause()
+                }
+
+                override fun onSkipToNext() {
+                    handleNext()
+                }
+
+                override fun onSkipToPrevious() {
+                    handlePrevious()
                 }
 
                 override fun onStop() {
@@ -782,6 +870,8 @@ class NativeAudioService : Service() {
                 .setActions(
                     PlaybackState.ACTION_PLAY or
                         PlaybackState.ACTION_PAUSE or
+                        PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                        PlaybackState.ACTION_SKIP_TO_NEXT or
                         PlaybackState.ACTION_STOP or
                         PlaybackState.ACTION_SEEK_TO
                 )
@@ -958,6 +1048,8 @@ class NativeAudioService : Service() {
         const val ACTION_UPDATE_QUEUE = "com.nichlasek.eutherbooksplayer.UPDATE_QUEUE"
         const val ACTION_PAUSE = "com.nichlasek.eutherbooksplayer.PAUSE"
         const val ACTION_RESUME = "com.nichlasek.eutherbooksplayer.RESUME"
+        const val ACTION_PREVIOUS = "com.nichlasek.eutherbooksplayer.PREVIOUS"
+        const val ACTION_NEXT = "com.nichlasek.eutherbooksplayer.NEXT"
         const val ACTION_STOP = "com.nichlasek.eutherbooksplayer.STOP"
         const val ACTION_SEEK = "com.nichlasek.eutherbooksplayer.SEEK"
         const val EXTRA_URLS_JSON = "urlsJson"

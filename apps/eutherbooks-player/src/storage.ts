@@ -1,7 +1,8 @@
-import { AppSettings, Bookmark, ModelBackend } from "./types";
+import { AppSettings, Bookmark, ModelBackend, ServerRouteConfig } from "./types";
 
 const settingsKey = "eutherbooks-player-settings";
 const bookmarksKey = "eutherbooks-player-bookmarks";
+const serverRouteConfigKey = "eutherbooks-player-server-route-config";
 
 export const defaultSettings: AppSettings = {
   serverUrl: defaultServerUrl(),
@@ -54,6 +55,23 @@ export function saveBookmark(bookmark: Bookmark): void {
   localStorage.setItem(bookmarksKey, JSON.stringify(bookmarks));
 }
 
+export function loadServerRouteConfig(): ServerRouteConfig {
+  try {
+    return normalizeServerRouteConfig(JSON.parse(localStorage.getItem(serverRouteConfigKey) ?? "{}"));
+  } catch (_err) {
+    return normalizeServerRouteConfig({});
+  }
+}
+
+export function saveServerRouteConfig(config: Partial<ServerRouteConfig>): ServerRouteConfig {
+  const normalized = normalizeServerRouteConfig({
+    ...config,
+    updatedAt: new Date().toISOString(),
+  });
+  localStorage.setItem(serverRouteConfigKey, JSON.stringify(normalized));
+  return normalized;
+}
+
 export function cleanServerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!trimmed) {
@@ -77,9 +95,10 @@ export function defaultServerUrl(): string {
   return "http://192.168.32.186:8088";
 }
 
-export function serverCandidates(preferredUrl: string): string[] {
+export function serverCandidates(preferredUrl: string, routeConfig: Partial<ServerRouteConfig> = {}): string[] {
   const candidates = [
     cleanServerUrl(preferredUrl),
+    ...normalizeUrlList(routeConfig.eutherbooksUrls),
     defaultServerUrl(),
     "http://192.168.32.186:8088",
     "http://192.168.32.186:8080/eutherbooks",
@@ -89,4 +108,55 @@ export function serverCandidates(preferredUrl: string): string[] {
     candidates.push(`${window.location.origin.replace(/\/+$/, "")}/eutherbooks`);
   }
   return [...new Set(candidates.filter(Boolean))];
+}
+
+export function hostConfigCandidates(preferredUrl: string, routeConfig: Partial<ServerRouteConfig> = {}): string[] {
+  const candidates = [
+    hostBaseUrl(preferredUrl),
+    ...normalizeUrlList(routeConfig.serverUrls),
+    cleanServerUrl(routeConfig.lanServerUrl ?? ""),
+    cleanServerUrl(routeConfig.publicServerUrl ?? ""),
+    "http://192.168.32.186:8080",
+    "https://apothictech.se",
+  ];
+  if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
+    candidates.push(window.location.origin.replace(/\/+$/, ""));
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function normalizeServerRouteConfig(raw: unknown): ServerRouteConfig {
+  const value = raw && typeof raw === "object" ? raw as Partial<ServerRouteConfig> : {};
+  return {
+    publicServerUrl: cleanServerUrl(value.publicServerUrl ?? "") || undefined,
+    lanServerUrl: cleanServerUrl(value.lanServerUrl ?? "") || undefined,
+    serverUrls: normalizeUrlList(value.serverUrls),
+    eutherbooksUrls: normalizeUrlList(value.eutherbooksUrls),
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+  };
+}
+
+function normalizeUrlList(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return [...new Set(values.map((value) => typeof value === "string" ? cleanServerUrl(value) : "").filter(Boolean))];
+}
+
+function hostBaseUrl(value: string): string {
+  const clean = cleanServerUrl(value);
+  if (!clean) {
+    return "";
+  }
+  try {
+    const url = new URL(clean);
+    if (url.pathname === "/eutherbooks" || url.pathname.startsWith("/eutherbooks/")) {
+      url.pathname = "";
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch (_err) {
+    return "";
+  }
 }

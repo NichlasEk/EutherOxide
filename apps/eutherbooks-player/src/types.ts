@@ -69,6 +69,14 @@ export type Health = {
   } | null;
 };
 
+export type ServerRouteConfig = {
+  publicServerUrl?: string;
+  lanServerUrl?: string;
+  serverUrls: string[];
+  eutherbooksUrls: string[];
+  updatedAt?: string;
+};
+
 export type AppSettings = {
   serverUrl: string;
   username: string;
