@@ -7617,6 +7617,10 @@ fn rewrite_camera_frigate_text(input: &str) -> String {
         .replace("\"/ws", "\"__EUTHER_FRIGATE_WS__")
         .replace("'/ws", "'__EUTHER_FRIGATE_WS__")
         .replace("`/ws", "`__EUTHER_FRIGATE_WS__")
+        .replace(
+            "window.baseUrl=\"/\"",
+            "window.baseUrl=\"/api/camera/frigate/\"",
+        )
         .replace("__EUTHER_FRIGATE_ASSETS__/", "/api/camera/frigate/assets/")
         .replace("__EUTHER_FRIGATE_API__/", "/api/camera/frigate/api/")
         .replace("__EUTHER_FRIGATE_WS__", "/api/camera/frigate/ws")
