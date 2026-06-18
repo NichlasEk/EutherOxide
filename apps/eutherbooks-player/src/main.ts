@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.32";
-const appBuild = "0.1.32-beta";
+const appVersion = "0.1.33";
+const appBuild = "0.1.33-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -88,12 +88,16 @@ let nativePlaybackActive = false;
 let nativeQueuedUrlsKey = "";
 let nativeQueueSessionStartIndex = 0;
 let nativeServiceQueuePrefix: string[] = [];
+let nativeRegressionResyncInFlight = false;
+let lastNativeSeekCommandAt = 0;
 let lastAutoBookmarkAt = 0;
 let lastBugReportKey = "";
 let lastWatchdogPosition = -1;
 let stuckPlaybackTicks = 0;
 let watchdogRecovering = false;
 let lastTelemetryReportAt = 0;
+let secondNextRetryKey = "";
+let secondNextRetryAfter = 0;
 let backgroundStateEvent = `${document.visibilityState} · ${navigator.onLine ? "online" : "offline"}`;
 const audio = new Audio();
 
@@ -429,6 +433,9 @@ async function ensureSecondNextJob(reason: string): Promise<void> {
     return;
   }
   const targetKey = playbackKey(selectedBookId, secondChapter.index, settings.modelBackend, settings.voiceId);
+  if (secondNextRetryKey === targetKey && Date.now() < secondNextRetryAfter) {
+    return;
+  }
   if (secondNextJob && secondNextJobKey === targetKey && secondNextJob.status !== "failed") {
     return;
   }
@@ -442,10 +449,14 @@ async function ensureSecondNextJob(reason: string): Promise<void> {
     const existing = matchingJobForChapter(jobs, secondChapter.index);
     secondNextJob = existing ?? await api.createJob(selectedBookId, secondChapter.index, settings, selectedVoice(), false, false);
     secondNextJobKey = targetKey;
+    secondNextRetryKey = "";
+    secondNextRetryAfter = 0;
     allJobs = upsertJobList(allJobs, secondNextJob);
     warmAudioCacheForJob(secondNextJob);
     void updateNativeQueue(`queue-second-next:${reason}`);
   } catch (err) {
+    secondNextRetryKey = targetKey;
+    secondNextRetryAfter = Date.now() + 15_000;
     setPlaybackEvent(`Second prefetch held: ${err instanceof Error ? err.message : "failed"}`);
   }
 }
@@ -684,6 +695,30 @@ function nativeAbsoluteIndexForSession(index = session?.currentIndex ?? 0): numb
   return nativeQueueSessionStartIndex + Math.max(0, index);
 }
 
+function sessionPositionForPart(index: number, seconds: number): number {
+  if (!session) {
+    return 0;
+  }
+  const safeIndex = Math.max(0, Math.min(index, Math.max(0, session.durations.length - 1)));
+  return session.durations.slice(0, safeIndex).reduce((sum, duration) => sum + duration, 0)
+    + Math.max(0, seconds);
+}
+
+function requestNativeSeek(index: number, seconds: number, reason: string): void {
+  lastNativeSeekCommandAt = Date.now();
+  void seekNativeAudio(index, seconds)
+    .then((state) => {
+      if (state.error) {
+        setPlaybackEvent(`Native seek failed: ${state.error}`);
+        void maybeReportNativeAudioIssue(`native-seek-${reason}`, true);
+      }
+      window.setTimeout(() => void refreshNativePlayback(), 350);
+    })
+    .catch((err) => {
+      setPlaybackEvent(`Native seek failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+}
+
 async function playNextPartOrChapter(): Promise<void> {
   if (!session) {
     return;
@@ -791,7 +826,7 @@ async function playPreviousPart(): Promise<void> {
     setSessionPartPosition(session.currentIndex, 0);
     if (nativePlaybackActive) {
       const targetIndex = nativeAbsoluteIndexForSession();
-      await seekNativeAudio(targetIndex, 0).then((state) => applyNativeAudioState(state));
+      requestNativeSeek(targetIndex, 0, "previous-reset");
     } else {
       audio.currentTime = 0;
     }
@@ -820,15 +855,9 @@ function seekToSessionPosition(seconds: number): void {
       if (nativePlaybackActive) {
         const targetIndex = nativeAbsoluteIndexForSession(session.currentIndex);
         const targetSeconds = session.currentSeconds;
-        void seekNativeAudio(targetIndex, targetSeconds)
-          .then((state) => {
-            const changedChapter = applyNativeAudioState(state);
-            if (changedChapter) {
-              render();
-            } else {
-              updatePlayerShell();
-            }
-          });
+        requestNativeSeek(targetIndex, targetSeconds, "seekbar");
+        setPlaybackEvent(`Seek: ${formatTime(target)}`);
+        updatePlayerShell();
         return;
       }
       audio.currentTime = session.currentSeconds;
@@ -1186,8 +1215,47 @@ function applyNativeAudioState(state = nativeAudioState()): boolean {
     advanceToNextJobSession(nextIndex, state.positionSeconds, "Native advanced to next chapter");
     return true;
   }
+  if (shouldResyncNativeRegression(relativeIndex, state.positionSeconds, state)) {
+    void resyncNativeAfterRegression(relativeIndex, state.positionSeconds);
+    return false;
+  }
   setSessionPartPosition(relativeIndex, state.positionSeconds);
   return false;
+}
+
+function shouldResyncNativeRegression(relativeIndex: number, seconds: number, state: NativeAudioState): boolean {
+  if (!session || !state.playing || Date.now() - lastNativeSeekCommandAt < 4_000) {
+    return false;
+  }
+  const currentPosition = sessionPosition(session);
+  const reportedPosition = sessionPositionForPart(relativeIndex, seconds);
+  const movedBack = reportedPosition < currentPosition - 10;
+  const indexMovedBack = relativeIndex < session.currentIndex;
+  return currentPosition > 20 && (movedBack || indexMovedBack);
+}
+
+async function resyncNativeAfterRegression(relativeIndex: number, seconds: number): Promise<void> {
+  if (!session || nativeRegressionResyncInFlight) {
+    return;
+  }
+  nativeRegressionResyncInFlight = true;
+  const targetIndex = nativeAbsoluteIndexForSession(session.currentIndex);
+  const targetSeconds = session.currentSeconds;
+  const targetPosition = sessionPosition(session);
+  setPlaybackEvent(`Native index moved back; resync ${formatTime(targetPosition)}`);
+  void reportPlaybackTelemetry("native-index-regression", true);
+  try {
+    lastNativeSeekCommandAt = Date.now();
+    await seekNativeAudio(targetIndex, targetSeconds);
+    window.setTimeout(() => void refreshNativePlayback(), 350);
+  } catch (err) {
+    setPlaybackEvent(`Native resync failed: ${err instanceof Error ? err.message : String(err)}`);
+    setSessionPartPosition(relativeIndex, seconds);
+  } finally {
+    window.setTimeout(() => {
+      nativeRegressionResyncInFlight = false;
+    }, 1_500);
+  }
 }
 
 function advanceToNextJobSession(partIndex: number, partSeconds: number, event: string): boolean {
