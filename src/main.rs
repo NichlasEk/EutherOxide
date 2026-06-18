@@ -7829,7 +7829,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
   <style>
     :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #090b0f; color: #eef3f5; }
     body { margin: 0; min-height: 100vh; background: #090b0f; }
-    body.camera-fullscreen { overflow: hidden; }
+    body.camera-fullscreen, body.event-lightbox-open { overflow: hidden; }
     main { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 32px; display: grid; gap: 16px; }
     header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
     h1 { margin: 0; font-size: clamp(1.4rem, 3vw, 2.1rem); }
@@ -7855,8 +7855,13 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
     .events-grid { padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
     .event-card { border: 1px solid rgba(180,205,218,.18); border-radius: 8px; overflow: hidden; background: #0c1219; }
-    .event-media { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #05070a; }
+    .event-media { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #05070a; cursor: zoom-in; }
     .event-media img { position: absolute; left: 50%; top: 50%; width: auto; height: auto; max-width: none; max-height: none; object-fit: contain; transform: translate(-50%, -50%) rotate(var(--camera-rotation, 0deg)); transform-origin: center center; }
+    .event-lightbox { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 56px 16px 18px; background: rgba(0,0,0,.92); }
+    .event-lightbox[hidden] { display: none; }
+    .event-lightbox-media { position: relative; width: min(100%, 1180px); height: min(82dvh, 820px); overflow: hidden; background: #020407; border: 1px solid rgba(180,205,218,.22); border-radius: 8px; }
+    .event-lightbox-media img { position: absolute; left: 50%; top: 50%; width: auto; height: auto; max-width: none; max-height: none; object-fit: contain; transform: translate(-50%, -50%) rotate(var(--camera-rotation, 0deg)); transform-origin: center center; }
+    .event-lightbox-close { position: fixed; right: 16px; top: 12px; z-index: 2001; }
     .event-card div { padding: 10px; display: grid; gap: 6px; border: 0; }
     .event-card strong { font-size: 1rem; }
     .event-card span { color: #a9b8c2; font-size: .92rem; }
@@ -7959,6 +7964,12 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       </section>
     </section>
   </main>
+  <div id="event-lightbox" class="event-lightbox" hidden>
+    <button id="event-lightbox-close" class="event-lightbox-close" type="button">Stäng</button>
+    <figure id="event-lightbox-media" class="event-lightbox-media">
+      <img id="event-lightbox-image" alt="" />
+    </figure>
+  </div>
   <script>
     const live = document.getElementById("yard-live");
     const frame = document.getElementById("snapshot-frame");
@@ -7978,6 +7989,10 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const eventsStatus = document.getElementById("events-status");
     const refreshEvents = document.getElementById("refresh-events");
     const eventFilter = document.getElementById("event-filter");
+    const eventLightbox = document.getElementById("event-lightbox");
+    const eventLightboxClose = document.getElementById("event-lightbox-close");
+    const eventLightboxMedia = document.getElementById("event-lightbox-media");
+    const eventLightboxImage = document.getElementById("event-lightbox-image");
     let csrfToken = "";
     let rotationDegrees = 0;
     let refreshMs = 500;
@@ -8007,6 +8022,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       liveFrame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       eventsGrid.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
+      eventLightboxMedia.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
       layoutCameraMedia();
     }
@@ -8054,6 +8070,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         const media = image.closest(".event-media");
         if (media) fitMediaIntoFrame(media, image);
       }
+      if (!eventLightbox.hidden) fitMediaIntoFrame(eventLightboxMedia, eventLightboxImage);
     }
 
     function layoutCameraMedia() {
@@ -8135,7 +8152,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         const card = document.createElement("article");
         card.className = "event-card";
         card.innerHTML = `
-          <figure class="event-media">
+          <figure class="event-media" role="button" tabindex="0" data-event-image-src="/api/camera/frigate/api/events/${safeId}/snapshot.jpg" data-event-image-alt="${safeTitle}">
             <img alt="${safeTitle}" src="/api/camera/frigate/api/events/${safeId}/thumbnail.jpg?format=android" loading="lazy" />
           </figure>
           <div>
@@ -8161,6 +8178,45 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         if (image?.complete && media) fitMediaIntoFrame(media, image);
       }
     }
+
+    function openEventLightbox(src, alt) {
+      eventLightboxImage.removeAttribute("src");
+      eventLightboxImage.alt = alt || "Eventbild";
+      eventLightbox.hidden = false;
+      document.body.classList.add("event-lightbox-open");
+      eventLightboxImage.onload = () => fitMediaIntoFrame(eventLightboxMedia, eventLightboxImage);
+      eventLightboxImage.src = `${src}${src.includes("?") ? "&" : "?"}ts=${Date.now()}`;
+      eventLightboxClose.focus();
+    }
+
+    function closeEventLightbox() {
+      eventLightbox.hidden = true;
+      document.body.classList.remove("event-lightbox-open");
+      eventLightboxImage.removeAttribute("src");
+    }
+
+    eventsGrid.addEventListener("click", (event) => {
+      const media = event.target.closest(".event-media");
+      if (!media) return;
+      openEventLightbox(media.dataset.eventImageSrc || "", media.dataset.eventImageAlt || "");
+    });
+
+    eventsGrid.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const media = event.target.closest(".event-media");
+      if (!media) return;
+      event.preventDefault();
+      openEventLightbox(media.dataset.eventImageSrc || "", media.dataset.eventImageAlt || "");
+    });
+
+    eventLightboxClose.addEventListener("click", closeEventLightbox);
+    eventLightbox.addEventListener("click", (event) => {
+      if (event.target === eventLightbox) closeEventLightbox();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !eventLightbox.hidden) closeEventLightbox();
+    });
+    window.addEventListener("resize", layoutCameraMedia);
 
     async function saveEventLabel(eventId, label) {
       const body = new URLSearchParams({ label });
