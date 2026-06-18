@@ -193,6 +193,8 @@ function appMarkup(): string {
         <button class="icon-button" id="list-new" type="button" aria-label="Ny lista">+</button>
       </section>
 
+      ${addItemBarMarkup(activeCategory)}
+
       <section class="search-bar">
         <input id="list-search" type="search" value="${escapeHtml(searchQuery)}" placeholder="Sök listor" aria-label="Sök listor" />
         ${searchQuery ? `<button id="search-clear" type="button" aria-label="Rensa sök">×</button>` : ""}
@@ -213,7 +215,6 @@ function appMarkup(): string {
         ${shoppingListMarkup({ ...documentState, items: activeList.items }, activeCategory)}
       </section>
 
-      ${addItemBarMarkup(activeCategory)}
       ${settingsPanelMarkup(settings, settingsOpen)}
     </main>
 `;
