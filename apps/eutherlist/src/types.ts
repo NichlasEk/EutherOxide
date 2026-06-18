@@ -51,8 +51,13 @@ export type AppSettings = {
   username: string;
   token: string;
   theme: ThemeName;
+  eutherlistFontScale: number;
 };
 
 export type ThemeName = "joanna-light" | "euther" | "apothecary-dark";
 
 export type SyncState = "offline" | "login" | "syncing" | "saved" | "dirty" | "error";
+
+export type UserPreferences = Record<string, unknown> & {
+  eutherlistFontScale?: number;
+};

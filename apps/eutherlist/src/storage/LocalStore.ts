@@ -20,6 +20,7 @@ export class LocalStore {
       username: "",
       token: "",
       theme: "joanna-light",
+      eutherlistFontScale: 1,
     };
     const settings = { ...fallback, ...readJson<Partial<AppSettings>>(settingsKey, {}) };
     return {
@@ -27,6 +28,7 @@ export class LocalStore {
       serverUrl: cleanServerUrl(settings.serverUrl),
       lanServerUrl: cleanLanServerUrl(settings.lanServerUrl),
       activeServerUrl: cleanActiveServerUrl(settings),
+      eutherlistFontScale: cleanFontScale(settings.eutherlistFontScale),
     };
   }
 
@@ -83,7 +85,14 @@ function cleanSettings(settings: AppSettings): AppSettings {
     serverUrl: cleanServerUrl(settings.serverUrl),
     lanServerUrl: cleanLanServerUrl(settings.lanServerUrl),
     activeServerUrl: cleanActiveServerUrl(settings),
+    eutherlistFontScale: cleanFontScale(settings.eutherlistFontScale),
   };
+}
+
+function cleanFontScale(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0.72, Math.min(1.2, value))
+    : 1;
 }
 
 function readJson<T>(key: string, fallback: T): T {

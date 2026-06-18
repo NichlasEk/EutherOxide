@@ -2,11 +2,21 @@
   box-sizing: border-box;
 }
 
+:root {
+  --eutherlist-font-scale: 1;
+  --eutherlist-row-height: calc(42px * var(--eutherlist-font-scale));
+  --eutherlist-control-height: calc(38px * var(--eutherlist-font-scale));
+}
+
 html,
 body,
 #app {
   min-height: 100%;
   margin: 0;
+}
+
+html {
+  font-size: calc(16px * var(--eutherlist-font-scale));
 }
 
 body {
@@ -155,7 +165,7 @@ button {
 
 .search-bar input {
   width: 100%;
-  min-height: 38px;
+  min-height: var(--eutherlist-control-height);
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-soft);
@@ -165,7 +175,7 @@ button {
 
 .search-bar button {
   min-width: 38px;
-  min-height: 38px;
+  min-height: var(--eutherlist-control-height);
   border-radius: 12px;
   background: var(--button-bg);
   color: var(--button-text);
@@ -181,7 +191,7 @@ button {
 }
 
 .search-results > span {
-  min-height: 38px;
+  min-height: var(--eutherlist-control-height);
   display: grid;
   place-items: center;
   color: var(--text-muted);
@@ -191,7 +201,7 @@ button {
 .search-result {
   display: grid;
   gap: 2px;
-  min-height: 44px;
+  min-height: calc(44px * var(--eutherlist-font-scale));
   text-align: left;
   border-radius: 10px;
   background: var(--surface-soft);
@@ -259,7 +269,7 @@ button {
 }
 
 .category-tab {
-  min-height: 34px;
+  min-height: calc(34px * var(--eutherlist-font-scale));
   white-space: nowrap;
   padding: 0 11px;
   border: 1px solid var(--border);
@@ -280,14 +290,14 @@ button {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  min-height: 40px;
+  min-height: calc(40px * var(--eutherlist-font-scale));
   padding: 6px 10px;
   font-size: 0.9rem;
 }
 
 .list-summary button,
 .wide-button {
-  min-height: 34px;
+  min-height: calc(34px * var(--eutherlist-font-scale));
   padding: 0 11px;
   border-radius: 12px;
   background: var(--button-bg);
@@ -321,7 +331,7 @@ button {
   display: grid;
   grid-template-columns: 38px 1fr 36px;
   align-items: center;
-  min-height: 42px;
+  min-height: var(--eutherlist-row-height);
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
@@ -335,7 +345,7 @@ button {
 .item-check,
 .item-delete {
   height: 100%;
-  min-height: 42px;
+  min-height: var(--eutherlist-row-height);
   background: transparent;
 }
 
@@ -506,6 +516,22 @@ button {
   padding: 12px;
   border-radius: 12px;
   background: var(--surface-soft);
+}
+
+.settings-range > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-muted);
+}
+
+.settings-range strong {
+  color: var(--text);
+}
+
+.settings-range input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
 }
 
 .wide-button.subtle {

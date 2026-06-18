@@ -24,6 +24,13 @@ export function settingsPanelMarkup(settings: AppSettings, open: boolean): strin
             ${themes.map((theme) => themeOption(theme.id, theme.label, settings.theme)).join("")}
           </select>
         </label>
+        <label class="settings-range">
+          <span>
+            Text size
+            <strong id="settings-font-scale-label">${Math.round(settings.eutherlistFontScale * 100)}%</strong>
+          </span>
+          <input id="settings-font-scale" type="range" min="72" max="120" step="2" value="${Math.round(settings.eutherlistFontScale * 100)}" />
+        </label>
         <div class="settings-user">
           <span>Signed in as</span>
           <strong>${escapeHtml(settings.username || "No one")}</strong>

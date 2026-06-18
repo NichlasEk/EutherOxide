@@ -1246,6 +1246,7 @@ struct HostUserPreferences {
     audio_volume: f64,
     mic_volume: f64,
     doom_mouse_sensitivity: f64,
+    eutherlist_font_scale: f64,
     theme: String,
     skin: String,
     eutherbooks_voice: String,
@@ -1275,6 +1276,7 @@ impl Default for HostUserPreferences {
             audio_volume: 0.8,
             mic_volume: 1.0,
             doom_mouse_sensitivity: 2.2,
+            eutherlist_font_scale: 1.0,
             theme: "dark".to_string(),
             skin: "classic".to_string(),
             eutherbooks_voice: "sv-female-warm".to_string(),
@@ -1519,11 +1521,11 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
         }
         ("GET", "/api/user/preferences") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             send_json(stream, &read_host_user_preferences(&user)?)
         }
         ("POST", "/api/user/preferences") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             let preferences: HostUserPreferences = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             save_host_user_preferences(&user, preferences)?;
@@ -2766,6 +2768,7 @@ fn host_app_token_path(path: &str) -> bool {
             | "/api/interaction/shopping-list/share"
             | "/api/interaction/shopping-list/unshare"
             | "/api/interaction/shopping-list/role"
+            | "/api/user/preferences"
     )
 }
 
@@ -12522,6 +12525,10 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
         preferences.doom_mouse_sensitivity =
             clamp_f64(value, 0.6, 4.0, preferences.doom_mouse_sensitivity);
     }
+    if let Some(value) = parse_toml_f64(&contents, "eutherlist_font_scale") {
+        preferences.eutherlist_font_scale =
+            clamp_f64(value, 0.72, 1.2, preferences.eutherlist_font_scale);
+    }
     if let Some(value) = parse_toml_string(&contents, "theme") {
         preferences.theme = clean_host_user_theme(&value);
     }
@@ -12622,6 +12629,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         audio_volume: clamp_unit_f64(preferences.audio_volume, 0.8),
         mic_volume: clamp_f64(preferences.mic_volume, 0.0, 1.6, 1.0),
         doom_mouse_sensitivity: clamp_f64(preferences.doom_mouse_sensitivity, 0.6, 4.0, 2.2),
+        eutherlist_font_scale: clamp_f64(preferences.eutherlist_font_scale, 0.72, 1.2, 1.0),
         theme: clean_host_user_theme(&preferences.theme),
         skin: clean_host_user_skin(&preferences.skin),
         eutherbooks_voice: clean_eutherbooks_voice(&preferences.eutherbooks_voice),
@@ -12683,10 +12691,11 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
+            preferences.eutherlist_font_scale,
             toml_escape(&preferences.theme),
             toml_escape(&preferences.skin),
             toml_escape(&preferences.eutherbooks_voice),

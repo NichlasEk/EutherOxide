@@ -19,7 +19,7 @@ import { settingsPanelMarkup } from "./components/SettingsPanel";
 import { shoppingListMarkup } from "./components/ShoppingList";
 import { LocalStore } from "./storage/LocalStore";
 import { applyTheme } from "./theme/ThemeProvider";
-import { AppSettings, ShoppingCategory, ShoppingItem, ShoppingNamedList, SyncState } from "./types";
+import { AppSettings, ShoppingCategory, ShoppingItem, ShoppingNamedList, SyncState, UserPreferences } from "./types";
 import {
   cleanListTitle,
   inferCategory,
@@ -46,6 +46,7 @@ let lastSyncError = "";
 let deferredRemoteRenderTimer: number | null = null;
 let addItemEditing = false;
 let addItemDraft: AddItemDraft | null = null;
+let userPreferences: UserPreferences | null = null;
 
 type AddItemDraft = {
   text: string;
@@ -53,6 +54,7 @@ type AddItemDraft = {
 };
 
 applyTheme(settings.theme);
+applyFontScale(settings.eutherlistFontScale);
 render();
 if (settings.token) {
   void syncFromStartup();
@@ -290,21 +292,34 @@ function bindCommonActions(): void {
     settingsOpen = false;
     render();
   });
+  const fontScale = document.querySelector<HTMLInputElement>("#settings-font-scale");
+  const fontScaleLabel = document.querySelector<HTMLElement>("#settings-font-scale-label");
+  fontScale?.addEventListener("input", () => {
+    const nextScale = cleanFontScale(Number(fontScale.value) / 100);
+    if (fontScaleLabel) {
+      fontScaleLabel.textContent = `${Math.round(nextScale * 100)}%`;
+    }
+    applyFontScale(nextScale);
+  });
   document.querySelector<HTMLButtonElement>("#settings-save")?.addEventListener("click", () => {
     const server = document.querySelector<HTMLInputElement>("#settings-server");
     const lanServer = document.querySelector<HTMLInputElement>("#settings-lan-server");
     const theme = document.querySelector<HTMLSelectElement>("#settings-theme");
+    const nextFontScale = cleanFontScale(Number(fontScale?.value ?? settings.eutherlistFontScale * 100) / 100);
     const nextSettings = {
       ...settings,
       serverUrl: cleanServerUrl(server?.value ?? settings.serverUrl),
       lanServerUrl: cleanLanServerUrl(lanServer?.value ?? settings.lanServerUrl),
       theme: (theme?.value ?? settings.theme) as AppSettings["theme"],
+      eutherlistFontScale: nextFontScale,
     };
     settings = { ...nextSettings, activeServerUrl: cleanActiveServerUrl(nextSettings) };
     store.saveSettings(settings);
     applyTheme(settings.theme);
+    applyFontScale(settings.eutherlistFontScale);
     settingsOpen = false;
     render();
+    void saveUserFontScale(nextFontScale);
     scheduleSync(50);
   });
   document.querySelector<HTMLButtonElement>("#settings-logout")?.addEventListener("click", () => {
@@ -493,6 +508,7 @@ async function syncFromStartup(): Promise<void> {
     const status = await api.status();
     rememberActiveServer(api.activeServerUrl);
     applyServerLanUrl(status.lanServerUrl);
+    await syncUserPreferences(api);
     const listApi = new ShoppingApi(settings);
     const remote = await listApi.loadList();
     rememberActiveServer(listApi.activeServerUrl);
@@ -513,6 +529,47 @@ async function syncFromStartup(): Promise<void> {
   if (remoteChanged) {
     renderRemoteUpdate();
   }
+}
+
+async function syncUserPreferences(api: ShoppingApi): Promise<void> {
+  try {
+    userPreferences = await api.preferences();
+    rememberActiveServer(api.activeServerUrl);
+    const nextScale = cleanFontScale(Number(userPreferences.eutherlistFontScale ?? settings.eutherlistFontScale));
+    if (nextScale !== settings.eutherlistFontScale) {
+      settings = { ...settings, eutherlistFontScale: nextScale };
+      store.saveSettings(settings);
+    }
+    applyFontScale(nextScale);
+  } catch (error) {
+    lastSyncError = syncErrorMessage(error);
+  }
+}
+
+async function saveUserFontScale(fontScale: number): Promise<void> {
+  if (!settings.token) {
+    return;
+  }
+  try {
+    const api = new ShoppingApi(settings);
+    const preferences = userPreferences ?? await api.preferences();
+    userPreferences = await api.savePreferences({
+      ...preferences,
+      eutherlistFontScale: cleanFontScale(fontScale),
+    });
+    rememberActiveServer(api.activeServerUrl);
+  } catch (error) {
+    setSyncState(navigator.onLine ? "error" : "offline", syncErrorMessage(error));
+    scheduleSync(5000);
+  }
+}
+
+function applyFontScale(fontScale: number): void {
+  document.documentElement.style.setProperty("--eutherlist-font-scale", cleanFontScale(fontScale).toFixed(3));
+}
+
+function cleanFontScale(value: number): number {
+  return Number.isFinite(value) ? Math.max(0.72, Math.min(1.2, value)) : 1;
 }
 
 function scheduleSync(delayMs: number): void {

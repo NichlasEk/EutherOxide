@@ -1,5 +1,5 @@
 import { listsToMarkdown, markdownToItems, markdownToLists } from "../shoppingMarkdown";
-import { AppSettings, ShoppingListDocument, ShoppingMember } from "../types";
+import { AppSettings, ShoppingListDocument, ShoppingMember, UserPreferences } from "../types";
 
 export const PUBLIC_SERVER_URL = "https://apothictech.se";
 export const LAN_SERVER_PORT = "32162";
@@ -85,6 +85,21 @@ export class ShoppingApi {
     });
     this.activeServerUrl = serverUrl;
     return responseToDocument(await response.json() as ShoppingListResponse);
+  }
+
+  async preferences(): Promise<UserPreferences> {
+    const { response, serverUrl } = await this.fetch("/api/user/preferences");
+    this.activeServerUrl = serverUrl;
+    return response.json() as Promise<UserPreferences>;
+  }
+
+  async savePreferences(preferences: UserPreferences): Promise<UserPreferences> {
+    const { response, serverUrl } = await this.fetch("/api/user/preferences", {
+      method: "POST",
+      body: JSON.stringify(preferences),
+    });
+    this.activeServerUrl = serverUrl;
+    return response.json() as Promise<UserPreferences>;
   }
 
   private async fetch(path: string, init: RequestInit = {}): Promise<ServerResponse> {
