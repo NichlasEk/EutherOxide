@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.33";
-const appBuild = "0.1.33-beta";
+const appVersion = "0.1.34";
+const appBuild = "0.1.34-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -93,6 +93,7 @@ let lastNativeSeekCommandAt = 0;
 let lastAutoBookmarkAt = 0;
 let lastBugReportKey = "";
 let lastWatchdogPosition = -1;
+let lastWatchdogSessionKey = "";
 let stuckPlaybackTicks = 0;
 let watchdogRecovering = false;
 let lastTelemetryReportAt = 0;
@@ -907,6 +908,7 @@ function startPlaybackWatchdog(): void {
     return;
   }
   lastWatchdogPosition = currentPlaybackPosition();
+  lastWatchdogSessionKey = watchdogSessionKey();
   stuckPlaybackTicks = 0;
   playbackWatchTimer = window.setInterval(() => {
     void playbackWatchdogTick();
@@ -919,6 +921,7 @@ function stopPlaybackWatchdog(): void {
   }
   playbackWatchTimer = null;
   lastWatchdogPosition = -1;
+  lastWatchdogSessionKey = "";
   stuckPlaybackTicks = 0;
   watchdogRecovering = false;
 }
@@ -967,13 +970,22 @@ async function playbackWatchdogTick(): Promise<void> {
   }
   if (!session || isPlaybackPaused()) {
     lastWatchdogPosition = currentPlaybackPosition();
+    lastWatchdogSessionKey = watchdogSessionKey();
     stuckPlaybackTicks = 0;
     return;
   }
+  const key = watchdogSessionKey();
   const position = currentPlaybackPosition();
+  if (key !== lastWatchdogSessionKey || position < lastWatchdogPosition - 2) {
+    lastWatchdogSessionKey = key;
+    lastWatchdogPosition = position;
+    stuckPlaybackTicks = 0;
+    return;
+  }
   const moved = position > lastWatchdogPosition + 0.15;
   const nearEnd = session.generatedSeconds > 0 && session.generatedSeconds - position < 1.5;
   if (moved || nearEnd) {
+    lastWatchdogSessionKey = key;
     lastWatchdogPosition = position;
     stuckPlaybackTicks = 0;
     return;
@@ -989,9 +1001,23 @@ async function playbackWatchdogTick(): Promise<void> {
     await playFromSession("auto");
   } finally {
     lastWatchdogPosition = currentPlaybackPosition();
+    lastWatchdogSessionKey = watchdogSessionKey();
     stuckPlaybackTicks = 0;
     watchdogRecovering = false;
   }
+}
+
+function resetPlaybackWatchdogBaseline(): void {
+  if (!session) {
+    return;
+  }
+  lastWatchdogPosition = currentPlaybackPosition();
+  lastWatchdogSessionKey = watchdogSessionKey();
+  stuckPlaybackTicks = 0;
+}
+
+function watchdogSessionKey(): string {
+  return session ? `${session.jobId}:${session.chapterIndex}:${nativeQueueSessionStartIndex}` : "";
 }
 
 function currentPlaybackPosition(): number {
@@ -1272,6 +1298,7 @@ function advanceToNextJobSession(partIndex: number, partSeconds: number, event: 
   session = sessionFromJob(currentJob);
   setSessionPartPosition(partIndex, partSeconds);
   warmAudioCacheForSession();
+  resetPlaybackWatchdogBaseline();
   setPlaybackEvent(event);
   void ensureSecondNextJob(event === "Native advanced to next chapter" ? "native-advanced" : "chapter-advanced");
   return true;
@@ -1373,6 +1400,7 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
       stuckTicks: stuckPlaybackTicks,
       recovering: watchdogRecovering,
       lastPosition: lastWatchdogPosition,
+      sessionKey: lastWatchdogSessionKey,
       currentPosition: currentPlaybackPosition(),
     },
     browserAudio: {
