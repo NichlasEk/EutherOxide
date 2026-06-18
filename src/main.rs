@@ -7813,7 +7813,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       </div>
       <nav class="actions">
         <a href="/">EutherHost</a>
-        <a href="/api/camera/frigate/" target="_blank" rel="noreferrer">Frigate</a>
+        <a href="http://192.168.32.186:8081/" target="_blank" rel="noreferrer">Frigate</a>
       </nav>
     </header>
     <section class="panel">
@@ -7868,10 +7868,10 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       <section id="events-grid" class="events-grid"></section>
     </section>
     <section class="panel">
-      <div><strong>Frigate admin</strong><span>Proxy via serverns lokala tunnel</span></div>
+      <div><strong>Frigate admin</strong><span>Root-proxy via Caddy på LAN</span></div>
       <section class="launch-card">
-        <p>Frigate-webben öppnas separat. Kamerabilden ovan är EutherHost-vyn som fungerar direkt i mobilen.</p>
-        <a href="/api/camera/frigate/" target="_blank" rel="noreferrer">Öppna Frigate</a>
+        <p>Frigate-webben öppnas separat på en skyddad LAN-port, så Frigates egen app kan köras från root utan subpath-problem.</p>
+        <a href="http://192.168.32.186:8081/" target="_blank" rel="noreferrer">Öppna Frigate</a>
       </section>
     </section>
   </main>
