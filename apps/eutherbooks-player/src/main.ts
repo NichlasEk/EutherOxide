@@ -40,8 +40,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
 const minNativeLookaheadChapters = 5;
-const appVersion = "0.1.36";
-const appBuild = "0.1.36-beta";
+const appVersion = "0.1.37";
+const appBuild = "0.1.37-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -69,6 +69,8 @@ let nextJobRequestInFlight = false;
 let batchQueueInFlight = false;
 let nativeLookaheadRequestInFlight = false;
 let nativeLookaheadRetryAfter = 0;
+let endpointSwitchInFlight = false;
+let endpointSwitchRetryAfter = 0;
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
 let endpointText = "";
@@ -119,6 +121,7 @@ audio.addEventListener("timeupdate", () => {
 });
 audio.addEventListener("error", () => {
   errorText = audio.error?.message || "Audio playback failed";
+  void recoverEndpointAfterNetworkError("browser-audio-error");
   render();
 });
 audio.addEventListener("pause", () => {
@@ -192,9 +195,6 @@ async function refreshAll(): Promise<void> {
       voices = nextVoices;
       books = nextBooks;
       allJobs = jobs;
-      if (settings.serverUrl !== candidate) {
-        updateSettings({ ...settings, serverUrl: candidate });
-      }
       selectedBookId ||= books[0]?.id ?? "";
       await loadChapters();
       attachExistingJob(jobs);
@@ -347,6 +347,11 @@ async function pollJobs(): Promise<void> {
     statusText = currentJob ? currentJob.progress_label || currentJob.status : "Ready";
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Poll failed";
+    if (await recoverEndpointAfterNetworkError("poll-failed")) {
+      render();
+      schedulePoll(900);
+      return;
+    }
     if (!fallbackRefreshRunning) {
       fallbackRefreshRunning = true;
       try {
@@ -1005,6 +1010,7 @@ function installBackgroundTelemetry(): void {
   window.addEventListener("online", () => {
     backgroundStateEvent = `${document.visibilityState} · online`;
     setPlaybackEvent("Network online");
+    void recoverEndpointAfterNetworkError("network-online", true);
     if (!isPlaybackPaused()) {
       void reportPlaybackTelemetry("network-online", true);
     }
@@ -1035,6 +1041,7 @@ async function playbackWatchdogTick(): Promise<void> {
     const state = nativeAudioState();
     if (isNativeWaitingForMoreAudio(state)) {
       void maybeEnsureNextAhead("watchdog-native-buffering");
+      void recoverEndpointAfterNetworkError("watchdog-native-buffering");
       void updateNativeQueue("watchdog-native-buffering");
     }
   } else {
@@ -1236,6 +1243,73 @@ function nativeQueueManifest(): NativeQueueManifest | null {
 
 function currentApiBaseUrl(): string {
   return (endpointText || settings.serverUrl).replace(/\/+$/, "");
+}
+
+async function recoverEndpointAfterNetworkError(reason: string, force = false): Promise<boolean> {
+  if (endpointSwitchInFlight || (!force && Date.now() < endpointSwitchRetryAfter)) {
+    return false;
+  }
+  endpointSwitchInFlight = true;
+  try {
+    await refreshServerRouteConfig();
+    const currentBaseUrl = currentApiBaseUrl();
+    const candidates = failoverServerCandidates(currentBaseUrl);
+    for (const candidate of candidates) {
+      try {
+        const nextApi = new EutherBooksApi(candidate, settings.authToken);
+        const [nextHealth, jobs] = await Promise.all([nextApi.health(), nextApi.jobs()]);
+        api = nextApi;
+        endpointText = candidate;
+        health = nextHealth;
+        allJobs = jobs;
+        attachExistingJob(jobs);
+        nativeQueuedUrlsKey = "";
+        endpointSwitchRetryAfter = 0;
+        setPlaybackEvent(`Endpoint switched: ${reason}`);
+        if (nativePlaybackActive) {
+          void updateNativeQueue(`endpoint-switch:${reason}`);
+        } else if (!isPlaybackPaused() && session?.audioFiles.length) {
+          void playFromSession("auto");
+        }
+        return candidate !== currentBaseUrl;
+      } catch (_err) {
+      }
+    }
+    endpointSwitchRetryAfter = Date.now() + 10_000;
+  } finally {
+    endpointSwitchInFlight = false;
+  }
+  return false;
+}
+
+function failoverServerCandidates(currentBaseUrl: string): string[] {
+  const current = currentBaseUrl.replace(/\/+$/, "");
+  const candidates = serverCandidates(settings.serverUrl, routeConfig)
+    .map((candidate) => candidate.replace(/\/+$/, ""));
+  const alternatives = candidates.filter((candidate) => candidate && candidate !== current);
+  const currentIsLan = isLanEndpoint(current);
+  alternatives.sort((left, right) => {
+    const leftLan = isLanEndpoint(left);
+    const rightLan = isLanEndpoint(right);
+    if (leftLan === rightLan) {
+      return 0;
+    }
+    return currentIsLan ? (leftLan ? 1 : -1) : (leftLan ? -1 : 1);
+  });
+  return [...new Set([...alternatives, current].filter(Boolean))];
+}
+
+function isLanEndpoint(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "localhost"
+      || host === "127.0.0.1"
+      || host.startsWith("10.")
+      || host.startsWith("192.168.")
+      || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+  } catch (_err) {
+    return false;
+  }
 }
 
 function selectedNextPlaybackKey(): string {
