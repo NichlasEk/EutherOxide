@@ -7861,6 +7861,18 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       <div class="panel-head">
         <strong>Smart inspelning</strong>
         <span class="camera-toolbar">
+          <label>
+            <span class="sr-only">Eventfilter</span>
+            <select id="event-filter">
+              <option value="">Alla objekt</option>
+              <option value="person">Person</option>
+              <option value="car">Bil</option>
+              <option value="bicycle">Cykel</option>
+              <option value="motorcycle">Motorcykel</option>
+              <option value="dog">Hund</option>
+              <option value="cat">Katt</option>
+            </select>
+          </label>
           <span id="events-status">Laddar events...</span>
           <button id="refresh-events" type="button">Uppdatera</button>
         </span>
@@ -7893,6 +7905,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const eventsGrid = document.getElementById("events-grid");
     const eventsStatus = document.getElementById("events-status");
     const refreshEvents = document.getElementById("refresh-events");
+    const eventFilter = document.getElementById("event-filter");
     let csrfToken = "";
     let rotationDegrees = 0;
     let refreshMs = 500;
@@ -7912,6 +7925,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let cameraPanY = 0;
     let suppressFullscreenUntil = 0;
     let liveBytes = 0;
+    let eventsTimer = 0;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
@@ -8017,7 +8031,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     function renderEvents(events) {
       eventsGrid.innerHTML = "";
       if (!events.length) {
-        eventsGrid.innerHTML = '<p class="empty-state">Inga inspelade objekt-events ännu. Frigate spelar ändå in enligt retention-reglerna och listan fylls när detect-streamen ser något relevant.</p>';
+        eventsGrid.innerHTML = '<p class="empty-state">Inga objekt-events ännu. AI-detect är aktiv för person, bil, cykel, motorcykel, hund och katt. Frigate sparar motion i 3 dagar och events/snapshots i 30 dagar när något hittas.</p>';
         return;
       }
       for (const event of events) {
@@ -8046,14 +8060,22 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     async function loadEvents() {
       eventsStatus.textContent = "Laddar events...";
       try {
-        const response = await fetch("/api/camera/frigate/api/events?camera=yard&limit=12", { credentials: "same-origin" });
+        const params = new URLSearchParams({ camera: "yard", limit: "24" });
+        if (eventFilter.value) params.set("label", eventFilter.value);
+        const response = await fetch(`/api/camera/frigate/api/events?${params}`, { credentials: "same-origin" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const events = await response.json();
         renderEvents(Array.isArray(events) ? events : []);
-        eventsStatus.textContent = `${Array.isArray(events) ? events.length : 0} events`;
+        const label = eventFilter.value ? ` ${eventFilter.options[eventFilter.selectedIndex].text.toLowerCase()}` : "";
+        eventsStatus.textContent = `${Array.isArray(events) ? events.length : 0}${label} events`;
       } catch {
         eventsStatus.textContent = "Events kunde inte laddas";
       }
+    }
+
+    function startEventsRefresh() {
+      window.clearInterval(eventsTimer);
+      eventsTimer = window.setInterval(loadEvents, 15000);
     }
 
     function scheduleSnapshotRefresh() {
@@ -8401,6 +8423,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       video.volume = Number(liveVolume.value) / 100;
     });
     refreshEvents.addEventListener("click", loadEvents);
+    eventFilter.addEventListener("change", loadEvents);
     live.addEventListener("load", layoutCameraMedia);
     video.addEventListener("loadedmetadata", () => {
       layoutCameraMedia();
@@ -8418,6 +8441,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     applyCameraZoom();
     applyRefresh(refreshMs);
     loadEvents();
+    startEventsRefresh();
     loadCameraSettings().catch(() => {});
   </script>
 </body>
