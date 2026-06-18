@@ -7530,8 +7530,8 @@ fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io:
         Ok(upstream) => upstream,
         Err(_) => return send_error(stream, 502, "EutherSight AI upstream unavailable"),
     };
-    upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
-    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(8)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let upstream_path = camera_ai_upstream_path(&request.path);
     write!(
         upstream,
@@ -7985,6 +7985,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let suppressFullscreenUntil = 0;
     let liveBytes = 0;
     let eventsTimer = 0;
+    let eventsInFlight = false;
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
@@ -8125,11 +8126,18 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     }
 
     async function loadEvents() {
+      if (eventsInFlight) return;
+      eventsInFlight = true;
       eventsStatus.textContent = "Laddar events...";
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 8000);
       try {
-        const params = new URLSearchParams({ camera: "yard", limit: "24" });
+        const params = new URLSearchParams({ camera: "yard", limit: "12" });
         if (eventFilter.value) params.set("label", eventFilter.value);
-        const response = await fetch(`/api/camera/ai/api/events?${params}`, { credentials: "same-origin" });
+        const response = await fetch(`/api/camera/ai/api/events?${params}`, {
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
         const items = Array.isArray(payload.items) ? payload.items : [];
@@ -8137,13 +8145,16 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         const label = eventFilter.value ? ` ${eventFilter.options[eventFilter.selectedIndex].text.toLowerCase()}` : "";
         eventsStatus.textContent = `${items.length}${label} AI-events`;
       } catch {
-        eventsStatus.textContent = "Events kunde inte laddas";
+        eventsStatus.textContent = "AI-events väntar";
+      } finally {
+        window.clearTimeout(timeout);
+        eventsInFlight = false;
       }
     }
 
     function startEventsRefresh() {
       window.clearInterval(eventsTimer);
-      eventsTimer = window.setInterval(loadEvents, 15000);
+      eventsTimer = window.setInterval(loadEvents, 30000);
     }
 
     function scheduleSnapshotRefresh() {
