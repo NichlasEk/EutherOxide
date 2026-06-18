@@ -1462,6 +1462,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/app/login"
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
+        && !is_eutherpunk_proxy_path(path)
         && !is_eutherbooks_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
         && !app_token_request
@@ -2199,6 +2200,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }
                 return proxy_camera_frigate_request(stream, &request);
             }
+            if is_eutherpunk_proxy_path(path) {
+                let _user = require_host_user_or_app(state, &request)?;
+                return proxy_eutherpunk_request(stream, &request);
+            }
             if is_eutherbooks_proxy_path(path) {
                 let user = require_host_user_or_app(state, &request)?;
                 if eutherbooks_route_requires_manage_library(path, &request.method) {
@@ -2218,6 +2223,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 };
             };
             if request.method != "GET"
+                && !is_eutherpunk_proxy_path(path)
                 && !is_eutherbooks_proxy_path(path)
                 && !is_camera_frigate_proxy_path(path)
                 && !valid_csrf_token(state, &request)?
@@ -3072,6 +3078,14 @@ fn host_route_requires_writable_library(path: &str, method: &str) -> bool {
 
 fn eutherbooks_route_requires_manage_library(path: &str, method: &str) -> bool {
     method == "POST" && path == "/eutherbooks/books/upload"
+}
+
+fn is_eutherpunk_proxy_path(path: &str) -> bool {
+    path == "/eutherpunk"
+        || path.starts_with("/api/eutherpunk/")
+        || path == "/api/eutherpunk"
+        || path.starts_with("/web/")
+        || path.starts_with("/downloads/eutherpunk-cli/")
 }
 
 fn is_eutherbooks_proxy_path(path: &str) -> bool {
@@ -7473,6 +7487,45 @@ fn send_android_apk(
             ("Pragma", "no-cache"),
         ],
     )
+}
+
+fn proxy_eutherpunk_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if !matches!(request.method.as_str(), "GET" | "HEAD" | "POST") {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_base =
+        env::var("EUTHERPUNK_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherPunk upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(300)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, request.path, upstream_base
+    )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    io::copy(&mut upstream, stream)?;
+    Ok(())
 }
 
 fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
