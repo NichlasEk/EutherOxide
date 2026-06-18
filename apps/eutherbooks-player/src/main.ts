@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.26";
-const appBuild = "0.1.26-beta";
+const appVersion = "0.1.29";
+const appBuild = "0.1.29-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -88,6 +88,9 @@ let nativeQueueSessionStartIndex = 0;
 let nativeServiceQueuePrefix: string[] = [];
 let lastAutoBookmarkAt = 0;
 let lastBugReportKey = "";
+let lastWatchdogPosition = -1;
+let stuckPlaybackTicks = 0;
+let watchdogRecovering = false;
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -119,9 +122,7 @@ render();
 mediaSessionStatus = installMediaSessionControls({
   play: () => void playFromSession("manual"),
   pause: () => {
-    stopPlayback(true, true);
-    statusText = "Paused";
-    render();
+    pausePlayback();
   },
   next: () => void playNextPartOrChapter(),
   previous: () => void playPreviousPart(),
@@ -624,10 +625,11 @@ async function playNextPartOrChapter(): Promise<void> {
   render();
 }
 
-function selectChapter(index: number): void {
+function selectChapter(index: number, options: { keepPlaying?: boolean; source?: string } = {}): void {
   if (!chapters.some((chapter) => chapter.index === index)) {
     return;
   }
+  const shouldResume = Boolean(options.keepPlaying) && !isPlaybackPaused();
   stopPlayback(true, true);
   selectedChapterIndex = index;
   userPausedPlayback = false;
@@ -635,7 +637,23 @@ function selectChapter(index: number): void {
   clearLookaheadQueue();
   session = null;
   persistSelection();
-  void refreshAll();
+  setPlaybackEvent(options.source ? `${options.source}: ${chapterLabel(chapters.find((chapter) => chapter.index === index)!)}` : "Chapter selected");
+  void refreshAll().then(async () => {
+    if (!shouldResume) {
+      return;
+    }
+    if (!session && currentJob?.audio_files.length) {
+      session = sessionFromJob(currentJob, session);
+      applyBookmarkToSession();
+    }
+    if (session?.audioFiles.length) {
+      await playFromSession("manual");
+      return;
+    }
+    if (selectedBookId) {
+      await generateCurrentChapter(false);
+    }
+  });
 }
 
 function selectRelativeChapter(direction: -1 | 1): void {
@@ -643,6 +661,32 @@ function selectRelativeChapter(direction: -1 | 1): void {
   if (target) {
     selectChapter(target.index);
   }
+}
+
+function playRelativeChapter(direction: -1 | 1, source: string): void {
+  const target = direction < 0 ? chapterBefore(selectedChapterIndex) : chapterAfter(selectedChapterIndex);
+  if (!target) {
+    setPlaybackEvent(direction < 0 ? "No previous chapter" : "No next chapter");
+    render();
+    return;
+  }
+  selectChapter(target.index, { keepPlaying: true, source });
+}
+
+function togglePlayback(source: string): void {
+  if (isPlaybackPaused()) {
+    setPlaybackEvent(`${source}: play`);
+    void playFromSession("manual");
+    return;
+  }
+  pausePlayback(source);
+}
+
+function pausePlayback(source = "Manual pause"): void {
+  stopPlayback(true, true);
+  statusText = "Paused";
+  setPlaybackEvent(source);
+  render();
 }
 
 async function playPreviousPart(): Promise<void> {
@@ -735,12 +779,10 @@ function startPlaybackWatchdog(): void {
   if (playbackWatchTimer !== null) {
     return;
   }
+  lastWatchdogPosition = currentPlaybackPosition();
+  stuckPlaybackTicks = 0;
   playbackWatchTimer = window.setInterval(() => {
-    if (nativePlaybackActive) {
-      void refreshNativePlayback();
-    } else {
-      maybeAdvanceNearPartEnd();
-    }
+    void playbackWatchdogTick();
   }, 500);
 }
 
@@ -749,6 +791,59 @@ function stopPlaybackWatchdog(): void {
     window.clearInterval(playbackWatchTimer);
   }
   playbackWatchTimer = null;
+  lastWatchdogPosition = -1;
+  stuckPlaybackTicks = 0;
+  watchdogRecovering = false;
+}
+
+async function playbackWatchdogTick(): Promise<void> {
+  if (!session) {
+    stopPlaybackWatchdog();
+    return;
+  }
+  if (nativePlaybackActive) {
+    await refreshNativePlayback();
+  } else {
+    maybeAdvanceNearPartEnd();
+  }
+  if (!session || isPlaybackPaused()) {
+    lastWatchdogPosition = currentPlaybackPosition();
+    stuckPlaybackTicks = 0;
+    return;
+  }
+  const position = currentPlaybackPosition();
+  const moved = position > lastWatchdogPosition + 0.15;
+  const nearEnd = session.generatedSeconds > 0 && session.generatedSeconds - position < 1.5;
+  if (moved || nearEnd) {
+    lastWatchdogPosition = position;
+    stuckPlaybackTicks = 0;
+    return;
+  }
+  stuckPlaybackTicks += 1;
+  if (stuckPlaybackTicks < 12 || watchdogRecovering) {
+    return;
+  }
+  watchdogRecovering = true;
+  setPlaybackEvent(`Watchdog stalled at ${formatTime(position)}; restarting audio`);
+  await maybeReportNativeAudioIssue("playback-watchdog-stalled", true);
+  try {
+    await playFromSession("auto");
+  } finally {
+    lastWatchdogPosition = currentPlaybackPosition();
+    stuckPlaybackTicks = 0;
+    watchdogRecovering = false;
+  }
+}
+
+function currentPlaybackPosition(): number {
+  if (!session) {
+    return 0;
+  }
+  if (nativePlaybackActive) {
+    return sessionPosition(session);
+  }
+  return session.durations.slice(0, session.currentIndex).reduce((sum, duration) => sum + duration, 0)
+    + (Number.isFinite(audio.currentTime) ? audio.currentTime : session.currentSeconds);
 }
 
 function selectedBook(): Book | undefined {
@@ -1532,26 +1627,10 @@ function bindUi(): void {
     render();
   });
   document.querySelector<HTMLButtonElement>("#resume-bookmark")?.addEventListener("click", () => resumeBookmark());
-  document.querySelector<HTMLButtonElement>("#play")?.addEventListener("click", () => {
-    if (isPlaybackPaused()) {
-      void playFromSession("manual");
-    } else {
-      stopPlayback(true, true);
-      statusText = "Paused";
-      render();
-    }
-  });
-  document.querySelector<HTMLButtonElement>("#mini-play")?.addEventListener("click", () => {
-    if (isPlaybackPaused()) {
-      void playFromSession("manual");
-    } else {
-      stopPlayback(true, true);
-      statusText = "Paused";
-      render();
-    }
-  });
-  document.querySelector<HTMLButtonElement>("#mini-prev-chapter")?.addEventListener("click", () => selectRelativeChapter(-1));
-  document.querySelector<HTMLButtonElement>("#mini-next-chapter")?.addEventListener("click", () => selectRelativeChapter(1));
+  document.querySelector<HTMLButtonElement>("#play")?.addEventListener("click", () => togglePlayback("Player"));
+  document.querySelector<HTMLButtonElement>("#mini-play")?.addEventListener("click", () => togglePlayback("Mini player"));
+  document.querySelector<HTMLButtonElement>("#mini-prev-chapter")?.addEventListener("click", () => playRelativeChapter(-1, "Mini previous"));
+  document.querySelector<HTMLButtonElement>("#mini-next-chapter")?.addEventListener("click", () => playRelativeChapter(1, "Mini next"));
   document.querySelector<HTMLButtonElement>("#back-30")?.addEventListener("click", () => {
     seekBy(-30);
     render();
