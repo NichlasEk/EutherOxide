@@ -8149,6 +8149,17 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         const safeManual = escapeHtml(manualLabel);
         const safeId = encodeURIComponent(id);
         const score = Number(event.top_score || event.score || 0);
+        const archive = item.archive || null;
+        const archiveStatus = archive?.status ? String(archive.status) : "";
+        const archiveText = archiveStatus === "archived"
+          ? "Arkiverad"
+          : archiveStatus === "copying"
+            ? "Arkiverar..."
+            : archiveStatus === "queued"
+              ? "Köad för arkiv"
+              : archiveStatus === "failed"
+                ? "Arkiv misslyckades"
+                : "Inte arkiverad";
         const card = document.createElement("article");
         card.className = "event-card";
         card.innerHTML = `
@@ -8167,7 +8178,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
             <nav>
               <a href="/api/camera/frigate/api/events/${safeId}/clip.mp4" target="_blank" rel="noreferrer">Clip</a>
               <a href="/api/camera/frigate/api/events/${safeId}/snapshot.jpg" target="_blank" rel="noreferrer">Snapshot</a>
+              <button data-event-archive="${safeId}" type="button" ${archiveStatus === "archived" || archiveStatus === "copying" || archiveStatus === "queued" ? "disabled" : ""}>Arkivera 15 min</button>
             </nav>
+            <span>${archiveText}</span>
           </div>`;
         const image = card.querySelector(".event-media img");
         const media = card.querySelector(".event-media");
@@ -8218,6 +8231,21 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     });
     window.addEventListener("resize", layoutCameraMedia);
 
+    async function archiveEvent(eventId, label) {
+      const body = new URLSearchParams({ label });
+      const response = await fetch(`/api/camera/ai/api/events/${encodeURIComponent(eventId)}/archive`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+        },
+        body,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    }
+
     async function saveEventLabel(eventId, label) {
       const body = new URLSearchParams({ label });
       const response = await fetch(`/api/camera/ai/api/events/${encodeURIComponent(eventId)}/label`, {
@@ -8259,6 +8287,24 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         eventsInFlight = false;
       }
     }
+
+    eventsGrid.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-event-archive]");
+      if (!button) return;
+      const eventId = decodeURIComponent(button.dataset.eventArchive || "");
+      const card = button.closest(".event-card");
+      const labelInput = card?.querySelector(".event-label-form input[name=label]");
+      button.disabled = true;
+      eventsStatus.textContent = "Startar arkiv...";
+      try {
+        await archiveEvent(eventId, labelInput?.value || "");
+        eventsStatus.textContent = "Arkivering startad";
+        window.setTimeout(loadEvents, 1200);
+      } catch {
+        eventsStatus.textContent = "Arkivering kunde inte startas";
+        button.disabled = false;
+      }
+    });
 
     eventsGrid.addEventListener("submit", async (event) => {
       const form = event.target.closest(".event-label-form");
