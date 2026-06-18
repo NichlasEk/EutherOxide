@@ -61,6 +61,7 @@ const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
+const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2180,6 +2181,14 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_camera_admin_page(stream)
         }
         _ => {
+            if is_camera_ai_proxy_path(path) {
+                let user = require_host_user(state, &request)?;
+                if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin)
+                {
+                    return send_error(stream, 403, &err.to_string());
+                }
+                return proxy_camera_ai_request(stream, &request);
+            }
             if is_camera_frigate_proxy_path(path) {
                 let user = require_host_user(state, &request)?;
                 if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin)
@@ -3070,6 +3079,13 @@ fn is_camera_frigate_proxy_path(path: &str) -> bool {
     path == CAMERA_FRIGATE_PROXY_PREFIX
         || path
             .strip_prefix(CAMERA_FRIGATE_PROXY_PREFIX)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn is_camera_ai_proxy_path(path: &str) -> bool {
+    path == CAMERA_AI_PROXY_PREFIX
+        || path
+            .strip_prefix(CAMERA_AI_PROXY_PREFIX)
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
@@ -7504,6 +7520,49 @@ fn eutherbooks_upstream_path(path: &str) -> String {
     stripped.to_string()
 }
 
+fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if request.method != "GET" {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_base =
+        env::var("EUTHERSIGHT_AI_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15101".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherSight AI upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let upstream_path = camera_ai_upstream_path(&request.path);
+    write!(
+        upstream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        upstream_path, upstream_base
+    )?;
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("accept-encoding")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    io::copy(&mut upstream, stream)?;
+    Ok(())
+}
+
+fn camera_ai_upstream_path(path: &str) -> String {
+    let stripped = path
+        .strip_prefix(CAMERA_AI_PROXY_PREFIX)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/");
+    stripped.to_string()
+}
+
 fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
     if !matches!(
         request.method.as_str(),
@@ -8028,26 +8087,34 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       }[char]));
     }
 
-    function renderEvents(events) {
+    function renderEvents(items) {
       eventsGrid.innerHTML = "";
-      if (!events.length) {
-        eventsGrid.innerHTML = '<p class="empty-state">Inga objekt-events ännu. AI-detect är aktiv för person, bil, cykel, motorcykel, hund och katt. Frigate sparar motion i 3 dagar och events/snapshots i 30 dagar när något hittas.</p>';
+      if (!items.length) {
+        eventsGrid.innerHTML = '<p class="empty-state">Inga objekt-events ännu. Frigate sparar motion i 3 dagar och events/snapshots i 30 dagar. Lokal AI-taggning körs på snapshots när events dyker upp.</p>';
         return;
       }
-      for (const event of events) {
+      for (const item of items) {
+        const event = item.event || item;
+        const analysis = item.analysis || null;
         const id = String(event.id || "");
         if (!id) continue;
-        const label = String(event.label || "event");
-        const safeLabel = escapeHtml(label);
+        const frigateLabel = String(event.label || "event");
+        const top = analysis?.top?.[0] || null;
+        const aiLabel = top?.label ? String(top.label) : "väntar på AI";
+        const aiScore = Number(top?.score || 0);
+        const title = top ? `${aiLabel} · ${frigateLabel}` : frigateLabel;
+        const safeTitle = escapeHtml(title);
+        const safeAi = escapeHtml(aiLabel);
         const safeId = encodeURIComponent(id);
         const score = Number(event.top_score || event.score || 0);
         const card = document.createElement("article");
         card.className = "event-card";
         card.innerHTML = `
-          <img alt="${safeLabel}" src="/api/camera/frigate/api/events/${safeId}/thumbnail.jpg?format=android" loading="lazy" />
+          <img alt="${safeTitle}" src="/api/camera/frigate/api/events/${safeId}/thumbnail.jpg?format=android" loading="lazy" />
           <div>
-            <strong>${safeLabel}</strong>
-            <span>${formatEventTime(event.start_time)} · ${formatEventDuration(event)} · ${Math.round(score * 100)}%</span>
+            <strong>${safeTitle}</strong>
+            <span>${formatEventTime(event.start_time)} · ${formatEventDuration(event)} · Frigate ${Math.round(score * 100)}%</span>
+            <span>Local AI: ${safeAi}${top ? ` ${Math.round(aiScore * 100)}%` : ""}</span>
             <nav>
               <a href="/api/camera/frigate/api/events/${safeId}/clip.mp4" target="_blank" rel="noreferrer">Clip</a>
               <a href="/api/camera/frigate/api/events/${safeId}/snapshot.jpg" target="_blank" rel="noreferrer">Snapshot</a>
@@ -8062,12 +8129,13 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       try {
         const params = new URLSearchParams({ camera: "yard", limit: "24" });
         if (eventFilter.value) params.set("label", eventFilter.value);
-        const response = await fetch(`/api/camera/frigate/api/events?${params}`, { credentials: "same-origin" });
+        const response = await fetch(`/api/camera/ai/api/events?${params}`, { credentials: "same-origin" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const events = await response.json();
-        renderEvents(Array.isArray(events) ? events : []);
+        const payload = await response.json();
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        renderEvents(items);
         const label = eventFilter.value ? ` ${eventFilter.options[eventFilter.selectedIndex].text.toLowerCase()}` : "";
-        eventsStatus.textContent = `${Array.isArray(events) ? events.length : 0}${label} events`;
+        eventsStatus.textContent = `${items.length}${label} AI-events`;
       } catch {
         eventsStatus.textContent = "Events kunde inte laddas";
       }
