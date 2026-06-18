@@ -40,8 +40,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
 const minNativeLookaheadChapters = 5;
-const appVersion = "0.1.37";
-const appBuild = "0.1.37-beta";
+const appVersion = "0.1.38";
+const appBuild = "0.1.38-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -71,6 +71,8 @@ let nativeLookaheadRequestInFlight = false;
 let nativeLookaheadRetryAfter = 0;
 let endpointSwitchInFlight = false;
 let endpointSwitchRetryAfter = 0;
+let failedJobRecoveryInFlight = false;
+let failedJobRecoveryKey = "";
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
 let endpointText = "";
@@ -244,23 +246,38 @@ async function loadChapters(): Promise<void> {
 }
 
 function attachExistingJob(jobs: Job[]): void {
+  const failed = jobs
+    .filter((job) =>
+      job.book_id === selectedBookId
+      && job.chapter_indexes.includes(selectedChapterIndex)
+      && job.voice === settings.voiceId
+      && job.tts_options?.model_backend === settings.modelBackend
+      && job.status === "failed"
+    )
+    .reverse()[0];
   const matching = jobs
     .filter((job) =>
       job.book_id === selectedBookId
       && job.chapter_indexes.includes(selectedChapterIndex)
       && job.voice === settings.voiceId
       && job.tts_options?.model_backend === settings.modelBackend
-      && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
+      && isUsableJob(job)
     )
     .reverse();
-  const playable = matching.find((job) => job.audio_files.length > 0);
-  currentJob = playable ?? matching[0] ?? currentJob;
+  const playable = matching.find(isPlayableJob);
+  currentJob = playable ?? matching[0] ?? null;
   if (currentJob) {
     session = sessionFromJob(currentJob, session);
     applyBookmarkToSession();
     warmAudioCacheForSession();
     attachExistingNextJob(jobs);
     void maybeEnsureNextAhead("attach");
+  } else if (failed) {
+    currentJob = failed;
+    session = null;
+    void recoverFailedCurrentJob("attach-failed");
+  } else {
+    session = null;
   }
 }
 
@@ -322,6 +339,11 @@ async function pollJobs(): Promise<void> {
   try {
     if (currentJob) {
       currentJob = await api.job(currentJob.id);
+      if (await recoverFailedCurrentJob("poll-current")) {
+        render();
+        schedulePoll(1000);
+        return;
+      }
       session = sessionFromJob(currentJob, session);
       warmAudioCacheForSession();
       void updateNativeQueue("poll-current");
@@ -332,12 +354,21 @@ async function pollJobs(): Promise<void> {
     }
     if (nextJob) {
       nextJob = await api.job(nextJob.id);
+      if (nextJob.status === "failed") {
+        nextJob = null;
+        nextJobKey = "";
+        void ensureNextJob();
+      }
       warmAudioCacheForJob(nextJob);
       void updateNativeQueue("poll-next");
       void ensureSecondNextJob("poll-next");
     }
     if (secondNextJob) {
       secondNextJob = await api.job(secondNextJob.id);
+      if (secondNextJob.status === "failed") {
+        secondNextJob = null;
+        secondNextJobKey = "";
+      }
       warmAudioCacheForJob(secondNextJob);
       void updateNativeQueue("poll-second-next");
       void ensureNativeLookahead("poll-second-next");
@@ -417,7 +448,7 @@ async function ensureNextJob(force = false): Promise<void> {
       schedulePoll(1500);
       return;
     }
-    const existing = matchingJobForChapter(jobs, nextChapter.index);
+  const existing = matchingJobForChapter(jobs, nextChapter.index);
     nextJob = existing ?? await api.createJob(selectedBookId, nextChapter.index, settings, selectedVoice(), false, false);
     nextJobKey = targetKey;
     allJobs = upsertJobList(allJobs, nextJob);
@@ -611,10 +642,50 @@ async function ensureNativeLookahead(reason: string): Promise<void> {
   }
 }
 
+async function recoverFailedCurrentJob(reason: string): Promise<boolean> {
+  if (!currentJob || currentJob.status !== "failed" || isPlayableJob(currentJob) || failedJobRecoveryInFlight) {
+    return false;
+  }
+  if (!selectedBookId || !settings.autoNext) {
+    statusText = "Chapter failed; regenerate it to continue";
+    setPlaybackEvent(statusText);
+    return false;
+  }
+  const key = `${currentJob.id}:${selectedPlaybackKey()}`;
+  if (failedJobRecoveryKey === key) {
+    return false;
+  }
+  failedJobRecoveryInFlight = true;
+  failedJobRecoveryKey = key;
+  try {
+    stopPlayback(false);
+    clearLookaheadQueue();
+    statusText = "Chapter failed; regenerating";
+    setPlaybackEvent(`Recovering failed chapter: ${reason}`);
+    currentJob = await api.createJob(selectedBookId, selectedChapterIndex, settings, selectedVoice(), false, true);
+    session = currentJob.audio_files.length ? sessionFromJob(currentJob, null) : null;
+    allJobs = upsertJobList(allJobs, currentJob);
+    schedulePoll(500);
+    return true;
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Could not recover failed chapter";
+    failedJobRecoveryKey = "";
+    return false;
+  } finally {
+    failedJobRecoveryInFlight = false;
+  }
+}
+
 async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void> {
   if (mode === "auto" && userPausedPlayback) {
     setPlaybackEvent("Auto-play held by manual pause");
     return;
+  }
+  if (currentJob?.status === "failed" && !isPlayableJob(currentJob)) {
+    if (await recoverFailedCurrentJob("play")) {
+      render();
+      return;
+    }
   }
   if (!session || session.audioFiles.length === 0) {
     setPlaybackEvent("No playable audio loaded");
@@ -795,6 +866,12 @@ function requestNativeSeek(index: number, seconds: number, reason: string): void
 async function playNextPartOrChapter(): Promise<void> {
   if (!session) {
     return;
+  }
+  if (currentJob?.status === "failed" && !isPlayableJob(currentJob)) {
+    if (await recoverFailedCurrentJob("chapter-end")) {
+      render();
+      return;
+    }
   }
   if (session.currentIndex + 1 < session.audioFiles.length) {
     setSessionPartPosition(session.currentIndex + 1, 0);
@@ -1154,8 +1231,26 @@ function selectedChapterHasAudio(): boolean {
   return Boolean(
     currentJob
     && jobPlaybackKey(currentJob) === selectedPlaybackKey()
-    && currentJob.audio_files.length > 0,
+    && isPlayableJob(currentJob),
   );
+}
+
+function isActiveJob(job: Job): boolean {
+  return job.status === "queued" || job.status === "running";
+}
+
+function isCompleteJob(job: Job): boolean {
+  return job.status === "done"
+    && job.audio_files.length > 0
+    && (job.total_audio_files <= 0 || job.audio_files.length >= job.total_audio_files);
+}
+
+function isPlayableJob(job: Job): boolean {
+  return isCompleteJob(job) || (isActiveJob(job) && job.audio_files.length > 0);
+}
+
+function isUsableJob(job: Job): boolean {
+  return isActiveJob(job) || isCompleteJob(job);
 }
 
 function hasEnoughDiskForAutoNext(): boolean {
@@ -1324,10 +1419,13 @@ function matchingJobForChapter(jobs: Job[], chapterIndex: number): Job | null {
       && job.chapter_indexes.includes(chapterIndex)
       && job.voice === settings.voiceId
       && job.tts_options?.model_backend === settings.modelBackend
-      && (job.status === "queued" || job.status === "running" || job.audio_files.length > 0)
+      && isUsableJob(job)
     )
     .reverse();
-  return matching.find((job) => job.audio_files.length > 0) ?? matching[0] ?? null;
+  return matching.find(isCompleteJob)
+    ?? matching.find((job) => isActiveJob(job) && job.audio_files.length > 0)
+    ?? matching[0]
+    ?? null;
 }
 
 async function updateNativeQueue(reason: string): Promise<void> {
