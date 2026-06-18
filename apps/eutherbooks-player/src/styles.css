@@ -184,10 +184,16 @@ label {
 }
 
 .chapter-actions,
-.queue-actions {
+.queue-actions,
+.batch-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.batch-actions {
+  grid-template-columns: minmax(92px, 0.7fr) minmax(112px, 1fr) auto;
+  align-items: center;
 }
 
 .player-panel {
@@ -330,6 +336,7 @@ label {
 }
 
 .queue-head span,
+.batch-actions span,
 .queue-grid span,
 .queue-grid em,
 .job-list small,

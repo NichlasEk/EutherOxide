@@ -92,6 +92,21 @@ export class EutherBooksApi {
     });
   }
 
+  async createJobsForChapters(
+    bookId: string,
+    chapterIndexes: number[],
+    settings: AppSettings,
+    voice: Voice | null,
+    cancelExisting = false,
+    forceRegenerate = false,
+  ): Promise<Job[]> {
+    const jobs: Job[] = [];
+    for (const chapterIndex of chapterIndexes) {
+      jobs.push(await this.createJob(bookId, chapterIndex, settings, voice, cancelExisting, forceRegenerate));
+    }
+    return jobs;
+  }
+
   async reportPlayerLog(payload: Record<string, unknown>): Promise<void> {
     const errors: string[] = [];
     for (const baseUrl of hostReportCandidates(this.baseUrl)) {

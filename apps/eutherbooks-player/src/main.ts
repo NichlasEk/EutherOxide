@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.31";
-const appBuild = "0.1.31-beta";
+const appVersion = "0.1.32";
+const appBuild = "0.1.32-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -58,12 +58,14 @@ let allJobs: Job[] = [];
 let selectedBookId = localStorage.getItem("eutherbooks-player-book") ?? "";
 let selectedChapterIndex = Number(localStorage.getItem("eutherbooks-player-chapter") ?? 0);
 let chapterQuery = "";
+let batchQueueCount = cleanBatchQueueCount(Number(localStorage.getItem("eutherbooks-player-batch-count") ?? 5));
 let currentJob: Job | null = null;
 let nextJob: Job | null = null;
 let nextJobKey = "";
 let secondNextJob: Job | null = null;
 let secondNextJobKey = "";
 let nextJobRequestInFlight = false;
+let batchQueueInFlight = false;
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
 let endpointText = "";
@@ -401,12 +403,14 @@ async function ensureNextJob(force = false): Promise<void> {
       schedulePoll(1500);
       return;
     }
-    nextJob = await api.createJob(selectedBookId, nextChapter.index, settings, selectedVoice(), false, false);
+    const existing = matchingJobForChapter(jobs, nextChapter.index);
+    nextJob = existing ?? await api.createJob(selectedBookId, nextChapter.index, settings, selectedVoice(), false, false);
     nextJobKey = targetKey;
+    allJobs = upsertJobList(allJobs, nextJob);
     warmAudioCacheForJob(nextJob);
     void updateNativeQueue("queue-next");
     void ensureSecondNextJob("queue-next");
-    setPlaybackEvent(`Queued next: ${chapterLabel(nextChapter)}`);
+    setPlaybackEvent(`${existing ? "Found next" : "Queued next"}: ${chapterLabel(nextChapter)}`);
     schedulePoll(1000);
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Could not queue next chapter";
@@ -438,10 +442,71 @@ async function ensureSecondNextJob(reason: string): Promise<void> {
     const existing = matchingJobForChapter(jobs, secondChapter.index);
     secondNextJob = existing ?? await api.createJob(selectedBookId, secondChapter.index, settings, selectedVoice(), false, false);
     secondNextJobKey = targetKey;
+    allJobs = upsertJobList(allJobs, secondNextJob);
     warmAudioCacheForJob(secondNextJob);
     void updateNativeQueue(`queue-second-next:${reason}`);
   } catch (err) {
     setPlaybackEvent(`Second prefetch held: ${err instanceof Error ? err.message : "failed"}`);
+  }
+}
+
+async function queueChapterBatch(): Promise<void> {
+  if (batchQueueInFlight || nextJobRequestInFlight || !selectedBookId) {
+    return;
+  }
+  const targets = chaptersAfter(selectedChapterIndex, batchQueueCount);
+  if (targets.length === 0) {
+    statusText = "Batch queue: end of book";
+    setPlaybackEvent(statusText);
+    render();
+    return;
+  }
+  batchQueueInFlight = true;
+  statusText = `Batch queue: checking ${targets.length} chapters`;
+  setPlaybackEvent(statusText);
+  render();
+  try {
+    health = await api.health();
+    if (!hasEnoughDiskForAutoNext()) {
+      statusText = "Batch queue held: low audio disk space";
+      setPlaybackEvent(statusText);
+      return;
+    }
+    allJobs = await api.jobs();
+    const missing = targets.filter((chapter) => !matchingJobForChapter(allJobs, chapter.index));
+    const createdJobs = missing.length
+      ? await api.createJobsForChapters(
+          selectedBookId,
+          missing.map((chapter) => chapter.index),
+          settings,
+          selectedVoice(),
+          false,
+          false,
+        )
+      : [];
+    const batchJobs = targets
+      .map((chapter) => {
+        const created = createdJobs.find((job) => job.chapter_indexes.includes(chapter.index));
+        return created ?? matchingJobForChapter(allJobs, chapter.index);
+      })
+      .filter((job): job is Job => Boolean(job));
+    allJobs = batchJobs.reduce((jobs, job) => upsertJobList(jobs, job), allJobs);
+    for (const job of batchJobs) {
+      warmAudioCacheForJob(job);
+      attachBatchLookaheadJob(job);
+    }
+    if (createdJobs.length > 0) {
+      schedulePoll(1000);
+    }
+    void updateNativeQueue("batch-queue");
+    const reused = targets.length - createdJobs.length;
+    statusText = `Batch queue: ${createdJobs.length} queued, ${reused} found`;
+    setPlaybackEvent(statusText);
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Could not batch queue chapters";
+  } finally {
+    batchQueueInFlight = false;
+    render();
   }
 }
 
@@ -978,6 +1043,24 @@ function hasMoreImportantActiveJob(jobs: Job[]): boolean {
   });
 }
 
+function upsertJobList(jobs: Job[], job: Job): Job[] {
+  return [job, ...jobs.filter((candidate) => candidate.id !== job.id)];
+}
+
+function attachBatchLookaheadJob(job: Job): void {
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  const secondChapter = nextChapter ? chapterAfter(nextChapter.index) : undefined;
+  const chapterIndex = job.chapter_indexes[0] ?? -1;
+  const key = playbackKey(selectedBookId, chapterIndex, settings.modelBackend, settings.voiceId);
+  if (nextChapter && chapterIndex === nextChapter.index) {
+    nextJob = job;
+    nextJobKey = key;
+  } else if (secondChapter && chapterIndex === secondChapter.index) {
+    secondNextJob = job;
+    secondNextJobKey = key;
+  }
+}
+
 function nativeQueueUrlsWithNext(): string[] {
   if (!session) {
     return [];
@@ -1380,6 +1463,14 @@ function chapterAfter(index: number): Chapter | undefined {
   return chapters.find((chapter) => chapter.index > index);
 }
 
+function chaptersAfter(index: number, count: number): Chapter[] {
+  return chapters.filter((chapter) => chapter.index > index).slice(0, cleanBatchQueueCount(count));
+}
+
+function cleanBatchQueueCount(count: number): number {
+  return [3, 5, 10, 20].includes(count) ? count : 5;
+}
+
 function chapterNumber(chapter: Chapter): number {
   const position = chapters.findIndex((candidate) => candidate.index === chapter.index);
   return position >= 0 ? position + 1 : chapter.index + 1;
@@ -1665,7 +1756,8 @@ function appMarkup(modelVoices: Voice[]): string {
           <li><span class="done">Live</span> Chapter search, previous/next chapter controls and sticky mini-player</li>
           <li><span class="beta">Beta</span> Background playback telemetry and watchdog recovery reports</li>
           <li><span class="beta">Beta</span> Queue diagnostics with auto-next visibility</li>
-          <li><span class="next">Next</span> Batch chapter queue editor and smarter generated-audio search</li>
+          <li><span class="beta">Beta</span> Batch chapter queue editor and smarter generated-audio reuse</li>
+          <li><span class="next">Next</span> Sleep-ready cache audit and long-playback stability report</li>
         </ul>
       </section>
 
@@ -1781,6 +1873,14 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#prefetch-next")?.addEventListener("click", () => {
     void ensureNextJob(true);
   });
+  document.querySelector<HTMLSelectElement>("#batch-count")?.addEventListener("change", (event) => {
+    batchQueueCount = Math.max(1, Number((event.currentTarget as HTMLSelectElement).value));
+    localStorage.setItem("eutherbooks-player-batch-count", String(batchQueueCount));
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#batch-queue")?.addEventListener("click", () => {
+    void queueChapterBatch();
+  });
   document.querySelector<HTMLButtonElement>("#sync-native-queue")?.addEventListener("click", () => {
     void updateNativeQueue("manual").then(() => render());
   });
@@ -1799,6 +1899,10 @@ function queuePanelMarkup(): string {
   const nativeState = nativeAudioState();
   const nextChapter = chapterAfter(selectedChapterIndex);
   const queueUrls = nativeQueueUrlsWithNext();
+  const batchTargets = chaptersAfter(selectedChapterIndex, batchQueueCount);
+  const batchLabel = batchTargets.length > 0
+    ? `${batchTargets.length} chapters`
+    : "End of book";
   const relevantJobs = allJobs
     .filter((job) => job.book_id === selectedBookId && job.owner === "eutherbooks-player")
     .slice()
@@ -1819,6 +1923,13 @@ function queuePanelMarkup(): string {
         <div class="queue-actions">
           <button id="prefetch-next" type="button" ${nextChapter && currentJob ? "" : "disabled"}>Prefetch next</button>
           <button id="sync-native-queue" type="button" ${nativePlaybackActive && session ? "" : "disabled"}>Sync native queue</button>
+        </div>
+        <div class="batch-actions">
+          <select id="batch-count" aria-label="Batch chapter count">
+            ${[3, 5, 10, 20].map((count) => `<option value="${count}" ${count === batchQueueCount ? "selected" : ""}>Next ${count}</option>`).join("")}
+          </select>
+          <button id="batch-queue" type="button" ${batchQueueInFlight || batchTargets.length === 0 ? "disabled" : ""}>Queue batch</button>
+          <span>${escapeHtml(batchLabel)}</span>
         </div>
         <div class="queue-grid">
           <span>Current</span>
