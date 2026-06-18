@@ -7846,7 +7846,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
     .events-grid { padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
     .event-card { border: 1px solid rgba(180,205,218,.18); border-radius: 8px; overflow: hidden; background: #0c1219; }
-    .event-card img { position: static; width: 100%; aspect-ratio: 16 / 9; height: auto; object-fit: cover; transform: none; background: #05070a; }
+    .event-media { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #05070a; }
+    .event-media img { position: absolute; left: 50%; top: 50%; width: auto; height: auto; max-width: none; max-height: none; object-fit: contain; transform: translate(-50%, -50%) rotate(var(--camera-rotation, 0deg)); transform-origin: center center; }
     .event-card div { padding: 10px; display: grid; gap: 6px; border: 0; }
     .event-card strong { font-size: 1rem; }
     .event-card span { color: #a9b8c2; font-size: .92rem; }
@@ -7993,6 +7994,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       liveFrame.dataset.rotation = String(rotationDegrees);
       frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       liveFrame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
+      eventsGrid.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
       layoutCameraMedia();
     }
@@ -8035,9 +8037,17 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       mediaElement.style.height = `${Math.max(1, height)}px`;
     }
 
+    function layoutEventMedia() {
+      for (const image of eventsGrid.querySelectorAll(".event-media img")) {
+        const media = image.closest(".event-media");
+        if (media) fitMediaIntoFrame(media, image);
+      }
+    }
+
     function layoutCameraMedia() {
       fitMediaIntoFrame(frame, live);
       fitMediaIntoFrame(liveFrame, video);
+      layoutEventMedia();
     }
 
     function updateLiveStatus(text) {
@@ -8111,7 +8121,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         const card = document.createElement("article");
         card.className = "event-card";
         card.innerHTML = `
-          <img alt="${safeTitle}" src="/api/camera/frigate/api/events/${safeId}/thumbnail.jpg?format=android" loading="lazy" />
+          <figure class="event-media">
+            <img alt="${safeTitle}" src="/api/camera/frigate/api/events/${safeId}/thumbnail.jpg?format=android" loading="lazy" />
+          </figure>
           <div>
             <strong>${safeTitle}</strong>
             <span>${formatEventTime(event.start_time)} · ${formatEventDuration(event)} · Frigate ${Math.round(score * 100)}%</span>
@@ -8121,7 +8133,13 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
               <a href="/api/camera/frigate/api/events/${safeId}/snapshot.jpg" target="_blank" rel="noreferrer">Snapshot</a>
             </nav>
           </div>`;
+        const image = card.querySelector(".event-media img");
+        const media = card.querySelector(".event-media");
+        image?.addEventListener("load", () => {
+          if (media) fitMediaIntoFrame(media, image);
+        }, { once: true });
         eventsGrid.appendChild(card);
+        if (image?.complete && media) fitMediaIntoFrame(media, image);
       }
     }
 
