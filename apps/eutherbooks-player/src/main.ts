@@ -39,8 +39,9 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.35";
-const appBuild = "0.1.35-beta";
+const minNativeLookaheadChapters = 5;
+const appVersion = "0.1.36";
+const appBuild = "0.1.36-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -66,6 +67,8 @@ let secondNextJob: Job | null = null;
 let secondNextJobKey = "";
 let nextJobRequestInFlight = false;
 let batchQueueInFlight = false;
+let nativeLookaheadRequestInFlight = false;
+let nativeLookaheadRetryAfter = 0;
 let session: PlaybackSession | null = null;
 let statusText = "Ready";
 let endpointText = "";
@@ -337,6 +340,7 @@ async function pollJobs(): Promise<void> {
       secondNextJob = await api.job(secondNextJob.id);
       warmAudioCacheForJob(secondNextJob);
       void updateNativeQueue("poll-second-next");
+      void ensureNativeLookahead("poll-second-next");
     } else if (currentJob?.status === "done" && settings.autoNext) {
       void maybeEnsureNextAhead("poll-ready");
     }
@@ -537,6 +541,69 @@ async function maybeEnsureNextAhead(reason: string): Promise<void> {
     setPlaybackEvent(`Auto-next check: ${reason}`);
   }
   await ensureNextJob();
+  void ensureNativeLookahead(reason);
+}
+
+async function ensureNativeLookahead(reason: string): Promise<void> {
+  if (
+    nativeLookaheadRequestInFlight
+    || batchQueueInFlight
+    || Date.now() < nativeLookaheadRetryAfter
+    || !settings.autoNext
+    || !selectedBookId
+    || !currentJob
+    || currentJob.status !== "done"
+    || !sessionMatchesCurrentSelection()
+  ) {
+    return;
+  }
+  const targets = chaptersAfter(selectedChapterIndex, Math.max(minNativeLookaheadChapters, batchQueueCount));
+  if (targets.length === 0) {
+    return;
+  }
+  nativeLookaheadRequestInFlight = true;
+  try {
+    health = await api.health();
+    if (!hasEnoughDiskForAutoNext()) {
+      statusText = "Lookahead held: low audio disk space";
+      setPlaybackEvent(statusText);
+      return;
+    }
+    allJobs = await api.jobs();
+    const missing = targets.filter((chapter) => !matchingJobForChapter(allJobs, chapter.index));
+    const createdJobs = missing.length
+      ? await api.createJobsForChapters(
+          selectedBookId,
+          missing.map((chapter) => chapter.index),
+          settings,
+          selectedVoice(),
+          false,
+          false,
+        )
+      : [];
+    const lookaheadJobs = targets
+      .map((chapter) => {
+        const created = createdJobs.find((job) => job.chapter_indexes.includes(chapter.index));
+        return created ?? matchingJobForChapter(allJobs, chapter.index);
+      })
+      .filter((job): job is Job => Boolean(job));
+    allJobs = lookaheadJobs.reduce((jobs, job) => upsertJobList(jobs, job), allJobs);
+    for (const job of lookaheadJobs) {
+      warmAudioCacheForJob(job);
+      attachBatchLookaheadJob(job);
+    }
+    if (createdJobs.length > 0) {
+      schedulePoll(1000);
+      setPlaybackEvent(`Lookahead queued ${createdJobs.length}: ${reason}`);
+    }
+    nativeLookaheadRetryAfter = 0;
+    void updateNativeQueue(`lookahead:${reason}`);
+  } catch (err) {
+    nativeLookaheadRetryAfter = Date.now() + 20_000;
+    setPlaybackEvent(`Lookahead held: ${err instanceof Error ? err.message : "failed"}`);
+  } finally {
+    nativeLookaheadRequestInFlight = false;
+  }
 }
 
 async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void> {
@@ -1127,18 +1194,20 @@ function attachBatchLookaheadJob(job: Job): void {
   }
 }
 
+function nativeLookaheadJobs(): Job[] {
+  return chaptersAfter(selectedChapterIndex, Math.max(minNativeLookaheadChapters, batchQueueCount))
+    .map((chapter) => matchingJobForChapter(allJobs, chapter.index))
+    .filter((job): job is Job => job !== null && job.status !== "failed");
+}
+
 function nativeQueueUrlsWithNext(): string[] {
   if (!session) {
     return [];
   }
   const currentUrls = session.audioFiles.map((candidate) => api.audioUrl(candidate));
-  const nextUrls = nextJob && nextJobKey === selectedNextPlaybackKey()
-    ? nextJob.audio_files.map((candidate) => api.audioUrl(candidate))
-    : [];
-  const secondNextUrls = secondNextJob && secondNextJobKey === selectedSecondNextPlaybackKey()
-    ? secondNextJob.audio_files.map((candidate) => api.audioUrl(candidate))
-    : [];
-  return [...currentUrls, ...nextUrls, ...secondNextUrls];
+  const lookaheadUrls = nativeLookaheadJobs()
+    .flatMap((job) => job.audio_files.map((candidate) => api.audioUrl(candidate)));
+  return [...currentUrls, ...lookaheadUrls];
 }
 
 function nativeQueueUrlsForService(): string[] {
@@ -1146,16 +1215,17 @@ function nativeQueueUrlsForService(): string[] {
 }
 
 function nativeQueueManifest(): NativeQueueManifest | null {
-  if (!session || !nextJob || nextJobKey !== selectedNextPlaybackKey()) {
+  if (!session) {
     return null;
   }
   const baseUrl = currentApiBaseUrl();
   if (!baseUrl) {
     return null;
   }
-  const manifestUrls = [`${baseUrl}/jobs/${encodeURIComponent(nextJob.id)}`];
-  if (secondNextJob && secondNextJobKey === selectedSecondNextPlaybackKey()) {
-    manifestUrls.push(`${baseUrl}/jobs/${encodeURIComponent(secondNextJob.id)}`);
+  const manifestUrls = nativeLookaheadJobs()
+    .map((job) => `${baseUrl}/jobs/${encodeURIComponent(job.id)}`);
+  if (manifestUrls.length === 0) {
+    return null;
   }
   return {
     manifestUrls,
@@ -1171,12 +1241,6 @@ function currentApiBaseUrl(): string {
 function selectedNextPlaybackKey(): string {
   const nextChapter = chapterAfter(selectedChapterIndex);
   return nextChapter ? selectedPlaybackKey(nextChapter.index) : "";
-}
-
-function selectedSecondNextPlaybackKey(): string {
-  const nextChapter = chapterAfter(selectedChapterIndex);
-  const secondChapter = nextChapter ? chapterAfter(nextChapter.index) : undefined;
-  return secondChapter ? selectedPlaybackKey(secondChapter.index) : "";
 }
 
 function matchingJobForChapter(jobs: Job[], chapterIndex: number): Job | null {
@@ -1312,6 +1376,7 @@ function advanceToNextJobSession(partIndex: number, partSeconds: number, event: 
   resetPlaybackWatchdogBaseline();
   setPlaybackEvent(event);
   void ensureSecondNextJob(event === "Native advanced to next chapter" ? "native-advanced" : "chapter-advanced");
+  void ensureNativeLookahead(event === "Native advanced to next chapter" ? "native-advanced" : "chapter-advanced");
   return true;
 }
 

@@ -189,11 +189,12 @@ function hostReportCandidates(baseUrl: string): string[] {
   const candidates: string[] = [];
   try {
     const url = new URL(hostBaseUrl(baseUrl));
-    candidates.push(url.toString().replace(/\/+$/, ""));
     if (url.hostname === "192.168.32.186" && url.port === "8088") {
-      url.port = "8080";
-      candidates.push(url.toString().replace(/\/+$/, ""));
+      const hostUrl = new URL(url.toString());
+      hostUrl.port = "8080";
+      candidates.push(hostUrl.toString().replace(/\/+$/, ""));
     }
+    candidates.push(url.toString().replace(/\/+$/, ""));
   } catch (_err) {
   }
   candidates.push("http://192.168.32.186:8080", "https://apothictech.se");
