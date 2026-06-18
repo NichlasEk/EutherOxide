@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.29";
-const appBuild = "0.1.29-beta";
+const appVersion = "0.1.30";
+const appBuild = "0.1.30-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -91,6 +91,8 @@ let lastBugReportKey = "";
 let lastWatchdogPosition = -1;
 let stuckPlaybackTicks = 0;
 let watchdogRecovering = false;
+let lastTelemetryReportAt = 0;
+let backgroundStateEvent = `${document.visibilityState} · ${navigator.onLine ? "online" : "offline"}`;
 const audio = new Audio();
 
 audio.preload = "auto";
@@ -130,6 +132,7 @@ mediaSessionStatus = installMediaSessionControls({
   seekTo: seekToSessionPosition,
 });
 setAudioCacheEnabled(settings.cacheAudio);
+installBackgroundTelemetry();
 void boot();
 
 async function boot(): Promise<void> {
@@ -493,6 +496,7 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
   await setPlaybackWakeLock(true);
   statusText = "Playing";
   setPlaybackEvent(mode === "auto" ? "Auto-play resumed" : "Manual play");
+  void reportPlaybackTelemetry(mode === "auto" ? "browser-auto-play" : "browser-manual-play");
   scheduleSleepTimer();
   startPlaybackWatchdog();
   updateAppMediaSession();
@@ -537,6 +541,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   if (!lastPlaybackEvent.includes("fallback")) {
     setPlaybackEvent(mode === "auto" ? "Native auto-play resumed" : "Native manual play");
   }
+  void reportPlaybackTelemetry(mode === "auto" ? "native-auto-play" : "native-manual-play");
   void maybeEnsureNextAhead("native-play");
   scheduleSleepTimer();
   startPlaybackWatchdog();
@@ -796,6 +801,38 @@ function stopPlaybackWatchdog(): void {
   watchdogRecovering = false;
 }
 
+function installBackgroundTelemetry(): void {
+  document.addEventListener("visibilitychange", () => {
+    backgroundStateEvent = `${document.visibilityState} · ${navigator.onLine ? "online" : "offline"}`;
+    setPlaybackEvent(`Visibility ${document.visibilityState}`);
+    if (!isPlaybackPaused()) {
+      void reportPlaybackTelemetry(`visibility-${document.visibilityState}`, true);
+    }
+    updatePlayerShell();
+  });
+  window.addEventListener("online", () => {
+    backgroundStateEvent = `${document.visibilityState} · online`;
+    setPlaybackEvent("Network online");
+    if (!isPlaybackPaused()) {
+      void reportPlaybackTelemetry("network-online", true);
+    }
+    updatePlayerShell();
+  });
+  window.addEventListener("offline", () => {
+    backgroundStateEvent = `${document.visibilityState} · offline`;
+    setPlaybackEvent("Network offline");
+    if (!isPlaybackPaused()) {
+      void reportPlaybackTelemetry("network-offline", true);
+    }
+    updatePlayerShell();
+  });
+  window.addEventListener("pagehide", () => {
+    if (!isPlaybackPaused()) {
+      void reportPlaybackTelemetry("pagehide-playing", true);
+    }
+  });
+}
+
 async function playbackWatchdogTick(): Promise<void> {
   if (!session) {
     stopPlaybackWatchdog();
@@ -825,7 +862,7 @@ async function playbackWatchdogTick(): Promise<void> {
   }
   watchdogRecovering = true;
   setPlaybackEvent(`Watchdog stalled at ${formatTime(position)}; restarting audio`);
-  await maybeReportNativeAudioIssue("playback-watchdog-stalled", true);
+  await reportPlaybackTelemetry("playback-watchdog-stalled", true);
   try {
     await playFromSession("auto");
   } finally {
@@ -1065,6 +1102,19 @@ async function maybeReportNativeAudioIssue(event: string, force = false): Promis
   }
 }
 
+async function reportPlaybackTelemetry(event: string, force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastTelemetryReportAt < 15_000) {
+    return;
+  }
+  lastTelemetryReportAt = now;
+  try {
+    await api.reportPlayerLog(playerBugPayload(event, nativeAudioState()));
+  } catch (err) {
+    setPlaybackEvent(`Telemetry failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function playerBugPayload(event: string, state: NativeAudioState): Record<string, unknown> {
   const cacheState = audioCacheState();
   return {
@@ -1120,6 +1170,22 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
     nativeAudio: state,
     wakeLock: wakeLockStatus(),
     mediaSession: mediaSessionStatus,
+    background: backgroundStateEvent,
+    watchdog: {
+      active: playbackWatchTimer !== null,
+      stuckTicks: stuckPlaybackTicks,
+      recovering: watchdogRecovering,
+      lastPosition: lastWatchdogPosition,
+      currentPosition: currentPlaybackPosition(),
+    },
+    browserAudio: {
+      paused: audio.paused,
+      currentTime: Number.isFinite(audio.currentTime) ? audio.currentTime : null,
+      duration: Number.isFinite(audio.duration) ? audio.duration : null,
+      readyState: audio.readyState,
+      networkState: audio.networkState,
+      src: audio.currentSrc || audio.src || "",
+    },
     playback: lastPlaybackEvent,
     playbackEvents,
     userAgent: navigator.userAgent,
@@ -1299,6 +1365,7 @@ function scheduleSleepTimer(): void {
     stopPlayback(true, true);
     statusText = "Sleep timer paused playback";
     setPlaybackEvent("Sleep timer paused playback");
+    void reportPlaybackTelemetry("sleep-timer-paused", true);
     render();
   }, settings.sleepTimerMinutes * 60_000);
 }
@@ -1527,6 +1594,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Playback: ${escapeHtml(lastPlaybackEvent)}${userPausedPlayback ? " · manual pause lock" : ""}</small>
         <small>Bookmark: ${bookmark ? `${escapeHtml(bookmark.label)} · ${bookmark.auto ? "auto" : "manual"}` : "none for this voice"}</small>
         <small>Wake: ${escapeHtml(wakeLockStatus())}</small>
+        <small>Background: ${escapeHtml(backgroundStateEvent)} · watchdog ${playbackWatchTimer !== null ? "on" : "off"} · stuck ${stuckPlaybackTicks}</small>
         <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · queue ${nativeState.index}/${nativeState.queueSize} · wake ${nativeState.wakeLockHeld ? "on" : "off"} · wifi ${nativeState.wifiLockHeld ? "on" : "off"} · headset ${nativeState.noisyReceiverRegistered ? "watching" : "off"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
@@ -1549,6 +1617,7 @@ function appMarkup(modelVoices: Voice[]): string {
           <li><span class="beta">Beta</span> Versioned APK reports with lock, queue, cache and job telemetry</li>
           <li><span class="done">Live</span> Lockscreen notification controls for previous, play/pause, next and stop</li>
           <li><span class="done">Live</span> Chapter search, previous/next chapter controls and sticky mini-player</li>
+          <li><span class="beta">Beta</span> Background playback telemetry and watchdog recovery reports</li>
           <li><span class="beta">Beta</span> Queue diagnostics with auto-next visibility</li>
           <li><span class="next">Next</span> Batch chapter queue editor and smarter generated-audio search</li>
         </ul>
