@@ -7785,6 +7785,15 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     input[type="range"] { width: 140px; accent-color: #96d7ff; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
+    .events-grid { padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .event-card { border: 1px solid rgba(180,205,218,.18); border-radius: 8px; overflow: hidden; background: #0c1219; }
+    .event-card img { position: static; width: 100%; aspect-ratio: 16 / 9; height: auto; object-fit: cover; transform: none; background: #05070a; }
+    .event-card div { padding: 10px; display: grid; gap: 6px; border: 0; }
+    .event-card strong { font-size: 1rem; }
+    .event-card span { color: #a9b8c2; font-size: .92rem; }
+    .event-card nav { display: flex; gap: 8px; flex-wrap: wrap; }
+    .event-card a { color: #96d7ff; font-weight: 800; }
+    .empty-state { padding: 18px; color: #a9b8c2; }
     .launch-card { padding: 18px; display: grid; gap: 10px; }
     .launch-card p { max-width: 68ch; }
     @media (max-width: 640px) {
@@ -7849,6 +7858,16 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       </section>
     </section>
     <section class="panel">
+      <div class="panel-head">
+        <strong>Smart inspelning</strong>
+        <span class="camera-toolbar">
+          <span id="events-status">Laddar events...</span>
+          <button id="refresh-events" type="button">Uppdatera</button>
+        </span>
+      </div>
+      <section id="events-grid" class="events-grid"></section>
+    </section>
+    <section class="panel">
       <div><strong>Frigate admin</strong><span>Proxy via serverns lokala tunnel</span></div>
       <section class="launch-card">
         <p>Frigate-webben öppnas separat. Kamerabilden ovan är EutherHost-vyn som fungerar direkt i mobilen.</p>
@@ -7871,6 +7890,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const rotate = document.getElementById("rotate-camera");
     const refreshRate = document.getElementById("refresh-rate");
     const rotationStatus = document.getElementById("rotation-status");
+    const eventsGrid = document.getElementById("events-grid");
+    const eventsStatus = document.getElementById("events-status");
+    const refreshEvents = document.getElementById("refresh-events");
     let csrfToken = "";
     let rotationDegrees = 0;
     let refreshMs = 500;
@@ -7962,6 +7984,76 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     function refreshSnapshot() {
       live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
+    }
+
+    function formatEventTime(value) {
+      const seconds = Number(value) || 0;
+      if (!seconds) return "okänd tid";
+      return new Date(seconds * 1000).toLocaleString("sv-SE", {
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
+    function formatEventDuration(event) {
+      const start = Number(event.start_time) || 0;
+      const end = Number(event.end_time) || 0;
+      if (!start || !end || end <= start) return "pågår";
+      return `${Math.round(end - start)} s`;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[char]));
+    }
+
+    function renderEvents(events) {
+      eventsGrid.innerHTML = "";
+      if (!events.length) {
+        eventsGrid.innerHTML = '<p class="empty-state">Inga inspelade objekt-events ännu. Frigate spelar ändå in enligt retention-reglerna och listan fylls när detect-streamen ser något relevant.</p>';
+        return;
+      }
+      for (const event of events) {
+        const id = String(event.id || "");
+        if (!id) continue;
+        const label = String(event.label || "event");
+        const safeLabel = escapeHtml(label);
+        const safeId = encodeURIComponent(id);
+        const score = Number(event.top_score || event.score || 0);
+        const card = document.createElement("article");
+        card.className = "event-card";
+        card.innerHTML = `
+          <img alt="${safeLabel}" src="/api/camera/frigate/api/events/${safeId}/thumbnail.jpg?format=android" loading="lazy" />
+          <div>
+            <strong>${safeLabel}</strong>
+            <span>${formatEventTime(event.start_time)} · ${formatEventDuration(event)} · ${Math.round(score * 100)}%</span>
+            <nav>
+              <a href="/api/camera/frigate/api/events/${safeId}/clip.mp4" target="_blank" rel="noreferrer">Clip</a>
+              <a href="/api/camera/frigate/api/events/${safeId}/snapshot.jpg" target="_blank" rel="noreferrer">Snapshot</a>
+            </nav>
+          </div>`;
+        eventsGrid.appendChild(card);
+      }
+    }
+
+    async function loadEvents() {
+      eventsStatus.textContent = "Laddar events...";
+      try {
+        const response = await fetch("/api/camera/frigate/api/events?camera=yard&limit=12", { credentials: "same-origin" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const events = await response.json();
+        renderEvents(Array.isArray(events) ? events : []);
+        eventsStatus.textContent = `${Array.isArray(events) ? events.length : 0} events`;
+      } catch {
+        eventsStatus.textContent = "Events kunde inte laddas";
+      }
     }
 
     function scheduleSnapshotRefresh() {
@@ -8308,6 +8400,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     liveVolume.addEventListener("input", () => {
       video.volume = Number(liveVolume.value) / 100;
     });
+    refreshEvents.addEventListener("click", loadEvents);
     live.addEventListener("load", layoutCameraMedia);
     video.addEventListener("loadedmetadata", () => {
       layoutCameraMedia();
@@ -8324,6 +8417,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     applyCameraZoom();
     applyRefresh(refreshMs);
+    loadEvents();
     loadCameraSettings().catch(() => {});
   </script>
 </body>
