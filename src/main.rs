@@ -7521,7 +7521,7 @@ fn eutherbooks_upstream_path(path: &str) -> String {
 }
 
 fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
-    if request.method != "GET" {
+    if !matches!(request.method.as_str(), "GET" | "POST") {
         return send_error(stream, 405, "method not allowed");
     }
     let upstream_base =
@@ -7535,9 +7535,12 @@ fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io:
     let upstream_path = camera_ai_upstream_path(&request.path);
     write!(
         upstream,
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-        upstream_path, upstream_base
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, upstream_path, upstream_base
     )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
     for (name, value) in &request.headers {
         if name.eq_ignore_ascii_case("host")
             || name.eq_ignore_ascii_case("connection")
@@ -7551,6 +7554,9 @@ fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io:
         write!(upstream, "{name}: {value}\r\n")?;
     }
     write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
     io::copy(&mut upstream, stream)?;
     Ok(())
 }
@@ -7851,6 +7857,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .event-card div { padding: 10px; display: grid; gap: 6px; border: 0; }
     .event-card strong { font-size: 1rem; }
     .event-card span { color: #a9b8c2; font-size: .92rem; }
+    .event-label-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .event-label-form input { min-height: 38px; flex: 1 1 150px; min-width: 0; border-radius: 8px; border: 1px solid rgba(180,205,218,.24); background: #070b10; color: #eef3f5; padding: 0 10px; font: inherit; }
+    .event-label-form button { min-height: 38px; }
     .event-card nav { display: flex; gap: 8px; flex-wrap: wrap; }
     .event-card a { color: #96d7ff; font-weight: 800; }
     .empty-state { padding: 18px; color: #a9b8c2; }
@@ -8111,11 +8120,13 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         if (!id) continue;
         const frigateLabel = String(event.label || "event");
         const top = analysis?.top?.[0] || null;
+        const manualLabel = item.manualLabel?.label ? String(item.manualLabel.label) : "";
         const aiLabel = top?.label ? String(top.label) : "väntar på AI";
         const aiScore = Number(top?.score || 0);
-        const title = top ? `${aiLabel} · ${frigateLabel}` : frigateLabel;
+        const title = manualLabel ? `${manualLabel} · ${frigateLabel}` : top ? `${aiLabel} · ${frigateLabel}` : frigateLabel;
         const safeTitle = escapeHtml(title);
         const safeAi = escapeHtml(aiLabel);
+        const safeManual = escapeHtml(manualLabel);
         const safeId = encodeURIComponent(id);
         const score = Number(event.top_score || event.score || 0);
         const card = document.createElement("article");
@@ -8127,7 +8138,12 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
           <div>
             <strong>${safeTitle}</strong>
             <span>${formatEventTime(event.start_time)} · ${formatEventDuration(event)} · Frigate ${Math.round(score * 100)}%</span>
+            ${manualLabel ? `<span>Din label: ${safeManual}</span>` : ""}
             <span>Local AI: ${safeAi}${top ? ` ${Math.round(aiScore * 100)}%` : ""}</span>
+            <form class="event-label-form" data-event-label-form="${safeId}">
+              <input name="label" type="text" maxlength="80" value="${safeManual}" placeholder="Skriv vad det är" aria-label="Event label" />
+              <button type="submit">Spara label</button>
+            </form>
             <nav>
               <a href="/api/camera/frigate/api/events/${safeId}/clip.mp4" target="_blank" rel="noreferrer">Clip</a>
               <a href="/api/camera/frigate/api/events/${safeId}/snapshot.jpg" target="_blank" rel="noreferrer">Snapshot</a>
@@ -8141,6 +8157,21 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         eventsGrid.appendChild(card);
         if (image?.complete && media) fitMediaIntoFrame(media, image);
       }
+    }
+
+    async function saveEventLabel(eventId, label) {
+      const body = new URLSearchParams({ label });
+      const response = await fetch(`/api/camera/ai/api/events/${encodeURIComponent(eventId)}/label`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+        },
+        body,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
     }
 
     async function loadEvents() {
@@ -8169,6 +8200,27 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         eventsInFlight = false;
       }
     }
+
+    eventsGrid.addEventListener("submit", async (event) => {
+      const form = event.target.closest(".event-label-form");
+      if (!form) return;
+      event.preventDefault();
+      const encodedId = form.dataset.eventLabelForm || "";
+      const input = form.querySelector("input[name=label]");
+      const button = form.querySelector("button");
+      const eventId = decodeURIComponent(encodedId);
+      const label = input?.value || "";
+      if (button) button.disabled = true;
+      try {
+        await saveEventLabel(eventId, label);
+        eventsStatus.textContent = label.trim() ? "Label sparad" : "Label borttagen";
+        await loadEvents();
+      } catch {
+        eventsStatus.textContent = "Label kunde inte sparas";
+      } finally {
+        if (button) button.disabled = false;
+      }
+    });
 
     function startEventsRefresh() {
       window.clearInterval(eventsTimer);
