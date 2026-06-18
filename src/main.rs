@@ -7535,6 +7535,7 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
         if name.eq_ignore_ascii_case("host")
             || name.eq_ignore_ascii_case("connection")
             || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("accept-encoding")
             || name.eq_ignore_ascii_case("x-csrf-token")
             || name.eq_ignore_ascii_case("cookie")
         {
@@ -7546,8 +7547,79 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
     if !request.body.is_empty() {
         upstream.write_all(&request.body)?;
     }
-    io::copy(&mut upstream, stream)?;
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response)?;
+    send_camera_frigate_response(stream, &upstream_path, &response)?;
     Ok(())
+}
+
+fn send_camera_frigate_response(
+    stream: &mut TcpStream,
+    upstream_path: &str,
+    response: &[u8],
+) -> io::Result<()> {
+    let Some(header_end) = find_subslice(response, b"\r\n\r\n") else {
+        stream.write_all(response)?;
+        return Ok(());
+    };
+    let body_offset = header_end + 4;
+    let header_text = String::from_utf8_lossy(&response[..header_end]).to_string();
+    let body = &response[body_offset..];
+    if !camera_frigate_should_rewrite_response(upstream_path, &header_text, body) {
+        stream.write_all(response)?;
+        return Ok(());
+    }
+    let rewritten = rewrite_camera_frigate_text(&String::from_utf8_lossy(body));
+    for line in header_text.lines() {
+        if line.to_ascii_lowercase().starts_with("content-length:")
+            || line.to_ascii_lowercase().starts_with("transfer-encoding:")
+        {
+            continue;
+        }
+        write!(stream, "{line}\r\n")?;
+    }
+    write!(stream, "Content-Length: {}\r\n\r\n", rewritten.len())?;
+    stream.write_all(rewritten.as_bytes())
+}
+
+fn camera_frigate_should_rewrite_response(
+    upstream_path: &str,
+    header_text: &str,
+    body: &[u8],
+) -> bool {
+    if header_text
+        .to_ascii_lowercase()
+        .lines()
+        .any(|line| line.starts_with("transfer-encoding:"))
+    {
+        return false;
+    }
+    let lower_headers = header_text.to_ascii_lowercase();
+    lower_headers.contains("content-type: text/html")
+        || lower_headers.contains("content-type: text/css")
+        || lower_headers.contains("content-type: application/javascript")
+        || lower_headers.contains("content-type: text/javascript")
+        || upstream_path.ends_with(".js")
+        || upstream_path.ends_with(".css")
+        || body.starts_with(b"<!doctype html")
+        || body.starts_with(b"<!DOCTYPE html")
+}
+
+fn rewrite_camera_frigate_text(input: &str) -> String {
+    input
+        .replace("\"/assets/", "\"__EUTHER_FRIGATE_ASSETS__/")
+        .replace("'/assets/", "'__EUTHER_FRIGATE_ASSETS__/")
+        .replace("`/assets/", "`__EUTHER_FRIGATE_ASSETS__/")
+        .replace("(/assets/", "(__EUTHER_FRIGATE_ASSETS__/")
+        .replace("\"/api/", "\"__EUTHER_FRIGATE_API__/")
+        .replace("'/api/", "'__EUTHER_FRIGATE_API__/")
+        .replace("`/api/", "`__EUTHER_FRIGATE_API__/")
+        .replace("\"/ws", "\"__EUTHER_FRIGATE_WS__")
+        .replace("'/ws", "'__EUTHER_FRIGATE_WS__")
+        .replace("`/ws", "`__EUTHER_FRIGATE_WS__")
+        .replace("__EUTHER_FRIGATE_ASSETS__/", "/api/camera/frigate/assets/")
+        .replace("__EUTHER_FRIGATE_API__/", "/api/camera/frigate/api/")
+        .replace("__EUTHER_FRIGATE_WS__", "/api/camera/frigate/ws")
 }
 
 fn proxy_camera_frigate_websocket_request(
