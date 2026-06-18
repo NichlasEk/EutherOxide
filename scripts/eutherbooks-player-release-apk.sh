@@ -728,7 +728,17 @@ class NativeAudioService : Service() {
         Thread {
             try {
                 repeat(120) {
-                    val fetched = fetchMergedManifestAudioUrls(manifests, audioBase)
+                    val fetched = try {
+                        fetchMergedManifestAudioUrls(manifests, audioBase)
+                    } catch (err: Exception) {
+                        synchronized(lock) {
+                            lastEvent = "Native manifest poll retry: ${err.message ?: err.javaClass.simpleName}"
+                            rememberEvent(lastEvent)
+                        }
+                        updatePlaybackState()
+                        updateNotification()
+                        emptyList()
+                    }
                     var shouldResume = false
                     synchronized(lock) {
                         val prefix = queue.take(startIndex.coerceAtMost(queue.size))

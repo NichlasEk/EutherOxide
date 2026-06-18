@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.34";
-const appBuild = "0.1.34-beta";
+const appVersion = "0.1.35";
+const appBuild = "0.1.35-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -965,6 +965,11 @@ async function playbackWatchdogTick(): Promise<void> {
   }
   if (nativePlaybackActive) {
     await refreshNativePlayback();
+    const state = nativeAudioState();
+    if (isNativeWaitingForMoreAudio(state)) {
+      void maybeEnsureNextAhead("watchdog-native-buffering");
+      void updateNativeQueue("watchdog-native-buffering");
+    }
   } else {
     maybeAdvanceNearPartEnd();
   }
@@ -1014,6 +1019,12 @@ function resetPlaybackWatchdogBaseline(): void {
   lastWatchdogPosition = currentPlaybackPosition();
   lastWatchdogSessionKey = watchdogSessionKey();
   stuckPlaybackTicks = 0;
+}
+
+function isNativeWaitingForMoreAudio(state = nativeAudioState()): boolean {
+  return state.active
+    && !state.ended
+    && state.lastEvent.toLowerCase().includes("buffering for more audio");
 }
 
 function watchdogSessionKey(): string {
@@ -1452,7 +1463,11 @@ function summarizeJob(job: Job | null): Record<string, unknown> | null {
 }
 
 function isPlaybackPaused(): boolean {
-  return nativePlaybackActive ? !nativeAudioState().playing : audio.paused;
+  if (!nativePlaybackActive) {
+    return audio.paused;
+  }
+  const state = nativeAudioState();
+  return !state.playing && !isNativeWaitingForMoreAudio(state);
 }
 
 function currentBookmarkId(): string {
