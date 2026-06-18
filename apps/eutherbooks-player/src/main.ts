@@ -39,8 +39,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
-const appVersion = "0.1.30";
-const appBuild = "0.1.30-beta";
+const appVersion = "0.1.31";
+const appBuild = "0.1.31-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -588,13 +588,43 @@ function applyAudioOffset(seconds: number, sourceChanged: boolean): void {
   apply();
 }
 
+function clampSessionPartIndex(index: number): number {
+  if (!session || session.audioFiles.length === 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(index, session.audioFiles.length - 1));
+}
+
+function clampSessionPartSeconds(index: number, seconds: number): number {
+  if (!session) {
+    return Math.max(0, seconds);
+  }
+  const duration = session.durations[index] ?? 0;
+  if (duration > 0) {
+    return Math.max(0, Math.min(seconds, Math.max(0, duration - 0.25)));
+  }
+  return Math.max(0, seconds);
+}
+
+function setSessionPartPosition(index: number, seconds: number): void {
+  if (!session) {
+    return;
+  }
+  const safeIndex = clampSessionPartIndex(index);
+  session.currentIndex = safeIndex;
+  session.currentSeconds = clampSessionPartSeconds(safeIndex, seconds);
+}
+
+function nativeAbsoluteIndexForSession(index = session?.currentIndex ?? 0): number {
+  return nativeQueueSessionStartIndex + Math.max(0, index);
+}
+
 async function playNextPartOrChapter(): Promise<void> {
   if (!session) {
     return;
   }
   if (session.currentIndex + 1 < session.audioFiles.length) {
-    session.currentIndex += 1;
-    session.currentSeconds = 0;
+    setSessionPartPosition(session.currentIndex + 1, 0);
     await playFromSession("auto");
     return;
   }
@@ -613,15 +643,8 @@ async function playNextPartOrChapter(): Promise<void> {
     await ensureNextJob();
   }
   if (nextJob?.audio_files.length) {
-    selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
-    persistSelection();
-    currentJob = nextJob;
-    nextJob = secondNextJob;
-    nextJobKey = secondNextJobKey;
-    secondNextJob = null;
-    secondNextJobKey = "";
-    session = sessionFromJob(currentJob);
-    void ensureSecondNextJob("chapter-advanced");
+    advanceToNextJobSession(0, 0, "Chapter advanced");
+    render();
     await playFromSession("auto");
     return;
   }
@@ -700,15 +723,15 @@ async function playPreviousPart(): Promise<void> {
   }
   const currentSeconds = nativePlaybackActive ? session.currentSeconds : audio.currentTime;
   if (currentSeconds > 4 || session.currentIndex === 0) {
-    session.currentSeconds = 0;
+    setSessionPartPosition(session.currentIndex, 0);
     if (nativePlaybackActive) {
-      await seekNativeAudio(session.currentIndex, 0).then(applyNativeAudioState);
+      const targetIndex = nativeAbsoluteIndexForSession();
+      await seekNativeAudio(targetIndex, 0).then((state) => applyNativeAudioState(state));
     } else {
       audio.currentTime = 0;
     }
   } else {
-    session.currentIndex -= 1;
-    session.currentSeconds = 0;
+    setSessionPartPosition(session.currentIndex - 1, 0);
     await playFromSession(isPlaybackPaused() ? "manual" : "auto");
   }
   updateAppMediaSession();
@@ -728,13 +751,18 @@ function seekToSessionPosition(seconds: number): void {
   for (let index = 0; index < session.durations.length; index += 1) {
     const duration = session.durations[index] || 0;
     if (target <= elapsed + duration || index === session.durations.length - 1) {
-      session.currentIndex = index;
-      session.currentSeconds = Math.max(0, target - elapsed);
+      setSessionPartPosition(index, Math.max(0, target - elapsed));
       if (nativePlaybackActive) {
-        void seekNativeAudio(session.currentIndex, session.currentSeconds)
+        const targetIndex = nativeAbsoluteIndexForSession(session.currentIndex);
+        const targetSeconds = session.currentSeconds;
+        void seekNativeAudio(targetIndex, targetSeconds)
           .then((state) => {
-            applyNativeAudioState(state);
-            updatePlayerShell();
+            const changedChapter = applyNativeAudioState(state);
+            if (changedChapter) {
+              render();
+            } else {
+              updatePlayerShell();
+            }
           });
         return;
       }
@@ -1029,9 +1057,13 @@ async function updateNativeQueue(reason: string): Promise<void> {
   }
   nativeQueuedUrlsKey = key;
   const state = await updateNativeAudioQueue(urls, nativeQueueManifest());
-  applyNativeAudioState(state);
+  const changedChapter = applyNativeAudioState(state);
   setPlaybackEvent(`Native queue updated: ${reason}`);
-  updatePlayerShell();
+  if (changedChapter) {
+    render();
+  } else {
+    updatePlayerShell();
+  }
 }
 
 async function refreshNativePlayback(): Promise<void> {
@@ -1039,24 +1071,28 @@ async function refreshNativePlayback(): Promise<void> {
     return;
   }
   const state = await refreshNativeAudioState();
-  applyNativeAudioState(state);
+  const changedChapter = applyNativeAudioState(state);
   await maybeReportNativeAudioIssue("native-refresh");
   maybeSaveAutoBookmark();
   if (state.ended) {
     nativePlaybackActive = false;
     await playNextPartOrChapter();
   }
-  updatePlayerShell();
+  if (changedChapter) {
+    render();
+  } else {
+    updatePlayerShell();
+  }
 }
 
-function applyNativeAudioState(state = nativeAudioState()): void {
+function applyNativeAudioState(state = nativeAudioState()): boolean {
   if (!session || !state.available) {
     nativePlaybackActive = false;
-    return;
+    return false;
   }
   nativePlaybackActive = state.active || state.playing || nativePlaybackActive;
   if (!nativePlaybackActive) {
-    return;
+    return false;
   }
   const currentPartCount = session.audioFiles.length;
   const relativeIndex = Math.max(0, state.index - nativeQueueSessionStartIndex);
@@ -1064,22 +1100,30 @@ function applyNativeAudioState(state = nativeAudioState()): void {
     const nextIndex = Math.max(0, relativeIndex - currentPartCount);
     nativeServiceQueuePrefix = nativeServiceQueuePrefix.concat(session.audioFiles.map((candidate) => api.audioUrl(candidate)));
     nativeQueueSessionStartIndex += currentPartCount;
-    selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
-    persistSelection();
-    currentJob = nextJob;
-    nextJob = secondNextJob;
-    nextJobKey = secondNextJobKey;
-    secondNextJob = null;
-    secondNextJobKey = "";
-    session = sessionFromJob(currentJob);
-    session.currentIndex = Math.max(0, Math.min(nextIndex, Math.max(0, session.audioFiles.length - 1)));
-    session.currentSeconds = Math.max(0, state.positionSeconds);
-    setPlaybackEvent("Native advanced to next chapter");
-    void ensureSecondNextJob("native-advanced");
-    return;
+    advanceToNextJobSession(nextIndex, state.positionSeconds, "Native advanced to next chapter");
+    return true;
   }
-  session.currentIndex = Math.max(0, Math.min(relativeIndex, Math.max(0, session.audioFiles.length - 1)));
-  session.currentSeconds = Math.max(0, state.positionSeconds);
+  setSessionPartPosition(relativeIndex, state.positionSeconds);
+  return false;
+}
+
+function advanceToNextJobSession(partIndex: number, partSeconds: number, event: string): boolean {
+  if (!nextJob?.audio_files.length) {
+    return false;
+  }
+  selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
+  persistSelection();
+  currentJob = nextJob;
+  nextJob = secondNextJob;
+  nextJobKey = secondNextJobKey;
+  secondNextJob = null;
+  secondNextJobKey = "";
+  session = sessionFromJob(currentJob);
+  setSessionPartPosition(partIndex, partSeconds);
+  warmAudioCacheForSession();
+  setPlaybackEvent(event);
+  void ensureSecondNextJob(event === "Native advanced to next chapter" ? "native-advanced" : "chapter-advanced");
+  return true;
 }
 
 async function maybeReportNativeAudioIssue(event: string, force = false): Promise<void> {
@@ -1142,6 +1186,8 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
       queuedUrls: nativeQueuedUrlsKey ? nativeQueuedUrlsKey.split("\n").filter(Boolean).length : 0,
       stateQueueSize: state.queueSize,
       index: state.index,
+      sessionStartIndex: nativeQueueSessionStartIndex,
+      sessionRelativeIndex: Math.max(0, state.index - nativeQueueSessionStartIndex),
     },
     session: session
       ? {
