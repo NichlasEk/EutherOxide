@@ -102,6 +102,9 @@ let lastWatchdogPosition = -1;
 let lastWatchdogSessionKey = "";
 let stuckPlaybackTicks = 0;
 let watchdogRecovering = false;
+let watchdogRecoveryCount = 0;
+let lastWatchdogDiagnosis = "steady";
+let lastWatchdogRecovery = "none";
 let lastTelemetryReportAt = 0;
 let secondNextRetryKey = "";
 let secondNextRetryAfter = 0;
@@ -1072,6 +1075,7 @@ function stopPlaybackWatchdog(): void {
   lastWatchdogSessionKey = "";
   stuckPlaybackTicks = 0;
   watchdogRecovering = false;
+  lastWatchdogDiagnosis = "stopped";
 }
 
 function installBackgroundTelemetry(): void {
@@ -1116,6 +1120,7 @@ async function playbackWatchdogTick(): Promise<void> {
     await refreshNativePlayback();
     const state = nativeAudioState();
     if (isNativeWaitingForMoreAudio(state)) {
+      lastWatchdogDiagnosis = playbackStallDiagnosis(state);
       void maybeEnsureNextAhead("watchdog-native-buffering");
       void recoverEndpointAfterNetworkError("watchdog-native-buffering");
       void updateNativeQueue("watchdog-native-buffering");
@@ -1143,17 +1148,20 @@ async function playbackWatchdogTick(): Promise<void> {
     lastWatchdogSessionKey = key;
     lastWatchdogPosition = position;
     stuckPlaybackTicks = 0;
+    lastWatchdogDiagnosis = moved ? "moving" : "near generated edge";
     return;
   }
   stuckPlaybackTicks += 1;
+  lastWatchdogDiagnosis = playbackStallDiagnosis(nativeAudioState());
   if (stuckPlaybackTicks < 12 || watchdogRecovering) {
     return;
   }
   watchdogRecovering = true;
-  setPlaybackEvent(`Watchdog stalled at ${formatTime(position)}; restarting audio`);
-  await reportPlaybackTelemetry("playback-watchdog-stalled", true);
+  watchdogRecoveryCount += 1;
+  setPlaybackEvent(`Watchdog stalled at ${formatTime(position)}; ${lastWatchdogDiagnosis}`);
+  await reportPlaybackTelemetry(`playback-watchdog-stalled:${lastWatchdogDiagnosis}`, true);
   try {
-    await playFromSession("auto");
+    await recoverStalledPlayback(position);
   } finally {
     lastWatchdogPosition = currentPlaybackPosition();
     lastWatchdogSessionKey = watchdogSessionKey();
@@ -1175,6 +1183,65 @@ function isNativeWaitingForMoreAudio(state = nativeAudioState()): boolean {
   return state.active
     && !state.ended
     && state.lastEvent.toLowerCase().includes("buffering for more audio");
+}
+
+function playbackStallDiagnosis(state = nativeAudioState()): string {
+  if (nativePlaybackActive && isNativeWaitingForMoreAudio(state)) {
+    if (nextJob && !isCompleteJob(nextJob)) {
+      return `native waiting for next chapter ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts`;
+    }
+    return "native waiting for queue extension";
+  }
+  if (nativePlaybackActive && state.playing) {
+    return "native playing but position stalled";
+  }
+  if (nativePlaybackActive && state.active && !state.playing) {
+    return `native paused while active: ${state.lastEvent || "unknown"}`;
+  }
+  if (!nativePlaybackActive && !audio.paused) {
+    return `browser audio stalled ready=${audio.readyState} network=${audio.networkState}`;
+  }
+  return "playback not moving";
+}
+
+async function recoverStalledPlayback(position: number): Promise<void> {
+  const reason = lastWatchdogDiagnosis || "unknown";
+  lastWatchdogRecovery = `refreshing queue: ${reason}`;
+  setPlaybackEvent(`Watchdog recovery: refreshing queue at ${formatTime(position)}`);
+  try {
+    const jobs = await api.jobs();
+    allJobs = jobs;
+    if (currentJob) {
+      const freshCurrent = jobs.find((job) => job.id === currentJob?.id) ?? matchingJobForChapter(jobs, selectedChapterIndex);
+      if (freshCurrent) {
+        currentJob = freshCurrent;
+        if (isPlayableJob(freshCurrent)) {
+          const refreshedSession = sessionFromJob(freshCurrent, session);
+          session = refreshedSession;
+          setSessionPartPosition(refreshedSession.currentIndex, refreshedSession.currentSeconds);
+          warmAudioCacheForSession();
+        }
+      }
+    }
+    attachExistingNextJob(jobs);
+    await maybeEnsureNextAhead("watchdog-stall-recovery");
+    await ensureNextJob(true);
+    await ensureSecondNextJob("watchdog-stall-recovery");
+    await ensureNativeLookahead("watchdog-stall-recovery");
+    await recoverEndpointAfterNetworkError("watchdog-stall-recovery", true);
+    if (nativePlaybackActive) {
+      await updateNativeQueue("watchdog-stall-recovery");
+      await refreshNativePlayback();
+    }
+    lastWatchdogRecovery = `restarting audio: ${reason}`;
+    await playFromSession("auto");
+    lastWatchdogRecovery = `recovered at ${new Date().toLocaleTimeString()}: ${reason}`;
+    await reportPlaybackTelemetry("playback-watchdog-recovered", true);
+  } catch (err) {
+    lastWatchdogRecovery = `failed: ${err instanceof Error ? err.message : String(err)}`;
+    setPlaybackEvent(`Watchdog recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    await playFromSession("auto");
+  }
 }
 
 function watchdogSessionKey(): string {
@@ -1640,6 +1707,8 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
     jobId: currentJob?.id ?? session?.jobId ?? "",
     currentJob: summarizeJob(currentJob),
     nextJob: summarizeJob(nextJob),
+    secondNextJob: summarizeJob(secondNextJob),
+    queueDiagnostics: playbackQueueDiagnostics(state),
     nativeQueue: {
       queuedUrls: nativeQueuedUrlsKey ? nativeQueuedUrlsKey.split("\n").filter(Boolean).length : 0,
       stateQueueSize: state.queueSize,
@@ -1679,6 +1748,9 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
       active: playbackWatchTimer !== null,
       stuckTicks: stuckPlaybackTicks,
       recovering: watchdogRecovering,
+      recoveryCount: watchdogRecoveryCount,
+      diagnosis: lastWatchdogDiagnosis,
+      lastRecovery: lastWatchdogRecovery,
       lastPosition: lastWatchdogPosition,
       sessionKey: lastWatchdogSessionKey,
       currentPosition: currentPlaybackPosition(),
@@ -1697,6 +1769,58 @@ function playerBugPayload(event: string, state: NativeAudioState): Record<string
     visible: document.visibilityState,
     online: navigator.onLine,
     timestamp: new Date().toISOString(),
+  };
+}
+
+function playbackQueueDiagnostics(state = nativeAudioState()): Record<string, unknown> {
+  return {
+    summary: playbackQueueSummary(state),
+    current: jobQueueState(currentJob),
+    next: jobQueueState(nextJob),
+    secondNext: jobQueueState(secondNextJob),
+    nativeQueueIndex: state.index,
+    nativeQueueSize: state.queueSize,
+    nativeRelativeIndex: Math.max(0, state.index - nativeQueueSessionStartIndex),
+    nativeQueuedUrls: nativeQueuedUrlsKey ? nativeQueuedUrlsKey.split("\n").filter(Boolean).length : 0,
+    prefixParts: nativeServiceQueuePrefix.length,
+    lookaheadJobs: nativeLookaheadJobs().map(jobQueueState),
+  };
+}
+
+function playbackQueueSummary(state = nativeAudioState()): string {
+  const current = jobQueueState(currentJob);
+  const next = jobQueueState(nextJob);
+  const second = jobQueueState(secondNextJob);
+  const native = nativePlaybackActive
+    ? `native ${state.index}/${state.queueSize}`
+    : "browser audio";
+  const recovery = watchdogRecovering ? "recovering" : lastWatchdogDiagnosis;
+  return `current ${current.parts} ${current.status}; next ${next.parts} ${next.status}; second ${second.parts} ${second.status}; ${native}; ${recovery}`;
+}
+
+function jobQueueState(job: Job | null): Record<string, string | number | boolean> {
+  if (!job) {
+    return {
+      id: "",
+      chapter: "",
+      status: "missing",
+      parts: "0/0",
+      readyParts: 0,
+      totalParts: 0,
+      playable: false,
+      complete: false,
+    };
+  }
+  const totalParts = Math.max(job.total_audio_files, job.audio_files.length);
+  return {
+    id: job.id,
+    chapter: job.chapter_indexes.join(","),
+    status: job.status,
+    parts: `${job.audio_files.length}/${totalParts}`,
+    readyParts: job.audio_files.length,
+    totalParts,
+    playable: isPlayableJob(job),
+    complete: isCompleteJob(job),
   };
 }
 
@@ -1982,6 +2106,7 @@ function appMarkup(modelVoices: Voice[]): string {
     : "Off";
   const cacheState = audioCacheState();
   const nativeState = nativeAudioState();
+  const queueSummary = playbackQueueSummary(nativeState);
   const bookmark = currentBookmark();
   const visibleChapters = filteredChapters();
   const freeAudioDisk = typeof health?.storage?.audio_free_bytes === "number" ? formatBytes(health.storage.audio_free_bytes) : "unknown";
@@ -2112,6 +2237,8 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Bookmark: ${bookmark ? `${escapeHtml(bookmark.label)} · ${bookmark.auto ? "auto" : "manual"}` : "none for this voice"}</small>
         <small>Wake: ${escapeHtml(wakeLockStatus())}</small>
         <small>Background: ${escapeHtml(backgroundStateEvent)} · watchdog ${playbackWatchTimer !== null ? "on" : "off"} · stuck ${stuckPlaybackTicks}</small>
+        <small>Queue health: ${escapeHtml(queueSummary)}</small>
+        <small>Self-heal: ${escapeHtml(lastWatchdogRecovery)} · recoveries ${watchdogRecoveryCount}</small>
         <small>Native audio: ${nativeState.available ? "available" : "off"} · ${nativeState.playing ? "playing" : "paused"} · queue ${nativeState.index}/${nativeState.queueSize} · wake ${nativeState.wakeLockHeld ? "on" : "off"} · wifi ${nativeState.wifiLockHeld ? "on" : "off"} · headset ${nativeState.noisyReceiverRegistered ? "watching" : "off"} · ${escapeHtml(nativeState.lastEvent)}${nativeState.error ? ` · ${escapeHtml(nativeState.error)}` : ""}</small>
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
@@ -2294,11 +2421,15 @@ function queuePanelMarkup(): string {
   const nextParts = nextJob
     ? `${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)}`
     : "0/0";
+  const secondNextChapter = nextChapter ? chapterAfter(nextChapter.index) : null;
+  const secondNextParts = secondNextJob
+    ? `${secondNextJob.audio_files.length}/${Math.max(secondNextJob.total_audio_files, secondNextJob.audio_files.length)}`
+    : "0/0";
   return `
       <section class="queue-panel">
         <div class="queue-head">
           <strong>Queue</strong>
-          <span>${queueUrls.length} audio parts · native ${nativeState.index}/${nativeState.queueSize}</span>
+          <span>${queueUrls.length} audio parts · native ${nativeState.index}/${nativeState.queueSize} · ${escapeHtml(lastWatchdogDiagnosis)}</span>
         </div>
         <div class="queue-actions">
           <button id="prefetch-next" type="button" ${nextChapter && currentJob ? "" : "disabled"}>Prefetch next</button>
@@ -2318,6 +2449,12 @@ function queuePanelMarkup(): string {
           <span>Next</span>
           <strong>${escapeHtml(nextChapter ? chapterLabel(nextChapter) : "End of book")}</strong>
           <em>${escapeHtml(nextJob?.status ?? (settings.autoNext ? "waiting" : "manual"))} · ${nextParts} parts</em>
+          <span>Second</span>
+          <strong>${escapeHtml(secondNextChapter ? chapterLabel(secondNextChapter) : "End of book")}</strong>
+          <em>${escapeHtml(secondNextJob?.status ?? (settings.autoNext ? "waiting" : "manual"))} · ${secondNextParts} parts</em>
+          <span>Recovery</span>
+          <strong>${escapeHtml(lastWatchdogRecovery)}</strong>
+          <em>${watchdogRecovering ? "recovering" : "idle"} · ${watchdogRecoveryCount} attempts</em>
         </div>
         <div class="job-list">
           ${relevantJobs.length
