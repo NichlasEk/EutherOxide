@@ -40,8 +40,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
 const minNativeLookaheadChapters = 5;
-const appVersion = "0.1.38";
-const appBuild = "0.1.38-beta";
+const appVersion = "0.1.39";
+const appBuild = "0.1.39-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
@@ -1479,21 +1479,43 @@ function applyNativeAudioState(state = nativeAudioState()): boolean {
   if (!nativePlaybackActive) {
     return false;
   }
-  const currentPartCount = session.audioFiles.length;
-  const relativeIndex = Math.max(0, state.index - nativeQueueSessionStartIndex);
-  if (relativeIndex >= currentPartCount && nextJob?.audio_files.length && nextJobKey === selectedNextPlaybackKey()) {
-    const nextIndex = Math.max(0, relativeIndex - currentPartCount);
+  let changedChapter = false;
+  let relativeIndex = Math.max(0, state.index - nativeQueueSessionStartIndex);
+  let advanceGuard = 0;
+  while (session && relativeIndex >= session.audioFiles.length && advanceGuard < 8) {
+    const currentPartCount = session.audioFiles.length;
+    if (!prepareNextJobForNativeAdvance()) {
+      break;
+    }
     nativeServiceQueuePrefix = nativeServiceQueuePrefix.concat(session.audioFiles.map((candidate) => api.audioUrl(candidate)));
     nativeQueueSessionStartIndex += currentPartCount;
-    advanceToNextJobSession(nextIndex, state.positionSeconds, "Native advanced to next chapter");
-    return true;
+    relativeIndex = Math.max(0, relativeIndex - currentPartCount);
+    if (!advanceToNextJobSession(0, 0, "Native advanced to next chapter")) {
+      break;
+    }
+    changedChapter = true;
+    advanceGuard += 1;
   }
   if (shouldResyncNativeRegression(relativeIndex, state.positionSeconds, state)) {
     void resyncNativeAfterRegression(relativeIndex, state.positionSeconds);
-    return false;
+    return changedChapter;
   }
   setSessionPartPosition(relativeIndex, state.positionSeconds);
-  return false;
+  return changedChapter;
+}
+
+function prepareNextJobForNativeAdvance(): boolean {
+  if (nextJob && nextJobKey === selectedNextPlaybackKey() && isPlayableJob(nextJob)) {
+    return true;
+  }
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  const candidate = nextChapter ? matchingJobForChapter(allJobs, nextChapter.index) : null;
+  if (!candidate || !isPlayableJob(candidate)) {
+    return false;
+  }
+  nextJob = candidate;
+  nextJobKey = selectedPlaybackKey(nextChapter!.index);
+  return true;
 }
 
 function shouldResyncNativeRegression(relativeIndex: number, seconds: number, state: NativeAudioState): boolean {
