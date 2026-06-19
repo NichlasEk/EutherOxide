@@ -77,12 +77,13 @@ export class EutherBooksApi {
     forceRegenerate = true,
   ): Promise<Job> {
     const options = jobOptions(settings, voice);
+    const voiceId = voice?.id ?? settings.voiceId;
     return this.json<Job>(`/books/${encodeURIComponent(bookId)}/tts`, {
       method: "POST",
       body: JSON.stringify({
         chapters: [chapterIndex],
-        voice: settings.voiceId,
-        language: voiceLanguage(settings.voiceId),
+        voice: voiceId,
+        language: voice?.language === "en" ? "en" : voiceLanguage(voiceId),
         model_backend: settings.modelBackend,
         owner: "eutherbooks-player",
         cancel_existing: cancelExisting,

@@ -2055,7 +2055,49 @@ function updateAppMediaSession(): void {
 }
 
 function selectedVoice(): Voice | null {
-  return voices.find((voice) => voice.id === settings.voiceId) ?? null;
+  const modelVoices = voicesForModel(voices, settings.modelBackend);
+  return modelVoices.find((voice) => voice.id === settings.voiceId)
+    ?? modelVoices[0]
+    ?? null;
+}
+
+function normalizeVoiceForCurrentModel(): Voice | null {
+  const modelVoices = voicesForModel(voices, settings.modelBackend);
+  if (modelVoices.some((voice) => voice.id === settings.voiceId)) {
+    return modelVoices.find((voice) => voice.id === settings.voiceId) ?? null;
+  }
+  const fallback = modelVoices[0] ?? null;
+  if (fallback) {
+    updateSettings({ ...settings, voiceId: fallback.id });
+  }
+  return fallback;
+}
+
+function matchingVoiceForModel(previousVoiceId: string, modelBackend: AppSettings["modelBackend"]): Voice | null {
+  const modelVoices = voicesForModel(voices, modelBackend);
+  if (modelVoices.length === 0) {
+    return null;
+  }
+  const exact = modelVoices.find((voice) => voice.id === previousVoiceId);
+  if (exact) {
+    return exact;
+  }
+  const suffix = voiceFamilySuffix(previousVoiceId);
+  return modelVoices.find((voice) => voiceFamilySuffix(voice.id) === suffix)
+    ?? modelVoices.find((voice) => voice.language === voiceIdLanguage(previousVoiceId))
+    ?? modelVoices[0]
+    ?? null;
+}
+
+function voiceFamilySuffix(voiceId: string): string {
+  return voiceId
+    .replace(/^dots-mf-/, "")
+    .replace(/^dots-soar-/, "")
+    .replace(/^auto-/, "");
+}
+
+function voiceIdLanguage(voiceId: string): string {
+  return voiceId.includes("-en") || voiceId.endsWith("en") ? "en" : "sv";
 }
 
 function render(): void {
@@ -2065,9 +2107,7 @@ function render(): void {
   }
   queuedRender = false;
   const modelVoices = voicesForModel(voices, settings.modelBackend);
-  if (!modelVoices.some((voice) => voice.id === settings.voiceId) && modelVoices[0]) {
-    updateSettings({ ...settings, voiceId: modelVoices[0].id });
-  }
+  normalizeVoiceForCurrentModel();
   appRoot.innerHTML = appMarkup(modelVoices);
   bindUi();
 }
@@ -2309,7 +2349,9 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#prev-chapter")?.addEventListener("click", () => selectRelativeChapter(-1));
   document.querySelector<HTMLButtonElement>("#next-chapter")?.addEventListener("click", () => selectRelativeChapter(1));
   document.querySelector<HTMLSelectElement>("#model-select")?.addEventListener("change", (event) => {
-    updateSettings({ ...settings, modelBackend: (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"] });
+    const modelBackend = (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"];
+    const voice = matchingVoiceForModel(settings.voiceId, modelBackend);
+    updateSettings({ ...settings, modelBackend, voiceId: voice?.id ?? settings.voiceId });
     userPausedPlayback = false;
     currentJob = null;
     clearLookaheadQueue();
