@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/write-version.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "android:init": "tauri android init",
