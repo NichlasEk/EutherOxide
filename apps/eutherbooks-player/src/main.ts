@@ -40,8 +40,8 @@ import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
 const minNativeLookaheadChapters = 5;
-const appVersion = "0.1.39";
-const appBuild = "0.1.39-beta";
+const appVersion = "0.1.40";
+const appBuild = "0.1.40-beta";
 
 if (!root) {
   throw new Error("Missing #app root");
