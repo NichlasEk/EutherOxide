@@ -711,16 +711,10 @@ class NativeAudioService : Service() {
     }
 
     private fun startManifestPoll(waitingIndex: Int) {
-        val manifests: List<String>
-        val audioBase: String
-        val startIndex: Int
         synchronized(lock) {
             if (manifestPollActive || manifestUrls.isEmpty() || audioBaseUrl.isBlank()) {
                 return
             }
-            manifests = manifestUrls
-            audioBase = audioBaseUrl
-            startIndex = manifestStartIndex.coerceAtLeast(0)
             manifestPollActive = true
             lastEvent = "Native polling next chapters"
             rememberEvent(lastEvent)
@@ -728,6 +722,14 @@ class NativeAudioService : Service() {
         Thread {
             try {
                 repeat(120) {
+                    val manifests: List<String>
+                    val audioBase: String
+                    val startIndex: Int
+                    synchronized(lock) {
+                        manifests = manifestUrls
+                        audioBase = audioBaseUrl
+                        startIndex = manifestStartIndex.coerceAtLeast(0)
+                    }
                     val fetched = try {
                         fetchMergedManifestAudioUrls(manifests, audioBase)
                     } catch (err: Exception) {

@@ -1302,6 +1302,11 @@ function nativeLookaheadJobs(): Job[] {
     .filter((job): job is Job => job !== null && job.status !== "failed");
 }
 
+function nativeManifestJobs(): Job[] {
+  return [currentJob, ...nativeLookaheadJobs()]
+    .filter((job): job is Job => job !== null && job.status !== "failed");
+}
+
 function nativeQueueUrlsWithNext(): string[] {
   if (!session) {
     return [];
@@ -1324,7 +1329,7 @@ function nativeQueueManifest(): NativeQueueManifest | null {
   if (!baseUrl) {
     return null;
   }
-  const manifestUrls = nativeLookaheadJobs()
+  const manifestUrls = nativeManifestJobs()
     .map((job) => `${baseUrl}/jobs/${encodeURIComponent(job.id)}`);
   if (manifestUrls.length === 0) {
     return null;
@@ -1332,7 +1337,7 @@ function nativeQueueManifest(): NativeQueueManifest | null {
   return {
     manifestUrls,
     audioBaseUrl: `${baseUrl}/audio/`,
-    startIndex: nativeServiceQueuePrefix.length + session.audioFiles.length,
+    startIndex: nativeServiceQueuePrefix.length,
   };
 }
 
@@ -1560,8 +1565,14 @@ function advanceToNextJobSession(partIndex: number, partSeconds: number, event: 
   selectedChapterIndex = nextJob.chapter_indexes[0] ?? selectedChapterIndex;
   persistSelection();
   currentJob = nextJob;
-  nextJob = secondNextJob;
-  nextJobKey = secondNextJobKey;
+  const expectedNextKey = selectedNextPlaybackKey();
+  if (secondNextJob && secondNextJobKey === expectedNextKey && secondNextJob.status !== "failed") {
+    nextJob = secondNextJob;
+    nextJobKey = secondNextJobKey;
+  } else {
+    nextJob = null;
+    nextJobKey = "";
+  }
   secondNextJob = null;
   secondNextJobKey = "";
   session = sessionFromJob(currentJob);
