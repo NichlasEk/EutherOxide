@@ -2230,6 +2230,9 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
   const visibleChapters = filteredChapters();
   const freeAudioDisk = typeof health?.storage?.audio_free_bytes === "number" ? formatBytes(health.storage.audio_free_bytes) : "unknown";
   const activeJobCount = allJobs.filter(isActiveJob).length;
+  const serverStatus = health?.status ?? "offline";
+  const serverStatusClass = serverStatus === "ok" ? "is-ok" : serverStatus === "offline" ? "is-offline" : "is-warn";
+  const serverStatusLabel = serverStatus === "ok" ? "Server OK" : serverStatus === "offline" ? "Server offline" : `Server ${serverStatus}`;
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -2243,7 +2246,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         <div class="topbar-actions">
           <button id="view-player" class="${appView === "player" ? "is-selected" : ""}" type="button">Player</button>
           <button id="view-debug" class="${appView === "debug" ? "is-selected" : ""}" type="button">Debug</button>
-          <strong class="status-pill ${health?.status === "ok" ? "is-ok" : "is-warn"}">${escapeHtml(health?.status ?? "offline")}</strong>
+          <span class="status-led ${serverStatusClass}" role="status" aria-label="${escapeHtml(serverStatusLabel)}" title="${escapeHtml(serverStatusLabel)}"></span>
         </div>
       </header>
 

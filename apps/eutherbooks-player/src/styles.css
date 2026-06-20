@@ -174,17 +174,24 @@ label {
   text-transform: uppercase;
 }
 
-.status-pill {
-  display: inline-grid;
-  place-items: center;
-  min-width: 72px;
-  min-height: 34px;
-  border: 1px solid #75522f;
-  border-radius: 8px;
-  background: #33210c;
-  color: #ffd49a;
-  padding: 0 10px;
-  text-transform: uppercase;
+.status-led {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 50%;
+  background: #d99020;
+  box-shadow: 0 0 0 3px rgba(217, 144, 32, 0.12), 0 0 18px rgba(217, 144, 32, 0.72), inset 0 1px 3px rgba(255, 255, 255, 0.55);
+}
+
+.status-led.is-ok {
+  background: #36e36f;
+  box-shadow: 0 0 0 3px rgba(54, 227, 111, 0.12), 0 0 18px rgba(54, 227, 111, 0.78), inset 0 1px 3px rgba(255, 255, 255, 0.62);
+}
+
+.status-led.is-offline {
+  background: #f04444;
+  box-shadow: 0 0 0 3px rgba(240, 68, 68, 0.12), 0 0 18px rgba(240, 68, 68, 0.76), inset 0 1px 3px rgba(255, 255, 255, 0.55);
 }
 
 .server-panel {
@@ -569,7 +576,7 @@ label {
     flex: 1 1 92px;
   }
 
-  .status-pill {
+  .status-led {
     margin-left: auto;
   }
 }
