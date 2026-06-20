@@ -1050,6 +1050,7 @@ function seekToSessionPosition(seconds: number): void {
 }
 
 function stopPlayback(savePosition: boolean, manual = false): void {
+  const wasNativePlaybackActive = nativePlaybackActive;
   if (savePosition && session && !nativePlaybackActive) {
     session.currentSeconds = audio.currentTime;
   }
@@ -1062,7 +1063,8 @@ function stopPlayback(savePosition: boolean, manual = false): void {
   } else if (!savePosition) {
     setPlaybackEvent("Playback stopped");
   }
-  if (nativePlaybackActive) {
+  if (wasNativePlaybackActive) {
+    nativePlaybackActive = false;
     const action = savePosition ? pauseNativeAudio : stopNativeAudio;
     void action().then((state) => {
       applyNativeAudioState(state);
@@ -2049,6 +2051,7 @@ function clearSleepTimer(): void {
 }
 
 function updatePlayerShell(): void {
+  updatePlaybackControlLabels();
   const position = document.querySelector<HTMLSpanElement>("[data-position]");
   if (position && session) {
     position.textContent = `${formatTime(sessionPosition(session))} / ${formatTime(session.generatedSeconds)}`;
@@ -2081,6 +2084,22 @@ function warmAudioCacheForJob(job: Job | null): void {
 
 function updateAppMediaSession(): void {
   mediaSessionStatus = updateMediaSession(selectedBook(), selectedChapter(), session, !isPlaybackPaused());
+}
+
+function playbackControlLabel(): "Play" | "Pause" {
+  return isPlaybackPaused() ? "Play" : "Pause";
+}
+
+function updatePlaybackControlLabels(): void {
+  const label = playbackControlLabel();
+  for (const selector of ["#play", "#mini-play"]) {
+    const button = document.querySelector<HTMLButtonElement>(selector);
+    if (!button) {
+      continue;
+    }
+    button.textContent = label;
+    button.setAttribute("aria-label", label);
+  }
 }
 
 function selectedVoice(): Voice | null {
@@ -2263,7 +2282,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
           <em>${escapeHtml(chapter ? chapterLabel(chapter) : "No chapter")}</em>
         </div>
         <div class="transport">
-          <button id="play" type="button">${isPlaybackPaused() ? "Play" : "Pause"}</button>
+          <button id="play" type="button" aria-label="${playbackControlLabel()}">${playbackControlLabel()}</button>
           <button id="generate" type="button">Generate</button>
           <button id="back-30" type="button">-30s</button>
           <button id="forward-30" type="button">+30s</button>
@@ -2560,7 +2579,7 @@ function miniPlayerMarkup(): string {
           <small>${escapeHtml(chapter ? chapterLabel(chapter) : statusText)} · ${escapeHtml(position)}</small>
         </div>
         <button id="mini-prev-chapter" type="button" aria-label="Previous chapter" ${chapterBefore(selectedChapterIndex) ? "" : "disabled"}>Prev</button>
-        <button id="mini-play" type="button">${isPlaybackPaused() ? "Play" : "Pause"}</button>
+        <button id="mini-play" type="button" aria-label="${playbackControlLabel()}">${playbackControlLabel()}</button>
         <button id="mini-next-chapter" type="button" aria-label="Next chapter" ${chapterAfter(selectedChapterIndex) ? "" : "disabled"}>Next</button>
       </section>
   `;
