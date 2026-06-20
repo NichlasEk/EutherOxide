@@ -2379,49 +2379,29 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
       </section>
       ` : ""}
 
-      <section class="library-grid">
-        <label>
-          <span>Book</span>
-          <select id="book-select">
-            ${books.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${candidate.id === selectedBookId ? "selected" : ""}>${escapeHtml(candidate.title)}</option>`).join("")}
-          </select>
-        </label>
-        <label>
-          <span>Chapter</span>
-          <select id="chapter-select">
-            ${visibleChapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(chapterLabel(candidate))}</option>`).join("")}
-          </select>
-        </label>
-        <label>
-          <span>Find chapter</span>
-          <input id="chapter-search" value="${escapeHtml(chapterQuery)}" placeholder="Title or number" />
-        </label>
-        <div class="chapter-actions">
-          <button id="prev-chapter" type="button" ${chapterBefore(selectedChapterIndex) ? "" : "disabled"}>Previous chapter</button>
-          <button id="next-chapter" type="button" ${chapterAfter(selectedChapterIndex) ? "" : "disabled"}>Next chapter</button>
-        </div>
-      </section>
-
-      <section class="voice-grid">
-        <label>
-          <span>Model</span>
-          <select id="model-select">
-            ${modelOption("dots.tts-mf", "Dots MF")}
-            ${modelOption("dots.tts-soar", "Dots SOAR")}
-            ${modelOption("auto-fallback", "Auto fallback")}
-            ${modelOption("voxcpm2", "VoxCPM2")}
-            ${modelOption("grapheneos-matcha-en", "GrapheneOS Matcha EN")}
-          </select>
-        </label>
-        <label>
-          <span>Voice</span>
-          <select id="voice-select">
-            ${modelVoices.map((voice) => `<option value="${escapeHtml(voice.id)}" ${voice.id === (currentVoice?.id ?? settings.voiceId) ? "selected" : ""}>${escapeHtml(voice.label)}</option>`).join("")}
-          </select>
-        </label>
-      </section>
-
       <section class="player-panel">
+        <div class="player-library">
+          <label>
+            <span>Book</span>
+            <select id="book-select">
+              ${books.map((candidate) => `<option value="${escapeHtml(candidate.id)}" ${candidate.id === selectedBookId ? "selected" : ""}>${escapeHtml(candidate.title)}</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            <span>Chapter</span>
+            <select id="chapter-select">
+              ${visibleChapters.map((candidate) => `<option value="${candidate.index}" ${candidate.index === selectedChapterIndex ? "selected" : ""}>${escapeHtml(chapterLabel(candidate))}</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            <span>Find chapter</span>
+            <input id="chapter-search" value="${escapeHtml(chapterQuery)}" placeholder="Title or number" />
+          </label>
+          <div class="chapter-actions">
+            <button id="prev-chapter" type="button" ${chapterBefore(selectedChapterIndex) ? "" : "disabled"}>Previous chapter</button>
+            <button id="next-chapter" type="button" ${chapterAfter(selectedChapterIndex) ? "" : "disabled"}>Next chapter</button>
+          </div>
+        </div>
         <div class="now-playing">
           <span>${escapeHtml(book?.author ?? "Audiobook")}</span>
           <strong>${escapeHtml(book?.title ?? "No book selected")}</strong>
@@ -2446,6 +2426,25 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         </div>
         <div class="progress-bar"><i style="width:${progressPercent}%"></i></div>
         <small class="player-status">${escapeHtml(statusText)}${currentJob?.progress_detail ? ` · ${escapeHtml(currentJob.progress_detail)}` : ""}</small>
+      </section>
+
+      <section class="voice-grid">
+        <label>
+          <span>Model</span>
+          <select id="model-select">
+            ${modelOption("dots.tts-mf", "Dots MF")}
+            ${modelOption("dots.tts-soar", "Dots SOAR")}
+            ${modelOption("auto-fallback", "Auto fallback")}
+            ${modelOption("voxcpm2", "VoxCPM2")}
+            ${modelOption("grapheneos-matcha-en", "GrapheneOS Matcha EN")}
+          </select>
+        </label>
+        <label>
+          <span>Voice</span>
+          <select id="voice-select">
+            ${modelVoices.map((voice) => `<option value="${escapeHtml(voice.id)}" ${voice.id === (currentVoice?.id ?? settings.voiceId) ? "selected" : ""}>${escapeHtml(voice.label)}</option>`).join("")}
+          </select>
+        </label>
       </section>
 
       <section class="next-status ${nextStatus.tone}">

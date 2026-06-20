@@ -289,11 +289,17 @@ label {
 }
 
 .library-grid,
-.voice-grid {
+.voice-grid,
+.player-library {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 10px;
+}
+
+.player-library {
+  padding: 0 0 4px;
+  border-bottom: 1px solid rgba(137, 199, 185, 0.16);
 }
 
 .chapter-actions,
@@ -641,7 +647,8 @@ label {
   }
 
   .library-grid,
-  .voice-grid {
+  .voice-grid,
+  .player-library {
     grid-template-columns: 1fr 1fr;
   }
 
