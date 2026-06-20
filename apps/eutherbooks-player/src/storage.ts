@@ -73,7 +73,7 @@ export function saveServerRouteConfig(config: Partial<ServerRouteConfig>): Serve
 }
 
 export function cleanServerUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, "");
+  const trimmed = repairKnownServerUrl(value).trim().replace(/\/+$/, "");
   if (!trimmed) {
     return "";
   }
@@ -96,11 +96,15 @@ export function defaultServerUrl(): string {
 }
 
 export function serverCandidates(preferredUrl: string, routeConfig: Partial<ServerRouteConfig> = {}): string[] {
+  const routeUrls = normalizeUrlList(routeConfig.eutherbooksUrls);
+  const lanRouteUrls = routeUrls.filter(isLanServerUrl);
+  const remoteRouteUrls = routeUrls.filter((url) => !isLanServerUrl(url));
   const candidates = [
-    cleanServerUrl(preferredUrl),
-    ...normalizeUrlList(routeConfig.eutherbooksUrls),
     defaultServerUrl(),
     "http://192.168.32.186:8088",
+    ...lanRouteUrls,
+    cleanServerUrl(preferredUrl),
+    ...remoteRouteUrls,
     "http://192.168.32.186:8080/eutherbooks",
     "https://apothictech.se/eutherbooks",
   ];
@@ -158,5 +162,18 @@ function hostBaseUrl(value: string): string {
     return url.toString().replace(/\/+$/, "");
   } catch (_err) {
     return "";
+  }
+}
+
+function repairKnownServerUrl(value: string): string {
+  return value.replace(/apothichtech\.se/gi, "apothictech.se");
+}
+
+function isLanServerUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "192.168.32.186" || hostname.endsWith(".local") || hostname.endsWith(".lan");
+  } catch (_err) {
+    return false;
   }
 }

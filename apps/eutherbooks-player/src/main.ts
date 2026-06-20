@@ -314,6 +314,35 @@ function clearLookaheadQueue(): void {
   nativeServiceQueuePrefix = [];
 }
 
+async function stopAllActiveJobs(): Promise<void> {
+  const activeCount = allJobs.filter(isActiveJob).length;
+  if (activeCount <= 0) {
+    statusText = "No active jobs to stop";
+    render();
+    return;
+  }
+  if (!window.confirm(`Stop ${activeCount} active EutherBooks job${activeCount === 1 ? "" : "s"}? Are you sure?`)) {
+    return;
+  }
+  stopPlayback(false);
+  clearLookaheadQueue();
+  statusText = "Stopping active jobs";
+  setPlaybackEvent("Stop all active jobs requested");
+  render();
+  try {
+    const result = await api.cancelActiveJobs();
+    currentJob = currentJob && isActiveJob(currentJob) ? null : currentJob;
+    session = currentJob ? session : null;
+    allJobs = await api.jobs();
+    statusText = `Stopped ${result.cancelled} active job${result.cancelled === 1 ? "" : "s"}`;
+    setPlaybackEvent(statusText);
+  } catch (err) {
+    errorText = err instanceof Error ? err.message : "Could not stop active jobs";
+  } finally {
+    render();
+  }
+}
+
 async function generateCurrentChapter(cancelExisting = true): Promise<void> {
   if (!selectedBookId) {
     return;
@@ -2089,6 +2118,10 @@ function matchingVoiceForModel(previousVoiceId: string, modelBackend: AppSetting
     ?? null;
 }
 
+function fallbackVoiceIdForModel(modelBackend: AppSettings["modelBackend"]): string {
+  return voicesForModel(voices, modelBackend)[0]?.id ?? settings.voiceId;
+}
+
 function voiceFamilySuffix(voiceId: string): string {
   return voiceId
     .replace(/^dots-mf-/, "")
@@ -2106,9 +2139,9 @@ function render(): void {
     return;
   }
   queuedRender = false;
+  const currentVoice = normalizeVoiceForCurrentModel();
   const modelVoices = voicesForModel(voices, settings.modelBackend);
-  normalizeVoiceForCurrentModel();
-  appRoot.innerHTML = appMarkup(modelVoices);
+  appRoot.innerHTML = appMarkup(modelVoices, currentVoice);
   bindUi();
 }
 
@@ -2132,7 +2165,7 @@ function flushDeferredRender(): void {
   }
 }
 
-function appMarkup(modelVoices: Voice[]): string {
+function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
   const book = selectedBook();
   const chapter = selectedChapter();
   const readyParts = session?.audioFiles.length ?? currentJob?.audio_files.length ?? 0;
@@ -2150,6 +2183,7 @@ function appMarkup(modelVoices: Voice[]): string {
   const bookmark = currentBookmark();
   const visibleChapters = filteredChapters();
   const freeAudioDisk = typeof health?.storage?.audio_free_bytes === "number" ? formatBytes(health.storage.audio_free_bytes) : "unknown";
+  const activeJobCount = allJobs.filter(isActiveJob).length;
   return `
     <main class="app-shell">
       <header class="topbar">
@@ -2217,7 +2251,7 @@ function appMarkup(modelVoices: Voice[]): string {
         <label>
           <span>Voice</span>
           <select id="voice-select">
-            ${modelVoices.map((voice) => `<option value="${escapeHtml(voice.id)}" ${voice.id === settings.voiceId ? "selected" : ""}>${escapeHtml(voice.label)}</option>`).join("")}
+            ${modelVoices.map((voice) => `<option value="${escapeHtml(voice.id)}" ${voice.id === (currentVoice?.id ?? settings.voiceId) ? "selected" : ""}>${escapeHtml(voice.label)}</option>`).join("")}
           </select>
         </label>
       </section>
@@ -2283,7 +2317,9 @@ function appMarkup(modelVoices: Voice[]): string {
         <small>Media: ${escapeHtml(mediaSessionStatus)}</small>
         <small>Cache: ${cacheState.enabled ? "on" : "off"} · ${cacheState.cached} parts · ${cacheState.pending} pending · ${escapeHtml(cacheState.lastEvent)}</small>
         <small>Audio disk free: ${escapeHtml(freeAudioDisk)}</small>
+        <small>Active jobs: ${activeJobCount}</small>
         ${nextJob ? `<small>Next: ${escapeHtml(nextJob.status)} · ${nextJob.audio_files.length}/${Math.max(nextJob.total_audio_files, nextJob.audio_files.length)} parts</small>` : settings.autoNext ? `<small>Next: waiting for current chapter to be ready</small>` : ""}
+        <button id="stop-active-jobs" type="button" ${activeJobCount > 0 ? "" : "disabled"}>Stop all active jobs</button>
         <button id="clear-cache" type="button">Clear audio cache</button>
         <button id="report-native-bug" type="button">Report native bug</button>
       </section>
@@ -2351,12 +2387,12 @@ function bindUi(): void {
   document.querySelector<HTMLSelectElement>("#model-select")?.addEventListener("change", (event) => {
     const modelBackend = (event.currentTarget as HTMLSelectElement).value as AppSettings["modelBackend"];
     const voice = matchingVoiceForModel(settings.voiceId, modelBackend);
-    updateSettings({ ...settings, modelBackend, voiceId: voice?.id ?? settings.voiceId });
+    updateSettings({ ...settings, modelBackend, voiceId: voice?.id ?? fallbackVoiceIdForModel(modelBackend) });
     userPausedPlayback = false;
     currentJob = null;
     clearLookaheadQueue();
     session = null;
-    render();
+    void refreshAll();
   });
   document.querySelector<HTMLSelectElement>("#voice-select")?.addEventListener("change", (event) => {
     updateSettings({ ...settings, voiceId: (event.currentTarget as HTMLSelectElement).value });
@@ -2365,6 +2401,9 @@ function bindUi(): void {
     clearLookaheadQueue();
     session = null;
     void refreshAll();
+  });
+  document.querySelector<HTMLButtonElement>("#stop-active-jobs")?.addEventListener("click", () => {
+    void stopAllActiveJobs();
   });
   document.querySelector<HTMLButtonElement>("#generate")?.addEventListener("click", () => {
     if (selectedChapterHasAudio()) {

@@ -68,6 +68,10 @@ export class EutherBooksApi {
     return this.json<Job>(`/jobs/${encodeURIComponent(jobId)}`);
   }
 
+  async cancelActiveJobs(): Promise<{ cancelled: number }> {
+    return this.json<{ cancelled: number }>("/jobs/active", { method: "DELETE" });
+  }
+
   async createJob(
     bookId: string,
     chapterIndex: number,
