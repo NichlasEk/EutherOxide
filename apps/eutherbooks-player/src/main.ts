@@ -2133,8 +2133,8 @@ function voiceIdLanguage(voiceId: string): string {
   return voiceId.includes("-en") || voiceId.endsWith("en") ? "en" : "sv";
 }
 
-function render(): void {
-  if (shouldDeferRender()) {
+function render(force = false): void {
+  if (!force && shouldDeferRender()) {
     queuedRender = true;
     return;
   }
@@ -2392,6 +2392,9 @@ function bindUi(): void {
     currentJob = null;
     clearLookaheadQueue();
     session = null;
+    activeSelectControl = false;
+    interactionLockUntil = 0;
+    render(true);
     void refreshAll();
   });
   document.querySelector<HTMLSelectElement>("#voice-select")?.addEventListener("change", (event) => {
