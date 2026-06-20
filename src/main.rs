@@ -4,7 +4,7 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 use std::path::{Component, Path, PathBuf};
@@ -1444,6 +1444,7 @@ fn try_acquire_host_request(active_requests: &Arc<AtomicUsize>) -> Option<HostRe
 
 fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let request = read_http_request(stream)?;
     set_response_cors_origin(cors_origin_for_request(state, &request));
     if request.method == "OPTIONS" {
@@ -7725,10 +7726,22 @@ fn proxy_camera_frigate_websocket_request(
     }
     write!(upstream, "\r\n")?;
 
+    upstream.set_read_timeout(Some(Duration::from_secs(75)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(75)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
     let mut upstream_to_client = upstream.try_clone()?;
     let mut client_writer = stream.try_clone()?;
-    let to_client = thread::spawn(move || io::copy(&mut upstream_to_client, &mut client_writer));
+    let client_shutdown = stream.try_clone()?;
+    let upstream_shutdown = upstream.try_clone()?;
+    let to_client = thread::spawn(move || {
+        let result = io::copy(&mut upstream_to_client, &mut client_writer);
+        let _ = client_shutdown.shutdown(Shutdown::Both);
+        result
+    });
     let to_upstream = io::copy(stream, &mut upstream);
+    let _ = upstream_shutdown.shutdown(Shutdown::Both);
     let _ = to_client.join();
     to_upstream.map(|_| ())
 }
@@ -8837,9 +8850,10 @@ fn login_page_html(error: Option<&str>) -> String {
     h1 {{ margin: 0; font-size: 1.5rem; }}
     p {{ margin: 0; color: #9fbe91; font-weight: 800; text-transform: uppercase; font-size: .76rem; letter-spacing: .08em; }}
     form {{ display: grid; gap: 12px; }}
-    input, button {{ min-height: 44px; border-radius: 8px; font: inherit; }}
+    input, button, .chat-link {{ min-height: 44px; border-radius: 8px; font: inherit; }}
     input {{ border: 1px solid rgba(207,240,178,.18); background: rgba(5,11,8,.86); color: #edf6dd; padding: 0 12px; }}
-    button {{ border: 1px solid rgba(247,101,82,.58); background: linear-gradient(135deg, rgba(128,43,33,.82), rgba(80,88,35,.72)); color: #fff4c6; font-weight: 900; cursor: pointer; }}
+    button, .chat-link {{ border: 1px solid rgba(247,101,82,.58); background: linear-gradient(135deg, rgba(128,43,33,.82), rgba(80,88,35,.72)); color: #fff4c6; font-weight: 900; cursor: pointer; }}
+    .chat-link {{ display: grid; place-items: center; text-decoration: none; border-color: rgba(210,238,177,.28); background: rgba(19,28,19,.72); }}
     .error {{ color: #ff9a8f; text-transform: none; letter-spacing: 0; }}
   </style>
 </head>
@@ -8853,6 +8867,7 @@ fn login_page_html(error: Option<&str>) -> String {
       <input name="password" type="password" autocomplete="current-password" placeholder="Password" required />
       <button type="submit">Bond Session</button>
     </form>
+    <a class="chat-link" href="/eutherpunk">Open AI Chat</a>
   </main>
 </body>
 </html>"#

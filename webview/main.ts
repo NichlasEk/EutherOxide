@@ -1857,6 +1857,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="app-nav-group">
           <span>Social Tools</span>
           <div class="app-nav-grid">
+            <button data-eutherpunk-chat-link type="button">AI Chat</button>
             <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
             <button data-workspace-window="books" type="button">Audiobooks</button>
             <button data-workspace-window="shopping" type="button">Shopping</button>
@@ -2728,6 +2729,11 @@ reactionCorePage.addEventListener("click", (event) => {
   }
   const routeButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-app-route]");
   if (routeButton && handleAppRouteButton(routeButton)) {
+    return;
+  }
+  const chatLinkButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-eutherpunk-chat-link]");
+  if (chatLinkButton) {
+    window.location.href = "/eutherpunk";
     return;
   }
   const workspaceButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-workspace-window]");
