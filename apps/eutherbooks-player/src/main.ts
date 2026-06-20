@@ -91,6 +91,8 @@ let advancingPlayback = false;
 let playbackWatchTimer: number | null = null;
 let fallbackRefreshRunning = false;
 let nativePlaybackActive = false;
+let optimisticPlaybackState: "playing" | "paused" | null = null;
+let optimisticPlaybackUntil = 0;
 let nativeQueuedUrlsKey = "";
 let nativeQueueSessionStartIndex = 0;
 let nativeServiceQueuePrefix: string[] = [];
@@ -719,11 +721,13 @@ async function playFromSession(mode: "manual" | "auto" = "manual"): Promise<void
     }
   }
   if (!session || session.audioFiles.length === 0) {
+    clearOptimisticPlaybackState();
     setPlaybackEvent("No playable audio loaded");
     return;
   }
   const path = session.audioFiles[session.currentIndex];
   if (!path) {
+    clearOptimisticPlaybackState();
     setPlaybackEvent("No audio part at current position");
     return;
   }
@@ -985,6 +989,7 @@ function playRelativeChapter(direction: -1 | 1, source: string): void {
 function togglePlayback(source: string): void {
   if (isPlaybackPaused()) {
     setPlaybackEvent(`${source}: play`);
+    setOptimisticPlaybackState("playing");
     void playFromSession("manual");
     return;
   }
@@ -992,10 +997,11 @@ function togglePlayback(source: string): void {
 }
 
 function pausePlayback(source = "Manual pause"): void {
+  setOptimisticPlaybackState("paused");
   stopPlayback(true, true);
   statusText = "Paused";
   setPlaybackEvent(source);
-  render();
+  updatePlayerShell();
 }
 
 async function playPreviousPart(): Promise<void> {
@@ -2087,7 +2093,27 @@ function updateAppMediaSession(): void {
 }
 
 function playbackControlLabel(): "Play" | "Pause" {
-  return isPlaybackPaused() ? "Play" : "Pause";
+  return isPlaybackEffectivelyPaused() ? "Play" : "Pause";
+}
+
+function isPlaybackEffectivelyPaused(): boolean {
+  if (optimisticPlaybackState && Date.now() < optimisticPlaybackUntil) {
+    return optimisticPlaybackState === "paused";
+  }
+  optimisticPlaybackState = null;
+  return isPlaybackPaused();
+}
+
+function setOptimisticPlaybackState(state: "playing" | "paused"): void {
+  optimisticPlaybackState = state;
+  optimisticPlaybackUntil = Date.now() + 4_000;
+  updatePlaybackControlLabels();
+}
+
+function clearOptimisticPlaybackState(): void {
+  optimisticPlaybackState = null;
+  optimisticPlaybackUntil = 0;
+  updatePlaybackControlLabels();
 }
 
 function updatePlaybackControlLabels(): void {
