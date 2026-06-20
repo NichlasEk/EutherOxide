@@ -1342,10 +1342,14 @@ function sessionMatchesCurrentSelection(): boolean {
 }
 
 function selectedChapterHasAudio(): boolean {
+  const matchingJob = matchingJobForChapter(allJobs, selectedChapterIndex);
   return Boolean(
-    currentJob
-    && jobPlaybackKey(currentJob) === selectedPlaybackKey()
-    && isPlayableJob(currentJob),
+    (
+      currentJob
+      && jobPlaybackKey(currentJob) === selectedPlaybackKey()
+      && isPlayableJob(currentJob)
+    )
+    || (matchingJob && isPlayableJob(matchingJob)),
   );
 }
 
@@ -1964,16 +1968,50 @@ function applyBookmarkToSession(): void {
   session.currentSeconds = Math.max(0, bookmark.partSeconds);
 }
 
-function resumeBookmark(): void {
+async function refreshJobsForCurrentSelection(reason: string): Promise<void> {
+  try {
+    allJobs = await api.jobs();
+    attachExistingJob(allJobs);
+    return;
+  } catch (err) {
+    await recoverEndpointAfterNetworkError(reason, true);
+    try {
+      allJobs = await api.jobs();
+      attachExistingJob(allJobs);
+      return;
+    } catch (_retryErr) {
+      throw err;
+    }
+  }
+}
+
+async function resumeBookmark(): Promise<void> {
   const bookmark = currentBookmark();
-  if (!bookmark || !session) {
+  if (!bookmark) {
     setPlaybackEvent("No bookmark for this voice");
+    render();
+    return;
+  }
+  if (!session || !sessionMatchesCurrentSelection()) {
+    statusText = "Refreshing bookmark audio";
+    setPlaybackEvent("Refreshing bookmark audio");
+    render();
+    try {
+      await refreshJobsForCurrentSelection("resume-bookmark");
+    } catch (err) {
+      errorText = err instanceof Error ? err.message : "Could not refresh bookmark audio";
+      render();
+      return;
+    }
+  }
+  if (!session || !sessionMatchesCurrentSelection()) {
+    setPlaybackEvent("No generated audio for this bookmark");
     render();
     return;
   }
   applyBookmarkToSession();
   userPausedPlayback = false;
-  void playFromSession("manual");
+  await playFromSession("manual");
 }
 
 async function loginToServer(): Promise<void> {
