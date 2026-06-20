@@ -1250,6 +1250,9 @@ struct HostUserPreferences {
     theme: String,
     skin: String,
     eutherbooks_voice: String,
+    eutherbooks_player_server_url: String,
+    eutherbooks_player_username: String,
+    eutherbooks_player_model_backend: String,
     eutherbooks_custom_voice: String,
     eutherbooks_length_scale: f64,
     eutherbooks_noise_scale: f64,
@@ -1280,6 +1283,9 @@ impl Default for HostUserPreferences {
             theme: "dark".to_string(),
             skin: "classic".to_string(),
             eutherbooks_voice: "sv-female-warm".to_string(),
+            eutherbooks_player_server_url: String::new(),
+            eutherbooks_player_username: String::new(),
+            eutherbooks_player_model_backend: "dots.tts-mf".to_string(),
             eutherbooks_custom_voice:
                 "A warm Swedish audiobook narrator with clear pronunciation and natural pacing."
                     .to_string(),
@@ -12752,6 +12758,15 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_string(&contents, "eutherbooks_voice") {
         preferences.eutherbooks_voice = clean_eutherbooks_voice(&value);
     }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_player_server_url") {
+        preferences.eutherbooks_player_server_url = clean_eutherbooks_player_server_url(&value);
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_player_username") {
+        preferences.eutherbooks_player_username = clean_eutherbooks_player_username(&value);
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherbooks_player_model_backend") {
+        preferences.eutherbooks_player_model_backend = clean_eutherbooks_player_model_backend(&value);
+    }
     if let Some(value) = parse_toml_string(&contents, "eutherbooks_custom_voice") {
         preferences.eutherbooks_custom_voice =
             clean_eutherbooks_text(&value, &preferences.eutherbooks_custom_voice, 500);
@@ -12847,6 +12862,15 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         theme: clean_host_user_theme(&preferences.theme),
         skin: clean_host_user_skin(&preferences.skin),
         eutherbooks_voice: clean_eutherbooks_voice(&preferences.eutherbooks_voice),
+        eutherbooks_player_server_url: clean_eutherbooks_player_server_url(
+            &preferences.eutherbooks_player_server_url,
+        ),
+        eutherbooks_player_username: clean_eutherbooks_player_username(
+            &preferences.eutherbooks_player_username,
+        ),
+        eutherbooks_player_model_backend: clean_eutherbooks_player_model_backend(
+            &preferences.eutherbooks_player_model_backend,
+        ),
         eutherbooks_custom_voice: clean_eutherbooks_text(
             &preferences.eutherbooks_custom_voice,
             "A warm Swedish audiobook narrator with clear pronunciation and natural pacing.",
@@ -12905,7 +12929,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_player_server_url = \"{}\"\neutherbooks_player_username = \"{}\"\neutherbooks_player_model_backend = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
@@ -12913,6 +12937,9 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             toml_escape(&preferences.theme),
             toml_escape(&preferences.skin),
             toml_escape(&preferences.eutherbooks_voice),
+            toml_escape(&preferences.eutherbooks_player_server_url),
+            toml_escape(&preferences.eutherbooks_player_username),
+            toml_escape(&preferences.eutherbooks_player_model_backend),
             toml_escape(&preferences.eutherbooks_custom_voice),
             preferences.eutherbooks_length_scale,
             preferences.eutherbooks_noise_scale,
@@ -13168,6 +13195,38 @@ fn clean_eutherbooks_voice(value: &str) -> String {
         "sv-female-warm".to_string()
     } else {
         cleaned
+    }
+}
+
+fn clean_eutherbooks_player_server_url(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 320 {
+        return String::new();
+    }
+    if !(value.starts_with("http://") || value.starts_with("https://")) {
+        return String::new();
+    }
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii() && !ch.is_control() && *ch != '"')
+        .collect()
+}
+
+fn clean_eutherbooks_player_username(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '@'))
+        .take(80)
+        .collect()
+}
+
+fn clean_eutherbooks_player_model_backend(value: &str) -> String {
+    match value.trim() {
+        "dots.tts-mf" | "dots.tts-soar" | "auto-fallback" | "voxcpm2" | "grapheneos-matcha-en" => {
+            value.trim().to_string()
+        }
+        _ => "dots.tts-mf".to_string(),
     }
 }
 

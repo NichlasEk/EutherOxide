@@ -1,4 +1,4 @@
-import { AppSettings, Book, Chapter, Health, Job, ModelBackend, ServerRouteConfig, Voice } from "./types";
+import { AppSettings, Book, Chapter, Health, HostUserPreferences, Job, ModelBackend, ServerRouteConfig, Voice } from "./types";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 const requestTimeoutMs = 3500;
@@ -42,6 +42,36 @@ export class EutherBooksApi {
       throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
     }
     return response.json() as Promise<{ token: string; user: string; lanServerUrl?: string }>;
+  }
+
+  static async userPreferences(baseUrl: string, authToken: string): Promise<HostUserPreferences> {
+    const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/user/preferences`, {
+      headers: {
+        "content-type": "application/json",
+        "X-Euther-App-Token": authToken,
+      },
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+    }
+    return response.json() as Promise<HostUserPreferences>;
+  }
+
+  static async updateUserPreferences(baseUrl: string, authToken: string, preferences: HostUserPreferences): Promise<HostUserPreferences> {
+    const response = await requestJson(`${hostBaseUrl(baseUrl)}/api/user/preferences`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Euther-App-Token": authToken,
+      },
+      body: JSON.stringify(preferences),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${response.status} ${response.statusText}${text ? `: ${text}` : ""}`);
+    }
+    return response.json() as Promise<HostUserPreferences>;
   }
 
   async health(): Promise<Health> {

@@ -77,6 +77,14 @@ export type ServerRouteConfig = {
   updatedAt?: string;
 };
 
+export type HostUserPreferences = {
+  eutherbooksVoice?: string;
+  eutherbooksPlayerServerUrl?: string;
+  eutherbooksPlayerUsername?: string;
+  eutherbooksPlayerModelBackend?: ModelBackend | string;
+  [key: string]: unknown;
+};
+
 export type AppSettings = {
   serverUrl: string;
   username: string;

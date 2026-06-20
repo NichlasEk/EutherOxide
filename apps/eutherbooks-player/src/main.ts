@@ -34,7 +34,7 @@ import {
   saveSettings,
   serverCandidates,
 } from "./storage";
-import { AppSettings, Book, Bookmark, Chapter, Health, Job, PlaybackSession, ServerRouteConfig, Voice } from "./types";
+import { AppSettings, Book, Bookmark, Chapter, Health, HostUserPreferences, Job, PlaybackSession, ServerRouteConfig, Voice } from "./types";
 import { appBuild, appVersion } from "./version";
 import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
@@ -58,6 +58,7 @@ let allJobs: Job[] = [];
 let selectedBookId = localStorage.getItem("eutherbooks-player-book") ?? "";
 let selectedChapterIndex = Number(localStorage.getItem("eutherbooks-player-chapter") ?? 0);
 let appView: "player" | "debug" = localStorage.getItem("eutherbooks-player-view") === "debug" ? "debug" : "player";
+let settingsPanelOpen = localStorage.getItem("eutherbooks-player-settings-open") === "true";
 let chapterQuery = "";
 let batchQueueCount = cleanBatchQueueCount(Number(localStorage.getItem("eutherbooks-player-batch-count") ?? 5));
 let currentJob: Job | null = null;
@@ -231,6 +232,7 @@ async function refreshSavedLogin(serverUrl: string): Promise<void> {
     if (status.authenticated && status.user && status.user !== settings.username) {
       updateSettings({ ...settings, username: status.user });
     }
+    await loadRemotePlayerPreferences(serverUrl);
   } catch (err) {
     if (serverUrl === settings.serverUrl) {
       updateSettings({ ...settings, authToken: "" });
@@ -238,6 +240,74 @@ async function refreshSavedLogin(serverUrl: string): Promise<void> {
     }
     throw err;
   }
+}
+
+async function loadRemotePlayerPreferences(serverUrl = settings.serverUrl): Promise<void> {
+  if (!settings.authToken) {
+    return;
+  }
+  const preferences = await EutherBooksApi.userPreferences(serverUrl, settings.authToken);
+  applyRemotePlayerPreferences(preferences);
+}
+
+function applyRemotePlayerPreferences(preferences: HostUserPreferences): void {
+  const serverUrl = typeof preferences.eutherbooksPlayerServerUrl === "string"
+    ? cleanServerUrl(preferences.eutherbooksPlayerServerUrl)
+    : "";
+  const username = typeof preferences.eutherbooksPlayerUsername === "string"
+    ? preferences.eutherbooksPlayerUsername.trim()
+    : "";
+  const modelBackend = normalizeModelBackend(preferences.eutherbooksPlayerModelBackend);
+  const voiceId = typeof preferences.eutherbooksVoice === "string" && preferences.eutherbooksVoice.trim()
+    ? preferences.eutherbooksVoice.trim()
+    : "";
+  const nextSettings = {
+    ...settings,
+    ...(serverUrl ? { serverUrl } : {}),
+    ...(username ? { username } : {}),
+    ...(modelBackend ? { modelBackend } : {}),
+    ...(voiceId ? { voiceId } : {}),
+  };
+  if (settingsChanged(settings, nextSettings)) {
+    updateSettings(nextSettings);
+  }
+}
+
+async function saveRemotePlayerPreferences(): Promise<void> {
+  if (!settings.authToken) {
+    return;
+  }
+  const existing = await EutherBooksApi.userPreferences(settings.serverUrl, settings.authToken).catch(() => ({} as HostUserPreferences));
+  await EutherBooksApi.updateUserPreferences(settings.serverUrl, settings.authToken, {
+    ...existing,
+    eutherbooksVoice: settings.voiceId,
+    eutherbooksPlayerServerUrl: settings.serverUrl,
+    eutherbooksPlayerUsername: settings.username,
+    eutherbooksPlayerModelBackend: settings.modelBackend,
+  });
+}
+
+function settingsChanged(left: AppSettings, right: AppSettings): boolean {
+  return left.serverUrl !== right.serverUrl
+    || left.username !== right.username
+    || left.authToken !== right.authToken
+    || left.voiceId !== right.voiceId
+    || left.modelBackend !== right.modelBackend
+    || left.autoPlay !== right.autoPlay
+    || left.autoNext !== right.autoNext
+    || left.autoBookmark !== right.autoBookmark
+    || left.cacheAudio !== right.cacheAudio
+    || left.sleepTimerMinutes !== right.sleepTimerMinutes;
+}
+
+function normalizeModelBackend(value: unknown): AppSettings["modelBackend"] | "" {
+  return value === "dots.tts-mf"
+    || value === "dots.tts-soar"
+    || value === "auto-fallback"
+    || value === "voxcpm2"
+    || value === "grapheneos-matcha-en"
+    ? value
+    : "";
 }
 
 async function loadChapters(): Promise<void> {
@@ -2034,10 +2104,22 @@ async function loginToServer(): Promise<void> {
       username: login.user || username,
       authToken: login.token,
     });
+    saveLocalLoginPassword(password);
+    await saveRemotePlayerPreferences();
     await refreshAll();
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Login failed";
     render();
+  }
+}
+
+function localLoginPassword(): string {
+  return localStorage.getItem("eutherbooks-player-login-password") ?? "";
+}
+
+function saveLocalLoginPassword(password: string): void {
+  if (password) {
+    localStorage.setItem("eutherbooks-player-login-password", password);
   }
 }
 
@@ -2356,12 +2438,13 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         <div class="topbar-actions">
           <button id="view-player" class="${appView === "player" ? "is-selected" : ""}" type="button">Player</button>
           <button id="view-debug" class="${appView === "debug" ? "is-selected" : ""}" type="button">Debug</button>
+          <button id="settings-toggle" class="icon-button ${settingsPanelOpen ? "is-selected" : ""}" type="button" aria-label="Settings" title="Settings">⚙</button>
           <span class="status-led ${serverStatusClass}" role="status" aria-label="${escapeHtml(serverStatusLabel)}" title="${escapeHtml(serverStatusLabel)}"></span>
         </div>
       </header>
 
-      ${appView === "debug" ? `
-      <section class="server-panel">
+      ${settingsPanelOpen ? `
+      <section class="server-panel settings-panel">
         <label>
           <span>Server</span>
           <input id="server-url" value="${escapeHtml(settings.serverUrl)}" inputmode="url" />
@@ -2372,10 +2455,11 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         </label>
         <label>
           <span>Password</span>
-          <input id="login-password" type="password" autocomplete="current-password" />
+          <input id="login-password" type="password" autocomplete="current-password" value="${escapeHtml(localLoginPassword())}" />
         </label>
         <button id="login" type="button">Login</button>
         <button id="reload" type="button">Retry</button>
+        <small>Server, user, model and voice sync to your server profile. Password stays local on this device.</small>
       </section>
       ` : ""}
 
@@ -2528,6 +2612,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
 function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#view-player")?.addEventListener("click", () => setAppView("player"));
   document.querySelector<HTMLButtonElement>("#view-debug")?.addEventListener("click", () => setAppView("debug"));
+  document.querySelector<HTMLButtonElement>("#settings-toggle")?.addEventListener("click", () => toggleSettingsPanel());
   document.querySelector<HTMLButtonElement>("#login")?.addEventListener("click", () => void loginToServer());
   document.querySelector<HTMLButtonElement>("#reload")?.addEventListener("click", () => void refreshAll());
   document.querySelector<HTMLInputElement>("#server-url")?.addEventListener("change", (event) => {
@@ -2535,8 +2620,12 @@ function bindUi(): void {
     const serverUrl = cleanServerUrl(value);
     if (serverUrl) {
       updateSettings({ ...settings, serverUrl });
+      void saveRemotePlayerPreferences().catch(() => undefined);
       void refreshAll();
     }
+  });
+  document.querySelector<HTMLInputElement>("#login-password")?.addEventListener("change", (event) => {
+    saveLocalLoginPassword((event.currentTarget as HTMLInputElement).value);
   });
   bindStableControls();
   bindSeekbar();
@@ -2572,6 +2661,7 @@ function bindUi(): void {
     activeSelectControl = false;
     interactionLockUntil = 0;
     render(true);
+    void saveRemotePlayerPreferences().catch(() => undefined);
     void refreshAll();
   });
   document.querySelector<HTMLSelectElement>("#voice-select")?.addEventListener("change", (event) => {
@@ -2580,6 +2670,7 @@ function bindUi(): void {
     currentJob = null;
     clearLookaheadQueue();
     session = null;
+    void saveRemotePlayerPreferences().catch(() => undefined);
     void refreshAll();
   });
   document.querySelector<HTMLButtonElement>("#stop-active-jobs")?.addEventListener("click", () => {
@@ -2670,6 +2761,12 @@ function bindUi(): void {
 function setAppView(view: "player" | "debug"): void {
   appView = view;
   localStorage.setItem("eutherbooks-player-view", view);
+  render(true);
+}
+
+function toggleSettingsPanel(): void {
+  settingsPanelOpen = !settingsPanelOpen;
+  localStorage.setItem("eutherbooks-player-settings-open", String(settingsPanelOpen));
   render(true);
 }
 

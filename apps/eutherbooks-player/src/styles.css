@@ -113,6 +113,13 @@ label {
   padding: 0 12px;
 }
 
+.topbar-actions .icon-button {
+  width: 42px;
+  min-width: 42px;
+  padding: 0;
+  font-size: 1.1rem;
+}
+
 .player-status {
   color: #9ce8dc;
   font-size: 0.82rem;
@@ -286,6 +293,13 @@ label {
   grid-template-columns: minmax(0, 1fr) 92px;
   gap: 8px;
   padding: 10px;
+}
+
+.settings-panel small {
+  grid-column: 1 / -1;
+  color: #9ce8dc;
+  font-size: 0.76rem;
+  font-weight: 800;
 }
 
 .library-grid,
