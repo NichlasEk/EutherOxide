@@ -1,0 +1,12 @@
+[Unit]
+Description=Clean low-risk EutherServer data on /srv
+
+[Service]
+Type=oneshot
+User=nichlas
+Group=nichlas
+WorkingDirectory=/home/nichlas/EutherOxide
+ExecStart=/usr/bin/python3 /home/nichlas/EutherOxide/scripts/euther-srv-clean.py --srv-root /srv --target-tmp-max-age-days 7 --incremental-max-age-days 14 --apply
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

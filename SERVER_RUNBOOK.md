@@ -76,6 +76,21 @@ Create the ROM directory:
 mkdir -p /home/nichlas/roms
 ```
 
+## Large Partition Storage
+
+Keep source checkouts and service config in `/home/nichlas`, but put generated,
+rebuildable, and bulky runtime data on the large `/srv` partition.
+
+Current server layout:
+
+- `/srv/eutherbooks/audio` - generated EutherBooks chapter audio, cleaned by `eutherbooks-clean.timer`.
+- `/srv/eutheroxide/target` - EutherOxide Rust target cache, symlinked from `/home/nichlas/EutherOxide/target`.
+- `/srv/eutheroxide/src-tauri-target` - desktop Tauri target cache, symlinked from `/home/nichlas/EutherOxide/src-tauri/target`.
+- `/srv/eutheroxide/apps/*-src-tauri-target` - app-specific Android/Tauri target caches, symlinked from each app checkout.
+
+`euther-srv-clean.timer` runs daily and removes old low-risk `/srv` build
+scratch data such as Cargo temporary files and stale incremental caches.
+
 ### 2b. Android Download APKs
 
 The EutherHost UI exposes public Android downloads under `/downloads/*.apk`.

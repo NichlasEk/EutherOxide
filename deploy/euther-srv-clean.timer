@@ -1,0 +1,10 @@
+[Unit]
+Description=Run /srv storage cleanup daily
+
+[Timer]
+OnCalendar=*-*-* 04:45:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

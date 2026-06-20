@@ -4,6 +4,8 @@
 /src-tauri/target
 /src-tauri/target/
 /src-tauri/gen/
+/apps/*/src-tauri/target
+/apps/*/src-tauri/target/
 /node_modules/
 /dist/
 /apps/euthersync/
