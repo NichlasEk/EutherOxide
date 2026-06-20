@@ -7854,6 +7854,11 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); text-decoration: none; }
     .events-grid { padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .events-pager { padding: 0 14px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .events-page-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+    .events-pager button[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
+    .events-pager button.is-active { background: #1d3346; color: #fff; }
+    .events-page-size { display: inline-flex; align-items: center; gap: 8px; color: #a9b8c2; font-weight: 700; }
     .event-card { border: 1px solid rgba(180,205,218,.18); border-radius: 8px; overflow: hidden; background: #0c1219; }
     .event-media { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #05070a; cursor: zoom-in; }
     .event-media img { position: absolute; left: 50%; top: 50%; width: auto; height: auto; max-width: none; max-height: none; object-fit: contain; transform: translate(-50%, -50%) rotate(var(--camera-rotation, 0deg)); transform-origin: center center; }
@@ -7874,10 +7879,20 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .launch-card { padding: 18px; display: grid; gap: 10px; }
     .launch-card p { max-width: 68ch; }
     @media (max-width: 640px) {
-      main { width: min(100vw - 24px, 1180px); padding-top: 18px; }
-      header { align-items: flex-start; }
+      main { width: min(100vw - 18px, 1180px); padding-top: 14px; gap: 12px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .actions { width: 100%; }
+      .actions a { flex: 1 1 auto; }
       .panel > div { align-items: flex-start; }
-      .camera-toolbar { width: 100%; justify-content: space-between; }
+      .panel-head { display: grid; grid-template-columns: 1fr; }
+      .camera-toolbar { width: 100%; justify-content: stretch; }
+      .camera-toolbar > * { flex: 1 1 auto; }
+      .snapshot-frame, .live-frame { height: min(58vh, 560px); min-height: 260px; }
+      .events-grid { grid-template-columns: 1fr; padding: 10px; }
+      .events-pager { padding: 0 10px 12px; }
+      .events-pager button, .events-page-size, .events-page-size select { flex: 1 1 auto; }
+      .event-label-form button, .event-card nav button, .event-card nav a { flex: 1 1 auto; }
+      .event-lightbox { padding: 50px 8px 12px; }
     }
   </style>
 </head>
@@ -7950,11 +7965,20 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
               <option value="cat">Katt</option>
             </select>
           </label>
+          <label class="events-page-size">
+            Per sida
+            <select id="event-page-size">
+              <option value="10">10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+            </select>
+          </label>
           <span id="events-status">Laddar events...</span>
           <button id="refresh-events" type="button">Uppdatera</button>
         </span>
       </div>
       <section id="events-grid" class="events-grid"></section>
+      <nav id="events-pager" class="events-pager" aria-label="Event-sidor"></nav>
     </section>
     <section class="panel">
       <div><strong>Frigate admin</strong><span>Root-proxy via Caddy på LAN</span></div>
@@ -7989,6 +8013,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const eventsStatus = document.getElementById("events-status");
     const refreshEvents = document.getElementById("refresh-events");
     const eventFilter = document.getElementById("event-filter");
+    const eventPageSize = document.getElementById("event-page-size");
+    const eventsPager = document.getElementById("events-pager");
     const eventLightbox = document.getElementById("event-lightbox");
     const eventLightboxClose = document.getElementById("event-lightbox-close");
     const eventLightboxMedia = document.getElementById("event-lightbox-media");
@@ -8014,6 +8040,10 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let liveBytes = 0;
     let eventsTimer = 0;
     let eventsInFlight = false;
+    let eventPageIndex = 0;
+    let eventPageCursors = [""];
+    let eventHasNext = false;
+    let eventNextBefore = "";
 
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
@@ -8130,7 +8160,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     function renderEvents(items) {
       eventsGrid.innerHTML = "";
       if (!items.length) {
-        eventsGrid.innerHTML = '<p class="empty-state">Inga objekt-events ännu. Frigate sparar motion i 3 dagar och events/snapshots i 30 dagar. Lokal AI-taggning körs på snapshots när events dyker upp.</p>';
+        eventsGrid.innerHTML = '<p class="empty-state">Inga objekt-events på den här sidan. Prova föregående sida eller ett annat filter.</p>';
         return;
       }
       for (const item of items) {
@@ -8261,6 +8291,30 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       return response.json();
     }
 
+    function eventLimit() {
+      const value = Number(eventPageSize.value) || 50;
+      return Math.max(1, Math.min(50, value));
+    }
+
+    function resetEventPagination() {
+      eventPageIndex = 0;
+      eventPageCursors = [""];
+      eventHasNext = false;
+      eventNextBefore = "";
+    }
+
+    function renderEventsPager() {
+      const pageCount = eventPageCursors.length + (eventHasNext ? 1 : 0);
+      const knownIndexes = [...eventPageCursors.keys()];
+      eventsPager.innerHTML = `
+        <button type="button" data-events-page-prev ${eventPageIndex <= 0 ? "disabled" : ""}>Föregående</button>
+        <span>Sida ${eventPageIndex + 1}${eventHasNext ? "" : ` av ${Math.max(1, eventPageCursors.length)}`}</span>
+        <span class="events-page-buttons">${knownIndexes.map((index) => `<button type="button" data-events-page="${index}" class="${index === eventPageIndex ? "is-active" : ""}">${index + 1}</button>`).join("")}</span>
+        <button type="button" data-events-page-next ${eventHasNext ? "" : "disabled"}>Nästa</button>`;
+      if (pageCount <= 1 && !eventHasNext) eventsPager.hidden = true;
+      else eventsPager.hidden = false;
+    }
+
     async function loadEvents() {
       if (eventsInFlight) return;
       eventsInFlight = true;
@@ -8268,7 +8322,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 8000);
       try {
-        const params = new URLSearchParams({ camera: "yard", limit: "12" });
+        const before = eventPageCursors[eventPageIndex] || "";
+        const params = new URLSearchParams({ camera: "yard", limit: String(eventLimit()) });
+        if (before) params.set("before", before);
         if (eventFilter.value) params.set("label", eventFilter.value);
         const response = await fetch(`/api/camera/ai/api/events?${params}`, {
           credentials: "same-origin",
@@ -8277,9 +8333,16 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
         const items = Array.isArray(payload.items) ? payload.items : [];
+        eventHasNext = Boolean(payload.hasNext);
+        eventNextBefore = payload.nextBefore ? String(payload.nextBefore) : "";
+        if (eventHasNext && eventNextBefore && eventPageCursors[eventPageIndex + 1] !== eventNextBefore) {
+          eventPageCursors = eventPageCursors.slice(0, eventPageIndex + 1);
+          eventPageCursors[eventPageIndex + 1] = eventNextBefore;
+        }
         renderEvents(items);
+        renderEventsPager();
         const label = eventFilter.value ? ` ${eventFilter.options[eventFilter.selectedIndex].text.toLowerCase()}` : "";
-        eventsStatus.textContent = `${items.length}${label} AI-events`;
+        eventsStatus.textContent = `Sida ${eventPageIndex + 1}: ${items.length}${label} AI-events`;
       } catch {
         eventsStatus.textContent = "AI-events väntar";
       } finally {
@@ -8287,6 +8350,42 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
         eventsInFlight = false;
       }
     }
+
+    eventsPager.addEventListener("click", (event) => {
+      const target = event.target.closest("button");
+      if (!target) return;
+      const page = target.dataset.eventsPage;
+      if (page !== undefined) {
+        eventPageIndex = Math.max(0, Math.min(eventPageCursors.length - 1, Number(page) || 0));
+        loadEvents();
+        return;
+      }
+      if (target.hasAttribute("data-events-page-prev") && eventPageIndex > 0) {
+        eventPageIndex -= 1;
+        loadEvents();
+        return;
+      }
+      if (target.hasAttribute("data-events-page-next") && eventHasNext && eventNextBefore) {
+        eventPageIndex += 1;
+        loadEvents();
+      }
+    });
+
+    eventPageSize.value = window.matchMedia("(max-width: 700px)").matches ? "10" : "50";
+    eventPageSize.addEventListener("change", () => {
+      resetEventPagination();
+      loadEvents();
+    });
+
+    eventFilter.addEventListener("change", () => {
+      resetEventPagination();
+      loadEvents();
+    });
+
+    refreshEvents.addEventListener("click", () => {
+      resetEventPagination();
+      loadEvents();
+    });
 
     eventsGrid.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-event-archive]");
@@ -8676,8 +8775,6 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     liveVolume.addEventListener("input", () => {
       video.volume = Number(liveVolume.value) / 100;
     });
-    refreshEvents.addEventListener("click", loadEvents);
-    eventFilter.addEventListener("change", loadEvents);
     live.addEventListener("load", layoutCameraMedia);
     video.addEventListener("loadedmetadata", () => {
       layoutCameraMedia();
