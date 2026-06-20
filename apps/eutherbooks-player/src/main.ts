@@ -57,6 +57,7 @@ let voices: Voice[] = [];
 let allJobs: Job[] = [];
 let selectedBookId = localStorage.getItem("eutherbooks-player-book") ?? "";
 let selectedChapterIndex = Number(localStorage.getItem("eutherbooks-player-chapter") ?? 0);
+let appView: "player" | "debug" = localStorage.getItem("eutherbooks-player-view") === "debug" ? "debug" : "player";
 let chapterQuery = "";
 let batchQueueCount = cleanBatchQueueCount(Number(localStorage.getItem("eutherbooks-player-batch-count") ?? 5));
 let currentJob: Job | null = null;
@@ -2239,9 +2240,14 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
             <h1>Player</h1>
           </div>
         </div>
-        <strong class="status-pill ${health?.status === "ok" ? "is-ok" : "is-warn"}">${escapeHtml(health?.status ?? "offline")}</strong>
+        <div class="topbar-actions">
+          <button id="view-player" class="${appView === "player" ? "is-selected" : ""}" type="button">Player</button>
+          <button id="view-debug" class="${appView === "debug" ? "is-selected" : ""}" type="button">Debug</button>
+          <strong class="status-pill ${health?.status === "ok" ? "is-ok" : "is-warn"}">${escapeHtml(health?.status ?? "offline")}</strong>
+        </div>
       </header>
 
+      ${appView === "debug" ? `
       <section class="server-panel">
         <label>
           <span>Server</span>
@@ -2258,6 +2264,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         <button id="login" type="button">Login</button>
         <button id="reload" type="button">Retry</button>
       </section>
+      ` : ""}
 
       <section class="library-grid">
         <label>
@@ -2325,6 +2332,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
           <span data-seek-marker>${session ? formatTime(sessionPosition(session)) : "0:00"}</span>
         </div>
         <div class="progress-bar"><i style="width:${progressPercent}%"></i></div>
+        <small class="player-status">${escapeHtml(statusText)}${currentJob?.progress_detail ? ` · ${escapeHtml(currentJob.progress_detail)}` : ""}</small>
       </section>
 
       <section class="options-row">
@@ -2346,6 +2354,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         </label>
       </section>
 
+      ${appView === "debug" ? `
       <section class="backend-panel">
         <strong>${escapeHtml(statusText)}</strong>
         <small>Endpoint: ${escapeHtml(endpointText || settings.serverUrl)}</small>
@@ -2388,6 +2397,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
           <li><span class="next">Next</span> Sleep-ready cache audit and long-playback stability report</li>
         </ul>
       </section>
+      ` : ""}
 
       ${errorText ? `<p class="error">${escapeHtml(errorText)}</p>` : ""}
       ${miniPlayerMarkup()}
@@ -2396,6 +2406,8 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
 }
 
 function bindUi(): void {
+  document.querySelector<HTMLButtonElement>("#view-player")?.addEventListener("click", () => setAppView("player"));
+  document.querySelector<HTMLButtonElement>("#view-debug")?.addEventListener("click", () => setAppView("debug"));
   document.querySelector<HTMLButtonElement>("#login")?.addEventListener("click", () => void loginToServer());
   document.querySelector<HTMLButtonElement>("#reload")?.addEventListener("click", () => void refreshAll());
   document.querySelector<HTMLInputElement>("#server-url")?.addEventListener("change", (event) => {
@@ -2529,6 +2541,12 @@ function bindUi(): void {
     }
     render();
   });
+}
+
+function setAppView(view: "player" | "debug"): void {
+  appView = view;
+  localStorage.setItem("eutherbooks-player-view", view);
+  render(true);
 }
 
 function queuePanelMarkup(): string {

@@ -100,6 +100,25 @@ label {
   padding: 14px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.topbar-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.player-status {
+  color: #9ce8dc;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
 .brand-lockup {
   display: flex;
   align-items: center;
@@ -467,7 +486,9 @@ label {
   .voice-grid,
   .player-panel,
   .options-row,
-  .backend-panel {
+  .backend-panel,
+  .queue-panel,
+  .mini-player {
     border-color: rgba(45, 139, 139, 0.25);
     background: rgba(255, 255, 252, 0.9);
     box-shadow: 0 12px 28px rgba(42, 47, 70, 0.12);
@@ -530,5 +551,25 @@ label {
 
   .chapter-actions {
     grid-column: 1 / -1;
+  }
+}
+
+
+@media (max-width: 520px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .topbar-actions {
+    width: 100%;
+  }
+
+  .topbar-actions button {
+    flex: 1 1 92px;
+  }
+
+  .status-pill {
+    margin-left: auto;
   }
 }
