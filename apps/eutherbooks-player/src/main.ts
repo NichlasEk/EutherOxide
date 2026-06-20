@@ -81,6 +81,7 @@ let lastEndpointErrors: string[] = [];
 let pollTimer: number | null = null;
 let sleepTimer: number | null = null;
 let sleepDeadline = 0;
+let sleepTimerMode: "off" | "minutes" | "chapter-end" = localStorage.getItem("eutherbooks-player-sleep-mode") === "chapter-end" ? "chapter-end" : "off";
 let userPausedPlayback = false;
 let lastPlaybackEvent = "Idle";
 let playbackEvents: string[] = ["Idle"];
@@ -917,6 +918,15 @@ async function playNextPartOrChapter(): Promise<void> {
   if (currentJob?.status !== "done") {
     statusText = "Buffering final audio";
     schedulePoll(300);
+    render();
+    return;
+  }
+  if (sleepTimerMode === "chapter-end") {
+    stopPlayback(true, true);
+    setSleepTimerMode("off", 0);
+    statusText = "Sleep timer stopped at chapter end";
+    setPlaybackEvent("Sleep timer stopped at chapter end");
+    void reportPlaybackTelemetry("sleep-timer-chapter-end", true);
     render();
     return;
   }
@@ -2022,6 +2032,43 @@ function chapterLabel(chapter: Chapter): string {
   return `Chapter ${String(chapterNumber(chapter)).padStart(2, "0")} - ${chapter.title}`;
 }
 
+function nextChapterStatus(): { tone: "ready" | "working" | "waiting" | "off" | "error"; title: string; detail: string } {
+  const nextChapter = chapterAfter(selectedChapterIndex);
+  if (!settings.autoNext) {
+    return { tone: "off", title: "Auto-next off", detail: "Use Next or enable Auto-next." };
+  }
+  if (!nextChapter) {
+    return { tone: "off", title: "End of book", detail: "No later chapter." };
+  }
+  const targetKey = selectedPlaybackKey(nextChapter.index);
+  const job = nextJobKey === targetKey && nextJob ? nextJob : matchingJobForChapter(allJobs, nextChapter.index);
+  const label = chapterLabel(nextChapter);
+  if (nextJobRequestInFlight) {
+    return { tone: "working", title: "Checking next chapter", detail: label };
+  }
+  if (job) {
+    const total = Math.max(job.total_audio_files, job.audio_files.length);
+    const parts = total > 0 ? `${job.audio_files.length}/${total} parts` : "no parts yet";
+    if (job.status === "failed") {
+      return { tone: "error", title: "Next chapter failed", detail: `${label} · ${parts}` };
+    }
+    if (isPlayableJob(job)) {
+      return { tone: "ready", title: "Next chapter ready", detail: `${label} · ${parts}` };
+    }
+    if (job.status === "running") {
+      return { tone: "working", title: "Generating next chapter", detail: `${label} · ${parts}` };
+    }
+    return { tone: "waiting", title: "Next chapter queued", detail: `${label} · ${parts}` };
+  }
+  if (!currentJob) {
+    return { tone: "waiting", title: "Next chapter not queued", detail: "Play or generate this chapter first." };
+  }
+  if (currentJob.status !== "done" && !isPlayableJob(currentJob)) {
+    return { tone: "waiting", title: "Next chapter pending", detail: "Waiting for current chapter audio." };
+  }
+  return { tone: "waiting", title: "Next chapter not queued", detail: label };
+}
+
 function updateSettings(next: AppSettings): void {
   settings = next;
   saveSettings(settings);
@@ -2036,12 +2083,13 @@ function persistSelection(): void {
 
 function scheduleSleepTimer(): void {
   clearSleepTimer();
-  if (settings.sleepTimerMinutes <= 0) {
+  if (sleepTimerMode !== "minutes" || settings.sleepTimerMinutes <= 0) {
     return;
   }
   sleepDeadline = Date.now() + settings.sleepTimerMinutes * 60_000;
   sleepTimer = window.setTimeout(() => {
     stopPlayback(true, true);
+    setSleepTimerMode("off", 0);
     statusText = "Sleep timer paused playback";
     setPlaybackEvent("Sleep timer paused playback");
     void reportPlaybackTelemetry("sleep-timer-paused", true);
@@ -2055,6 +2103,31 @@ function clearSleepTimer(): void {
   }
   sleepTimer = null;
   sleepDeadline = 0;
+}
+
+function setSleepTimerMode(mode: "off" | "minutes" | "chapter-end", minutes = settings.sleepTimerMinutes): void {
+  sleepTimerMode = mode;
+  localStorage.setItem("eutherbooks-player-sleep-mode", mode);
+  const nextMinutes = mode === "minutes" ? minutes : 0;
+  if (settings.sleepTimerMinutes !== nextMinutes) {
+    updateSettings({ ...settings, sleepTimerMinutes: nextMinutes });
+  }
+  if (mode === "minutes" && !isPlaybackPaused()) {
+    scheduleSleepTimer();
+  } else {
+    clearSleepTimer();
+  }
+}
+
+function sleepTimerLabel(): string {
+  if (sleepTimerMode === "chapter-end") {
+    return "End of chapter";
+  }
+  if (sleepTimerMode === "minutes" && settings.sleepTimerMinutes > 0) {
+    const remaining = sleepDeadline ? ` · ${Math.max(0, Math.ceil((sleepDeadline - Date.now()) / 60000))} left` : "";
+    return `${settings.sleepTimerMinutes} min${remaining}`;
+  }
+  return "Off";
 }
 
 function updatePlayerShell(): void {
@@ -2220,9 +2293,8 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
   const position = session ? `${formatTime(sessionPosition(session))} / ${generated}` : "0:00 / 0:00";
   const progressPercent = totalParts > 0 ? Math.min(100, Math.round((readyParts / totalParts) * 100)) : 0;
   const seekProgress = session ? seekPercent(sessionPosition(session)) : 0;
-  const sleepLabel = settings.sleepTimerMinutes > 0
-    ? `${settings.sleepTimerMinutes} min${sleepDeadline ? ` · ${Math.max(0, Math.ceil((sleepDeadline - Date.now()) / 60000))} left` : ""}`
-    : "Off";
+  const sleepLabel = sleepTimerLabel();
+  const nextStatus = nextChapterStatus();
   const cacheState = audioCacheState();
   const nativeState = nativeAudioState();
   const queueSummary = playbackQueueSummary(nativeState);
@@ -2338,23 +2410,31 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         <small class="player-status">${escapeHtml(statusText)}${currentJob?.progress_detail ? ` · ${escapeHtml(currentJob.progress_detail)}` : ""}</small>
       </section>
 
+      <section class="next-status ${nextStatus.tone}">
+        <span>Next</span>
+        <strong>${escapeHtml(nextStatus.title)}</strong>
+        <small>${escapeHtml(nextStatus.detail)}</small>
+      </section>
+
+      <section class="sleep-panel">
+        <div>
+          <span>Sleep</span>
+          <strong>${escapeHtml(sleepLabel)}</strong>
+        </div>
+        <div class="sleep-buttons">
+          ${sleepButton("off", "Off")}
+          ${sleepButton("15", "15")}
+          ${sleepButton("30", "30")}
+          ${sleepButton("60", "60")}
+          ${sleepButton("chapter-end", "Chapter end")}
+        </div>
+      </section>
+
       <section class="options-row">
         <button id="auto-play" class="${settings.autoPlay ? "is-selected" : ""}" type="button">Auto-play</button>
         <button id="auto-next" class="${settings.autoNext ? "is-selected" : ""}" type="button">Auto-next</button>
         <button id="auto-bookmark" class="${settings.autoBookmark ? "is-selected" : ""}" type="button">Auto-bookmark</button>
         <button id="cache-audio" class="${settings.cacheAudio ? "is-selected" : ""}" type="button">Cache</button>
-        <label>
-          <span>Sleep</span>
-          <select id="sleep-select">
-            ${sleepOption(0, "Off")}
-            ${sleepOption(5, "5 min")}
-            ${sleepOption(10, "10 min")}
-            ${sleepOption(15, "15 min")}
-            ${sleepOption(30, "30 min")}
-            ${sleepOption(45, "45 min")}
-            ${sleepOption(60, "60 min")}
-          </select>
-        </label>
       </section>
 
       ${appView === "debug" ? `
@@ -2535,14 +2615,18 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#sync-native-queue")?.addEventListener("click", () => {
     void updateNativeQueue("manual").then(() => render());
   });
-  document.querySelector<HTMLSelectElement>("#sleep-select")?.addEventListener("change", (event) => {
-    updateSettings({ ...settings, sleepTimerMinutes: Number((event.currentTarget as HTMLSelectElement).value) });
-    if (isPlaybackPaused()) {
-      clearSleepTimer();
-    } else {
-      scheduleSleepTimer();
-    }
-    render();
+  document.querySelectorAll<HTMLButtonElement>("[data-sleep]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const value = button.dataset.sleep ?? "off";
+      if (value === "chapter-end") {
+        setSleepTimerMode("chapter-end", 0);
+      } else if (value === "off") {
+        setSleepTimerMode("off", 0);
+      } else {
+        setSleepTimerMode("minutes", Number(value));
+      }
+      render();
+    });
   });
 }
 
@@ -2736,8 +2820,13 @@ function modelOption(value: AppSettings["modelBackend"], label: string): string 
   return `<option value="${value}" ${settings.modelBackend === value ? "selected" : ""}>${label}</option>`;
 }
 
-function sleepOption(value: number, label: string): string {
-  return `<option value="${value}" ${settings.sleepTimerMinutes === value ? "selected" : ""}>${label}</option>`;
+function sleepButton(value: "off" | "15" | "30" | "60" | "chapter-end", label: string): string {
+  const selected = value === "chapter-end"
+    ? sleepTimerMode === "chapter-end"
+    : value === "off"
+      ? sleepTimerMode === "off"
+      : sleepTimerMode === "minutes" && settings.sleepTimerMinutes === Number(value);
+  return `<button data-sleep="${value}" class="${selected ? "is-selected" : ""}" type="button">${label}</button>`;
 }
 
 function formatBytes(value: number): string {

@@ -119,6 +119,93 @@ label {
   font-weight: 850;
 }
 
+.next-status,
+.sleep-panel {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(137, 199, 185, 0.18);
+  border-bottom: 1px solid rgba(137, 199, 185, 0.12);
+  background: rgba(9, 16, 21, 0.62);
+}
+
+.next-status {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.next-status span,
+.sleep-panel span {
+  color: #9ce8dc;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.next-status strong,
+.sleep-panel strong {
+  color: #eefbf2;
+  font-size: 0.94rem;
+}
+
+.next-status small {
+  grid-column: 2;
+  color: #b7c9c1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.next-status::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #9ca3af;
+  box-shadow: 0 0 12px rgba(156, 163, 175, 0.55);
+}
+
+.next-status.ready::before {
+  background: #36e36f;
+  box-shadow: 0 0 14px rgba(54, 227, 111, 0.75);
+}
+
+.next-status.working::before {
+  background: #33cfff;
+  box-shadow: 0 0 14px rgba(51, 207, 255, 0.75);
+}
+
+.next-status.waiting::before {
+  background: #d99020;
+  box-shadow: 0 0 14px rgba(217, 144, 32, 0.7);
+}
+
+.next-status.error::before {
+  background: #f04444;
+  box-shadow: 0 0 14px rgba(240, 68, 68, 0.72);
+}
+
+.sleep-panel {
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  align-items: center;
+}
+
+.sleep-panel > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.sleep-buttons {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sleep-buttons button {
+  min-height: 34px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
 .brand-lockup {
   display: flex;
   align-items: center;
@@ -493,6 +580,8 @@ label {
   .voice-grid,
   .player-panel,
   .options-row,
+  .next-status,
+  .sleep-panel,
   .backend-panel,
   .queue-panel,
   .mini-player {
@@ -578,5 +667,13 @@ label {
 
   .status-led {
     margin-left: auto;
+  }
+
+  .sleep-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .sleep-buttons {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
