@@ -376,8 +376,10 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.max
@@ -471,6 +473,7 @@ class NativeAudioService : Service() {
         ensureMediaSession()
         startForeground(NOTIFICATION_ID, notification())
         updatePlaybackState()
+        prefetchQueueFrom(index)
         playCurrent(positionMs)
     }
 
@@ -533,6 +536,7 @@ class NativeAudioService : Service() {
         if (synchronized(lock) { active }) {
             ensurePlaybackSessionActive()
         }
+        prefetchQueueFrom(synchronized(lock) { index })
         updatePlaybackState()
         updateNotification()
     }
@@ -647,8 +651,50 @@ class NativeAudioService : Service() {
         }
         releasePlayer()
         ensurePlaybackSessionActive()
+        val requestId: Long
+        synchronized(lock) {
+            playRequestId += 1
+            requestId = playRequestId
+            lastEvent = if (isCached(url)) "Native preparing cached audio" else "Native caching audio"
+            rememberEvent(lastEvent)
+        }
+        prefetchQueueFrom(synchronized(lock) { index + 1 })
+        Thread {
+            try {
+                val source = playableSource(url)
+                synchronized(lock) {
+                    if (requestId != playRequestId) {
+                        return@Thread
+                    }
+                }
+                preparePlayer(source, startPositionMs, requestId)
+            } catch (err: Exception) {
+                synchronized(lock) {
+                    if (requestId != playRequestId) {
+                        return@Thread
+                    }
+                    error = "Native cache failed: ${err.message ?: err.javaClass.simpleName}"
+                    playing = false
+                    lastEvent = error
+                    rememberEvent(lastEvent)
+                }
+                updatePlaybackState()
+                updateNotification()
+            }
+        }.start()
+        updatePlaybackState()
+        updateNotification()
+    }
+
+    private fun preparePlayer(source: String, startPositionMs: Long, requestId: Long) {
         val nextPlayer = MediaPlayer()
-        player = nextPlayer
+        synchronized(lock) {
+            if (requestId != playRequestId) {
+                nextPlayer.release()
+                return
+            }
+            player = nextPlayer
+        }
         try {
             nextPlayer.setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
             nextPlayer.setAudioAttributes(
@@ -657,9 +703,13 @@ class NativeAudioService : Service() {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
-            nextPlayer.setDataSource(url)
+            nextPlayer.setDataSource(source)
             nextPlayer.setOnPreparedListener { prepared ->
                 synchronized(lock) {
+                    if (requestId != playRequestId) {
+                        prepared.release()
+                        return@setOnPreparedListener
+                    }
                     durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                     positionMs = startPositionMs.coerceIn(0L, max(0L, durationMs - 250L))
                     playing = true
@@ -677,10 +727,18 @@ class NativeAudioService : Service() {
                 updateNotification()
             }
             nextPlayer.setOnCompletionListener {
+                synchronized(lock) {
+                    if (requestId != playRequestId) {
+                        return@setOnCompletionListener
+                    }
+                }
                 advanceAfterCompletion()
             }
             nextPlayer.setOnErrorListener { _mp, what, extra ->
                 synchronized(lock) {
+                    if (requestId != playRequestId) {
+                        return@setOnErrorListener true
+                    }
                     error = "MediaPlayer error $what/$extra"
                     lastEvent = error
                     rememberEvent(lastEvent)
@@ -689,6 +747,10 @@ class NativeAudioService : Service() {
                 true
             }
             synchronized(lock) {
+                if (requestId != playRequestId) {
+                    nextPlayer.release()
+                    return
+                }
                 lastEvent = "Native preparing audio"
                 rememberEvent(lastEvent)
             }
@@ -698,6 +760,9 @@ class NativeAudioService : Service() {
         } catch (err: Exception) {
             releasePlayer()
             synchronized(lock) {
+                if (requestId != playRequestId) {
+                    return
+                }
                 error = err.message ?: err.javaClass.simpleName
                 playing = false
                 lastEvent = "Native playback failed"
@@ -752,6 +817,137 @@ class NativeAudioService : Service() {
         registerNoisyReceiver()
         ensureMediaSession()
         startForeground(NOTIFICATION_ID, notification())
+    }
+
+    private fun prefetchQueueFrom(startIndex: Int) {
+        val urls = synchronized(lock) {
+            queue.drop(startIndex.coerceAtLeast(0)).take(AUDIO_PREFETCH_LIMIT)
+        }
+        if (urls.isEmpty()) {
+            return
+        }
+        Thread {
+            for (url in urls) {
+                try {
+                    playableSource(url)
+                } catch (_err: Exception) {
+                }
+            }
+            pruneAudioCache()
+            synchronized(lock) {
+                lastEvent = "Native audio cache ready"
+                rememberEvent(lastEvent)
+            }
+            updatePlaybackState()
+            updateNotification()
+        }.start()
+    }
+
+    private fun playableSource(url: String): String {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return url
+        }
+        val file = cacheFileForUrl(url)
+        if (file.isFile && file.length() > 0L) {
+            file.setLastModified(System.currentTimeMillis())
+            return file.absolutePath
+        }
+        return downloadAudio(url, file).absolutePath
+    }
+
+    private fun isCached(url: String): Boolean {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return true
+        }
+        val file = cacheFileForUrl(url)
+        return file.isFile && file.length() > 0L
+    }
+
+    private fun cacheFileForUrl(url: String): File {
+        val extension = URL(url).path.substringAfterLast('/', "").substringAfterLast('.', "wav").ifBlank { "wav" }
+        return File(audioCacheDir(), "${sha256(url)}.$extension")
+    }
+
+    private fun audioCacheDir(): File {
+        return File(cacheDir, AUDIO_CACHE_DIR).apply { mkdirs() }
+    }
+
+    private fun downloadAudio(url: String, destination: File): File {
+        synchronized(cacheDownloads) {
+            if (!cacheDownloads.add(destination.absolutePath)) {
+                repeat(80) {
+                    if (destination.isFile && destination.length() > 0L) {
+                        return destination
+                    }
+                    try {
+                        Thread.sleep(250L)
+                    } catch (_err: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return destination
+                    }
+                }
+            }
+        }
+        try {
+            if (destination.isFile && destination.length() > 0L) {
+                destination.setLastModified(System.currentTimeMillis())
+                return destination
+            }
+            val tmp = File(destination.parentFile, "${destination.name}.tmp")
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15000
+                readTimeout = 30000
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "EutherBooksPlayerNativeAudio/1")
+            }
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                throw IllegalStateException("audio HTTP $code")
+            }
+            connection.inputStream.use { input ->
+                tmp.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (tmp.length() <= 0L) {
+                tmp.delete()
+                throw IllegalStateException("empty audio cache file")
+            }
+            if (!tmp.renameTo(destination)) {
+                tmp.copyTo(destination, overwrite = true)
+                tmp.delete()
+            }
+            destination.setLastModified(System.currentTimeMillis())
+            pruneAudioCache()
+            return destination
+        } finally {
+            synchronized(cacheDownloads) {
+                cacheDownloads.remove(destination.absolutePath)
+            }
+        }
+    }
+
+    private fun pruneAudioCache() {
+        val files = audioCacheDir().listFiles()?.filter { it.isFile } ?: return
+        var total = files.sumOf { it.length() }
+        if (total <= AUDIO_CACHE_MAX_BYTES) {
+            return
+        }
+        for (file in files.sortedBy { it.lastModified() }) {
+            if (total <= AUDIO_CACHE_MAX_BYTES) {
+                break
+            }
+            val size = file.length()
+            if (file.delete()) {
+                total -= size
+            }
+        }
+    }
+
+    private fun sha256(value: String): String {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
     }
 
     private fun rememberManifest(intent: Intent, defaultStartIndex: Int) {
@@ -1276,9 +1472,14 @@ class NativeAudioService : Service() {
         private var audioBaseUrl = ""
         private var manifestStartIndex = 0
         private var manifestPollActive = false
+        private var playRequestId = 0L
         private var lastEvent = "Native audio idle"
         private var error = ""
         private var recentEvents: List<String> = listOf("Native audio idle")
+        private const val AUDIO_CACHE_DIR = "native-audio-cache"
+        private const val AUDIO_CACHE_MAX_BYTES = 768L * 1024L * 1024L
+        private const val AUDIO_PREFETCH_LIMIT = 32
+        private val cacheDownloads = mutableSetOf<String>()
         @Volatile private var currentService: NativeAudioService? = null
 
         @JvmStatic
