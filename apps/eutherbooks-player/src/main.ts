@@ -101,6 +101,7 @@ let nativeQueueSessionStartIndex = 0;
 let nativeServiceQueuePrefix: string[] = [];
 let nativeRegressionResyncInFlight = false;
 let lastNativeSeekCommandAt = 0;
+let nativePlayRequestUntil = 0;
 let lastAutoBookmarkAt = 0;
 let lastBugReportKey = "";
 let lastWatchdogPosition = -1;
@@ -853,6 +854,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     chapter ? chapterLabel(chapter) : "Audiobook",
     nativeQueueManifest(),
   );
+  nativePlayRequestUntil = Date.now() + 6_000;
   nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
   applyNativeAudioState(state);
   await maybeReportNativeAudioIssue("native-play-request");
@@ -1068,6 +1070,11 @@ function playRelativeChapter(direction: -1 | 1, source: string): void {
 }
 
 function togglePlayback(source: string): void {
+  if (isNativePlayRequestPending()) {
+    setPlaybackEvent(`${source}: native play starting`);
+    updatePlayerShell();
+    return;
+  }
   if (isPlaybackPaused()) {
     setPlaybackEvent(`${source}: play`);
     setOptimisticPlaybackState("playing");
@@ -1982,7 +1989,26 @@ function isPlaybackPaused(): boolean {
     return audio.paused;
   }
   const state = nativeAudioState();
+  if (isNativePlayRequestPending(state)) {
+    return false;
+  }
   return !state.playing && !isNativeWaitingForMoreAudio(state);
+}
+
+function isNativePlayRequestPending(state = nativeAudioState()): boolean {
+  if (!nativePlaybackActive || Date.now() > nativePlayRequestUntil) {
+    return false;
+  }
+  const event = state.lastEvent.toLowerCase();
+  return state.active
+    && !state.playing
+    && !state.ended
+    && (
+      event.includes("requested")
+      || event.includes("preparing")
+      || event.includes("queue loaded")
+      || event.includes("queue update")
+    );
 }
 
 function currentBookmarkId(): string {

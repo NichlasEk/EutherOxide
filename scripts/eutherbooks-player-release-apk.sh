@@ -490,6 +490,9 @@ class NativeAudioService : Service() {
             playCurrent(0L)
             return
         }
+        if (synchronized(lock) { active }) {
+            ensurePlaybackSessionActive()
+        }
         updatePlaybackState()
         updateNotification()
     }
@@ -603,6 +606,7 @@ class NativeAudioService : Service() {
             return
         }
         releasePlayer()
+        ensurePlaybackSessionActive()
         val nextPlayer = MediaPlayer()
         player = nextPlayer
         try {
@@ -700,6 +704,14 @@ class NativeAudioService : Service() {
         updatePlaybackState()
         updateNotification()
         startManifestPoll(nextIndex)
+    }
+
+    private fun ensurePlaybackSessionActive() {
+        requestAudioFocus()
+        acquirePlaybackLocks()
+        registerNoisyReceiver()
+        ensureMediaSession()
+        startForeground(NOTIFICATION_ID, notification())
     }
 
     private fun rememberManifest(intent: Intent, defaultStartIndex: Int) {
