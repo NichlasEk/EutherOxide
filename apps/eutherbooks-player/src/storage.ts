@@ -3,11 +3,13 @@ import { AppSettings, Bookmark, ModelBackend, ServerRouteConfig } from "./types"
 const settingsKey = "eutherbooks-player-settings";
 const bookmarksKey = "eutherbooks-player-bookmarks";
 const serverRouteConfigKey = "eutherbooks-player-server-route-config";
+const bootstrapUsername = import.meta.env.VITE_EUTHERBOOKS_PLAYER_USERNAME?.trim() ?? "";
+const bootstrapAuthToken = import.meta.env.VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN?.trim() ?? "";
 
 export const defaultSettings: AppSettings = {
   serverUrl: defaultServerUrl(),
-  username: "",
-  authToken: "",
+  username: bootstrapUsername,
+  authToken: bootstrapAuthToken,
   voiceId: "dots-mf-own-sv",
   modelBackend: "dots.tts-mf",
   autoPlay: true,
@@ -23,9 +25,13 @@ export function loadSettings(): AppSettings {
     return {
       ...defaultSettings,
       ...parsed,
-      serverUrl: cleanServerUrl(parsed?.serverUrl) || defaultSettings.serverUrl,
-      username: typeof parsed?.username === "string" ? parsed.username.trim() : "",
-      authToken: typeof parsed?.authToken === "string" ? parsed.authToken.trim() : "",
+      serverUrl: toEutherBooksUrl(parsed?.serverUrl) || defaultSettings.serverUrl,
+      username: typeof parsed?.username === "string" && parsed.username.trim()
+        ? parsed.username.trim()
+        : defaultSettings.username,
+      authToken: typeof parsed?.authToken === "string" && parsed.authToken.trim()
+        ? parsed.authToken.trim()
+        : defaultSettings.authToken,
     };
   } catch (_err) {
     return defaultSettings;
@@ -92,7 +98,7 @@ export function defaultServerUrl(): string {
       return `${window.location.origin.replace(/\/+$/, "")}/eutherbooks`;
     }
   }
-  return "http://192.168.32.186:8088";
+  return "https://apothictech.se:8443/eutherbooks";
 }
 
 export function serverCandidates(preferredUrl: string, routeConfig: Partial<ServerRouteConfig> = {}): string[] {
@@ -101,12 +107,14 @@ export function serverCandidates(preferredUrl: string, routeConfig: Partial<Serv
   const remoteRouteUrls = routeUrls.filter((url) => !isLanServerUrl(url));
   const candidates = [
     defaultServerUrl(),
-    "http://192.168.32.186:8088",
-    ...lanRouteUrls,
-    cleanServerUrl(preferredUrl),
+    toEutherBooksUrl(preferredUrl),
     ...remoteRouteUrls,
+    "https://apothictech.se:8443/eutherbooks",
+    "http://192.168.32.186:32162/eutherbooks",
     "http://192.168.32.186:8080/eutherbooks",
     "https://apothictech.se/eutherbooks",
+    ...lanRouteUrls.map(toEutherBooksUrl),
+    "http://192.168.32.186:8088",
   ];
   if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
     candidates.push(`${window.location.origin.replace(/\/+$/, "")}/eutherbooks`);
@@ -116,10 +124,12 @@ export function serverCandidates(preferredUrl: string, routeConfig: Partial<Serv
 
 export function hostConfigCandidates(preferredUrl: string, routeConfig: Partial<ServerRouteConfig> = {}): string[] {
   const candidates = [
-    hostBaseUrl(preferredUrl),
-    ...normalizeUrlList(routeConfig.serverUrls),
-    cleanServerUrl(routeConfig.lanServerUrl ?? ""),
     cleanServerUrl(routeConfig.publicServerUrl ?? ""),
+    "https://apothictech.se:8443",
+    ...normalizeUrlList(routeConfig.serverUrls).filter((url) => !isLanServerUrl(url)),
+    hostBaseUrl(preferredUrl),
+    cleanServerUrl(routeConfig.lanServerUrl ?? ""),
+    "http://192.168.32.186:32162",
     "http://192.168.32.186:8080",
     "https://apothictech.se",
   ];
@@ -147,6 +157,35 @@ function normalizeUrlList(values: unknown): string[] {
   return [...new Set(values.map((value) => typeof value === "string" ? cleanServerUrl(value) : "").filter(Boolean))];
 }
 
+export function toEutherBooksUrl(value: string): string {
+  const clean = cleanServerUrl(value);
+  if (!clean) {
+    return "";
+  }
+  try {
+    const url = new URL(clean);
+    if (url.hostname.toLowerCase() === "apothictech.se" && (!url.port || url.port === "443")) {
+      url.protocol = "https:";
+      url.port = "8443";
+    }
+    if (url.pathname === "/eutherbooks" || url.pathname.startsWith("/eutherbooks/")) {
+      return url.toString().replace(/\/+$/, "");
+    }
+    if (url.hostname === "192.168.32.186" && url.port === "8088") {
+      return url.toString().replace(/\/+$/, "");
+    }
+    if (url.hostname === "192.168.32.186" && url.port === "32162") {
+      url.port = "8080";
+    }
+    url.pathname = "/eutherbooks";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch (_err) {
+    return "";
+  }
+}
+
 function hostBaseUrl(value: string): string {
   const clean = cleanServerUrl(value);
   if (!clean) {
@@ -154,6 +193,10 @@ function hostBaseUrl(value: string): string {
   }
   try {
     const url = new URL(clean);
+    if (url.hostname.toLowerCase() === "apothictech.se" && (!url.port || url.port === "443")) {
+      url.protocol = "https:";
+      url.port = "8443";
+    }
     if (url.pathname === "/eutherbooks" || url.pathname.startsWith("/eutherbooks/")) {
       url.pathname = "";
     }

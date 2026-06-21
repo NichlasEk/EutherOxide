@@ -1,7 +1,7 @@
 import { AppSettings, Book, Chapter, Health, HostUserPreferences, Job, ModelBackend, ServerRouteConfig, Voice } from "./types";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
-const requestTimeoutMs = 3500;
+const requestTimeoutMs = 15000;
 
 export class EutherBooksApi {
   constructor(private readonly baseUrl: string, private readonly authToken = "") {}
@@ -232,7 +232,7 @@ function hostReportCandidates(baseUrl: string): string[] {
     candidates.push(url.toString().replace(/\/+$/, ""));
   } catch (_err) {
   }
-  candidates.push("http://192.168.32.186:8080", "https://apothictech.se");
+  candidates.push("http://192.168.32.186:8080", "http://192.168.32.186:32162", "https://apothictech.se:8443", "https://apothictech.se");
   if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
     candidates.push(window.location.origin.replace(/\/+$/, ""));
   }

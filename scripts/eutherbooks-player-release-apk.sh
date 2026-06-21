@@ -7,9 +7,11 @@ TAURI_DIR="$APP_DIR/src-tauri"
 ANDROID_DIR="$TAURI_DIR/gen/android"
 APK_OUTPUT_ROOT="$ANDROID_DIR/app/build/outputs/apk"
 ANDROID_APP_GRADLE="$ANDROID_DIR/app/build.gradle.kts"
+ANDROID_GRADLE_PROPERTIES="$ANDROID_DIR/gradle.properties"
 ANDROID_TARGET="${EUTHERBOOKS_PLAYER_ANDROID_TARGET:-aarch64}"
 OUT_APK="${OUT_APK:-/home/nichlas/EutherBooksPlayer-release-signed.apk}"
 REPO_APK="${REPO_APK:-$APP_DIR/releases/EutherBooksPlayer-release-signed.apk}"
+PUBLIC_APK="${PUBLIC_APK:-/srv/eutheroxide-downloads/EutherBooksPlayer-release-signed.apk}"
 
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -18,6 +20,8 @@ KEYSTORE="${EUTHERBOOKS_PLAYER_KEYSTORE:-${EUTHERLIST_KEYSTORE:-/home/nichlas/.e
 KEY_ALIAS="${EUTHERBOOKS_PLAYER_KEY_ALIAS:-${EUTHERLIST_KEY_ALIAS:-eutherlist}}"
 KEYSTORE_PASS="${EUTHERBOOKS_PLAYER_KEYSTORE_PASS:-${EUTHERLIST_KEYSTORE_PASS:-EutherList2026}}"
 KEY_PASS="${EUTHERBOOKS_PLAYER_KEY_PASS:-${EUTHERLIST_KEY_PASS:-$KEYSTORE_PASS}}"
+BOOTSTRAP_USER="${EUTHERBOOKS_PLAYER_BOOTSTRAP_USER:-nichlas}"
+HOST_USERS_FILE="$ROOT/.euther-host/users.toml"
 
 if [[ ! -d "$ANDROID_HOME" ]]; then
   echo "[eutherbooks-player-release-apk] Android SDK not found: $ANDROID_HOME" >&2
@@ -34,6 +38,38 @@ if ! command -v apksigner >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ -z "${VITE_EUTHERBOOKS_PLAYER_USERNAME:-}" ]]; then
+  export VITE_EUTHERBOOKS_PLAYER_USERNAME="$BOOTSTRAP_USER"
+fi
+
+if [[ -z "${VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN:-}" && -f "$HOST_USERS_FILE" ]]; then
+  VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN="$(
+    awk -v wanted="$BOOTSTRAP_USER" '
+      /^\[\[user\]\]/ { in_user = 0; next }
+      /^name = "/ {
+        name = $0
+        sub(/^name = "/, "", name)
+        sub(/"$/, "", name)
+        in_user = (name == wanted)
+        next
+      }
+      in_user && /^app_token = "/ {
+        token = $0
+        sub(/^app_token = "/, "", token)
+        sub(/"$/, "", token)
+        print token
+        exit
+      }
+    ' "$HOST_USERS_FILE"
+  )"
+  export VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN
+fi
+
+if [[ -z "${VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN:-}" ]]; then
+  echo "[eutherbooks-player-release-apk] bootstrap app token not found for $BOOTSTRAP_USER" >&2
+  exit 1
+fi
+
 cd "$APP_DIR"
 
 if [[ ! -d "$ANDROID_DIR" ]]; then
@@ -43,6 +79,10 @@ fi
 
 if [[ -f "$ANDROID_APP_GRADLE" ]]; then
   perl -0pi -e 's/manifestPlaceholders\["usesCleartextTraffic"\] = "false"/manifestPlaceholders["usesCleartextTraffic"] = "true"/' "$ANDROID_APP_GRADLE"
+fi
+
+if [[ -f "$ANDROID_GRADLE_PROPERTIES" ]] && ! grep -q '^android.enableAapt2Daemon=false$' "$ANDROID_GRADLE_PROPERTIES"; then
+  printf '\nandroid.enableAapt2Daemon=false\n' >> "$ANDROID_GRADLE_PROPERTIES"
 fi
 
 ANDROID_MANIFEST="$ANDROID_DIR/app/src/main/AndroidManifest.xml"
@@ -1378,8 +1418,14 @@ mkdir -p "$(dirname "$OUT_APK")"
 cp "$SIGNED_APK" "$OUT_APK"
 mkdir -p "$(dirname "$REPO_APK")"
 cp "$SIGNED_APK" "$REPO_APK"
+if [[ -d "$(dirname "$PUBLIC_APK")" && -w "$(dirname "$PUBLIC_APK")" ]]; then
+  cp "$SIGNED_APK" "$PUBLIC_APK"
+fi
 
 apksigner verify "$OUT_APK"
 
 echo "[eutherbooks-player-release-apk] ready: $OUT_APK"
 echo "[eutherbooks-player-release-apk] repo copy: $REPO_APK"
+if [[ -f "$PUBLIC_APK" ]]; then
+  echo "[eutherbooks-player-release-apk] public copy: $PUBLIC_APK"
+fi

@@ -20,16 +20,46 @@
           "url": "http://192.168.32.186:8080/api/app/**"
         },
         {
+          "url": "http://192.168.32.186:8080/api/user/**"
+        },
+        {
           "url": "http://192.168.32.186:8080/api/eutherbooks-player/log"
+        },
+        {
+          "url": "http://192.168.32.186:32162/eutherbooks/**"
+        },
+        {
+          "url": "http://192.168.32.186:32162/api/app/**"
+        },
+        {
+          "url": "http://192.168.32.186:32162/api/user/**"
+        },
+        {
+          "url": "http://192.168.32.186:32162/api/eutherbooks-player/log"
         },
         {
           "url": "https://apothictech.se/eutherbooks/**"
         },
         {
+          "url": "https://apothictech.se:8443/eutherbooks/**"
+        },
+        {
           "url": "https://apothictech.se/api/app/**"
         },
         {
+          "url": "https://apothictech.se:8443/api/app/**"
+        },
+        {
+          "url": "https://apothictech.se/api/user/**"
+        },
+        {
+          "url": "https://apothictech.se:8443/api/user/**"
+        },
+        {
           "url": "https://apothictech.se/api/eutherbooks-player/log"
+        },
+        {
+          "url": "https://apothictech.se:8443/api/eutherbooks-player/log"
         }
       ]
     }

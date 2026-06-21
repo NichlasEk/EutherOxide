@@ -24,7 +24,6 @@ import type { NativeAudioState, NativeQueueManifest } from "./native-audio";
 import { formatTime, sessionFromJob, sessionPosition } from "./playback-session";
 import {
   bookmarkKey,
-  cleanServerUrl,
   hostConfigCandidates,
   loadBookmarks,
   loadServerRouteConfig,
@@ -33,6 +32,7 @@ import {
   saveServerRouteConfig,
   saveSettings,
   serverCandidates,
+  toEutherBooksUrl,
 } from "./storage";
 import { AppSettings, Book, Bookmark, Chapter, Health, HostUserPreferences, Job, PlaybackSession, ServerRouteConfig, Voice } from "./types";
 import { appBuild, appVersion } from "./version";
@@ -161,7 +161,7 @@ void boot();
 async function boot(): Promise<void> {
   await refreshAudioCacheState();
   await refreshNativeAudioState();
-  await refreshServerRouteConfig();
+  void refreshServerRouteConfig();
   await refreshAll();
   schedulePoll(600);
 }
@@ -188,7 +188,7 @@ async function refreshAll(): Promise<void> {
   errorText = "";
   lastEndpointErrors = [];
   render();
-  await refreshServerRouteConfig();
+  void refreshServerRouteConfig();
   const candidates = serverCandidates(settings.serverUrl, routeConfig);
   for (const candidate of candidates) {
     try {
@@ -205,6 +205,9 @@ async function refreshAll(): Promise<void> {
       voices = nextVoices;
       books = nextBooks;
       allJobs = jobs;
+      if (candidate !== settings.serverUrl) {
+        updateSettings({ ...settings, serverUrl: candidate });
+      }
       selectedBookId ||= books[0]?.id ?? "";
       await loadChapters();
       attachExistingJob(jobs);
@@ -235,7 +238,7 @@ async function refreshSavedLogin(serverUrl: string): Promise<void> {
     }
     await loadRemotePlayerPreferences(serverUrl);
   } catch (err) {
-    if (serverUrl === settings.serverUrl) {
+    if (serverUrl === settings.serverUrl && isAuthRejectedError(err)) {
       updateSettings({ ...settings, authToken: "" });
       errorText = err instanceof Error ? `Saved login expired: ${err.message}` : "Saved login expired";
     }
@@ -252,9 +255,13 @@ async function loadRemotePlayerPreferences(serverUrl = settings.serverUrl): Prom
 }
 
 function applyRemotePlayerPreferences(preferences: HostUserPreferences): void {
-  const serverUrl = typeof preferences.eutherbooksPlayerServerUrl === "string"
-    ? cleanServerUrl(preferences.eutherbooksPlayerServerUrl)
+  const remoteServerUrl = typeof preferences.eutherbooksPlayerServerUrl === "string"
+    ? toEutherBooksUrl(preferences.eutherbooksPlayerServerUrl)
     : "";
+  const publicServerUrl = toEutherBooksUrl(routeConfig.publicServerUrl ?? defaultPublicServerUrl());
+  const serverUrl = remoteServerUrl && !isLanEndpoint(remoteServerUrl)
+    ? remoteServerUrl
+    : publicServerUrl;
   const username = typeof preferences.eutherbooksPlayerUsername === "string"
     ? preferences.eutherbooksPlayerUsername.trim()
     : "";
@@ -272,6 +279,17 @@ function applyRemotePlayerPreferences(preferences: HostUserPreferences): void {
   if (settingsChanged(settings, nextSettings)) {
     updateSettings(nextSettings);
   }
+}
+
+function defaultPublicServerUrl(): string {
+  return "https://apothictech.se:8443/eutherbooks";
+}
+
+function isAuthRejectedError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  return /\b(401|403)\b/.test(err.message);
 }
 
 async function saveRemotePlayerPreferences(): Promise<void> {
@@ -838,17 +856,29 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   await maybeEnsureNextAhead("native-play-start");
   const book = selectedBook();
   const chapter = selectedChapter();
-  nativeServiceQueuePrefix = [];
+  const previousState = nativeAudioState();
+  const keepNativeQueuePosition = mode === "auto"
+    && nativePlaybackActive
+    && previousState.active
+    && !previousState.ended
+    && nativeServiceQueuePrefix.length > 0
+    && nativeQueuedUrlsKey.length > 0;
+  if (!keepNativeQueuePosition) {
+    nativeServiceQueuePrefix = [];
+    nativeQueueSessionStartIndex = 0;
+  }
   const queue = nativeQueueUrlsForService();
   nativeQueuedUrlsKey = queue.join("\n");
-  nativeQueueSessionStartIndex = 0;
+  const startIndex = keepNativeQueuePosition
+    ? nativeAbsoluteIndexForSession(session.currentIndex)
+    : session.currentIndex;
   if (mode === "manual") {
     userPausedPlayback = false;
   }
   audio.pause();
   const state = await playNativeAudioQueue(
     queue,
-    session.currentIndex,
+    startIndex,
     session.currentSeconds,
     book?.title ?? "EutherBooks",
     chapter ? chapterLabel(chapter) : "Audiobook",
@@ -2113,7 +2143,7 @@ async function resumeBookmark(): Promise<void> {
 async function loginToServer(): Promise<void> {
   const username = document.querySelector<HTMLInputElement>("#login-username")?.value.trim() ?? "";
   const password = document.querySelector<HTMLInputElement>("#login-password")?.value ?? "";
-  const serverUrl = cleanServerUrl(document.querySelector<HTMLInputElement>("#server-url")?.value ?? settings.serverUrl);
+  const serverUrl = toEutherBooksUrl(document.querySelector<HTMLInputElement>("#server-url")?.value ?? settings.serverUrl);
   if (!serverUrl || !username || !password) {
     errorText = "Server, user and password are required";
     render();
@@ -2216,7 +2246,10 @@ function nextChapterStatus(): { tone: "ready" | "working" | "waiting" | "off" | 
 }
 
 function updateSettings(next: AppSettings): void {
-  settings = next;
+  settings = {
+    ...next,
+    serverUrl: toEutherBooksUrl(next.serverUrl) || settings.serverUrl,
+  };
   saveSettings(settings);
   api = new EutherBooksApi(settings.serverUrl, settings.authToken);
   setAudioCacheEnabled(settings.cacheAudio);
@@ -2643,7 +2676,7 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#reload")?.addEventListener("click", () => void refreshAll());
   document.querySelector<HTMLInputElement>("#server-url")?.addEventListener("change", (event) => {
     const value = (event.currentTarget as HTMLInputElement).value;
-    const serverUrl = cleanServerUrl(value);
+    const serverUrl = toEutherBooksUrl(value);
     if (serverUrl) {
       updateSettings({ ...settings, serverUrl });
       void saveRemotePlayerPreferences().catch(() => undefined);

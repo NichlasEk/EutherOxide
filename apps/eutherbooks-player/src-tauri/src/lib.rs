@@ -225,7 +225,7 @@ fn log_startup_diagnostics<R: tauri::Runtime>(app: &tauri::App<R>) {
     ensure_file(
         "config",
         &app_data_dir.join("config.json"),
-        br#"{"serverUrl":"http://192.168.32.186:8088"}"#,
+        br#"{"serverUrl":"https://apothictech.se:8443/eutherbooks"}"#,
     );
 }
 

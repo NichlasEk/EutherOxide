@@ -7443,8 +7443,11 @@ fn is_eutherbooks_player_apk_download_path(path: &str) -> bool {
     matches!(
         path,
         "/downloads/eutherbooksplayer.apk"
+            | "/downloads/eutherbooks-player.apk"
             | "/downloads/EutherBooksPlayer.apk"
+            | "/downloads/EutherBooksPlayer-release.apk"
             | "/downloads/EutherBooksPlayer-release-signed.apk"
+            | "/downloads/eutherbooks-player-release-signed.apk"
             | "/downloads/eutherbooksplayer-release-signed.apk"
     )
 }
