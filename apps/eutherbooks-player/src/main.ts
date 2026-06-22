@@ -481,10 +481,15 @@ async function pollJobs(): Promise<void> {
         schedulePoll(1000);
         return;
       }
+      const shouldAutoPlayCurrent = settings.autoPlay
+        && !userPausedPlayback
+        && currentJob.audio_files.length > 0
+        && currentJob.status !== "failed"
+        && (!session || session.jobId !== currentJob.id || isPlaybackPaused());
       session = sessionFromJob(currentJob, session);
       warmAudioCacheForSession();
       void updateNativeQueue("poll-current");
-      if (settings.autoPlay && !userPausedPlayback && isPlaybackPaused() && currentJob.audio_files.length > 0 && currentJob.status !== "failed") {
+      if (shouldAutoPlayCurrent) {
         await playFromSession("auto");
       }
       void maybeEnsureNextAhead("poll-current");
