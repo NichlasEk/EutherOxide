@@ -941,6 +941,7 @@ struct HostUser {
     can_manage_library: bool,
     can_award_eutherium: bool,
     can_camera_admin: bool,
+    can_server_map: bool,
     camera_rotation_degrees: u16,
     camera_refresh_ms: u16,
     euthersync_media_backup: Option<bool>,
@@ -956,6 +957,9 @@ struct HostPermissions {
     can_manage_library: bool,
     can_award_eutherium: bool,
     can_camera_admin: bool,
+    can_server_map: bool,
+    can_euthersync_media_backup: bool,
+    can_euthersync_feed_post: bool,
 }
 
 struct HostSession {
@@ -2159,6 +2163,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 can_manage_library: form_bool(&form, "can_manage_library"),
                 can_award_eutherium: form_bool(&form, "can_award_eutherium"),
                 can_camera_admin: form_bool(&form, "can_camera_admin"),
+                can_server_map: form_bool(&form, "can_server_map"),
+                can_euthersync_media_backup: form_bool(&form, "can_euthersync_media_backup"),
+                can_euthersync_feed_post: form_bool(&form, "can_euthersync_feed_post"),
             };
             set_host_user_permissions(state, &username, permissions)?;
             send_json(stream, &host_user_list(state)?)
@@ -2186,8 +2193,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let Some(user) = authenticated_user(state, &request)? else {
                 return send_login_page(stream, None);
             };
-            if !is_host_admin(state, &user)? {
-                return send_error(stream, 403, "admin user required");
+            if let Err(err) = require_host_permission(state, &user, HostPermission::ServerMap) {
+                return send_error(stream, 403, &err.to_string());
             }
             send_server_map_page(stream)
         }
@@ -2202,7 +2209,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         _ => {
             if is_euthernet_admin_proxy_path(path) {
-                if let Err(err) = require_host_admin(state, &request) {
+                let user = require_host_user(state, &request)?;
+                if let Err(err) = require_host_permission(state, &user, HostPermission::ServerMap) {
                     return send_error(stream, 403, &err.to_string());
                 }
                 return proxy_euthernet_admin_request(stream, &request);
@@ -2838,6 +2846,7 @@ enum HostPermission {
     UploadRoms,
     ManageLibrary,
     CameraAdmin,
+    ServerMap,
 }
 
 fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermissions> {
@@ -2856,9 +2865,24 @@ fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermiss
             can_manage_library: false,
             can_award_eutherium: false,
             can_camera_admin: false,
+            can_server_map: false,
+            can_euthersync_media_backup: false,
+            can_euthersync_feed_post: false,
         });
     };
     Ok(host_permissions_for_user(user))
+}
+
+fn host_user_euthersync_media_backup(user: &HostUser) -> bool {
+    if user.admin {
+        return true;
+    }
+    user.euthersync_media_backup
+        .unwrap_or(user.can_upload_roms || user.can_manage_library)
+}
+
+fn host_user_euthersync_feed_post(user: &HostUser) -> bool {
+    user.euthersync_feed_post.unwrap_or(true)
 }
 
 fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
@@ -2870,6 +2894,9 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
             can_manage_library: true,
             can_award_eutherium: true,
             can_camera_admin: true,
+            can_server_map: true,
+            can_euthersync_media_backup: true,
+            can_euthersync_feed_post: true,
         };
     }
     HostPermissions {
@@ -2879,6 +2906,9 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
         can_manage_library: user.can_manage_library,
         can_award_eutherium: user.can_award_eutherium,
         can_camera_admin: user.can_camera_admin,
+        can_server_map: user.can_server_map,
+        can_euthersync_media_backup: host_user_euthersync_media_backup(user),
+        can_euthersync_feed_post: host_user_euthersync_feed_post(user),
     }
 }
 
@@ -2894,6 +2924,7 @@ fn require_host_permission(
         HostPermission::UploadRoms => permissions.can_upload_roms,
         HostPermission::ManageLibrary => permissions.can_manage_library,
         HostPermission::CameraAdmin => permissions.can_camera_admin,
+        HostPermission::ServerMap => permissions.can_server_map,
     };
     if allowed {
         Ok(())
@@ -6962,6 +6993,7 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         can_manage_library: false,
         can_award_eutherium: false,
         can_camera_admin: false,
+        can_server_map: false,
         camera_rotation_degrees: 0,
         camera_refresh_ms: 500,
         euthersync_media_backup: Some(false),
@@ -7041,6 +7073,9 @@ fn set_host_user_permissions(
     user.can_manage_library = permissions.can_manage_library;
     user.can_award_eutherium = permissions.can_award_eutherium;
     user.can_camera_admin = permissions.can_camera_admin;
+    user.can_server_map = permissions.can_server_map;
+    user.euthersync_media_backup = Some(permissions.can_euthersync_media_backup);
+    user.euthersync_feed_post = Some(permissions.can_euthersync_feed_post);
     save_host_users(&users)
 }
 
@@ -7557,10 +7592,7 @@ fn is_euthernet_admin_proxy_path(path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-fn proxy_euthernet_admin_request(
-    stream: &mut TcpStream,
-    request: &HttpRequest,
-) -> io::Result<()> {
+fn proxy_euthernet_admin_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
     if !matches!(request.method.as_str(), "GET" | "POST") {
         return send_error(stream, 405, "method not allowed");
     }
@@ -7605,7 +7637,11 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
     let stripped = path
         .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
         .unwrap_or_default();
-    let relative = if stripped.is_empty() { "/map" } else { stripped };
+    let relative = if stripped.is_empty() {
+        "/map"
+    } else {
+        stripped
+    };
     let allowed = [
         "/status",
         "/map",
@@ -12534,6 +12570,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut can_manage_library = false;
     let mut can_award_eutherium = false;
     let mut can_camera_admin = false;
+    let mut can_server_map = false;
     let mut camera_rotation_degrees = 0;
     let mut camera_refresh_ms = 500;
     let mut euthersync_media_backup = None;
@@ -12559,6 +12596,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_manage_library,
                     can_award_eutherium,
                     can_camera_admin,
+                    can_server_map,
                     camera_rotation_degrees,
                     camera_refresh_ms,
                     euthersync_media_backup,
@@ -12575,6 +12613,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_manage_library = false;
             can_award_eutherium = false;
             can_camera_admin = false;
+            can_server_map = false;
             camera_rotation_degrees = 0;
             camera_refresh_ms = 500;
             euthersync_media_backup = None;
@@ -12608,6 +12647,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_award_eutherium = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "can_camera_admin") {
             can_camera_admin = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_server_map") {
+            can_server_map = value;
         } else if let Some(value) = parse_toml_u16_assignment(line, "camera_rotation_degrees") {
             camera_rotation_degrees = normalize_camera_rotation(value as i32);
         } else if let Some(value) = parse_toml_u16_assignment(line, "camera_refresh_ms") {
@@ -12633,6 +12674,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_manage_library,
             can_award_eutherium,
             can_camera_admin,
+            can_server_map,
             camera_rotation_degrees,
             camera_refresh_ms,
             euthersync_media_backup,
@@ -12686,6 +12728,7 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
             user.can_award_eutherium
         ));
         contents.push_str(&format!("can_camera_admin = {}\n", user.can_camera_admin));
+        contents.push_str(&format!("can_server_map = {}\n", user.can_server_map));
         contents.push_str(&format!(
             "camera_rotation_degrees = {}\n",
             user.camera_rotation_degrees
@@ -13345,7 +13388,8 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
         preferences.eutherbooks_player_username = clean_eutherbooks_player_username(&value);
     }
     if let Some(value) = parse_toml_string(&contents, "eutherbooks_player_model_backend") {
-        preferences.eutherbooks_player_model_backend = clean_eutherbooks_player_model_backend(&value);
+        preferences.eutherbooks_player_model_backend =
+            clean_eutherbooks_player_model_backend(&value);
     }
     if let Some(value) = parse_toml_string(&contents, "eutherbooks_custom_voice") {
         preferences.eutherbooks_custom_voice =
