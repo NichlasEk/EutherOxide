@@ -60,8 +60,10 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
+const SERVER_MAP_PATH: &str = "/server-map";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
+const EUTHERNET_ADMIN_PROXY_PREFIX: &str = "/api/admin/euthernet";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2180,6 +2182,15 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherbooks_audio_stream_path(path) => {
             proxy_eutherbooks_request(stream, &request)
         }
+        ("GET", SERVER_MAP_PATH) => {
+            let Some(user) = authenticated_user(state, &request)? else {
+                return send_login_page(stream, None);
+            };
+            if !is_host_admin(state, &user)? {
+                return send_error(stream, 403, "admin user required");
+            }
+            send_server_map_page(stream)
+        }
         ("GET", CAMERA_ADMIN_PATH) => {
             let Some(user) = authenticated_user(state, &request)? else {
                 return send_login_page(stream, None);
@@ -2190,6 +2201,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_camera_admin_page(stream)
         }
         _ => {
+            if is_euthernet_admin_proxy_path(path) {
+                if let Err(err) = require_host_admin(state, &request) {
+                    return send_error(stream, 403, &err.to_string());
+                }
+                return proxy_euthernet_admin_request(stream, &request);
+            }
             if is_camera_ai_proxy_path(path) {
                 let user = require_host_user(state, &request)?;
                 if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin)
@@ -7533,6 +7550,80 @@ fn eutherbooks_upstream_path(path: &str) -> String {
     stripped.to_string()
 }
 
+fn is_euthernet_admin_proxy_path(path: &str) -> bool {
+    path == EUTHERNET_ADMIN_PROXY_PREFIX
+        || path
+            .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn proxy_euthernet_admin_request(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    if !matches!(request.method.as_str(), "GET" | "POST") {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_path = euthernet_admin_upstream_path(&request.path)?;
+    let upstream_base =
+        env::var("EUTHERNET_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8791".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherNet upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, upstream_path, upstream_base
+    )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("accept-encoding")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    io::copy(&mut upstream, stream)?;
+    Ok(())
+}
+
+fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
+    let stripped = path
+        .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
+        .unwrap_or_default();
+    let relative = if stripped.is_empty() { "/map" } else { stripped };
+    let allowed = [
+        "/status",
+        "/map",
+        "/summary",
+        "/changes",
+        "/report",
+        "/inventory",
+        "/backup-manifest",
+        "/restore-drill",
+        "/refresh",
+    ];
+    let endpoint = relative.split('?').next().unwrap_or(relative);
+    if !allowed.contains(&endpoint) {
+        return Err(invalid_request("unsupported EutherNet endpoint"));
+    }
+    Ok(format!("/api/euthernet{relative}"))
+}
+
 fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
     if !matches!(request.method.as_str(), "GET" | "POST") {
         return send_error(stream, 405, "method not allowed");
@@ -7839,6 +7930,492 @@ fn normalize_camera_refresh_ms(refresh_ms: u16) -> u16 {
         2000..=4999 => 2000,
         _ => 5000,
     }
+}
+
+fn send_server_map_page(stream: &mut TcpStream) -> io::Result<()> {
+    let body = r###"<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EutherNet Serverkarta</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090d;
+      --panel: #111720;
+      --panel-2: #162130;
+      --line: #2a3a4e;
+      --text: #edf3f7;
+      --muted: #9caab7;
+      --cyan: #39d7d2;
+      --amber: #f3bd5d;
+      --green: #7ad66d;
+      --red: #ef6f7a;
+      --blue: #8aa8ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, select {
+      font: inherit;
+    }
+    .shell {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0b1017;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 11px;
+      cursor: pointer;
+    }
+    .button.primary {
+      border-color: #178c89;
+      background: #10817e;
+      color: #001112;
+      font-weight: 700;
+    }
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 180px;
+      text-align: right;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      min-height: 0;
+    }
+    .map-pane {
+      min-width: 0;
+      padding: 14px;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 10px;
+      min-height: 66px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 20px;
+      line-height: 1;
+    }
+    .map-wrap {
+      height: min(64vh, 760px);
+      min-height: 460px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0a0f16;
+      overflow: hidden;
+    }
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .edge {
+      stroke: #526174;
+      stroke-width: 1.6;
+      fill: none;
+    }
+    .edge.ssh { stroke: var(--amber); stroke-dasharray: 5 5; }
+    .edge.proxy { stroke: var(--cyan); }
+    .node circle, .node rect {
+      stroke: #d9eff4;
+      stroke-width: 1.2;
+      cursor: pointer;
+    }
+    .node text {
+      fill: var(--text);
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .node .kind {
+      fill: var(--muted);
+      font-size: 10px;
+    }
+    .node.running circle, .node.running rect { fill: #173b2a; }
+    .node.failed circle, .node.failed rect { fill: #4a1e28; stroke: var(--red); }
+    .node.online circle, .node.online rect, .node.listening circle, .node.listening rect { fill: #14303a; stroke: var(--cyan); }
+    .node.unknown circle, .node.unknown rect { fill: #252b35; }
+    .node.present circle, .node.present rect, .node.configured circle, .node.configured rect { fill: #1d2842; stroke: var(--blue); }
+    aside {
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      background: #0d121a;
+      padding: 14px;
+      overflow: auto;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+    .detail-list {
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid #223044;
+      padding: 7px 4px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    .pill {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .pill.running, .pill.online, .pill.listening { color: var(--green); border-color: #315b38; }
+    .pill.failed { color: var(--red); border-color: #6a3340; }
+    pre {
+      max-height: 320px;
+      overflow: auto;
+      margin: 0;
+      color: #c8d5df;
+      white-space: pre-wrap;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-left: 0; border-top: 1px solid var(--line); }
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .map-wrap { min-height: 380px; height: 55vh; }
+      header { align-items: flex-start; flex-direction: column; }
+      .status { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1>EutherNet serverkarta</h1>
+        <div class="status" id="substatus">Laddar deterministisk inventory...</div>
+      </div>
+      <div class="toolbar">
+        <button class="button primary" id="refresh">Uppdatera inventory</button>
+        <button class="button" id="reload">Ladda om vy</button>
+        <a class="button" href="/">Till EutherOxide</a>
+      </div>
+    </header>
+    <main>
+      <section class="map-pane">
+        <div class="summary" id="summary"></div>
+        <div class="map-wrap"><svg id="map" viewBox="0 0 1200 760" role="img" aria-label="Interaktiv serverkarta"></svg></div>
+      </section>
+      <aside>
+        <section class="panel">
+          <h2>Vald nod</h2>
+          <div class="detail-list" id="details">Klicka på en nod i kartan.</div>
+        </section>
+        <section class="panel">
+          <h2>Tjänster</h2>
+          <div id="services"></div>
+        </section>
+        <section class="panel">
+          <h2>Lyssnande portar</h2>
+          <div id="ports"></div>
+        </section>
+        <section class="panel">
+          <h2>SSH-flöden</h2>
+          <div id="ssh"></div>
+        </section>
+        <section class="panel">
+          <h2>Rapport</h2>
+          <pre id="report"></pre>
+        </section>
+      </aside>
+    </main>
+  </div>
+  <script>
+    const mapEl = document.querySelector("#map");
+    const summaryEl = document.querySelector("#summary");
+    const detailsEl = document.querySelector("#details");
+    const servicesEl = document.querySelector("#services");
+    const portsEl = document.querySelector("#ports");
+    const sshEl = document.querySelector("#ssh");
+    const reportEl = document.querySelector("#report");
+    const substatusEl = document.querySelector("#substatus");
+    let csrfToken = "";
+    let currentMap = null;
+
+    async function jsonFetch(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (options.method && options.method !== "GET" && csrfToken) {
+        headers["X-CSRF-Token"] = csrfToken;
+      }
+      const response = await fetch(path, { ...options, headers });
+      if (!response.ok) {
+        throw new Error((await response.text()) || response.statusText);
+      }
+      return response.json();
+    }
+
+    async function loadAuth() {
+      const auth = await jsonFetch("/api/auth/status");
+      csrfToken = auth.csrfToken || "";
+      if (!auth.authenticated || !auth.isAdmin) {
+        throw new Error("Admin-login krävs.");
+      }
+    }
+
+    async function loadMap() {
+      substatusEl.textContent = "Laddar EutherNet...";
+      const [status, map, report] = await Promise.all([
+        jsonFetch("/api/admin/euthernet/status"),
+        jsonFetch("/api/admin/euthernet/map"),
+        jsonFetch("/api/admin/euthernet/report"),
+      ]);
+      currentMap = map;
+      substatusEl.textContent = `Snapshot ${map.collected_at || status.collected_at || "ok"}`;
+      renderSummary(status, map);
+      renderMap(map);
+      renderTables(map);
+      reportEl.textContent = report.report || map.map_md || "";
+    }
+
+    async function refreshInventory() {
+      substatusEl.textContent = "Uppdaterar inventory...";
+      await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
+      await loadMap();
+    }
+
+    function renderSummary(status, map) {
+      const serviceCounts = countBy(map.services || [], "status");
+      const sshCount = (map.ssh_connections || []).length;
+      const failed = serviceCounts.failed || 0;
+      summaryEl.innerHTML = "";
+      for (const item of [
+        ["Noder", (map.nodes || []).length],
+        ["Edges", (map.edges || []).length],
+        ["Tjänster", `${serviceCounts.running || 0} kör / ${failed} fel`],
+        ["Portar", (map.listening_services || []).length || (map.ports || []).length],
+        ["SSH", sshCount],
+      ]) {
+        const node = document.createElement("div");
+        node.className = "metric";
+        node.innerHTML = `<span>${escapeHtml(item[0])}</span><strong>${escapeHtml(String(item[1]))}</strong>`;
+        summaryEl.appendChild(node);
+      }
+    }
+
+    function renderMap(map) {
+      mapEl.replaceChildren();
+      const nodes = map.nodes || [];
+      const edges = map.edges || [];
+      const positions = layoutNodes(nodes);
+      const edgeLayer = svg("g", {});
+      const nodeLayer = svg("g", {});
+      for (const edge of edges) {
+        const a = positions[edge.from];
+        const b = positions[edge.to];
+        if (!a || !b) continue;
+        edgeLayer.appendChild(svg("path", {
+          class: `edge ${edge.type || ""}`,
+          d: `M ${a.x} ${a.y} C ${(a.x + b.x) / 2} ${a.y}, ${(a.x + b.x) / 2} ${b.y}, ${b.x} ${b.y}`,
+        }));
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const label = svg("text", { x: mid.x, y: mid.y - 4, fill: "#8f9dad", "font-size": "10", "text-anchor": "middle" });
+        label.textContent = edge.label || edge.type || "";
+        edgeLayer.appendChild(label);
+      }
+      for (const node of nodes) {
+        const pos = positions[node.id];
+        if (!pos) continue;
+        const group = svg("g", { class: `node ${node.status || "unknown"}`, transform: `translate(${pos.x},${pos.y})`, tabindex: "0" });
+        if (node.type === "host" || node.type === "proxy") {
+          group.appendChild(svg("rect", { x: -58, y: -28, width: 116, height: 56, rx: 7 }));
+        } else {
+          group.appendChild(svg("circle", { r: node.type === "port" ? 23 : 30 }));
+        }
+        const title = svg("text", { y: node.type === "port" ? 4 : -2, "text-anchor": "middle" });
+        title.textContent = shortLabel(node.label || node.id, node.type === "port" ? 10 : 16);
+        const kind = svg("text", { y: node.type === "port" ? 19 : 15, class: "kind", "text-anchor": "middle" });
+        kind.textContent = node.type || "";
+        group.append(title, kind);
+        group.addEventListener("click", () => showDetails(node));
+        nodeLayer.appendChild(group);
+      }
+      mapEl.append(edgeLayer, nodeLayer);
+      if (nodes[0]) showDetails(nodes[0]);
+    }
+
+    function layoutNodes(nodes) {
+      const groups = {
+        external: [],
+        proxy: [],
+        host: [],
+        service: [],
+        port: [],
+        repo: [],
+        ssh: [],
+        ai: [],
+        storage: [],
+      };
+      for (const node of nodes) {
+        (groups[node.type] || (groups[node.type] = [])).push(node);
+      }
+      const columns = [
+        ["external", 90],
+        ["proxy", 235],
+        ["host", 390],
+        ["service", 560],
+        ["port", 740],
+        ["repo", 910],
+        ["ssh", 1060],
+        ["ai", 1030],
+        ["storage", 1030],
+      ];
+      const positions = {};
+      for (const [type, x] of columns) {
+        const list = groups[type] || [];
+        const step = Math.min(88, Math.max(42, 650 / Math.max(1, list.length)));
+        const start = 90 + Math.max(0, (650 - step * (list.length - 1)) / 2);
+        list.forEach((node, index) => {
+          positions[node.id] = { x, y: start + index * step };
+        });
+      }
+      return positions;
+    }
+
+    function renderTables(map) {
+      servicesEl.innerHTML = table(["Namn", "Status", "Units"], (map.services || []).map((item) => [
+        item.name,
+        pill(item.status),
+        (item.units || []).join(", "),
+      ]));
+      portsEl.innerHTML = table(["Port", "Process"], (map.listening_services || []).map((item) => [
+        `${item.protocol}:${item.port}`,
+        item.process || item.local || "",
+      ]));
+      sshEl.innerHTML = table(["Riktning", "Peer", "Status"], (map.ssh_connections || []).map((item) => [
+        item.direction,
+        item.peer,
+        `${item.state} ${item.process || ""}`,
+      ]));
+    }
+
+    function showDetails(node) {
+      detailsEl.innerHTML = `
+        <div><strong>${escapeHtml(node.label || node.id)}</strong></div>
+        <div>Typ: ${escapeHtml(node.type || "")}</div>
+        <div>Status: ${pill(node.status || "unknown")}</div>
+        <div>ID: ${escapeHtml(node.id || "")}</div>
+        <div>${escapeHtml(node.detail || "")}</div>
+      `;
+    }
+
+    function table(headers, rows) {
+      if (!rows.length) return `<span class="pill">Inget observerat</span>`;
+      return `<table><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${typeof cell === "string" && cell.startsWith("<span") ? cell : escapeHtml(String(cell || ""))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    }
+
+    function countBy(items, key) {
+      return items.reduce((acc, item) => {
+        const value = item[key] || "unknown";
+        acc[value] = (acc[value] || 0) + 1;
+        return acc;
+      }, {});
+    }
+
+    function pill(value) {
+      const safe = escapeHtml(String(value || "unknown"));
+      return `<span class="pill ${safe}">${safe}</span>`;
+    }
+
+    function shortLabel(value, max) {
+      value = String(value || "");
+      return value.length > max ? `${value.slice(0, Math.max(1, max - 1))}…` : value;
+    }
+
+    function svg(name, attrs) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+      return node;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
+    }
+
+    document.querySelector("#reload").addEventListener("click", () => loadMap().catch(showError));
+    document.querySelector("#refresh").addEventListener("click", () => refreshInventory().catch(showError));
+
+    function showError(error) {
+      substatusEl.textContent = `Fel: ${error.message}`;
+      reportEl.textContent = error.stack || error.message;
+    }
+
+    loadAuth().then(loadMap).catch(showError);
+  </script>
+</body>
+</html>"###;
+    send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
 }
 
 fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
