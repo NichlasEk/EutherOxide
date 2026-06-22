@@ -280,6 +280,7 @@ function bindInput(): void {
   renderer.domElement.addEventListener("click", () => {
     if (viewMode === "walk") enterWalkMode();
   });
+  renderer.domElement.addEventListener("wheel", handleWheelZoom, { passive: false });
   modeButton.addEventListener("click", toggleMapMode);
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
@@ -316,6 +317,27 @@ function enterWalkMode(): void {
   renderer.domElement.focus();
   controls.lock();
   hintLine.textContent = "WASD moves. Mouse look starts when the browser grants pointer lock.";
+}
+
+function handleWheelZoom(event: WheelEvent): void {
+  event.preventDefault();
+  navigationEnabled = true;
+  const amount = THREE.MathUtils.clamp(event.deltaY * 0.035, -14, 14);
+  if (viewMode === "map") {
+    const nextY = THREE.MathUtils.clamp(controls.object.position.y + amount * 1.8, 18, 118);
+    controls.object.position.y = nextY;
+    camera.lookAt(controls.object.position.x, 0, controls.object.position.z - 8);
+    hintLine.textContent = "Map mode. Scroll zooms. WASD pans. Press M for 3D.";
+    return;
+  }
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  forward.y = 0;
+  if (forward.lengthSq() === 0) return;
+  forward.normalize();
+  controls.object.position.addScaledVector(forward, -amount);
+  controls.object.position.y = 3.2;
+  hintLine.textContent = "Scroll zooms. WASD moves. Click Enter for mouse look.";
 }
 
 function toggleMapMode(): void {
