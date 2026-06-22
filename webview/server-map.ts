@@ -1390,12 +1390,18 @@ async function askCustodian(): Promise<void> {
     "Svara kort, praktiskt och basera dig på EutherNet inventory. Föreslå bara allowlistade actions om åtgärder behövs.",
     `Fråga: ${question}`,
   ].filter(Boolean).join("\n");
-  const result = await jsonFetch<{ ok?: boolean; answer?: string; source?: string; fallback?: string }>("/api/admin/euthernet/ask", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question: prompt }),
-  });
-  custodianAnswer.textContent = result.answer || result.fallback || "No custodian answer.";
+  try {
+    const result = await jsonFetch<{ ok?: boolean; answer?: string; source?: string; fallback?: string }>("/api/admin/euthernet/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: prompt }),
+    });
+    custodianAnswer.textContent = result.answer || result.fallback || "No custodian answer.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    custodianAnswer.textContent = `Custodian link failed: ${message}`;
+    throw error;
+  }
 }
 
 function latestJobForBook(bookId: string, jobs: EutherBooksJob[]): EutherBooksJob | null {
