@@ -884,7 +884,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     chapter ? chapterLabel(chapter) : "Audiobook",
     nativeQueueManifest(),
   );
-  nativePlayRequestUntil = Date.now() + 6_000;
+  nativePlayRequestUntil = Date.now() + 20_000;
   nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
   applyNativeAudioState(state);
   await maybeReportNativeAudioIssue("native-play-request");
@@ -1279,6 +1279,13 @@ async function playbackWatchdogTick(): Promise<void> {
       void maybeEnsureNextAhead("watchdog-native-buffering");
       void recoverEndpointAfterNetworkError("watchdog-native-buffering");
       void updateNativeQueue("watchdog-native-buffering");
+    }
+    if (isNativePlayRequestPending(state)) {
+      lastWatchdogDiagnosis = playbackStallDiagnosis(state);
+      lastWatchdogPosition = currentPlaybackPosition();
+      lastWatchdogSessionKey = watchdogSessionKey();
+      stuckPlaybackTicks = 0;
+      return;
     }
   } else {
     maybeAdvanceNearPartEnd();
@@ -2036,6 +2043,7 @@ function isNativePlayRequestPending(state = nativeAudioState()): boolean {
     && (
       event.includes("requested")
       || event.includes("preparing")
+      || event.includes("caching audio")
       || event.includes("queue loaded")
       || event.includes("queue update")
     );
