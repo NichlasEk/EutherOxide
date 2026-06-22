@@ -200,7 +200,7 @@ function installShell(): void {
           <p class="eyebrow">Actions</p>
           <button id="ev-action-health" type="button">Health Check</button>
           <button id="ev-action-enter-node" type="button" disabled>Enter Node</button>
-          <button id="ev-action-leave-room" type="button" disabled>Leave Room</button>
+          <button id="ev-action-leave-room" type="button" disabled hidden>Back to Map</button>
           <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
           <small>Restart uses EutherNet's configured command allowlist. System services may need sudoers for non-interactive restart.</small>
@@ -217,6 +217,7 @@ function installShell(): void {
     :root { color-scheme: dark; }
     body { margin: 0; overflow: hidden; background: #05070a; color: #f4fbff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     button, a { font: inherit; }
+    [hidden] { display: none !important; }
     #eutherverse { position: fixed; inset: 0; background: #05070a; }
     #eutherverse-canvas { width: 100%; height: 100%; display: block; }
     .ev-topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 2; display: flex; justify-content: space-between; gap: 16px; padding: 14px 16px; background: linear-gradient(180deg, rgba(4,8,13,.86), rgba(4,8,13,0)); pointer-events: none; }
@@ -446,6 +447,10 @@ function buildCity(map: ServerMap): void {
 }
 
 async function enterFocusedNode(): Promise<void> {
+  if (focusedNode && roomMode === "eutherbooks") {
+    if (isRoomReturnNode(focusedNode)) leaveRoom();
+    return;
+  }
   if (!focusedNode || !isEutherBooksNode(focusedNode)) return;
   lastCityPosition.copy(controls.object.position);
   await enterEutherBooksRoom();
@@ -471,7 +476,7 @@ async function enterEutherBooksRoom(): Promise<void> {
   camera.lookAt(0, 2.2, 0);
   showEutherBooksOverview(library.books, library.jobs, library.health, library.source);
   statusLine.textContent = `EutherBooks Library | ${library.books.length} books | ${library.jobs.length} jobs | ${library.health?.status || library.source}`;
-  hintLine.textContent = "EutherBooks room. WASD moves. Aim at a book and press E. Esc leaves room.";
+  hintLine.textContent = "EutherBooks room. Aim at Back to EutherVerse and press F to return.";
 }
 
 function leaveRoom(): void {
@@ -552,9 +557,18 @@ function buildEutherBooksLibrary(books: EutherBook[], jobs: EutherBooksJob[], he
     });
   });
 
-  addRoomNode("qwen-desk", "Qwen Librarian", "ai", "planned", "Ask about books, imports, voices and queue status.", new THREE.Vector3(0, 0, -24), 0xb878ff);
+  addRoomNode("qwen-desk", "Qwen Librarian", "ai", "planned", "Ask about books, imports, voices, queue status and the way back.", new THREE.Vector3(0, 0, -24), 0xb878ff);
   addRoomNode("upload-intake", "Upload Intake", "service", "planned", "Future drag/drop intake for epub, pdf and audio.", new THREE.Vector3(-8, 0, -24), 0xf0b85a);
   addRoomNode("listening-booth", "Listening Booth", "service", "configured", "Open a selected book in EutherBooks Player.", new THREE.Vector3(8, 0, -24), 0x39d7d2);
+  addRoomNode(
+    "eutherbooks-entry-gate",
+    "EutherBooks Entry",
+    "portal",
+    "configured",
+    "The service node you entered from. Press F here to return to EutherVerse.",
+    new THREE.Vector3(0, 0, 31),
+    0x39d7d2,
+  );
   addRoomNode(
     "library-stats",
     "Library Stats",
@@ -800,7 +814,7 @@ function updateFocus(): void {
     return;
   }
   hintLine.textContent = node
-      ? `Target: ${node.label} | E inspect${isEutherBooksNode(node) && roomMode === "city" ? " | F enter" : ""}`
+    ? `Target: ${node.label} | E inspect${isEutherBooksNode(node) && roomMode === "city" ? " | F enter" : ""}${isRoomReturnNode(node) ? " | F back" : ""}`
     : navigationEnabled
       ? "WASD moves. Space/Z changes depth. Click Enter again for mouse look."
       : "Click Enter to take controls.";
@@ -947,6 +961,9 @@ function showRoomNode(node: SceneNode): void {
   if (node.id === "upload-intake") {
     lines.push(["Next", "Expose confirmed EutherBooks upload action here"]);
   }
+  if (isRoomReturnNode(node)) {
+    lines.push(["Use", "Press F to return through the node you entered from"]);
+  }
   detailPanel.innerHTML = lines
     .filter(([, value]) => value)
     .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
@@ -970,11 +987,11 @@ function updateControlsGuide(node: SceneNode | null): void {
   ];
 
   if (roomMode === "eutherbooks") {
-    rows.push(["Esc", "Leave library"]);
-    rows.push(["Button", "Leave Room"]);
+    rows.push(["F", "Back through portal"]);
+    rows.push(["Esc", "Release cursor"]);
     objective.textContent = node
       ? eutherBooksObjectiveFor(node)
-      : "You are inside EutherBooks. Move like an inspection diver: WASD across the room, Space/Z up and down, E to inspect shelves and stations. Use Leave Room or Esc to return.";
+      : "You are inside EutherBooks. Move like an inspection diver: WASD across the room, Space/Z up and down, E to inspect shelves and stations. Aim at EutherBooks Entry or Qwen Librarian and press F to return.";
   } else {
     rows.push(["F", "Enter node when available"]);
     rows.push(["Esc", "Release cursor"]);
@@ -1001,7 +1018,7 @@ function eutherBooksObjectiveFor(node: SceneNode): string {
     return "Book target. Press E to inspect metadata, conversion job status and available audio files.";
   }
   if (node.id === "qwen-desk") {
-    return "Qwen Librarian desk. Press E to inspect the planned local chat station for book questions and library operations.";
+    return "Qwen Librarian desk. Press E to inspect the planned local chat station, or press F to ask the librarian to send you back to EutherVerse.";
   }
   if (node.id === "upload-intake") {
     return "Upload Intake. Press E to inspect the planned station for adding new books.";
@@ -1012,7 +1029,14 @@ function eutherBooksObjectiveFor(node: SceneNode): string {
   if (node.id === "library-stats") {
     return "Library Stats. Press E to inspect book counts, queue state and backend health.";
   }
+  if (isRoomReturnNode(node)) {
+    return "This is the EutherBooks entry node. Press F to return through the node you entered from.";
+  }
   return `Targeting ${node.label}. Press E to inspect this library object.`;
+}
+
+function isRoomReturnNode(node: SceneNode): boolean {
+  return roomMode === "eutherbooks" && (node.id === "eutherbooks-entry-gate" || node.id === "qwen-desk");
 }
 
 function isEutherBooksNode(node: SceneNode): boolean {
