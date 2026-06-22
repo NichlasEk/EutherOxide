@@ -100,6 +100,8 @@ let nativeQueuedUrlsKey = "";
 let nativeQueueSessionStartIndex = 0;
 let nativeServiceQueuePrefix: string[] = [];
 let nativeRegressionResyncInFlight = false;
+let nativeAdvanceBufferKey = "";
+let nativeAdvanceBufferRetryAfter = 0;
 let lastNativeSeekCommandAt = 0;
 let nativePlayRequestUntil = 0;
 let nativePlayConfirmTimer: ReturnType<typeof window.setTimeout> | null = null;
@@ -1829,17 +1831,46 @@ function applyNativeAudioState(state = nativeAudioState()): boolean {
 }
 
 function prepareNextJobForNativeAdvance(): boolean {
-  if (nextJob && nextJobKey === selectedNextPlaybackKey() && isPlayableJob(nextJob)) {
+  const targetKey = selectedNextPlaybackKey();
+  if (nextJob && nextJobKey === targetKey && isCompleteJob(nextJob)) {
+    nativeAdvanceBufferKey = "";
+    nativeAdvanceBufferRetryAfter = 0;
     return true;
   }
   const nextChapter = chapterAfter(selectedChapterIndex);
-  const candidate = nextChapter ? matchingJobForChapter(allJobs, nextChapter.index) : null;
-  if (!candidate || !isPlayableJob(candidate)) {
+  if (!nextChapter) {
+    return false;
+  }
+  const candidate = matchingJobForChapter(allJobs, nextChapter.index);
+  if (!candidate || !isCompleteJob(candidate)) {
+    holdNativeAdvanceForBuffer(candidate, targetKey);
     return false;
   }
   nextJob = candidate;
-  nextJobKey = selectedPlaybackKey(nextChapter!.index);
+  nextJobKey = selectedPlaybackKey(nextChapter.index);
+  nativeAdvanceBufferKey = "";
+  nativeAdvanceBufferRetryAfter = 0;
   return true;
+}
+
+function holdNativeAdvanceForBuffer(candidate: Job | null, targetKey: string): void {
+  if (candidate && targetKey) {
+    nextJob = candidate;
+    nextJobKey = targetKey;
+    allJobs = upsertJobList(allJobs, candidate);
+  }
+  if (nativeAdvanceBufferKey === targetKey && Date.now() < nativeAdvanceBufferRetryAfter) {
+    return;
+  }
+  nativeAdvanceBufferKey = targetKey;
+  nativeAdvanceBufferRetryAfter = Date.now() + 5_000;
+  const ready = candidate
+    ? candidate.audio_files.length + "/" + (candidate.total_audio_files || "?")
+    : "0/0";
+  setPlaybackEvent("Native waiting for next chapter buffer: " + ready);
+  schedulePoll(1_000);
+  void ensureNativeLookahead("native-buffer");
+  void updateNativeQueue("native-buffer");
 }
 
 function shouldResyncNativeRegression(relativeIndex: number, seconds: number, state: NativeAudioState): boolean {
