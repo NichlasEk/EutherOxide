@@ -454,6 +454,7 @@ class NativeAudioService : Service() {
             ACTION_UPDATE_QUEUE -> handleUpdateQueue(intent)
             ACTION_PAUSE -> handlePause()
             ACTION_RESUME -> handleResume()
+            ACTION_TOGGLE_PLAYBACK -> handleTogglePlayback()
             ACTION_PREVIOUS -> handlePrevious()
             ACTION_NEXT -> handleNext()
             ACTION_STOP -> handleStop()
@@ -1165,7 +1166,7 @@ class NativeAudioService : Service() {
         val playPauseIntent = PendingIntent.getService(
             this,
             1,
-            Intent(this, NativeAudioService::class.java).setAction(if (snapshot.playing) ACTION_PAUSE else ACTION_RESUME),
+            Intent(this, NativeAudioService::class.java).setAction(ACTION_TOGGLE_PLAYBACK),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val previousIntent = PendingIntent.getService(
@@ -1249,7 +1250,7 @@ class NativeAudioService : Service() {
                     when (event.keyCode) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> handleResume()
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> handlePause()
-                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> if (snapshot().playing) handlePause() else handleResume()
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> handleTogglePlayback()
                         KeyEvent.KEYCODE_MEDIA_NEXT -> handleNext()
                         KeyEvent.KEYCODE_MEDIA_PREVIOUS -> handlePrevious()
                         KeyEvent.KEYCODE_MEDIA_STOP -> handleStop()
@@ -1259,6 +1260,14 @@ class NativeAudioService : Service() {
                 }
             })
             isActive = true
+        }
+    }
+
+    private fun handleTogglePlayback() {
+        if (snapshot().playing) {
+            handlePause()
+        } else {
+            handleResume()
         }
     }
 
@@ -1496,6 +1505,7 @@ class NativeAudioService : Service() {
         const val ACTION_UPDATE_QUEUE = "com.nichlasek.eutherbooksplayer.UPDATE_QUEUE"
         const val ACTION_PAUSE = "com.nichlasek.eutherbooksplayer.PAUSE"
         const val ACTION_RESUME = "com.nichlasek.eutherbooksplayer.RESUME"
+        const val ACTION_TOGGLE_PLAYBACK = "com.nichlasek.eutherbooksplayer.TOGGLE_PLAYBACK"
         const val ACTION_PREVIOUS = "com.nichlasek.eutherbooksplayer.PREVIOUS"
         const val ACTION_NEXT = "com.nichlasek.eutherbooksplayer.NEXT"
         const val ACTION_STOP = "com.nichlasek.eutherbooksplayer.STOP"
