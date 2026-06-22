@@ -58,6 +58,8 @@ type SceneNode = MapNode & {
   position: THREE.Vector3;
 };
 
+type ViewMode = "walk" | "map";
+
 const statusColors: Record<string, number> = {
   running: 0x39d77b,
   online: 0x39d7d2,
@@ -86,6 +88,8 @@ let csrfToken = "";
 let serverMap: ServerMap | null = null;
 let selectedNode: SceneNode | null = null;
 let focusedNode: SceneNode | null = null;
+let viewMode: ViewMode = "walk";
+let navigationEnabled = false;
 
 const sceneNodes = new Map<string, SceneNode>();
 const clock = new THREE.Clock();
@@ -105,6 +109,7 @@ let detailPanel: HTMLElement;
 let statusLine: HTMLElement;
 let hintLine: HTMLElement;
 let crosshair: HTMLElement;
+let modeButton: HTMLButtonElement;
 
 bootstrap().catch((error) => {
   document.body.innerHTML = `<main class="eutherverse-fail"><h1>EutherVerse kunde inte starta</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
@@ -132,6 +137,7 @@ function installShell(): void {
         </div>
         <nav>
           <button id="ev-enter" type="button">Enter</button>
+          <button id="ev-map-mode" type="button">Map</button>
           <button id="ev-refresh" type="button">Refresh</button>
           <a href="/">EutherOxide</a>
         </nav>
@@ -148,6 +154,7 @@ function installShell(): void {
             <div><dt>WASD</dt><dd>Move</dd></div>
             <div><dt>Mouse</dt><dd>Look</dd></div>
             <div><dt>E</dt><dd>Inspect</dd></div>
+            <div><dt>M</dt><dd>Map mode</dd></div>
             <div><dt>R</dt><dd>Refresh inventory</dd></div>
             <div><dt>Esc</dt><dd>Release cursor</dd></div>
           </dl>
@@ -212,6 +219,7 @@ function installShell(): void {
   statusLine = document.querySelector("#ev-status")!;
   hintLine = document.querySelector("#ev-hint")!;
   crosshair = document.querySelector("#crosshair")!;
+  modeButton = document.querySelector<HTMLButtonElement>("#ev-map-mode")!;
 }
 
 async function loadAuth(): Promise<void> {
@@ -224,6 +232,7 @@ async function loadAuth(): Promise<void> {
 
 function initScene(): void {
   const canvas = document.querySelector<HTMLCanvasElement>("#eutherverse-canvas")!;
+  canvas.tabIndex = 0;
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x05070a);
   scene.fog = new THREE.FogExp2(0x05070a, 0.012);
@@ -267,21 +276,63 @@ function addGrid(): void {
 }
 
 function bindInput(): void {
-  document.querySelector("#ev-enter")?.addEventListener("click", () => controls.lock());
+  document.querySelector("#ev-enter")?.addEventListener("click", enterWalkMode);
+  renderer.domElement.addEventListener("click", () => {
+    if (viewMode === "walk") enterWalkMode();
+  });
+  modeButton.addEventListener("click", toggleMapMode);
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.addEventListener("keydown", (event) => {
+    if (event.repeat && event.code !== "KeyE") return;
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "KeyE", "KeyM", "KeyR"].includes(event.code)) {
+      event.preventDefault();
+    }
     keys.add(event.code);
     if (event.code === "KeyE") inspectFocusedNode();
+    if (event.code === "KeyM") toggleMapMode();
     if (event.code === "KeyR") void loadMap(true).catch(showError);
   });
   document.addEventListener("keyup", (event) => keys.delete(event.code));
   controls.addEventListener("lock", () => {
+    navigationEnabled = true;
     hintLine.textContent = "Aim at a district and press E.";
   });
   controls.addEventListener("unlock", () => {
-    hintLine.textContent = "Click Enter to take controls.";
+    if (viewMode === "walk" && navigationEnabled) {
+      hintLine.textContent = "WASD moves. Click Enter again for mouse look.";
+    } else if (viewMode === "walk") {
+      hintLine.textContent = "Click Enter to take controls.";
+    }
   });
+}
+
+function enterWalkMode(): void {
+  viewMode = "walk";
+  navigationEnabled = true;
+  modeButton.textContent = "Map";
+  crosshair.style.display = "";
+  controls.object.position.y = 3.2;
+  renderer.domElement.focus();
+  controls.lock();
+  hintLine.textContent = "WASD moves. Mouse look starts when the browser grants pointer lock.";
+}
+
+function toggleMapMode(): void {
+  if (viewMode === "map") {
+    enterWalkMode();
+    return;
+  }
+  viewMode = "map";
+  navigationEnabled = true;
+  keys.clear();
+  controls.unlock();
+  modeButton.textContent = "3D";
+  crosshair.style.display = "none";
+  controls.object.position.set(7, 72, 13);
+  camera.lookAt(7, 0, 5);
+  velocity.set(0, 0, 0);
+  hintLine.textContent = "Map mode. WASD pans the overview. Press M for 3D.";
 }
 
 async function loadMap(refresh: boolean): Promise<void> {
@@ -445,7 +496,11 @@ function animate(): void {
 }
 
 function updateMovement(delta: number): void {
-  if (!controls.isLocked) return;
+  if (!navigationEnabled) return;
+  if (viewMode === "map") {
+    updateMapMovement(delta);
+    return;
+  }
   velocity.x -= velocity.x * 9.0 * delta;
   velocity.z -= velocity.z * 9.0 * delta;
   direction.z = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
@@ -459,6 +514,16 @@ function updateMovement(delta: number): void {
   controls.object.position.y = 3.2;
 }
 
+function updateMapMovement(delta: number): void {
+  const speed = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 62 : 34;
+  const step = speed * delta;
+  if (keys.has("KeyW")) controls.object.position.z -= step;
+  if (keys.has("KeyS")) controls.object.position.z += step;
+  if (keys.has("KeyA")) controls.object.position.x -= step;
+  if (keys.has("KeyD")) controls.object.position.x += step;
+  camera.lookAt(controls.object.position.x, 0, controls.object.position.z - 8);
+}
+
 function updateFocus(): void {
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(cityRoot.children, true);
@@ -467,7 +532,15 @@ function updateFocus(): void {
   if (node === focusedNode) return;
   focusedNode = node;
   crosshair.style.opacity = node ? "1" : ".45";
-  hintLine.textContent = node ? `Target: ${node.label} | E inspect` : controls.isLocked ? "Aim at a district and press E." : "Click Enter to take controls.";
+  if (viewMode === "map") {
+    hintLine.textContent = node ? `Map target: ${node.label} | E inspect` : "Map mode. WASD pans the overview. Press M for 3D.";
+    return;
+  }
+  hintLine.textContent = node
+    ? `Target: ${node.label} | E inspect`
+    : navigationEnabled
+      ? "WASD moves. Click Enter again for mouse look."
+      : "Click Enter to take controls.";
 }
 
 function inspectFocusedNode(): void {
