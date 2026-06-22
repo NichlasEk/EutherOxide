@@ -56,9 +56,40 @@ type AuthStatus = {
 type SceneNode = MapNode & {
   object: THREE.Object3D;
   position: THREE.Vector3;
+  meta?: Record<string, string | number | boolean | null | undefined>;
 };
 
 type ViewMode = "walk" | "map";
+type RoomMode = "city" | "eutherbooks";
+
+type EutherBook = {
+  id: string;
+  title: string;
+  author?: string;
+  format?: string;
+};
+
+type EutherBooksJob = {
+  id: string;
+  book_id: string;
+  status: string;
+  owner?: string;
+  audio_files?: string[];
+  total_audio_files?: number;
+  progress_label?: string;
+  progress_detail?: string;
+  error?: string | null;
+};
+
+type EutherBooksHealth = {
+  status?: string;
+  tts_backend?: string;
+  storage?: {
+    audio_free_bytes?: number;
+    audio_total_bytes?: number;
+    audio_used_bytes?: number;
+  };
+};
 
 const statusColors: Record<string, number> = {
   running: 0x39d77b,
@@ -89,7 +120,9 @@ let serverMap: ServerMap | null = null;
 let selectedNode: SceneNode | null = null;
 let focusedNode: SceneNode | null = null;
 let viewMode: ViewMode = "walk";
+let roomMode: RoomMode = "city";
 let navigationEnabled = false;
+let lastCityPosition = new THREE.Vector3(7, 3.2, 58);
 
 const sceneNodes = new Map<string, SceneNode>();
 const clock = new THREE.Clock();
@@ -110,6 +143,8 @@ let statusLine: HTMLElement;
 let hintLine: HTMLElement;
 let crosshair: HTMLElement;
 let modeButton: HTMLButtonElement;
+let enterNodeButton: HTMLButtonElement;
+let leaveRoomButton: HTMLButtonElement;
 
 bootstrap().catch((error) => {
   document.body.innerHTML = `<main class="eutherverse-fail"><h1>EutherVerse kunde inte starta</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
@@ -162,6 +197,9 @@ function installShell(): void {
         <section>
           <p class="eyebrow">Actions</p>
           <button id="ev-action-health" type="button">Health Check</button>
+          <button id="ev-action-enter-node" type="button" disabled>Enter Node</button>
+          <button id="ev-action-leave-room" type="button" disabled>Leave Room</button>
+          <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
           <small>Write actions are locked until EutherNet exposes an explicit restart allowlist.</small>
         </section>
@@ -183,7 +221,7 @@ function installShell(): void {
     .ev-topbar p, .eyebrow { margin: 0; color: #77d7d3; text-transform: uppercase; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
     .ev-topbar h1 { margin: 2px 0 0; font-size: 20px; letter-spacing: 0; }
     .ev-topbar nav { display: flex; gap: 8px; pointer-events: auto; }
-    .ev-topbar button, .ev-topbar a, #ev-panel button { border: 1px solid rgba(103,225,218,.38); border-radius: 6px; background: rgba(10,22,30,.82); color: #effcff; padding: 8px 11px; text-decoration: none; cursor: pointer; }
+    .ev-topbar button, .ev-topbar a, #ev-panel button, #ev-panel a { border: 1px solid rgba(103,225,218,.38); border-radius: 6px; background: rgba(10,22,30,.82); color: #effcff; padding: 8px 11px; text-decoration: none; cursor: pointer; }
     .ev-topbar button:hover, .ev-topbar a:hover, #ev-panel button:hover:not(:disabled) { background: rgba(40,128,133,.72); }
     #ev-panel { position: fixed; top: 78px; right: 14px; bottom: 54px; z-index: 2; width: min(360px, calc(100vw - 28px)); overflow: auto; border: 1px solid rgba(103,225,218,.28); border-radius: 8px; background: rgba(5,10,16,.78); backdrop-filter: blur(16px); padding: 13px; box-shadow: 0 18px 80px rgba(0,0,0,.45); }
     #ev-panel h2 { margin: 4px 0 10px; font-size: 18px; }
@@ -195,7 +233,7 @@ function installShell(): void {
     #ev-panel dl div { display: grid; grid-template-columns: 64px 1fr; gap: 8px; color: #b7c8d4; font-size: 13px; }
     #ev-panel dt { color: #f4cf78; font-weight: 900; }
     #ev-panel dd { margin: 0; }
-    #ev-panel button { width: 100%; margin: 6px 0; text-align: left; }
+    #ev-panel button, #ev-panel a { width: 100%; margin: 6px 0; text-align: left; display: block; box-sizing: border-box; }
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
     .ev-hud { position: fixed; left: 14px; right: 14px; bottom: 12px; z-index: 2; display: flex; justify-content: space-between; gap: 12px; color: #b7c8d4; font-size: 13px; pointer-events: none; }
@@ -220,6 +258,8 @@ function installShell(): void {
   hintLine = document.querySelector("#ev-hint")!;
   crosshair = document.querySelector("#crosshair")!;
   modeButton = document.querySelector<HTMLButtonElement>("#ev-map-mode")!;
+  enterNodeButton = document.querySelector<HTMLButtonElement>("#ev-action-enter-node")!;
+  leaveRoomButton = document.querySelector<HTMLButtonElement>("#ev-action-leave-room")!;
 }
 
 async function loadAuth(): Promise<void> {
@@ -284,15 +324,19 @@ function bindInput(): void {
   modeButton.addEventListener("click", toggleMapMode);
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
+  enterNodeButton.addEventListener("click", () => enterFocusedNode().catch(showError));
+  leaveRoomButton.addEventListener("click", leaveRoom);
   document.addEventListener("keydown", (event) => {
     if (event.repeat && event.code !== "KeyE") return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "KeyE", "KeyM", "KeyR"].includes(event.code)) {
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "KeyE", "KeyF", "KeyM", "KeyR", "Escape"].includes(event.code)) {
       event.preventDefault();
     }
     keys.add(event.code);
     if (event.code === "KeyE") inspectFocusedNode();
+    if (event.code === "KeyF") void enterFocusedNode().catch(showError);
     if (event.code === "KeyM") toggleMapMode();
     if (event.code === "KeyR") void loadMap(true).catch(showError);
+    if (event.code === "Escape" && roomMode !== "city") leaveRoom();
   });
   document.addEventListener("keyup", (event) => keys.delete(event.code));
   controls.addEventListener("lock", () => {
@@ -358,6 +402,8 @@ function toggleMapMode(): void {
 }
 
 async function loadMap(refresh: boolean): Promise<void> {
+  roomMode = "city";
+  leaveRoomButton.disabled = true;
   statusLine.textContent = refresh ? "Refreshing EutherNet inventory..." : "Loading EutherNet map...";
   if (refresh) {
     await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
@@ -368,6 +414,8 @@ async function loadMap(refresh: boolean): Promise<void> {
 }
 
 function buildCity(map: ServerMap): void {
+  roomMode = "city";
+  leaveRoomButton.disabled = true;
   cityRoot.clear();
   beamRoot.clear();
   sceneNodes.clear();
@@ -390,6 +438,178 @@ function buildCity(map: ServerMap): void {
     beamRoot.add(createBeam(from.position, to.position, edge));
   }
   showOverview(map);
+}
+
+async function enterFocusedNode(): Promise<void> {
+  if (!focusedNode || !isEutherBooksNode(focusedNode)) return;
+  lastCityPosition.copy(controls.object.position);
+  await enterEutherBooksRoom();
+}
+
+async function enterEutherBooksRoom(): Promise<void> {
+  roomMode = "eutherbooks";
+  viewMode = "walk";
+  navigationEnabled = true;
+  modeButton.textContent = "Map";
+  leaveRoomButton.disabled = false;
+  enterNodeButton.disabled = true;
+  cityRoot.clear();
+  beamRoot.clear();
+  sceneNodes.clear();
+  focusedNode = null;
+  selectedNode = null;
+  statusLine.textContent = "Entering EutherBooks library...";
+
+  const library = await loadEutherBooksRoomData();
+  buildEutherBooksLibrary(library.books, library.jobs, library.health);
+  controls.object.position.set(0, 3.2, 34);
+  camera.lookAt(0, 2.2, 0);
+  showEutherBooksOverview(library.books, library.jobs, library.health, library.source);
+  statusLine.textContent = `EutherBooks Library | ${library.books.length} books | ${library.jobs.length} jobs | ${library.health?.status || library.source}`;
+  hintLine.textContent = "EutherBooks room. WASD moves. Aim at a book and press E. Esc leaves room.";
+}
+
+function leaveRoom(): void {
+  if (roomMode === "city") return;
+  if (serverMap) buildCity(serverMap);
+  controls.object.position.copy(lastCityPosition);
+  controls.object.position.y = 3.2;
+  camera.lookAt(7, 2.2, 0);
+  hintLine.textContent = "Back in EutherVerse. Aim at EutherBooks and press F to enter.";
+}
+
+async function loadEutherBooksRoomData(): Promise<{
+  books: EutherBook[];
+  jobs: EutherBooksJob[];
+  health: EutherBooksHealth | null;
+  source: string;
+}> {
+  try {
+    const [books, jobs, health] = await Promise.all([
+      jsonFetch<EutherBook[]>("/eutherbooks/books"),
+      jsonFetch<EutherBooksJob[]>("/eutherbooks/jobs").catch(() => []),
+      jsonFetch<EutherBooksHealth>("/eutherbooks/health").catch(() => null),
+    ]);
+    return { books, jobs, health, source: "live" };
+  } catch (error) {
+    const service = serverMap?.services.find((item) => item.name.toLowerCase() === "eutherbooks");
+    return {
+      books: [
+        { id: "library-unavailable", title: "EutherBooks API unavailable", author: service?.status || "No live book list" },
+        { id: "upload-zone", title: "Upload Intake", author: "Drop zone planned" },
+        { id: "qwen-librarian", title: "Qwen Librarian", author: "Desk online when chat backend is wired" },
+      ],
+      jobs: [],
+      health: { status: service?.status || "unknown", tts_backend: "fallback" },
+      source: error instanceof Error ? error.message : "fallback",
+    };
+  }
+}
+
+function buildEutherBooksLibrary(books: EutherBook[], jobs: EutherBooksJob[], health: EutherBooksHealth | null): void {
+  const visibleBooks = books.slice(0, 42);
+  const shelfCount = Math.max(1, Math.ceil(visibleBooks.length / 7));
+  for (let shelf = 0; shelf < shelfCount; shelf += 1) {
+    const z = -16 + shelf * 7.5;
+    cityRoot.add(createShelf(new THREE.Vector3(-18, 0, z), 11));
+    cityRoot.add(createShelf(new THREE.Vector3(18, 0, z), 11));
+  }
+
+  visibleBooks.forEach((book, index) => {
+    const row = Math.floor(index / 7);
+    const col = index % 7;
+    const side = index % 2 === 0 ? -1 : 1;
+    const x = side * (12.8 + col * 0.72);
+    const z = -16 + row * 7.5;
+    const y = 1.1 + (col % 3) * 1.35;
+    const job = latestJobForBook(book.id, jobs);
+    const object = createBookObject(book, job);
+    const position = new THREE.Vector3(x, y, z);
+    object.position.copy(position);
+    cityRoot.add(object);
+    sceneNodes.set(`book-${book.id}`, {
+      id: `book-${book.id}`,
+      label: book.title,
+      type: "book",
+      status: bookStatus(book, job),
+      detail: book.author || book.format || "EutherBooks volume",
+      object,
+      position,
+      meta: {
+        bookId: book.id,
+        author: book.author,
+        format: book.format,
+        job: job?.status,
+        audioFiles: job?.audio_files?.length ?? 0,
+        totalAudioFiles: job?.total_audio_files ?? 0,
+        error: job?.error,
+      },
+    });
+  });
+
+  addRoomNode("qwen-desk", "Qwen Librarian", "ai", "planned", "Ask about books, imports, voices and queue status.", new THREE.Vector3(0, 0, -24), 0xb878ff);
+  addRoomNode("upload-intake", "Upload Intake", "service", "planned", "Future drag/drop intake for epub, pdf and audio.", new THREE.Vector3(-8, 0, -24), 0xf0b85a);
+  addRoomNode("listening-booth", "Listening Booth", "service", "configured", "Open a selected book in EutherBooks Player.", new THREE.Vector3(8, 0, -24), 0x39d7d2);
+  addRoomNode(
+    "library-stats",
+    "Library Stats",
+    "storage",
+    health?.status || "unknown",
+    `${books.length} books, ${jobs.length} jobs, ${health?.tts_backend || "unknown"} backend`,
+    new THREE.Vector3(0, 0, 19),
+    0x8aa8ff,
+  );
+}
+
+function createShelf(position: THREE.Vector3, width: number): THREE.Object3D {
+  const group = new THREE.Group();
+  group.position.copy(position);
+  const material = new THREE.MeshStandardMaterial({ color: 0x1a2a31, roughness: 0.72, metalness: 0.18 });
+  for (let level = 0; level < 4; level += 1) {
+    const shelf = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, 1.0), material);
+    shelf.position.set(0, 0.65 + level * 1.35, 0);
+    group.add(shelf);
+  }
+  const sideMaterial = new THREE.MeshStandardMaterial({ color: 0x223944, roughness: 0.68, metalness: 0.2 });
+  [-width / 2, width / 2].forEach((x) => {
+    const side = new THREE.Mesh(new THREE.BoxGeometry(0.2, 5.2, 1.1), sideMaterial);
+    side.position.set(x, 2.7, 0);
+    group.add(side);
+  });
+  return group;
+}
+
+function createBookObject(book: EutherBook, job: EutherBooksJob | null): THREE.Object3D {
+  const color = bookStatusColor(bookStatus(book, job));
+  const group = new THREE.Group();
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.58, 1.18, 0.32),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.18, roughness: 0.5, metalness: 0.1 }),
+  );
+  mesh.userData.nodeId = `book-${book.id}`;
+  group.userData.nodeId = `book-${book.id}`;
+  group.add(mesh);
+  const label = createLabel(book.title, job?.status || book.format || "book", color);
+  label.position.set(0, 1.25, 0);
+  label.scale.set(5.8, 1.82, 1);
+  group.add(label);
+  return group;
+}
+
+function addRoomNode(
+  id: string,
+  label: string,
+  type: string,
+  status: string,
+  detail: string,
+  position: THREE.Vector3,
+  color: number,
+): void {
+  const node: MapNode = { id, label, type, status, detail };
+  const object = createNodeObject(node);
+  object.position.copy(position);
+  cityRoot.add(object);
+  sceneNodes.set(id, { ...node, object, position, meta: { room: "eutherbooks" } });
 }
 
 function layoutNodes(nodes: MapNode[]): Map<string, THREE.Vector3> {
@@ -554,12 +774,13 @@ function updateFocus(): void {
   if (node === focusedNode) return;
   focusedNode = node;
   crosshair.style.opacity = node ? "1" : ".45";
+  enterNodeButton.disabled = !(node && isEutherBooksNode(node) && roomMode === "city");
   if (viewMode === "map") {
     hintLine.textContent = node ? `Map target: ${node.label} | E inspect` : "Map mode. WASD pans the overview. Press M for 3D.";
     return;
   }
   hintLine.textContent = node
-    ? `Target: ${node.label} | E inspect`
+    ? `Target: ${node.label} | E inspect${isEutherBooksNode(node) && roomMode === "city" ? " | F enter" : ""}`
     : navigationEnabled
       ? "WASD moves. Click Enter again for mouse look."
       : "Click Enter to take controls.";
@@ -581,8 +802,31 @@ function showOverview(map: ServerMap): void {
   `;
 }
 
+function showEutherBooksOverview(
+  books: EutherBook[],
+  jobs: EutherBooksJob[],
+  health: EutherBooksHealth | null,
+  source: string,
+): void {
+  const runningJobs = jobs.filter((job) => job.status === "running" || job.status === "queued").length;
+  const failedJobs = jobs.filter((job) => job.status === "failed").length;
+  document.querySelector("#ev-target")!.textContent = "EutherBooks Library";
+  detailPanel.innerHTML = `
+    <div><strong>${books.length}</strong> books on shelves</div>
+    <div><strong>${jobs.length}</strong> known jobs</div>
+    <div><strong>${runningJobs}</strong> queued/running</div>
+    <div><strong>${failedJobs}</strong> failed jobs</div>
+    <div><strong>${escapeHtml(health?.tts_backend || "unknown")}</strong> TTS backend</div>
+    <div><strong>${escapeHtml(source)}</strong> source</div>
+  `;
+}
+
 function showNode(node: SceneNode): void {
   document.querySelector("#ev-target")!.textContent = node.label || node.id;
+  if (roomMode === "eutherbooks") {
+    showRoomNode(node);
+    return;
+  }
   const service = serverMap?.services.find((item) => item.name.toLowerCase() === node.label.toLowerCase());
   const port = serverMap?.listening_services.find((item) => `port-${item.protocol}-${item.port}` === node.id);
   const lines = [
@@ -604,6 +848,59 @@ function showNode(node: SceneNode): void {
     .filter(([, value]) => value)
     .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</div>`)
     .join("");
+}
+
+function showRoomNode(node: SceneNode): void {
+  const lines = [
+    ["ID", node.id],
+    ["Type", node.type],
+    ["Status", node.status || "unknown"],
+    ["Detail", node.detail || ""],
+  ];
+  if (node.id.startsWith("book-")) {
+    lines.push(["Book ID", String(node.meta?.bookId || "")]);
+    lines.push(["Author", String(node.meta?.author || "")]);
+    lines.push(["Format", String(node.meta?.format || "")]);
+    lines.push(["Job", String(node.meta?.job || "no recent job")]);
+    lines.push(["Audio", `${node.meta?.audioFiles || 0}/${node.meta?.totalAudioFiles || 0}`]);
+    lines.push(["Error", String(node.meta?.error || "")]);
+  }
+  if (node.id === "qwen-desk") {
+    lines.push(["Next", "Wire local Qwen chat with selected book context"]);
+  }
+  if (node.id === "upload-intake") {
+    lines.push(["Next", "Expose confirmed EutherBooks upload action here"]);
+  }
+  detailPanel.innerHTML = lines
+    .filter(([, value]) => value)
+    .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
+    .join("");
+}
+
+function isEutherBooksNode(node: SceneNode): boolean {
+  const value = `${node.id} ${node.label} ${node.detail || ""}`.toLowerCase();
+  return value.includes("eutherbooks");
+}
+
+function latestJobForBook(bookId: string, jobs: EutherBooksJob[]): EutherBooksJob | null {
+  return jobs.find((job) => job.book_id === bookId) || null;
+}
+
+function bookStatus(book: EutherBook, job: EutherBooksJob | null): string {
+  if (!job) return book.format || "present";
+  if (job.status === "done") {
+    const ready = job.audio_files?.length || 0;
+    const total = job.total_audio_files || ready;
+    return ready >= total ? "running" : "configured";
+  }
+  return job.status || "present";
+}
+
+function bookStatusColor(status: string): number {
+  if (statusColors[status]) return statusColors[status];
+  if (status.includes("epub")) return 0x39d7d2;
+  if (status.includes("pdf")) return 0xf0b85a;
+  return 0x8aa8ff;
 }
 
 function nodeIdForObject(object: THREE.Object3D): string | null {
