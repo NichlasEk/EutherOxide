@@ -465,6 +465,17 @@ async function pollJobs(): Promise<void> {
   try {
     if (currentJob) {
       currentJob = await api.job(currentJob.id);
+      if (!currentJobMatchesSelection(currentJob)) {
+        setPlaybackEvent("Discarded stale job for another chapter");
+        allJobs = await api.jobs();
+        currentJob = null;
+        session = null;
+        clearLookaheadQueue();
+        attachExistingJob(allJobs);
+        render();
+        schedulePoll(500);
+        return;
+      }
       if (await recoverFailedCurrentJob("poll-current")) {
         render();
         schedulePoll(1000);
@@ -1500,6 +1511,18 @@ function jobPlaybackKey(job: Job): string {
     job.voice,
   );
 }
+
+
+function currentJobMatchesSelection(job: Job | null): boolean {
+  return Boolean(
+    job
+    && job.book_id === selectedBookId
+    && job.chapter_indexes.includes(selectedChapterIndex)
+    && job.voice === settings.voiceId
+    && job.tts_options?.model_backend === settings.modelBackend,
+  );
+}
+
 
 function sessionMatchesCurrentSelection(): boolean {
   return Boolean(
