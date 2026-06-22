@@ -227,7 +227,7 @@ function installShell(): void {
             <button id="ev-custodian-leave" type="button">Leave</button>
           </div>
           <div id="ev-custodian-context" class="ev-dialog-context"></div>
-          <div id="ev-custodian-answer" class="ev-dialog-answer"></div>
+          <div id="ev-custodian-answer" class="ev-dialog-answer" tabindex="0"></div>
           <form id="ev-custodian-form" class="ev-dialog-form">
             <input id="ev-custodian-question" type="text" maxlength="420" placeholder="Ask about status, alerts, ports, units or actions" autocomplete="off" />
             <button type="submit">Ask</button>
@@ -269,12 +269,12 @@ function installShell(): void {
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
     #ev-custodian-overlay { position: fixed; inset: 0; z-index: 5; display: grid; align-items: end; pointer-events: auto; background: linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.52)); padding: 24px; box-sizing: border-box; }
-    .ev-dialog { width: min(980px, calc(100vw - 48px)); margin: 0 auto; border: 1px solid rgba(103,225,218,.36); border-radius: 8px; background: rgba(4,9,15,.78); backdrop-filter: blur(18px); box-shadow: 0 24px 120px rgba(0,0,0,.62); padding: 16px; }
+    .ev-dialog { width: min(980px, calc(100vw - 48px)); max-height: min(72vh, 720px); margin: 0 auto; border: 1px solid rgba(103,225,218,.36); border-radius: 8px; background: rgba(4,9,15,.78); backdrop-filter: blur(18px); box-shadow: 0 24px 120px rgba(0,0,0,.62); padding: 16px; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; box-sizing: border-box; }
     .ev-dialog-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(110,142,160,.24); padding-bottom: 12px; }
     .ev-dialog h2 { margin: 3px 0 0; font-size: 22px; }
     .ev-dialog-head button, .ev-dialog-form button { border: 1px solid rgba(103,225,218,.42); border-radius: 6px; background: rgba(10,22,30,.86); color: #effcff; padding: 9px 13px; font: inherit; cursor: pointer; }
     .ev-dialog-context { color: #8fded9; font-size: 13px; line-height: 1.4; margin: 12px 0; overflow-wrap: anywhere; }
-    .ev-dialog-answer { min-height: 96px; max-height: min(42vh, 340px); overflow: auto; border: 1px solid rgba(103,225,218,.2); border-radius: 6px; background: rgba(1,5,9,.54); color: #d7e6ef; padding: 12px; line-height: 1.45; white-space: pre-wrap; }
+    .ev-dialog-answer { min-height: 96px; overflow: auto; overscroll-behavior: contain; scrollbar-color: rgba(103,225,218,.62) rgba(1,5,9,.42); border: 1px solid rgba(103,225,218,.2); border-radius: 6px; background: rgba(1,5,9,.54); color: #d7e6ef; padding: 12px; line-height: 1.45; white-space: pre-wrap; }
     .ev-dialog-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 12px; }
     .ev-dialog-form input { min-width: 0; border: 1px solid rgba(103,225,218,.34); border-radius: 6px; background: rgba(3,8,12,.82); color: #effcff; padding: 11px 12px; font: inherit; box-sizing: border-box; }
     .ev-hud { position: fixed; left: 14px; right: 14px; bottom: 12px; z-index: 2; display: flex; justify-content: space-between; gap: 12px; color: #b7c8d4; font-size: 13px; pointer-events: none; }
@@ -291,7 +291,7 @@ function installShell(): void {
       .ev-topbar button, .ev-topbar a { padding: 7px 10px; white-space: nowrap; }
       .ev-topbar h1 { font-size: 17px; }
       #ev-custodian-overlay { padding: 10px; align-items: stretch; }
-      .ev-dialog { width: auto; min-height: 58vh; display: grid; grid-template-rows: auto auto 1fr auto; padding: 12px; }
+      .ev-dialog { width: auto; min-height: 58vh; max-height: calc(100vh - 20px); padding: 12px; }
       .ev-dialog-form { grid-template-columns: 1fr; }
       .ev-hud { display: none; }
     }
@@ -391,6 +391,15 @@ function bindInput(): void {
     if (controls.isLocked) controls.unlock();
   });
   custodianQuestion.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+  });
+  custodianAnswer.addEventListener("wheel", (event) => {
+    event.stopPropagation();
+  }, { passive: true });
+  custodianAnswer.addEventListener("touchmove", (event) => {
+    event.stopPropagation();
+  }, { passive: true });
+  custodianAnswer.addEventListener("keydown", (event) => {
     event.stopPropagation();
   });
   document.addEventListener("keydown", (event) => {
