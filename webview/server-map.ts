@@ -333,7 +333,7 @@ function bindInput(): void {
   restartButton.addEventListener("click", () => restartSelectedService().catch(showError));
   document.addEventListener("keydown", (event) => {
     if (event.repeat && event.code !== "KeyE") return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "KeyE", "KeyF", "KeyM", "KeyR", "Escape"].includes(event.code)) {
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "KeyZ", "ShiftLeft", "ShiftRight", "KeyE", "KeyF", "KeyM", "KeyR", "Escape"].includes(event.code)) {
       event.preventDefault();
     }
     keys.add(event.code);
@@ -350,7 +350,7 @@ function bindInput(): void {
   });
   controls.addEventListener("unlock", () => {
     if (viewMode === "walk" && navigationEnabled) {
-      hintLine.textContent = "WASD moves. Click Enter again for mouse look.";
+      hintLine.textContent = "WASD moves. Space/Z changes depth. Click Enter again for mouse look.";
     } else if (viewMode === "walk") {
       hintLine.textContent = "Click Enter to take controls.";
     }
@@ -362,10 +362,10 @@ function enterWalkMode(): void {
   navigationEnabled = true;
   modeButton.textContent = "Map";
   crosshair.style.display = "";
-  controls.object.position.y = 3.2;
+  controls.object.position.y = Math.max(3.2, controls.object.position.y);
   renderer.domElement.focus();
   controls.lock();
-  hintLine.textContent = "WASD moves. Mouse look starts when the browser grants pointer lock.";
+  hintLine.textContent = "WASD moves. Space/Z changes depth. Mouse look starts when the browser grants pointer lock.";
 }
 
 function handleWheelZoom(event: WheelEvent): void {
@@ -385,8 +385,8 @@ function handleWheelZoom(event: WheelEvent): void {
   if (forward.lengthSq() === 0) return;
   forward.normalize();
   controls.object.position.addScaledVector(forward, -amount);
-  controls.object.position.y = 3.2;
-  hintLine.textContent = "Scroll zooms. WASD moves. Click Enter for mouse look.";
+  controls.object.position.y = THREE.MathUtils.clamp(controls.object.position.y, 2.2, 118);
+  hintLine.textContent = "Scroll zooms. WASD moves. Space/Z changes depth.";
 }
 
 function toggleMapMode(): void {
@@ -734,6 +734,7 @@ function animate(): void {
   const delta = Math.min(clock.getDelta(), 0.05);
   updateMovement(delta);
   updateFocus();
+  updateLabelBillboards();
   const time = performance.now() * 0.001;
   beamRoot.children.forEach((child) => {
     const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
@@ -749,16 +750,28 @@ function updateMovement(delta: number): void {
     return;
   }
   velocity.x -= velocity.x * 9.0 * delta;
+  velocity.y -= velocity.y * 9.0 * delta;
   velocity.z -= velocity.z * 9.0 * delta;
   direction.z = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
   direction.x = Number(keys.has("KeyD")) - Number(keys.has("KeyA"));
   direction.normalize();
   const speed = keys.has("ShiftLeft") ? 74 : 42;
+  const verticalSpeed = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 52 : 30;
   if (keys.has("KeyW") || keys.has("KeyS")) velocity.z -= direction.z * speed * delta;
   if (keys.has("KeyA") || keys.has("KeyD")) velocity.x -= direction.x * speed * delta;
+  if (keys.has("Space")) velocity.y += verticalSpeed * delta;
+  if (keys.has("KeyZ")) velocity.y -= verticalSpeed * delta;
   controls.moveRight(-velocity.x * delta);
   controls.moveForward(-velocity.z * delta);
-  controls.object.position.y = 3.2;
+  controls.object.position.y = THREE.MathUtils.clamp(controls.object.position.y + velocity.y * delta, 2.2, roomMode === "eutherbooks" ? 38 : 118);
+}
+
+function updateLabelBillboards(): void {
+  cityRoot.traverse((object) => {
+    if ((object as THREE.Sprite).isSprite) {
+      object.quaternion.copy(camera.quaternion);
+    }
+  });
 }
 
 function updateMapMovement(delta: number): void {
@@ -787,9 +800,9 @@ function updateFocus(): void {
     return;
   }
   hintLine.textContent = node
-    ? `Target: ${node.label} | E inspect${isEutherBooksNode(node) && roomMode === "city" ? " | F enter" : ""}`
+      ? `Target: ${node.label} | E inspect${isEutherBooksNode(node) && roomMode === "city" ? " | F enter" : ""}`
     : navigationEnabled
-      ? "WASD moves. Click Enter again for mouse look."
+      ? "WASD moves. Space/Z changes depth. Click Enter again for mouse look."
       : "Click Enter to take controls.";
 }
 
@@ -949,6 +962,8 @@ function updateControlsGuide(node: SceneNode | null): void {
     ["WASD", viewMode === "map" ? "Pan overview" : "Move"],
     ["Mouse", viewMode === "map" ? "Disabled in map" : "Look"],
     ["Scroll", viewMode === "map" ? "Zoom overview" : "Move closer/farther"],
+    ["Space", viewMode === "map" ? "Not used" : "Ascend"],
+    ["Z", viewMode === "map" ? "Not used" : "Descend"],
     ["E", "Inspect target"],
     ["M", viewMode === "map" ? "Return to 3D" : "Map mode"],
     ["R", "Refresh inventory"],
@@ -959,13 +974,13 @@ function updateControlsGuide(node: SceneNode | null): void {
     rows.push(["Button", "Leave Room"]);
     objective.textContent = node
       ? eutherBooksObjectiveFor(node)
-      : "You are inside EutherBooks. Aim at a book, desk, booth or stats node and press E to inspect it. Use Leave Room or Esc to return to the server city.";
+      : "You are inside EutherBooks. Move like an inspection diver: WASD across the room, Space/Z up and down, E to inspect shelves and stations. Use Leave Room or Esc to return.";
   } else {
     rows.push(["F", "Enter node when available"]);
     rows.push(["Esc", "Release cursor"]);
     objective.textContent = node
       ? cityObjectiveFor(node)
-      : "Click Enter for mouse look. Walk to EutherBooks, aim at the green service block, then press F or click Enter Node to open the library room.";
+      : "Click Enter for mouse look. Move like an inspection diver around the server city: WASD across, Space/Z up and down. Aim at EutherBooks, then press F or Enter Node.";
   }
 
   controlsList.innerHTML = rows
