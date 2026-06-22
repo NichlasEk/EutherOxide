@@ -410,6 +410,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.view.KeyEvent
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -1239,6 +1240,23 @@ class NativeAudioService : Service() {
                 override fun onSeekTo(pos: Long) {
                     handleSeek(Intent(this@NativeAudioService, NativeAudioService::class.java).putExtra(EXTRA_INDEX, index).putExtra(EXTRA_POSITION_MS, pos))
                 }
+
+                override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                    val event = mediaButtonIntent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return super.onMediaButtonEvent(mediaButtonIntent)
+                    if (event.action != KeyEvent.ACTION_UP) {
+                        return true
+                    }
+                    when (event.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> handleResume()
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> handlePause()
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> if (snapshot().playing) handlePause() else handleResume()
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> handleNext()
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> handlePrevious()
+                        KeyEvent.KEYCODE_MEDIA_STOP -> handleStop()
+                        else -> return super.onMediaButtonEvent(mediaButtonIntent)
+                    }
+                    return true
+                }
             })
             isActive = true
         }
@@ -1299,6 +1317,7 @@ class NativeAudioService : Service() {
                 .setActions(
                     PlaybackState.ACTION_PLAY or
                         PlaybackState.ACTION_PAUSE or
+                        PlaybackState.ACTION_PLAY_PAUSE or
                         PlaybackState.ACTION_SKIP_TO_PREVIOUS or
                         PlaybackState.ACTION_SKIP_TO_NEXT or
                         PlaybackState.ACTION_STOP or
