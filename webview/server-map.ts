@@ -186,7 +186,8 @@ function installShell(): void {
         </section>
         <section>
           <p class="eyebrow">Controls</p>
-          <dl>
+          <div id="ev-objective" class="ev-objective">Click Enter, walk with WASD, aim at a node and press E to inspect it.</div>
+          <dl id="ev-controls-list">
             <div><dt>WASD</dt><dd>Move</dd></div>
             <div><dt>Mouse</dt><dd>Look</dd></div>
             <div><dt>E</dt><dd>Inspect</dd></div>
@@ -230,6 +231,7 @@ function installShell(): void {
     #ev-panel section:last-child { border-bottom: 0; }
     #ev-detail { display: grid; gap: 7px; color: #b7c8d4; font-size: 13px; overflow-wrap: anywhere; }
     #ev-detail strong { color: #fff; }
+    .ev-objective { margin-top: 8px; border: 1px solid rgba(244,207,120,.28); border-radius: 6px; background: rgba(244,207,120,.08); color: #f3e4b6; padding: 9px 10px; font-size: 13px; line-height: 1.35; }
     #ev-panel dl { display: grid; gap: 7px; margin: 8px 0 0; }
     #ev-panel dl div { display: grid; grid-template-columns: 64px 1fr; gap: 8px; color: #b7c8d4; font-size: 13px; }
     #ev-panel dt { color: #f4cf78; font-weight: 900; }
@@ -779,6 +781,7 @@ function updateFocus(): void {
   crosshair.style.opacity = node ? "1" : ".45";
   enterNodeButton.disabled = !(node && isEutherBooksNode(node) && roomMode === "city");
   restartButton.disabled = !(node && restartCommandForNode(node));
+  updateControlsGuide(node);
   if (viewMode === "map") {
     hintLine.textContent = node ? `Map target: ${node.label} | E inspect` : "Map mode. WASD pans the overview. Press M for 3D.";
     return;
@@ -799,6 +802,7 @@ function inspectFocusedNode(): void {
 
 function showOverview(map: ServerMap): void {
   restartButton.disabled = true;
+  updateControlsGuide(null);
   document.querySelector("#ev-target")!.textContent = "EutherVerse";
   detailPanel.innerHTML = `
     <div><strong>${map.nodes.length}</strong> nodes</div>
@@ -816,6 +820,7 @@ function showEutherBooksOverview(
 ): void {
   const runningJobs = jobs.filter((job) => job.status === "running" || job.status === "queued").length;
   const failedJobs = jobs.filter((job) => job.status === "failed").length;
+  updateControlsGuide(null);
   document.querySelector("#ev-target")!.textContent = "EutherBooks Library";
   detailPanel.innerHTML = `
     <div><strong>${books.length}</strong> books on shelves</div>
@@ -828,6 +833,7 @@ function showEutherBooksOverview(
 }
 
 function showNode(node: SceneNode): void {
+  updateControlsGuide(node);
   document.querySelector("#ev-target")!.textContent = node.label || node.id;
   if (roomMode === "eutherbooks") {
     showRoomNode(node);
@@ -907,6 +913,7 @@ function restartCommandForService(service: ServiceReport): string | null {
 }
 
 function showRoomNode(node: SceneNode): void {
+  updateControlsGuide(node);
   const lines = [
     ["ID", node.id],
     ["Type", node.type],
@@ -931,6 +938,66 @@ function showRoomNode(node: SceneNode): void {
     .filter(([, value]) => value)
     .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
     .join("");
+}
+
+function updateControlsGuide(node: SceneNode | null): void {
+  const objective = document.querySelector<HTMLElement>("#ev-objective");
+  const controlsList = document.querySelector<HTMLElement>("#ev-controls-list");
+  if (!objective || !controlsList) return;
+
+  const rows: Array<[string, string]> = [
+    ["WASD", viewMode === "map" ? "Pan overview" : "Move"],
+    ["Mouse", viewMode === "map" ? "Disabled in map" : "Look"],
+    ["Scroll", viewMode === "map" ? "Zoom overview" : "Move closer/farther"],
+    ["E", "Inspect target"],
+    ["M", viewMode === "map" ? "Return to 3D" : "Map mode"],
+    ["R", "Refresh inventory"],
+  ];
+
+  if (roomMode === "eutherbooks") {
+    rows.push(["Esc", "Leave library"]);
+    rows.push(["Button", "Leave Room"]);
+    objective.textContent = node
+      ? eutherBooksObjectiveFor(node)
+      : "You are inside EutherBooks. Aim at a book, desk, booth or stats node and press E to inspect it. Use Leave Room or Esc to return to the server city.";
+  } else {
+    rows.push(["F", "Enter node when available"]);
+    rows.push(["Esc", "Release cursor"]);
+    objective.textContent = node
+      ? cityObjectiveFor(node)
+      : "Click Enter for mouse look. Walk to EutherBooks, aim at the green service block, then press F or click Enter Node to open the library room.";
+  }
+
+  controlsList.innerHTML = rows
+    .map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+    .join("");
+}
+
+function cityObjectiveFor(node: SceneNode): string {
+  if (isEutherBooksNode(node)) {
+    return "EutherBooks has an explorable room. Press F or click Enter Node to go into the library. Press E first if you want service details and restart controls.";
+  }
+  const restart = restartCommandForNode(node) ? " Restart is available after inspection." : "";
+  return `Targeting ${node.label}. Press E to inspect status, ports, units and repo path.${restart}`;
+}
+
+function eutherBooksObjectiveFor(node: SceneNode): string {
+  if (node.id.startsWith("book-")) {
+    return "Book target. Press E to inspect metadata, conversion job status and available audio files.";
+  }
+  if (node.id === "qwen-desk") {
+    return "Qwen Librarian desk. Press E to inspect the planned local chat station for book questions and library operations.";
+  }
+  if (node.id === "upload-intake") {
+    return "Upload Intake. Press E to inspect the planned station for adding new books.";
+  }
+  if (node.id === "listening-booth") {
+    return "Listening Booth. Press E to inspect the player station for opening and listening to processed books.";
+  }
+  if (node.id === "library-stats") {
+    return "Library Stats. Press E to inspect book counts, queue state and backend health.";
+  }
+  return `Targeting ${node.label}. Press E to inspect this library object.`;
 }
 
 function isEutherBooksNode(node: SceneNode): boolean {
