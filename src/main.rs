@@ -8449,6 +8449,7 @@ fn send_server_map_page(stream: &mut TcpStream) -> io::Result<()> {
 
     loadAuth().then(loadMap).catch(showError);
   </script>
+  <script type="module" src="/assets/server-map.js"></script>
 </body>
 </html>"###;
     send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())

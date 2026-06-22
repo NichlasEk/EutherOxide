@@ -25,5 +25,15 @@ export default defineConfig({
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        serverMap: "webview/server-map.ts",
+      },
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.name === "serverMap" ? "assets/server-map.js" : "assets/[name]-[hash].js",
+      },
+    },
   },
 });
