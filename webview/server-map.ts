@@ -145,6 +145,7 @@ let crosshair: HTMLElement;
 let modeButton: HTMLButtonElement;
 let enterNodeButton: HTMLButtonElement;
 let leaveRoomButton: HTMLButtonElement;
+let restartButton: HTMLButtonElement;
 
 bootstrap().catch((error) => {
   document.body.innerHTML = `<main class="eutherverse-fail"><h1>EutherVerse kunde inte starta</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
@@ -201,7 +202,7 @@ function installShell(): void {
           <button id="ev-action-leave-room" type="button" disabled>Leave Room</button>
           <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
-          <small>Write actions are locked until EutherNet exposes an explicit restart allowlist.</small>
+          <small>Restart uses EutherNet's configured command allowlist. System services may need sudoers for non-interactive restart.</small>
         </section>
       </aside>
       <footer class="ev-hud">
@@ -260,6 +261,7 @@ function installShell(): void {
   modeButton = document.querySelector<HTMLButtonElement>("#ev-map-mode")!;
   enterNodeButton = document.querySelector<HTMLButtonElement>("#ev-action-enter-node")!;
   leaveRoomButton = document.querySelector<HTMLButtonElement>("#ev-action-leave-room")!;
+  restartButton = document.querySelector<HTMLButtonElement>("#ev-action-restart")!;
 }
 
 async function loadAuth(): Promise<void> {
@@ -326,6 +328,7 @@ function bindInput(): void {
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
   enterNodeButton.addEventListener("click", () => enterFocusedNode().catch(showError));
   leaveRoomButton.addEventListener("click", leaveRoom);
+  restartButton.addEventListener("click", () => restartSelectedService().catch(showError));
   document.addEventListener("keydown", (event) => {
     if (event.repeat && event.code !== "KeyE") return;
     if (["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "KeyE", "KeyF", "KeyM", "KeyR", "Escape"].includes(event.code)) {
@@ -775,6 +778,7 @@ function updateFocus(): void {
   focusedNode = node;
   crosshair.style.opacity = node ? "1" : ".45";
   enterNodeButton.disabled = !(node && isEutherBooksNode(node) && roomMode === "city");
+  restartButton.disabled = !(node && restartCommandForNode(node));
   if (viewMode === "map") {
     hintLine.textContent = node ? `Map target: ${node.label} | E inspect` : "Map mode. WASD pans the overview. Press M for 3D.";
     return;
@@ -790,9 +794,11 @@ function inspectFocusedNode(): void {
   if (!focusedNode) return;
   selectedNode = focusedNode;
   showNode(selectedNode);
+  restartButton.disabled = !restartCommandForNode(selectedNode);
 }
 
 function showOverview(map: ServerMap): void {
+  restartButton.disabled = true;
   document.querySelector("#ev-target")!.textContent = "EutherVerse";
   detailPanel.innerHTML = `
     <div><strong>${map.nodes.length}</strong> nodes</div>
@@ -839,6 +845,7 @@ function showNode(node: SceneNode): void {
     lines.push(["Units", service.units.join(", ")]);
     lines.push(["Ports", service.ports.join(", ")]);
     lines.push(["Repo", service.repo_path]);
+    lines.push(["Restart", restartCommandForService(service) ? "available" : "not allowlisted"]);
   }
   if (port) {
     lines.push(["Port", `${port.protocol}:${port.port}`]);
@@ -848,6 +855,55 @@ function showNode(node: SceneNode): void {
     .filter(([, value]) => value)
     .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</div>`)
     .join("");
+}
+
+async function restartSelectedService(): Promise<void> {
+  if (!selectedNode) return;
+  const command = restartCommandForNode(selectedNode);
+  if (!command) {
+    statusLine.textContent = "Restart is not allowlisted for this node.";
+    return;
+  }
+  const label = selectedNode.label || selectedNode.id;
+  const ok = window.confirm(`Restart ${label}?`);
+  if (!ok) return;
+  restartButton.disabled = true;
+  statusLine.textContent = `Restarting ${label}...`;
+  const result = await jsonFetch<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>("/api/admin/euthernet/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: command }),
+  });
+  if (!result.ok) {
+    throw new Error(result.error || result.stderr || "restart failed");
+  }
+  statusLine.textContent = `Restarted ${label}: ${(result.stdout || "ok").trim()}`;
+  await new Promise((resolve) => window.setTimeout(resolve, 900));
+  await loadMap(false);
+}
+
+function restartCommandForNode(node: SceneNode): string | null {
+  if (roomMode !== "city") return null;
+  const service = serviceForNode(node);
+  return service ? restartCommandForService(service) : null;
+}
+
+function serviceForNode(node: SceneNode): ServiceReport | null {
+  const nodeLabel = node.label.toLowerCase();
+  const nodeId = node.id.toLowerCase();
+  return serverMap?.services.find((service) => {
+    const serviceName = service.name.toLowerCase();
+    return serviceName === nodeLabel || serviceName === nodeId || service.units.some((unit) => node.detail?.includes(unit));
+  }) || null;
+}
+
+function restartCommandForService(service: ServiceReport): string | null {
+  const units = service.units.filter((unit) => unit.endsWith(".service"));
+  if (units.includes("eutherhost.service")) return "restart-eutherhost";
+  if (units.includes("caddy.service")) return "restart-caddy";
+  if (units.includes("eutherbooks.service")) return "restart-eutherbooks";
+  if (units.includes("eutherpunkd.service")) return "restart-eutherpunkd";
+  return null;
 }
 
 function showRoomNode(node: SceneNode): void {

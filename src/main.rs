@@ -7652,6 +7652,7 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
         "/backup-manifest",
         "/restore-drill",
         "/refresh",
+        "/run",
     ];
     let endpoint = relative.split('?').next().unwrap_or(relative);
     if !allowed.contains(&endpoint) {
