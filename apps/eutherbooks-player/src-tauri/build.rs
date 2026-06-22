@@ -14,6 +14,8 @@ fn main() {
                     "status",
                     "set_wake_lock",
                     "setWakeLock",
+                    "request_ignore_battery_optimizations",
+                    "requestIgnoreBatteryOptimizations",
                     "ping",
                 ])
                 .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands),

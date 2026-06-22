@@ -102,6 +102,8 @@ let nativeServiceQueuePrefix: string[] = [];
 let nativeRegressionResyncInFlight = false;
 let lastNativeSeekCommandAt = 0;
 let nativePlayRequestUntil = 0;
+let nativePlayConfirmTimer: ReturnType<typeof window.setTimeout> | null = null;
+let nativePlayConfirmToken = 0;
 let lastAutoBookmarkAt = 0;
 let lastBugReportKey = "";
 let lastWatchdogPosition = -1;
@@ -876,15 +878,19 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     userPausedPlayback = false;
   }
   audio.pause();
+  const startPositionSeconds = session.currentSeconds;
+  const nativeTitle = book?.title ?? "EutherBooks";
+  const nativeSubtitle = chapter ? chapterLabel(chapter) : "Audiobook";
   const state = await playNativeAudioQueue(
     queue,
     startIndex,
-    session.currentSeconds,
-    book?.title ?? "EutherBooks",
-    chapter ? chapterLabel(chapter) : "Audiobook",
+    startPositionSeconds,
+    nativeTitle,
+    nativeSubtitle,
     nativeQueueManifest(),
   );
   nativePlayRequestUntil = Date.now() + 20_000;
+  scheduleNativePlayConfirmation(mode, queue, startIndex, startPositionSeconds, nativeTitle, nativeSubtitle);
   nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
   applyNativeAudioState(state);
   await maybeReportNativeAudioIssue("native-play-request");
@@ -906,6 +912,57 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   startPlaybackWatchdog();
   updateAppMediaSession();
   render();
+}
+
+
+function clearNativePlayConfirmation(): void {
+  nativePlayConfirmToken += 1;
+  if (nativePlayConfirmTimer) {
+    window.clearTimeout(nativePlayConfirmTimer);
+    nativePlayConfirmTimer = null;
+  }
+}
+
+function scheduleNativePlayConfirmation(
+  mode: "manual" | "auto",
+  queue: string[],
+  startIndex: number,
+  positionSeconds: number,
+  title: string,
+  subtitle: string,
+): void {
+  clearNativePlayConfirmation();
+  const token = nativePlayConfirmToken;
+  const queuedUrls = [...queue];
+  nativePlayConfirmTimer = window.setTimeout(() => {
+    nativePlayConfirmTimer = null;
+    void confirmNativePlayStarted(token, mode, queuedUrls, startIndex, positionSeconds, title, subtitle);
+  }, 4_000);
+}
+
+async function confirmNativePlayStarted(
+  token: number,
+  mode: "manual" | "auto",
+  queue: string[],
+  startIndex: number,
+  positionSeconds: number,
+  title: string,
+  subtitle: string,
+): Promise<void> {
+  if (token !== nativePlayConfirmToken || !nativePlaybackActive || isPlaybackPaused()) {
+    return;
+  }
+  await refreshNativePlayback();
+  const state = nativeAudioState();
+  if (token !== nativePlayConfirmToken || !nativePlaybackActive || state.playing || state.ended || !isNativePlayRequestPending(state)) {
+    return;
+  }
+  const retryPosition = state.positionSeconds > 0 ? state.positionSeconds : positionSeconds;
+  const retryState = await playNativeAudioQueue(queue, startIndex, retryPosition, title, subtitle, nativeQueueManifest());
+  nativePlayRequestUntil = Date.now() + 10_000;
+  applyNativeAudioState(retryState);
+  setPlaybackEvent(mode === "auto" ? "Native auto-play confirmed" : "Native manual play confirmed");
+  await reportPlaybackTelemetry(mode === "auto" ? "native-auto-play-confirm" : "native-manual-play-confirm", true);
 }
 
 function maybeAdvanceNearPartEnd(): void {
@@ -1373,16 +1430,18 @@ async function recoverStalledPlayback(position: number): Promise<void> {
   try {
     const jobs = await api.jobs();
     allJobs = jobs;
-    if (currentJob) {
-      const freshCurrent = jobs.find((job) => job.id === currentJob?.id) ?? matchingJobForChapter(jobs, selectedChapterIndex);
-      if (freshCurrent) {
-        currentJob = freshCurrent;
-        if (isPlayableJob(freshCurrent)) {
-          const refreshedSession = sessionFromJob(freshCurrent, session);
-          session = refreshedSession;
-          setSessionPartPosition(refreshedSession.currentIndex, refreshedSession.currentSeconds);
-          warmAudioCacheForSession();
-        }
+    const matchingCurrent = matchingJobForChapter(jobs, selectedChapterIndex);
+    const sameChapterCurrent = currentJob?.chapter_indexes.includes(selectedChapterIndex)
+      ? jobs.find((job) => job.id === currentJob?.id)
+      : null;
+    const freshCurrent = matchingCurrent ?? sameChapterCurrent;
+    if (freshCurrent) {
+      currentJob = freshCurrent;
+      if (isPlayableJob(freshCurrent)) {
+        const refreshedSession = sessionFromJob(freshCurrent, session);
+        session = refreshedSession;
+        setSessionPartPosition(refreshedSession.currentIndex, refreshedSession.currentSeconds);
+        warmAudioCacheForSession();
       }
     }
     attachExistingNextJob(jobs);
