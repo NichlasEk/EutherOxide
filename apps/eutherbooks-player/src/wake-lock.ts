@@ -27,6 +27,25 @@ export async function setPlaybackWakeLock(enabled: boolean): Promise<void> {
   }
 }
 
+
+export async function requestBatteryOptimizationExemption(): Promise<string> {
+  if (!window.__TAURI_INTERNALS__) {
+    lastEvent = "Battery settings unavailable";
+    return lastEvent;
+  }
+  const pluginErrors: string[] = [];
+  for (const command of ["request_ignore_battery_optimizations", "requestIgnoreBatteryOptimizations"]) {
+    try {
+      lastEvent = extractState(await invoke<unknown>("plugin:eutherbooks-native-audio|" + command, {}));
+      return lastEvent;
+    } catch (err) {
+      pluginErrors.push(`${command}: ${errorMessage(err)}`);
+    }
+  }
+  lastEvent = `Battery settings failed: ${pluginErrors.join(" | ")}`;
+  return lastEvent;
+}
+
 function extractState(value: unknown): string {
   if (typeof value === "string") {
     return value;

@@ -36,7 +36,7 @@ import {
 } from "./storage";
 import { AppSettings, Book, Bookmark, Chapter, Health, HostUserPreferences, Job, PlaybackSession, ServerRouteConfig, Voice } from "./types";
 import { appBuild, appVersion } from "./version";
-import { setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
+import { requestBatteryOptimizationExemption, setPlaybackWakeLock, wakeLockStatus } from "./wake-lock";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const minAutoNextFreeBytes = 512 * 1024 * 1024;
@@ -2526,6 +2526,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         </label>
         <button id="login" type="button">Login</button>
         <button id="reload" type="button">Retry</button>
+        <button id="battery-unrestricted" type="button">Unrestricted battery</button>
         <small>Server, user, model and voice sync to your server profile. Password stays local on this device.</small>
       </section>
       ` : ""}
@@ -2682,6 +2683,12 @@ function bindUi(): void {
   document.querySelector<HTMLButtonElement>("#settings-toggle")?.addEventListener("click", () => toggleSettingsPanel());
   document.querySelector<HTMLButtonElement>("#login")?.addEventListener("click", () => void loginToServer());
   document.querySelector<HTMLButtonElement>("#reload")?.addEventListener("click", () => void refreshAll());
+  document.querySelector<HTMLButtonElement>("#battery-unrestricted")?.addEventListener("click", () => {
+    void requestBatteryOptimizationExemption().then((status) => {
+      setPlaybackEvent(status);
+      render();
+    });
+  });
   document.querySelector<HTMLInputElement>("#server-url")?.addEventListener("change", (event) => {
     const value = (event.currentTarget as HTMLInputElement).value;
     const serverUrl = toEutherBooksUrl(value);

@@ -99,6 +99,7 @@ if [[ -f "$ANDROID_MANIFEST" ]]; then
   ensure_permission "FOREGROUND_SERVICE"
   ensure_permission "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
   ensure_permission "POST_NOTIFICATIONS"
+  ensure_permission "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
   if ! grep -q 'NativeAudioService' "$ANDROID_MANIFEST"; then
     echo "[eutherbooks-player-release-apk] registering native audio service"
     perl -0pi -e 's#(\s*</application>)#        <service\n            android:name=".NativeAudioService"\n            android:exported="false"\n            android:foregroundServiceType="mediaPlayback" />\n$1#' "$ANDROID_MANIFEST"
@@ -187,7 +188,10 @@ package com.nichlasek.eutherbooksplayer
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.PowerManager
+import android.provider.Settings
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -343,6 +347,36 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     @Command
     fun setWakeLock(invoke: Invoke) {
         set_wake_lock(invoke)
+    }
+
+
+    @Command
+    fun request_ignore_battery_optimizations(invoke: Invoke) {
+        try {
+            val powerManager = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (powerManager.isIgnoringBatteryOptimizations(activity.packageName)) {
+                resolveState(invoke, "battery unrestricted already enabled")
+                return
+            }
+            val packageUri = Uri.parse("package:" + activity.packageName)
+            val requestIntent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = packageUri
+            }
+            try {
+                activity.startActivity(requestIntent)
+                resolveState(invoke, "battery unrestricted request opened")
+            } catch (_err: Exception) {
+                activity.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                resolveState(invoke, "battery optimization settings opened")
+            }
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun requestIgnoreBatteryOptimizations(invoke: Invoke) {
+        request_ignore_battery_optimizations(invoke)
     }
 
     private fun resolveState(invoke: Invoke, state: String) {
