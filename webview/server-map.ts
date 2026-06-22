@@ -115,6 +115,9 @@ const typeHeights: Record<string, number> = {
   storage: 3.8,
 };
 
+const alertRed = 0xff315a;
+const alertDark = 0x4b0710;
+
 let csrfToken = "";
 let serverMap: ServerMap | null = null;
 let selectedNode: SceneNode | null = null;
@@ -441,7 +444,7 @@ function buildCity(map: ServerMap): void {
     const from = sceneNodes.get(edge.from);
     const to = sceneNodes.get(edge.to);
     if (!from || !to) continue;
-    beamRoot.add(createBeam(from.position, to.position, edge));
+    beamRoot.add(createBeam(from.position, to.position, edge, nodeIsAlerting(from) || nodeIsAlerting(to)));
   }
   showOverview(map);
 }
@@ -668,6 +671,7 @@ function layoutNodes(nodes: MapNode[]): Map<string, THREE.Vector3> {
 function createNodeObject(node: MapNode): THREE.Object3D {
   const group = new THREE.Group();
   const color = statusColors[node.status || "unknown"] || statusColors.unknown;
+  const alerting = nodeIsAlerting(node);
   const height = typeHeights[node.type] || 2.6;
   const width = node.type === "host" ? 5.8 : node.type === "service" ? 4.6 : 3.4;
   const depth = node.type === "port" ? 2.2 : 3.4;
@@ -677,29 +681,34 @@ function createNodeObject(node: MapNode): THREE.Object3D {
       ? new THREE.CylinderGeometry(2.4, 2.4, height, 8)
       : new THREE.BoxGeometry(width, height, depth);
   const material = new THREE.MeshStandardMaterial({
-    color,
-    emissive: color,
-    emissiveIntensity: node.status === "failed" ? 0.85 : 0.28,
+    color: alerting ? alertRed : color,
+    emissive: alerting ? alertRed : color,
+    emissiveIntensity: alerting ? 1.0 : 0.28,
     roughness: 0.38,
     metalness: 0.28,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.y = height / 2;
   mesh.userData.nodeId = node.id;
+  mesh.userData.alert = alerting;
+  mesh.userData.baseColor = color;
   group.add(mesh);
 
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(width * 0.72, width * 0.86, 32),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
+    new THREE.MeshBasicMaterial({ color: alerting ? alertRed : color, transparent: true, opacity: alerting ? 0.88 : 0.5, side: THREE.DoubleSide }),
   );
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.04;
+  ring.userData.alert = alerting;
+  ring.userData.baseColor = color;
   group.add(ring);
 
-  const label = createLabel(node.label, node.type, color);
+  const label = createLabel(node.label, alerting ? `${node.type} ALERT` : node.type, alerting ? alertRed : color);
   label.position.set(0, height + 1.2, 0);
   group.add(label);
   group.userData.nodeId = node.id;
+  group.userData.alert = alerting;
   return group;
 }
 
@@ -728,18 +737,20 @@ function createLabel(title: string, subtitle: string, color: number): THREE.Spri
   return sprite;
 }
 
-function createBeam(from: THREE.Vector3, to: THREE.Vector3, edge: MapEdge): THREE.Object3D {
-  const color = edge.type === "ssh" ? 0xf2bd5f : edge.type === "proxy" ? 0x39d7d2 : 0x4d6dff;
+function createBeam(from: THREE.Vector3, to: THREE.Vector3, edge: MapEdge, alerting: boolean): THREE.Object3D {
+  const color = alerting ? alertRed : edge.type === "ssh" ? 0xf2bd5f : edge.type === "proxy" ? 0x39d7d2 : 0x4d6dff;
   const points = [
     from.clone().add(new THREE.Vector3(0, 1.4, 0)),
     from.clone().lerp(to, 0.5).add(new THREE.Vector3(0, 4.8, 0)),
     to.clone().add(new THREE.Vector3(0, 1.4, 0)),
   ];
   const curve = new THREE.CatmullRomCurve3(points);
-  const geometry = new THREE.TubeGeometry(curve, 32, 0.08, 8, false);
-  const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.68 });
+  const geometry = new THREE.TubeGeometry(curve, 32, alerting ? 0.14 : 0.08, 8, false);
+  const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: alerting ? 0.95 : 0.68 });
   const beam = new THREE.Mesh(geometry, material);
   beam.userData.phase = Math.random() * Math.PI * 2;
+  beam.userData.alert = alerting;
+  beam.userData.baseColor = color;
   return beam;
 }
 
@@ -750,11 +761,40 @@ function animate(): void {
   updateFocus();
   updateLabelBillboards();
   const time = performance.now() * 0.001;
+  updateAlertAnimations(time);
   beamRoot.children.forEach((child) => {
     const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
-    material.opacity = 0.42 + Math.sin(time * 3 + (child.userData.phase || 0)) * 0.18;
+    if (child.userData.alert) {
+      material.opacity = 0.25 + alertPulse(time, child.userData.phase || 0) * 0.72;
+      material.color.setHex(alertPulse(time, child.userData.phase || 0) > 0.54 ? alertRed : alertDark);
+    } else {
+      material.opacity = 0.42 + Math.sin(time * 3 + (child.userData.phase || 0)) * 0.18;
+    }
   });
   renderer.render(scene, camera);
+}
+
+function updateAlertAnimations(time: number): void {
+  cityRoot.traverse((object) => {
+    if (!object.userData.alert) return;
+    const pulse = alertPulse(time, object.userData.phase || 0);
+    const material = (object as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!material || Array.isArray(material)) return;
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.color.setHex(pulse > 0.5 ? alertRed : alertDark);
+      material.emissive.setHex(alertRed);
+      material.emissiveIntensity = 0.45 + pulse * 1.65;
+      return;
+    }
+    if (material instanceof THREE.MeshBasicMaterial) {
+      material.color.setHex(pulse > 0.5 ? alertRed : alertDark);
+      material.opacity = 0.25 + pulse * 0.75;
+    }
+  });
+}
+
+function alertPulse(time: number, phase = 0): number {
+  return 0.5 + Math.sin(time * 7.5 + phase) * 0.5;
 }
 
 function updateMovement(delta: number): void {
@@ -830,10 +870,12 @@ function inspectFocusedNode(): void {
 function showOverview(map: ServerMap): void {
   restartButton.disabled = true;
   updateControlsGuide(null);
+  const alerts = map.nodes.filter(nodeIsAlerting).length;
   document.querySelector("#ev-target")!.textContent = "EutherVerse";
   detailPanel.innerHTML = `
     <div><strong>${map.nodes.length}</strong> nodes</div>
     <div><strong>${map.edges.length}</strong> links</div>
+    <div><strong>${alerts}</strong> active alerts</div>
     <div><strong>${map.services.filter((service) => service.status === "running").length}</strong> running services</div>
     <div><strong>${map.listening_services.length || map.ports.length}</strong> observed ports</div>
   `;
@@ -872,6 +914,7 @@ function showNode(node: SceneNode): void {
     ["ID", node.id],
     ["Type", node.type],
     ["Status", node.status || "unknown"],
+    ["Alarm", nodeIsAlerting(node) ? "active" : "clear"],
     ["Detail", node.detail || ""],
   ];
   if (service) {
@@ -937,6 +980,26 @@ function restartCommandForService(service: ServiceReport): string | null {
   if (units.includes("eutherbooks.service")) return "restart-eutherbooks";
   if (units.includes("eutherpunkd.service")) return "restart-eutherpunkd";
   return null;
+}
+
+function nodeIsAlerting(node: Pick<MapNode, "status" | "detail">): boolean {
+  const status = `${node.status || ""} ${node.detail || ""}`.toLowerCase();
+  if (!status.trim()) return false;
+  return [
+    "failed",
+    "failure",
+    "stopped",
+    "inactive",
+    "dead",
+    "down",
+    "offline",
+    "error",
+    "unreachable",
+    "timeout",
+    "refused",
+    "missing",
+    "degraded",
+  ].some((word) => status.includes(word));
 }
 
 function showRoomNode(node: SceneNode): void {
