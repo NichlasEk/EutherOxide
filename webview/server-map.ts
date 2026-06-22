@@ -60,7 +60,7 @@ type SceneNode = MapNode & {
 };
 
 type ViewMode = "walk" | "map";
-type RoomMode = "city" | "eutherbooks";
+type RoomMode = "city" | "eutherbooks" | "node";
 
 type EutherBook = {
   id: string;
@@ -126,6 +126,7 @@ let viewMode: ViewMode = "walk";
 let roomMode: RoomMode = "city";
 let navigationEnabled = false;
 let lastCityPosition = new THREE.Vector3(7, 3.2, 58);
+let currentRoomNode: SceneNode | null = null;
 
 const sceneNodes = new Map<string, SceneNode>();
 const clock = new THREE.Clock();
@@ -149,6 +150,9 @@ let modeButton: HTMLButtonElement;
 let enterNodeButton: HTMLButtonElement;
 let leaveRoomButton: HTMLButtonElement;
 let restartButton: HTMLButtonElement;
+let custodianForm: HTMLFormElement;
+let custodianQuestion: HTMLInputElement;
+let custodianAnswer: HTMLElement;
 
 bootstrap().catch((error) => {
   document.body.innerHTML = `<main class="eutherverse-fail"><h1>EutherVerse kunde inte starta</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
@@ -206,6 +210,11 @@ function installShell(): void {
           <button id="ev-action-leave-room" type="button" disabled hidden>Back to Map</button>
           <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
+          <form id="ev-custodian-form" hidden>
+            <input id="ev-custodian-question" type="text" maxlength="420" placeholder="Ask room custodian" autocomplete="off" />
+            <button type="submit">Ask Custodian</button>
+            <div id="ev-custodian-answer"></div>
+          </form>
           <small>Restart uses EutherNet's configured command allowlist. System services may need sudoers for non-interactive restart.</small>
         </section>
       </aside>
@@ -242,6 +251,10 @@ function installShell(): void {
     #ev-panel dd { margin: 0; }
     #ev-panel button, #ev-panel a { width: 100%; margin: 6px 0; text-align: left; display: block; box-sizing: border-box; }
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
+    #ev-custodian-form { display: grid; gap: 7px; margin-top: 8px; }
+    #ev-custodian-form input { border: 1px solid rgba(103,225,218,.28); border-radius: 6px; background: rgba(3,8,12,.76); color: #effcff; padding: 9px 10px; font: inherit; box-sizing: border-box; width: 100%; }
+    #ev-custodian-form button { margin: 0; }
+    #ev-custodian-answer { color: #c7d7e2; font-size: 13px; line-height: 1.35; white-space: pre-wrap; }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
     .ev-hud { position: fixed; left: 14px; right: 14px; bottom: 12px; z-index: 2; display: flex; justify-content: space-between; gap: 12px; color: #b7c8d4; font-size: 13px; pointer-events: none; }
     #crosshair { position: fixed; z-index: 3; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; }
@@ -268,6 +281,9 @@ function installShell(): void {
   enterNodeButton = document.querySelector<HTMLButtonElement>("#ev-action-enter-node")!;
   leaveRoomButton = document.querySelector<HTMLButtonElement>("#ev-action-leave-room")!;
   restartButton = document.querySelector<HTMLButtonElement>("#ev-action-restart")!;
+  custodianForm = document.querySelector<HTMLFormElement>("#ev-custodian-form")!;
+  custodianQuestion = document.querySelector<HTMLInputElement>("#ev-custodian-question")!;
+  custodianAnswer = document.querySelector<HTMLElement>("#ev-custodian-answer")!;
 }
 
 async function loadAuth(): Promise<void> {
@@ -335,6 +351,13 @@ function bindInput(): void {
   enterNodeButton.addEventListener("click", () => enterFocusedNode().catch(showError));
   leaveRoomButton.addEventListener("click", leaveRoom);
   restartButton.addEventListener("click", () => restartSelectedService().catch(showError));
+  custodianForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void askCustodian().catch(showError);
+  });
+  custodianQuestion.addEventListener("focus", () => {
+    if (controls.isLocked) controls.unlock();
+  });
   document.addEventListener("keydown", (event) => {
     if (event.repeat && event.code !== "KeyE") return;
     if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "KeyZ", "ShiftLeft", "ShiftRight", "KeyE", "KeyF", "KeyM", "KeyR", "Escape"].includes(event.code)) {
@@ -412,7 +435,9 @@ function toggleMapMode(): void {
 
 async function loadMap(refresh: boolean): Promise<void> {
   roomMode = "city";
+  currentRoomNode = null;
   leaveRoomButton.disabled = true;
+  setCustodianVisible(false);
   statusLine.textContent = refresh ? "Refreshing EutherNet inventory..." : "Loading EutherNet map...";
   if (refresh) {
     await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
@@ -430,6 +455,8 @@ function buildCity(map: ServerMap): void {
   sceneNodes.clear();
   selectedNode = null;
   focusedNode = null;
+  currentRoomNode = null;
+  setCustodianVisible(false);
 
   const positions = layoutNodes(map.nodes);
   for (const node of map.nodes) {
@@ -450,22 +477,30 @@ function buildCity(map: ServerMap): void {
 }
 
 async function enterFocusedNode(): Promise<void> {
-  if (focusedNode && roomMode === "eutherbooks") {
+  if (focusedNode && roomMode !== "city") {
     if (isRoomReturnNode(focusedNode)) leaveRoom();
+    if (isCustodianNode(focusedNode)) focusCustodian();
     return;
   }
-  if (!focusedNode || !isEutherBooksNode(focusedNode)) return;
+  if (!focusedNode || !nodeCanEnter(focusedNode)) return;
   lastCityPosition.copy(controls.object.position);
-  await enterEutherBooksRoom();
+  currentRoomNode = focusedNode;
+  if (isEutherBooksNode(focusedNode)) {
+    await enterEutherBooksRoom(focusedNode);
+    return;
+  }
+  enterGenericNodeRoom(focusedNode);
 }
 
-async function enterEutherBooksRoom(): Promise<void> {
+async function enterEutherBooksRoom(sourceNode: SceneNode): Promise<void> {
   roomMode = "eutherbooks";
+  currentRoomNode = sourceNode;
   viewMode = "walk";
   navigationEnabled = true;
   modeButton.textContent = "Map";
   leaveRoomButton.disabled = false;
   enterNodeButton.disabled = true;
+  setCustodianVisible(true);
   cityRoot.clear();
   beamRoot.clear();
   sceneNodes.clear();
@@ -484,11 +519,78 @@ async function enterEutherBooksRoom(): Promise<void> {
 
 function leaveRoom(): void {
   if (roomMode === "city") return;
+  currentRoomNode = null;
+  setCustodianVisible(false);
   if (serverMap) buildCity(serverMap);
   controls.object.position.copy(lastCityPosition);
   controls.object.position.y = 3.2;
   camera.lookAt(7, 2.2, 0);
   hintLine.textContent = "Back in EutherVerse. Aim at EutherBooks and press F to enter.";
+}
+
+function enterGenericNodeRoom(sourceNode: SceneNode): void {
+  roomMode = "node";
+  currentRoomNode = sourceNode;
+  viewMode = "walk";
+  navigationEnabled = true;
+  modeButton.textContent = "Map";
+  leaveRoomButton.disabled = false;
+  enterNodeButton.disabled = true;
+  selectedNode = null;
+  focusedNode = null;
+  setCustodianVisible(true);
+  cityRoot.clear();
+  beamRoot.clear();
+  sceneNodes.clear();
+  buildGenericNodeRoom(sourceNode);
+  controls.object.position.set(0, 3.2, 28);
+  camera.lookAt(0, 2.5, 0);
+  showGenericRoomOverview(sourceNode);
+  statusLine.textContent = `${sourceNode.label} room | ${sourceNode.type} | ${sourceNode.status || "unknown"}`;
+  hintLine.textContent = `${sourceNode.label} room. Aim at ${sourceNode.label} Entry and press F to return.`;
+}
+
+function buildGenericNodeRoom(sourceNode: SceneNode): void {
+  const service = serviceForNode(sourceNode);
+  const status = sourceNode.status || service?.status || "unknown";
+  addRoomNode(
+    "room-custodian",
+    `${sourceNode.label} Custodian`,
+    "ai",
+    nodeIsAlerting(sourceNode) ? "failed" : "configured",
+    `Local guide for ${sourceNode.label}. Press F to ask about this room.`,
+    new THREE.Vector3(-9, 0, -12),
+    nodeIsAlerting(sourceNode) ? alertRed : 0xb878ff,
+  );
+  addRoomNode(
+    "room-core",
+    `${sourceNode.label} Core`,
+    sourceNode.type,
+    status,
+    sourceNode.detail || service?.units.join(", ") || "Inventory-backed room core.",
+    new THREE.Vector3(0, 0, -10),
+    statusColors[status] || statusColors.unknown,
+  );
+  addRoomNode(
+    "room-entry-gate",
+    `${sourceNode.label} Entry`,
+    "portal",
+    "configured",
+    "The node you entered from. Press F here to return to EutherVerse.",
+    new THREE.Vector3(0, 0, 24),
+    0x39d7d2,
+  );
+  addRoomNode(
+    "room-status-console",
+    "Status Console",
+    "service",
+    nodeIsAlerting(sourceNode) ? "failed" : "configured",
+    roomConsoleDetail(sourceNode),
+    new THREE.Vector3(9, 0, -12),
+    nodeIsAlerting(sourceNode) ? alertRed : 0x39d7d2,
+  );
+  beamRoot.add(createBeam(new THREE.Vector3(-9, 0, -12), new THREE.Vector3(0, 0, -10), { from: "room-custodian", to: "room-core", type: "ai" }, nodeIsAlerting(sourceNode)));
+  beamRoot.add(createBeam(new THREE.Vector3(9, 0, -12), new THREE.Vector3(0, 0, -10), { from: "room-status-console", to: "room-core", type: "status" }, nodeIsAlerting(sourceNode)));
 }
 
 async function loadEutherBooksRoomData(): Promise<{
@@ -846,7 +948,7 @@ function updateFocus(): void {
   if (node === focusedNode) return;
   focusedNode = node;
   crosshair.style.opacity = node ? "1" : ".45";
-  enterNodeButton.disabled = !(node && isEutherBooksNode(node) && roomMode === "city");
+  enterNodeButton.disabled = !(node && nodeCanEnter(node) && roomMode === "city");
   restartButton.disabled = !(node && restartCommandForNode(node));
   updateControlsGuide(node);
   if (viewMode === "map") {
@@ -854,7 +956,7 @@ function updateFocus(): void {
     return;
   }
   hintLine.textContent = node
-    ? `Target: ${node.label} | E inspect${isEutherBooksNode(node) && roomMode === "city" ? " | F enter" : ""}${isRoomReturnNode(node) ? " | F back" : ""}`
+    ? `Target: ${node.label} | E inspect${nodeCanEnter(node) && roomMode === "city" ? " | F enter" : ""}${isRoomReturnNode(node) ? " | F back" : ""}${isCustodianNode(node) ? " | F ask" : ""}`
     : navigationEnabled
       ? "WASD moves. Space/Z changes depth. Click Enter again for mouse look."
       : "Click Enter to take controls.";
@@ -879,6 +981,23 @@ function showOverview(map: ServerMap): void {
     <div><strong>${map.services.filter((service) => service.status === "running").length}</strong> running services</div>
     <div><strong>${map.listening_services.length || map.ports.length}</strong> observed ports</div>
   `;
+}
+
+function showGenericRoomOverview(node: SceneNode): void {
+  const service = serviceForNode(node);
+  document.querySelector("#ev-target")!.textContent = `${node.label} Room`;
+  detailPanel.innerHTML = [
+    ["Node", node.id],
+    ["Type", node.type],
+    ["Status", node.status || service?.status || "unknown"],
+    ["Alarm", nodeIsAlerting(node) ? "active" : "clear"],
+    ["Units", service?.units.join(", ") || ""],
+    ["Ports", service?.ports.join(", ") || ""],
+    ["Repo", service?.repo_path || ""],
+  ]
+    .filter(([, value]) => value)
+    .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</div>`)
+    .join("");
 }
 
 function showEutherBooksOverview(
@@ -1021,6 +1140,9 @@ function showRoomNode(node: SceneNode): void {
   if (node.id === "qwen-desk") {
     lines.push(["Next", "Wire local Qwen chat with selected book context"]);
   }
+  if (isCustodianNode(node)) {
+    lines.push(["Use", "Press F to ask this room custodian"]);
+  }
   if (node.id === "upload-intake") {
     lines.push(["Next", "Expose confirmed EutherBooks upload action here"]);
   }
@@ -1055,6 +1177,12 @@ function updateControlsGuide(node: SceneNode | null): void {
     objective.textContent = node
       ? eutherBooksObjectiveFor(node)
       : "You are inside EutherBooks. Move like an inspection diver: WASD across the room, Space/Z up and down, E to inspect shelves and stations. Aim at EutherBooks Entry or Qwen Librarian and press F to return.";
+  } else if (roomMode === "node") {
+    rows.push(["F", "Ask/back when targeted"]);
+    rows.push(["Esc", "Release cursor"]);
+    objective.textContent = node
+      ? genericRoomObjectiveFor(node)
+      : `You are inside ${currentRoomNode?.label || "a node"} room. Inspect the core, ask the custodian, or aim at the Entry node and press F to return.`;
   } else {
     rows.push(["F", "Enter node when available"]);
     rows.push(["Esc", "Release cursor"]);
@@ -1072,6 +1200,9 @@ function cityObjectiveFor(node: SceneNode): string {
   if (isEutherBooksNode(node)) {
     return "EutherBooks has an explorable room. Press F or click Enter Node to go into the library. Press E first if you want service details and restart controls.";
   }
+  if (nodeCanEnter(node)) {
+    return `${node.label} has an explorable room. Press F or click Enter Node to inspect it with its custodian.`;
+  }
   const restart = restartCommandForNode(node) ? " Restart is available after inspection." : "";
   return `Targeting ${node.label}. Press E to inspect status, ports, units and repo path.${restart}`;
 }
@@ -1081,7 +1212,7 @@ function eutherBooksObjectiveFor(node: SceneNode): string {
     return "Book target. Press E to inspect metadata, conversion job status and available audio files.";
   }
   if (node.id === "qwen-desk") {
-    return "Qwen Librarian desk. Press E to inspect the planned local chat station, or press F to ask the librarian to send you back to EutherVerse.";
+    return "Qwen Librarian desk. Press F to ask the librarian to send you back to EutherVerse, or use the custodian panel for status questions.";
   }
   if (node.id === "upload-intake") {
     return "Upload Intake. Press E to inspect the planned station for adding new books.";
@@ -1098,13 +1229,95 @@ function eutherBooksObjectiveFor(node: SceneNode): string {
   return `Targeting ${node.label}. Press E to inspect this library object.`;
 }
 
+function genericRoomObjectiveFor(node: SceneNode): string {
+  if (isRoomReturnNode(node)) {
+    return "Entry node. Press F to return through the node you entered from.";
+  }
+  if (isCustodianNode(node)) {
+    return "Room custodian. Press F to focus the ask box, then ask about status, ports, units, alerts or safe actions.";
+  }
+  if (node.id === "room-core") {
+    return "Room core. Press E to inspect the real inventory state represented by this room.";
+  }
+  if (node.id === "room-status-console") {
+    return "Status console. Press E to inspect the condensed health context for this node.";
+  }
+  return `Targeting ${node.label}. Press E to inspect.`;
+}
+
 function isRoomReturnNode(node: SceneNode): boolean {
-  return roomMode === "eutherbooks" && (node.id === "eutherbooks-entry-gate" || node.id === "qwen-desk");
+  return roomMode === "eutherbooks"
+    ? node.id === "eutherbooks-entry-gate" || node.id === "qwen-desk"
+    : roomMode === "node" && node.id === "room-entry-gate";
+}
+
+function isCustodianNode(node: SceneNode): boolean {
+  return (roomMode === "eutherbooks" && node.id === "qwen-desk") || (roomMode === "node" && node.id === "room-custodian");
 }
 
 function isEutherBooksNode(node: SceneNode): boolean {
   const value = `${node.id} ${node.label} ${node.detail || ""}`.toLowerCase();
   return value.includes("eutherbooks");
+}
+
+function nodeCanEnter(node: SceneNode): boolean {
+  if (roomMode !== "city") return false;
+  if (isEutherBooksNode(node)) return true;
+  return ["service", "proxy", "host", "ai", "storage"].includes(node.type);
+}
+
+function roomConsoleDetail(node: SceneNode): string {
+  const service = serviceForNode(node);
+  const pieces = [
+    `status=${node.status || service?.status || "unknown"}`,
+    service?.units.length ? `units=${service.units.join(",")}` : "",
+    service?.ports.length ? `ports=${service.ports.join(",")}` : "",
+    service?.repo_path ? `repo=${service.repo_path}` : "",
+  ].filter(Boolean);
+  return pieces.join(" | ") || node.detail || "No expanded inventory detail.";
+}
+
+function focusCustodian(): void {
+  setCustodianVisible(true);
+  custodianQuestion.focus({ preventScroll: true });
+  custodianAnswer.textContent = currentRoomNode
+    ? `Custodian linked to ${currentRoomNode.label}. Ask about status, alerts, ports, units or allowed actions.`
+    : "Custodian online.";
+}
+
+function setCustodianVisible(visible: boolean): void {
+  custodianForm.hidden = !visible;
+  if (!visible) {
+    custodianQuestion.value = "";
+    custodianAnswer.textContent = "";
+  }
+}
+
+async function askCustodian(): Promise<void> {
+  const node = currentRoomNode;
+  if (!node) return;
+  const question = custodianQuestion.value.trim() || "Sammanfatta status och risker för den här noden.";
+  custodianAnswer.textContent = "Custodian thinking...";
+  const service = serviceForNode(node);
+  const prompt = [
+    `Du är custodian i EutherVerse-rummet för noden ${node.label}.`,
+    `Nod-id: ${node.id}`,
+    `Typ: ${node.type}`,
+    `Status: ${node.status || "unknown"}`,
+    `Alarm: ${nodeIsAlerting(node) ? "active" : "clear"}`,
+    `Detalj: ${node.detail || ""}`,
+    service ? `Units: ${service.units.join(", ")}` : "",
+    service ? `Ports: ${service.ports.join(", ")}` : "",
+    service?.repo_path ? `Repo: ${service.repo_path}` : "",
+    "Svara kort, praktiskt och basera dig på EutherNet inventory. Föreslå bara allowlistade actions om åtgärder behövs.",
+    `Fråga: ${question}`,
+  ].filter(Boolean).join("\n");
+  const result = await jsonFetch<{ ok?: boolean; answer?: string; source?: string; fallback?: string }>("/api/admin/euthernet/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: prompt }),
+  });
+  custodianAnswer.textContent = result.answer || result.fallback || "No custodian answer.";
 }
 
 function latestJobForBook(bookId: string, jobs: EutherBooksJob[]): EutherBooksJob | null {
