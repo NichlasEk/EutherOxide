@@ -150,9 +150,13 @@ let modeButton: HTMLButtonElement;
 let enterNodeButton: HTMLButtonElement;
 let leaveRoomButton: HTMLButtonElement;
 let restartButton: HTMLButtonElement;
+let custodianOverlay: HTMLElement;
+let custodianTitle: HTMLElement;
+let custodianContext: HTMLElement;
 let custodianForm: HTMLFormElement;
 let custodianQuestion: HTMLInputElement;
 let custodianAnswer: HTMLElement;
+let custodianLeaveButton: HTMLButtonElement;
 
 bootstrap().catch((error) => {
   document.body.innerHTML = `<main class="eutherverse-fail"><h1>EutherVerse kunde inte starta</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
@@ -210,14 +214,26 @@ function installShell(): void {
           <button id="ev-action-leave-room" type="button" disabled hidden>Back to Map</button>
           <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
-          <form id="ev-custodian-form" hidden>
-            <input id="ev-custodian-question" type="text" maxlength="420" placeholder="Ask room custodian" autocomplete="off" />
-            <button type="submit">Ask Custodian</button>
-            <div id="ev-custodian-answer"></div>
-          </form>
           <small>Restart uses EutherNet's configured command allowlist. System services may need sudoers for non-interactive restart.</small>
         </section>
       </aside>
+      <div id="ev-custodian-overlay" hidden>
+        <div class="ev-dialog">
+          <div class="ev-dialog-head">
+            <div>
+              <p class="eyebrow">Custodian Link</p>
+              <h2 id="ev-custodian-title">Room Custodian</h2>
+            </div>
+            <button id="ev-custodian-leave" type="button">Leave</button>
+          </div>
+          <div id="ev-custodian-context" class="ev-dialog-context"></div>
+          <div id="ev-custodian-answer" class="ev-dialog-answer"></div>
+          <form id="ev-custodian-form" class="ev-dialog-form">
+            <input id="ev-custodian-question" type="text" maxlength="420" placeholder="Ask about status, alerts, ports, units or actions" autocomplete="off" />
+            <button type="submit">Ask</button>
+          </form>
+        </div>
+      </div>
       <footer class="ev-hud">
         <span id="ev-status">Booting scene...</span>
         <span id="ev-hint">Click Enter to take controls.</span>
@@ -251,11 +267,16 @@ function installShell(): void {
     #ev-panel dd { margin: 0; }
     #ev-panel button, #ev-panel a { width: 100%; margin: 6px 0; text-align: left; display: block; box-sizing: border-box; }
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
-    #ev-custodian-form { display: grid; gap: 7px; margin-top: 8px; }
-    #ev-custodian-form input { border: 1px solid rgba(103,225,218,.28); border-radius: 6px; background: rgba(3,8,12,.76); color: #effcff; padding: 9px 10px; font: inherit; box-sizing: border-box; width: 100%; }
-    #ev-custodian-form button { margin: 0; }
-    #ev-custodian-answer { color: #c7d7e2; font-size: 13px; line-height: 1.35; white-space: pre-wrap; }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
+    #ev-custodian-overlay { position: fixed; inset: 0; z-index: 5; display: grid; align-items: end; pointer-events: auto; background: linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.52)); padding: 24px; box-sizing: border-box; }
+    .ev-dialog { width: min(980px, calc(100vw - 48px)); margin: 0 auto; border: 1px solid rgba(103,225,218,.36); border-radius: 8px; background: rgba(4,9,15,.78); backdrop-filter: blur(18px); box-shadow: 0 24px 120px rgba(0,0,0,.62); padding: 16px; }
+    .ev-dialog-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(110,142,160,.24); padding-bottom: 12px; }
+    .ev-dialog h2 { margin: 3px 0 0; font-size: 22px; }
+    .ev-dialog-head button, .ev-dialog-form button { border: 1px solid rgba(103,225,218,.42); border-radius: 6px; background: rgba(10,22,30,.86); color: #effcff; padding: 9px 13px; font: inherit; cursor: pointer; }
+    .ev-dialog-context { color: #8fded9; font-size: 13px; line-height: 1.4; margin: 12px 0; overflow-wrap: anywhere; }
+    .ev-dialog-answer { min-height: 96px; max-height: min(42vh, 340px); overflow: auto; border: 1px solid rgba(103,225,218,.2); border-radius: 6px; background: rgba(1,5,9,.54); color: #d7e6ef; padding: 12px; line-height: 1.45; white-space: pre-wrap; }
+    .ev-dialog-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 12px; }
+    .ev-dialog-form input { min-width: 0; border: 1px solid rgba(103,225,218,.34); border-radius: 6px; background: rgba(3,8,12,.82); color: #effcff; padding: 11px 12px; font: inherit; box-sizing: border-box; }
     .ev-hud { position: fixed; left: 14px; right: 14px; bottom: 12px; z-index: 2; display: flex; justify-content: space-between; gap: 12px; color: #b7c8d4; font-size: 13px; pointer-events: none; }
     #crosshair { position: fixed; z-index: 3; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; }
     #crosshair::before, #crosshair::after { content: ""; position: absolute; background: rgba(238,255,255,.76); box-shadow: 0 0 12px rgba(57,215,210,.9); }
@@ -269,6 +290,9 @@ function installShell(): void {
       .ev-topbar nav::-webkit-scrollbar { display: none; }
       .ev-topbar button, .ev-topbar a { padding: 7px 10px; white-space: nowrap; }
       .ev-topbar h1 { font-size: 17px; }
+      #ev-custodian-overlay { padding: 10px; align-items: stretch; }
+      .ev-dialog { width: auto; min-height: 58vh; display: grid; grid-template-rows: auto auto 1fr auto; padding: 12px; }
+      .ev-dialog-form { grid-template-columns: 1fr; }
       .ev-hud { display: none; }
     }
   `;
@@ -281,9 +305,13 @@ function installShell(): void {
   enterNodeButton = document.querySelector<HTMLButtonElement>("#ev-action-enter-node")!;
   leaveRoomButton = document.querySelector<HTMLButtonElement>("#ev-action-leave-room")!;
   restartButton = document.querySelector<HTMLButtonElement>("#ev-action-restart")!;
+  custodianOverlay = document.querySelector<HTMLElement>("#ev-custodian-overlay")!;
+  custodianTitle = document.querySelector<HTMLElement>("#ev-custodian-title")!;
+  custodianContext = document.querySelector<HTMLElement>("#ev-custodian-context")!;
   custodianForm = document.querySelector<HTMLFormElement>("#ev-custodian-form")!;
   custodianQuestion = document.querySelector<HTMLInputElement>("#ev-custodian-question")!;
   custodianAnswer = document.querySelector<HTMLElement>("#ev-custodian-answer")!;
+  custodianLeaveButton = document.querySelector<HTMLButtonElement>("#ev-custodian-leave")!;
 }
 
 async function loadAuth(): Promise<void> {
@@ -355,10 +383,25 @@ function bindInput(): void {
     event.preventDefault();
     void askCustodian().catch(showError);
   });
+  custodianLeaveButton.addEventListener("click", closeCustodianDialog);
+  custodianOverlay.addEventListener("click", (event) => {
+    if (event.target === custodianOverlay) closeCustodianDialog();
+  });
   custodianQuestion.addEventListener("focus", () => {
     if (controls.isLocked) controls.unlock();
   });
+  custodianQuestion.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+  });
   document.addEventListener("keydown", (event) => {
+    if (custodianDialogOpen()) {
+      if (event.code === "Escape") {
+        event.preventDefault();
+        closeCustodianDialog();
+      }
+      return;
+    }
+    if (isTextInputEvent(event)) return;
     if (event.repeat && event.code !== "KeyE") return;
     if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "KeyZ", "ShiftLeft", "ShiftRight", "KeyE", "KeyF", "KeyM", "KeyR", "Escape"].includes(event.code)) {
       event.preventDefault();
@@ -500,7 +543,7 @@ async function enterEutherBooksRoom(sourceNode: SceneNode): Promise<void> {
   modeButton.textContent = "Map";
   leaveRoomButton.disabled = false;
   enterNodeButton.disabled = true;
-  setCustodianVisible(true);
+  setCustodianVisible(false);
   cityRoot.clear();
   beamRoot.clear();
   sceneNodes.clear();
@@ -538,7 +581,7 @@ function enterGenericNodeRoom(sourceNode: SceneNode): void {
   enterNodeButton.disabled = true;
   selectedNode = null;
   focusedNode = null;
-  setCustodianVisible(true);
+  setCustodianVisible(false);
   cityRoot.clear();
   beamRoot.clear();
   sceneNodes.clear();
@@ -1212,7 +1255,7 @@ function eutherBooksObjectiveFor(node: SceneNode): string {
     return "Book target. Press E to inspect metadata, conversion job status and available audio files.";
   }
   if (node.id === "qwen-desk") {
-    return "Qwen Librarian desk. Press F to ask the librarian to send you back to EutherVerse, or use the custodian panel for status questions.";
+    return "Qwen Librarian desk. Press F to ask the librarian to send you back to EutherVerse, or use the custodian dialog for status questions.";
   }
   if (node.id === "upload-intake") {
     return "Upload Intake. Press E to inspect the planned station for adding new books.";
@@ -1234,7 +1277,7 @@ function genericRoomObjectiveFor(node: SceneNode): string {
     return "Entry node. Press F to return through the node you entered from.";
   }
   if (isCustodianNode(node)) {
-    return "Room custodian. Press F to focus the ask box, then ask about status, ports, units, alerts or safe actions.";
+    return "Room custodian. Press F to open the dialog, then ask about status, ports, units, alerts or safe actions.";
   }
   if (node.id === "room-core") {
     return "Room core. Press E to inspect the real inventory state represented by this room.";
@@ -1278,7 +1321,15 @@ function roomConsoleDetail(node: SceneNode): string {
 }
 
 function focusCustodian(): void {
+  openCustodianDialog();
+}
+
+function openCustodianDialog(): void {
   setCustodianVisible(true);
+  if (controls.isLocked) controls.unlock();
+  const node = currentRoomNode;
+  custodianTitle.textContent = node ? `${node.label} Custodian` : "Room Custodian";
+  custodianContext.textContent = node ? roomCustodianContext(node) : "No room context.";
   custodianQuestion.focus({ preventScroll: true });
   custodianAnswer.textContent = currentRoomNode
     ? `Custodian linked to ${currentRoomNode.label}. Ask about status, alerts, ports, units or allowed actions.`
@@ -1286,11 +1337,38 @@ function focusCustodian(): void {
 }
 
 function setCustodianVisible(visible: boolean): void {
-  custodianForm.hidden = !visible;
+  custodianOverlay.hidden = !visible;
   if (!visible) {
     custodianQuestion.value = "";
     custodianAnswer.textContent = "";
+    custodianContext.textContent = "";
   }
+}
+
+function closeCustodianDialog(): void {
+  setCustodianVisible(false);
+  renderer.domElement.focus();
+  hintLine.textContent = "Custodian link closed. Click Enter for mouse look.";
+}
+
+function custodianDialogOpen(): boolean {
+  return !custodianOverlay.hidden;
+}
+
+function isTextInputEvent(event: KeyboardEvent): boolean {
+  const target = event.target as HTMLElement | null;
+  if (!target) return false;
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
+}
+
+function roomCustodianContext(node: SceneNode): string {
+  const service = serviceForNode(node);
+  return [
+    `${node.type.toUpperCase()} | ${node.status || service?.status || "unknown"} | alarm ${nodeIsAlerting(node) ? "active" : "clear"}`,
+    service?.units.length ? `units: ${service.units.join(", ")}` : "",
+    service?.ports.length ? `ports: ${service.ports.join(", ")}` : "",
+    service?.repo_path ? `repo: ${service.repo_path}` : "",
+  ].filter(Boolean).join("  ");
 }
 
 async function askCustodian(): Promise<void> {
