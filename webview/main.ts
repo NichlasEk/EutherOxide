@@ -643,6 +643,26 @@ type EutheriumJoxOffer = {
   decidedUnixMs?: number | null;
 };
 
+type EutheriumJoxListing = {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  imagePath: string;
+  joxPath: string;
+  provenanceStatus: string;
+  currentOwner: string;
+  shopStatus: string;
+  listedByUserId: string;
+  listedUnixMs: number;
+};
+
+type EutheriumJoxDetails = {
+  ok?: boolean;
+  listing: EutheriumJoxListing;
+  offers: EutheriumJoxOffer[];
+};
+
 type TrophyRoomLayoutItem = {
   inventoryId: string;
   x: number;
@@ -669,6 +689,7 @@ type EutheriumMeResult = {
   inventory: EutheriumInventoryEntry[];
   items: EutheriumShopItem[];
   joxOffers?: EutheriumJoxOffer[];
+  joxListings?: EutheriumJoxListing[];
   trophyRoom: TrophyRoomResult;
 };
 
@@ -1493,6 +1514,7 @@ let eutheriumSaving = false;
 let eutheriumStatus = "Not loaded";
 let eutheriumMe: EutheriumMeResult | null = null;
 let eutheriumAdmin: EutheriumAdminResult | null = null;
+let selectedJoxDetails: EutheriumJoxDetails | null = null;
 let eutheriumLobbyStatus = "Not loaded";
 let eutheriumLobbyBalance: number | null = null;
 let eutheriumLobbyAwards: EutheriumLedgerEntry[] = [];
@@ -3028,6 +3050,21 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   const joxResponse = target.closest<HTMLButtonElement>("[data-jox-offer-response]");
   if (joxResponse) {
     await respondJoxOffer(joxResponse.dataset.joxOfferResponse ?? "", joxResponse.dataset.joxDecision ?? "");
+    return;
+  }
+  const joxDetails = target.closest<HTMLButtonElement>("[data-jox-details]");
+  if (joxDetails) {
+    await loadJoxDetails(joxDetails.dataset.joxDetails ?? "");
+    return;
+  }
+  const joxRelist = target.closest<HTMLButtonElement>("[data-jox-relist]");
+  if (joxRelist) {
+    await relistJoxItem(joxRelist.dataset.joxRelist ?? "");
+    return;
+  }
+  const joxUnlist = target.closest<HTMLButtonElement>("[data-jox-unlist]");
+  if (joxUnlist) {
+    await unlistJoxItem(joxUnlist.dataset.joxUnlist ?? "");
     return;
   }
   const award = target.closest<HTMLButtonElement>("[data-eutherium-award-submit]");
@@ -7900,6 +7937,8 @@ function eutheriumWindowMarkup(): string {
       </section>
       ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
       ${joxOffersPanelMarkup(data)}
+      ${joxDetailsPanelMarkup()}
+      ${data.isAdmin ? joxAdminPanelMarkup(data) : ""}
       <section class="eutherium-shop-panel" id="eutherium-shop">
         <div class="section-head">
           <p class="section-label">Shop</p>
@@ -11137,6 +11176,75 @@ function joxOfferMarkup(offer: EutheriumJoxOffer, balance: number): string {
   `;
 }
 
+function joxDetailsPanelMarkup(): string {
+  const details = selectedJoxDetails;
+  if (!details) {
+    return "";
+  }
+  const listing = details.listing;
+  return `
+    <section class="eutherium-jox-details-panel">
+      <div class="section-head">
+        <p class="section-label">JOX Details</p>
+        <span>${escapeHtml(listing.provenanceStatus)} / ${escapeHtml(listing.shopStatus)}</span>
+      </div>
+      <div class="eutherium-jox-details">
+        <img src="${escapeHtml(listing.imagePath)}" alt="" />
+        <div>
+          <strong>${escapeHtml(listing.name)}</strong>
+          <p>${escapeHtml(listing.description)}</p>
+          <span>Owner: ${escapeHtml(displayUserName(listing.currentOwner))}</span>
+          <span>Value: ${formatEutherium(listing.price)} EUX</span>
+          <a href="${escapeHtml(listing.joxPath)}" download>Download .jox</a>
+        </div>
+      </div>
+      <div class="eutherium-jox-history">
+        ${details.offers.length ? details.offers.map(joxHistoryRowMarkup).join("") : `<span>No offer history yet</span>`}
+      </div>
+    </section>
+  `;
+}
+
+function joxHistoryRowMarkup(offer: EutheriumJoxOffer): string {
+  return `
+    <div class="eutherium-jox-history-row">
+      <strong>${escapeHtml(offer.status)}</strong>
+      <span>${escapeHtml(displayUserName(offer.recipientUserId))}</span>
+      <em>${formatEutherium(offer.price)} EUX</em>
+    </div>
+  `;
+}
+
+function joxAdminPanelMarkup(data: EutheriumMeResult): string {
+  const listings = data.joxListings ?? [];
+  return `
+    <section class="eutherium-jox-admin-panel">
+      <div class="section-head">
+        <p class="section-label">JOX Admin</p>
+        <span>${listings.length} artifacts</span>
+      </div>
+      <div class="eutherium-jox-admin-list">
+        ${listings.length ? listings.map(joxAdminRowMarkup).join("") : `<span>No JOX artifacts yet</span>`}
+      </div>
+    </section>
+  `;
+}
+
+function joxAdminRowMarkup(listing: EutheriumJoxListing): string {
+  const itemId = `jox:${listing.id}`;
+  return `
+    <div class="eutherium-jox-admin-row">
+      <img src="${escapeHtml(listing.imagePath)}" alt="" />
+      <div>
+        <strong>${escapeHtml(listing.name)}</strong>
+        <span>${escapeHtml(listing.shopStatus)} / ${escapeHtml(displayUserName(listing.currentOwner))} / ${formatEutherium(listing.price)} EUX</span>
+      </div>
+      <button data-jox-details="${escapeHtml(itemId)}" type="button">Details</button>
+      <button data-jox-unlist="${escapeHtml(itemId)}" type="button" ${listing.shopStatus === "listed" ? "" : "disabled"}>Unlist</button>
+    </div>
+  `;
+}
+
 function trophyRoomMarkup(data: EutheriumMeResult): string {
   return `
     <div class="trophy-room trophy-bg-${escapeHtml(data.trophyRoom.layout.background)}">
@@ -11230,6 +11338,7 @@ function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
         <button data-jox-offer="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
           Request ${formatEutherium(item.price)} EUX
         </button>
+        <button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button>
       </article>
     `;
   }
@@ -11256,6 +11365,9 @@ function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
 function inventoryItemMarkup(entry: EutheriumInventoryEntry, layout: TrophyRoomLayout): string {
   const item = entry.item;
   const placed = layout.items.some((placedItem) => placedItem.inventoryId === entry.id);
+  const joxControls = item?.itemType === "jox_artifact"
+    ? `<button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button><button data-jox-relist="${escapeHtml(entry.id)}" type="button">Relist</button>`
+    : "";
   return `
     <article class="eutherium-inventory-card ${selectedTrophyInventoryId === entry.id ? "is-selected" : ""}">
       ${item ? `<img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />` : ""}
@@ -11264,6 +11376,7 @@ function inventoryItemMarkup(entry: EutheriumInventoryEntry, layout: TrophyRoomL
         <span>${placed ? "Placed in room" : "In inventory"}</span>
       </div>
       <button data-trophy-place="${escapeHtml(entry.id)}" type="button" ${placed ? "disabled" : ""}>Place in room</button>
+      ${joxControls}
     </article>
   `;
 }
@@ -11418,9 +11531,6 @@ async function respondJoxOffer(offerId: string, decision: string): Promise<void>
   if (!offerId || !decision) {
     return;
   }
-  const acceptedOffer = decision === "accept"
-    ? eutheriumMe?.joxOffers?.find((offer) => offer.id === offerId) ?? null
-    : null;
   eutheriumSaving = true;
   eutheriumStatus = decision === "accept" ? "Accepting JOX" : "Declining JOX";
   renderWorkspaceWindow();
@@ -11431,12 +11541,8 @@ async function respondJoxOffer(offerId: string, decision: string): Promise<void>
       1600,
     );
     eutheriumLoaded = true;
-    if (decision === "accept" && acceptedOffer) {
-      await updateAcceptedJoxOwner(acceptedOffer);
-      eutheriumStatus = "JOX accepted and rehashed";
-    } else {
-      eutheriumStatus = decision === "accept" ? "JOX accepted" : "JOX declined";
-    }
+    selectedJoxDetails = null;
+    eutheriumStatus = decision === "accept" ? "JOX accepted and rehashed" : "JOX declined";
   } catch (err) {
     eutheriumStatus = err instanceof Error ? err.message : "JOX response failed";
   } finally {
@@ -11445,30 +11551,81 @@ async function respondJoxOffer(offerId: string, decision: string): Promise<void>
   }
 }
 
-async function updateAcceptedJoxOwner(offer: EutheriumJoxOffer): Promise<void> {
-  if (!hostUsername || !offer.joxPath) {
+async function relistJoxItem(inventoryId: string): Promise<void> {
+  if (!inventoryId) {
     return;
   }
-  const joxUrl = new URL(offer.joxPath, window.location.origin);
-  if (
-    joxUrl.origin !== window.location.origin ||
-    !joxUrl.pathname.startsWith("/api/camera/ai/api/secondsight/jox/")
-  ) {
-    throw new Error("JOX accepted, but file rehash URL was not trusted");
+  const raw = window.prompt("JOX price in EUX", "1000");
+  if (raw === null) {
+    return;
   }
-  const metadataUrl = `${joxUrl.pathname.replace(/\/$/, "")}/metadata`;
-  const response = await bridgeJson<{ ok?: boolean; error?: string }>(
-    metadataUrl,
+  const price = Math.max(0, Math.round(Number(raw) || 0));
+  eutheriumSaving = true;
+  eutheriumStatus = "Relisting JOX";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/jox/relist",
+      { method: "POST", body: JSON.stringify({ inventoryId, price }) },
+      1400,
+    );
+    selectedJoxDetails = null;
+    eutheriumLoaded = true;
+    eutheriumStatus = "JOX listed";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX relist failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function unlistJoxItem(itemId: string): Promise<void> {
+  if (!itemId) {
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Unlisting JOX";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/jox/unlist",
+      { method: "POST", body: JSON.stringify({ itemId }) },
+      1400,
+    );
+    selectedJoxDetails = null;
+    eutheriumLoaded = true;
+    eutheriumStatus = "JOX unlisted";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX unlist failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function loadJoxDetails(itemId: string): Promise<void> {
+  if (!itemId) {
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Loading JOX details";
+  renderWorkspaceWindow();
+  try {
+    selectedJoxDetails = await bridgeJson<EutheriumJoxDetails>(
+      "/api/shop/jox/details",
     {
       method: "POST",
-      body: JSON.stringify({
-        current_owner: hostUsername,
-      }),
+      body: JSON.stringify({ itemId }),
     },
     1600,
   );
-  if (!response.ok) {
-    throw new Error(response.error || "JOX accepted, but file rehash failed");
+    eutheriumStatus = "JOX details loaded";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX details failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
   }
 }
 

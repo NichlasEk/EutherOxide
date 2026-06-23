@@ -1244,6 +1244,25 @@ struct HostJoxTransferOffer {
     decided_unix_ms: Option<u64>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxRelistRequest {
+    inventory_id: String,
+    price: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxUnlistRequest {
+    item_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxDetailsRequest {
+    item_id: String,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HostInventoryEntry {
@@ -2116,8 +2135,28 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let user = require_host_user(state, &request)?;
             let response: HostJoxTransferOfferResponseRequest = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
-            respond_host_jox_transfer_offer(&user, response)?;
+            respond_host_jox_transfer_offer(state, &user, response)?;
             send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("POST", "/api/shop/jox/relist") => {
+            let user = require_host_user(state, &request)?;
+            let relist: HostJoxRelistRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            relist_owned_host_jox(&user, relist)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("POST", "/api/shop/jox/unlist") => {
+            let admin = require_host_admin(state, &request)?;
+            let unlist: HostJoxUnlistRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            unlist_host_jox(&admin, unlist)?;
+            send_json(stream, &host_eutherium_me(state, &admin)?)
+        }
+        ("POST", "/api/shop/jox/details") => {
+            let user = require_host_user(state, &request)?;
+            let details: HostJoxDetailsRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &host_jox_details_result(state, &user, details)?)
         }
         ("POST", "/api/shop/buy") => {
             let user = require_host_user(state, &request)?;
@@ -4516,6 +4555,7 @@ fn host_eutherium_me(state: &HostState, user: &str) -> io::Result<serde_json::Va
         "inventory": host_inventory_entries(user)?,
         "items": host_shop_items()?,
         "joxOffers": host_jox_transfer_offers_for_user(user)?,
+        "joxListings": host_jox_listings_for_user(state, user)?,
         "trophyRoom": host_trophy_room_result(user)?,
     }))
 }
@@ -5099,6 +5139,7 @@ fn create_host_jox_transfer_offer(
 }
 
 fn respond_host_jox_transfer_offer(
+    state: &HostState,
     user: &str,
     response: HostJoxTransferOfferResponseRequest,
 ) -> io::Result<()> {
@@ -5135,6 +5176,10 @@ fn respond_host_jox_transfer_offer(
         return Err(invalid_request("not enough Eutherium"));
     }
 
+    let seller = listings[listing_index].current_owner.clone();
+    let seller_is_user = seller != user && require_existing_host_user(state, &seller).is_ok();
+    update_remote_jox_owner(&offer.jox_path, user)?;
+
     append_host_eutherium_ledger(HostEutheriumLedgerEntry {
         id: host_eutherium_entry_id("jox-buy", user),
         user_id: user.to_string(),
@@ -5144,7 +5189,22 @@ fn respond_host_jox_transfer_offer(
         created_by_user_id: user.to_string(),
         created_unix_ms: unix_ms_now(),
     })?;
+    if seller_is_user {
+        append_host_eutherium_ledger(HostEutheriumLedgerEntry {
+            id: host_eutherium_entry_id("jox-sale", &seller),
+            user_id: seller.clone(),
+            amount: offer.price,
+            reason: format!("Sold JOX {}", offer.name),
+            source: "jox_trophy_shop".to_string(),
+            created_by_user_id: user.to_string(),
+            created_unix_ms: unix_ms_now(),
+        })?;
+    }
     let mut inventory = load_host_inventory()?;
+    if seller_is_user {
+        inventory.retain(|entry| !(entry.user_id == seller && entry.item_id == offer.item_id));
+        prune_host_trophy_layout_item(&seller, &offer.item_id)?;
+    }
     inventory.push(HostInventoryEntry {
         id: host_eutherium_entry_id("inv", user),
         user_id: user.to_string(),
@@ -5170,6 +5230,200 @@ fn respond_host_jox_transfer_offer(
         }
     }
     save_host_jox_transfer_offers(&offers)
+}
+
+fn relist_owned_host_jox(user: &str, request: HostJoxRelistRequest) -> io::Result<()> {
+    let inventory_id = request.inventory_id.trim();
+    if request.price < 0 || request.price > 1_000_000 {
+        return Err(invalid_request("JOX price must be between 0 and 1000000"));
+    }
+    let inventory = load_host_inventory()?;
+    let entry = inventory
+        .iter()
+        .find(|entry| entry.id == inventory_id && entry.user_id == user)
+        .ok_or_else(|| invalid_request("inventory JOX not found"))?;
+    let artifact_id = entry
+        .item_id
+        .strip_prefix("jox:")
+        .ok_or_else(|| invalid_request("inventory item is not JOX"))?;
+    let mut listings = load_host_jox_shop_listings()?;
+    let listing = listings
+        .iter_mut()
+        .find(|listing| listing.id == artifact_id)
+        .ok_or_else(|| invalid_request("JOX listing metadata not found"))?;
+    if listing.current_owner != user {
+        return Err(invalid_request("only the current JOX owner can relist it"));
+    }
+    if listing.provenance_status != "valid" {
+        return Err(invalid_request("unknown provenance JOX cannot be relisted"));
+    }
+    listing.price = request.price;
+    listing.shop_status = "listed".to_string();
+    listing.listed_by_user_id = user.to_string();
+    listing.listed_unix_ms = unix_ms_now();
+    save_host_jox_shop_listings(&listings)
+}
+
+fn unlist_host_jox(admin: &str, request: HostJoxUnlistRequest) -> io::Result<()> {
+    let artifact_id = request
+        .item_id
+        .trim()
+        .strip_prefix("jox:")
+        .ok_or_else(|| invalid_request("not a JOX shop item"))?
+        .to_string();
+    let mut listings = load_host_jox_shop_listings()?;
+    let listing = listings
+        .iter_mut()
+        .find(|listing| listing.id == artifact_id)
+        .ok_or_else(|| invalid_request("JOX listing not found"))?;
+    if listing.shop_status == "listed" {
+        listing.shop_status = "owned".to_string();
+        listing.listed_by_user_id = admin.to_string();
+        listing.listed_unix_ms = unix_ms_now();
+    }
+    let mut offers = load_host_jox_transfer_offers()?;
+    let decided_at = unix_ms_now();
+    for offer in &mut offers {
+        if offer.artifact_id == artifact_id && offer.status == "pending" {
+            offer.status = "expired".to_string();
+            offer.decided_unix_ms = Some(decided_at);
+        }
+    }
+    save_host_jox_shop_listings(&listings)?;
+    save_host_jox_transfer_offers(&offers)
+}
+
+fn host_jox_listings_for_user(
+    state: &HostState,
+    user: &str,
+) -> io::Result<Vec<HostJoxShopListing>> {
+    let admin = is_host_admin(state, user)?;
+    let mut listings: Vec<_> = load_host_jox_shop_listings()?
+        .into_iter()
+        .filter(|listing| admin || listing.shop_status == "listed" || listing.current_owner == user)
+        .collect();
+    listings.sort_by_key(|listing| std::cmp::Reverse(listing.listed_unix_ms));
+    Ok(listings)
+}
+
+fn host_jox_details_result(
+    state: &HostState,
+    user: &str,
+    request: HostJoxDetailsRequest,
+) -> io::Result<serde_json::Value> {
+    let artifact_id = request
+        .item_id
+        .trim()
+        .strip_prefix("jox:")
+        .ok_or_else(|| invalid_request("not a JOX shop item"))?
+        .to_string();
+    let listing = load_host_jox_shop_listings()?
+        .into_iter()
+        .find(|listing| listing.id == artifact_id)
+        .ok_or_else(|| invalid_request("JOX listing not found"))?;
+    let owns_inventory = load_host_inventory()?
+        .into_iter()
+        .any(|entry| entry.user_id == user && entry.item_id == request.item_id);
+    if !is_host_admin(state, user)?
+        && listing.current_owner != user
+        && listing.shop_status != "listed"
+        && !owns_inventory
+    {
+        return Err(invalid_request("JOX details not available"));
+    }
+    let mut offers: Vec<_> = load_host_jox_transfer_offers()?
+        .into_iter()
+        .filter(|offer| offer.artifact_id == artifact_id)
+        .collect();
+    offers.sort_by_key(|offer| std::cmp::Reverse(offer.created_unix_ms));
+    offers.truncate(20);
+    Ok(serde_json::json!({
+        "ok": true,
+        "listing": listing,
+        "offers": offers,
+    }))
+}
+
+fn prune_host_trophy_layout_item(user: &str, item_id: &str) -> io::Result<()> {
+    let inventory = load_host_inventory()?;
+    let removed_ids: HashSet<String> = inventory
+        .into_iter()
+        .filter(|entry| entry.user_id == user && entry.item_id == item_id)
+        .map(|entry| entry.id)
+        .collect();
+    if removed_ids.is_empty() {
+        return Ok(());
+    }
+    let mut layout = load_host_trophy_room_layout(user)?;
+    let original_len = layout.items.len();
+    layout
+        .items
+        .retain(|item| !removed_ids.contains(&item.inventory_id));
+    if layout.items.len() != original_len {
+        save_host_trophy_room_layout(user, layout)?;
+    }
+    Ok(())
+}
+
+fn update_remote_jox_owner(jox_path: &str, owner: &str) -> io::Result<()> {
+    let upstream_path = camera_ai_jox_metadata_path(jox_path)?;
+    let upstream_base =
+        env::var("EUTHERSIGHT_AI_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15101".to_string());
+    let body = serde_json::to_vec(&serde_json::json!({ "current_owner": owner }))
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut upstream = TcpStream::connect(&upstream_base)
+        .map_err(|_| invalid_request("EutherSight AI upstream unavailable"))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(8)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    write!(
+        upstream,
+        "POST {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        upstream_path,
+        upstream_base,
+        body.len()
+    )?;
+    upstream.write_all(&body)?;
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response)?;
+    let response_text = String::from_utf8_lossy(&response);
+    let status_ok = response_text
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "));
+    let body_text = response_text
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or_default()
+        .trim();
+    let payload: serde_json::Value = serde_json::from_str(body_text)
+        .map_err(|err| invalid_request(format!("invalid JOX metadata response: {err}")))?;
+    if !status_ok || payload.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return Err(invalid_request(
+            payload
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("JOX metadata update failed"),
+        ));
+    }
+    Ok(())
+}
+
+fn camera_ai_jox_metadata_path(jox_path: &str) -> io::Result<String> {
+    let path = if let Some(rest) = jox_path.strip_prefix("http://") {
+        rest.split_once('/').map(|(_, path)| format!("/{path}"))
+    } else if let Some(rest) = jox_path.strip_prefix("https://") {
+        rest.split_once('/').map(|(_, path)| format!("/{path}"))
+    } else {
+        Some(jox_path.to_string())
+    }
+    .ok_or_else(|| invalid_request("invalid JOX URL"))?;
+    let stripped = path
+        .strip_prefix(CAMERA_AI_PROXY_PREFIX)
+        .ok_or_else(|| invalid_request("untrusted JOX URL"))?;
+    if !stripped.starts_with("/api/secondsight/jox/") {
+        return Err(invalid_request("untrusted JOX metadata path"));
+    }
+    Ok(format!("{}/metadata", stripped.trim_end_matches('/')))
 }
 
 fn host_trophy_icon(kind: &str) -> String {
