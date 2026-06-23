@@ -427,6 +427,7 @@ class NativeAudioService : Service() {
     private var playbackWakeLock: PowerManager.WakeLock? = null
     private var playbackWifiLock: WifiManager.WifiLock? = null
     private var noisyReceiverRegistered = false
+    private var ignoreMediaPauseUntilMs = 0L
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
         if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
@@ -513,7 +514,16 @@ class NativeAudioService : Service() {
         playCurrent(positionMs)
     }
 
-    private fun handlePause() {
+    private fun handlePause(reason: String = "Native playback paused", honorResumeDebounce: Boolean = false) {
+        if (honorResumeDebounce && shouldIgnoreImmediateMediaPause()) {
+            synchronized(lock) {
+                lastEvent = "Native duplicate media pause ignored"
+                rememberEvent(lastEvent)
+            }
+            updatePlaybackState()
+            updateNotification()
+            return
+        }
         player?.let {
             if (it.isPlaying) {
                 it.pause()
@@ -522,7 +532,7 @@ class NativeAudioService : Service() {
         synchronized(lock) {
             positionMs = currentPositionMs()
             playing = false
-            lastEvent = "Native playback paused"
+            lastEvent = reason
             rememberEvent(lastEvent)
         }
         releasePlaybackLocks()
@@ -1223,7 +1233,7 @@ class NativeAudioService : Service() {
                 }
 
                 override fun onPause() {
-                    handlePause()
+                    handlePause("Native playback paused by media session", true)
                 }
 
                 override fun onSkipToNext() {
@@ -1249,7 +1259,7 @@ class NativeAudioService : Service() {
                     }
                     when (event.keyCode) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> handleResume()
-                        KeyEvent.KEYCODE_MEDIA_PAUSE -> handlePause()
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> handlePause("Native playback paused by media button", true)
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> handleTogglePlayback()
                         KeyEvent.KEYCODE_MEDIA_NEXT -> handleNext()
                         KeyEvent.KEYCODE_MEDIA_PREVIOUS -> handlePrevious()
@@ -1265,13 +1275,22 @@ class NativeAudioService : Service() {
 
     private fun handleTogglePlayback() {
         if (snapshot().playing) {
-            handlePause()
+            handlePause("Native playback paused by toggle", true)
         } else {
             handleResume()
         }
     }
 
+    private fun shouldIgnoreImmediateMediaPause(): Boolean {
+        return snapshot().playing && System.currentTimeMillis() < ignoreMediaPauseUntilMs
+    }
+
+    private fun markMediaResumeWindow() {
+        ignoreMediaPauseUntilMs = System.currentTimeMillis() + 1200L
+    }
+
     private fun handleResume() {
+        markMediaResumeWindow()
         requestAudioFocus()
         acquirePlaybackLocks()
         registerNoisyReceiver()
