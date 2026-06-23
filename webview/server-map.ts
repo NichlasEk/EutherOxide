@@ -135,6 +135,15 @@ const direction = new THREE.Vector3();
 const keys = new Set<string>();
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2(0, 0);
+let mobileMapTouch:
+  | {
+      startedAt: number;
+      startX: number;
+      startY: number;
+      startCamera: THREE.Vector3;
+      startDistance?: number;
+    }
+  | null = null;
 
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
@@ -247,7 +256,7 @@ function installShell(): void {
     button, a { font: inherit; }
     [hidden] { display: none !important; }
     #eutherverse { position: fixed; inset: 0; background: #05070a; }
-    #eutherverse-canvas { width: 100%; height: 100%; display: block; }
+    #eutherverse-canvas { width: 100%; height: 100%; display: block; touch-action: none; }
     .ev-topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 2; display: flex; justify-content: space-between; gap: 16px; padding: 14px 16px; background: linear-gradient(180deg, rgba(4,8,13,.86), rgba(4,8,13,0)); pointer-events: none; }
     .ev-topbar p, .eyebrow { margin: 0; color: #77d7d3; text-transform: uppercase; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
     .ev-topbar h1 { margin: 2px 0 0; font-size: 20px; letter-spacing: 0; }
@@ -290,6 +299,7 @@ function installShell(): void {
       .ev-topbar nav::-webkit-scrollbar { display: none; }
       .ev-topbar button, .ev-topbar a { padding: 7px 10px; white-space: nowrap; }
       .ev-topbar h1 { font-size: 17px; }
+      #ev-panel { top: auto; left: 10px; right: 10px; bottom: 10px; width: auto; max-height: 42vh; }
       #ev-custodian-overlay { padding: 10px; align-items: stretch; }
       .ev-dialog { width: auto; min-height: 58vh; max-height: calc(100vh - 20px); padding: 12px; }
       .ev-dialog-form { grid-template-columns: 1fr; }
@@ -373,6 +383,9 @@ function bindInput(): void {
     if (viewMode === "walk") enterWalkMode();
   });
   renderer.domElement.addEventListener("wheel", handleWheelZoom, { passive: false });
+  renderer.domElement.addEventListener("touchstart", handleMapTouchStart, { passive: false });
+  renderer.domElement.addEventListener("touchmove", handleMapTouchMove, { passive: false });
+  renderer.domElement.addEventListener("touchend", handleMapTouchEnd, { passive: false });
   modeButton.addEventListener("click", toggleMapMode);
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
@@ -454,7 +467,7 @@ function handleWheelZoom(event: WheelEvent): void {
   if (viewMode === "map") {
     const nextY = THREE.MathUtils.clamp(controls.object.position.y + amount * 1.8, 18, 118);
     controls.object.position.y = nextY;
-    camera.lookAt(controls.object.position.x, 0, controls.object.position.z - 8);
+    lookAtMapCenter();
     hintLine.textContent = "Map mode. Scroll zooms. WASD pans. Press M for 3D.";
     return;
   }
@@ -468,21 +481,90 @@ function handleWheelZoom(event: WheelEvent): void {
   hintLine.textContent = "Scroll zooms. WASD moves. Space/Z changes depth.";
 }
 
+function handleMapTouchStart(event: TouchEvent): void {
+  if (viewMode !== "map" || custodianDialogOpen()) return;
+  event.preventDefault();
+  const first = event.touches[0];
+  if (!first) return;
+  mobileMapTouch = {
+    startedAt: performance.now(),
+    startX: first.clientX,
+    startY: first.clientY,
+    startCamera: controls.object.position.clone(),
+    startDistance: event.touches.length > 1 ? touchDistance(event.touches[0], event.touches[1]) : undefined,
+  };
+}
+
+function handleMapTouchMove(event: TouchEvent): void {
+  if (viewMode !== "map" || !mobileMapTouch || custodianDialogOpen()) return;
+  event.preventDefault();
+  if (event.touches.length > 1 && mobileMapTouch.startDistance) {
+    const distance = touchDistance(event.touches[0], event.touches[1]);
+    const zoom = (mobileMapTouch.startDistance - distance) * 0.16;
+    controls.object.position.y = THREE.MathUtils.clamp(mobileMapTouch.startCamera.y + zoom, 18, 122);
+  }
+  const first = event.touches[0];
+  if (!first) return;
+  const scale = THREE.MathUtils.clamp(controls.object.position.y / 72, 0.35, 1.7);
+  controls.object.position.x = mobileMapTouch.startCamera.x - (first.clientX - mobileMapTouch.startX) * 0.06 * scale;
+  controls.object.position.z = mobileMapTouch.startCamera.z - (first.clientY - mobileMapTouch.startY) * 0.06 * scale;
+  lookAtMapCenter();
+  hintLine.textContent = "Mobile map. Drag pans, pinch zooms, tap a node to inspect.";
+}
+
+function handleMapTouchEnd(event: TouchEvent): void {
+  if (viewMode !== "map" || !mobileMapTouch || custodianDialogOpen()) return;
+  event.preventDefault();
+  const changed = event.changedTouches[0];
+  const travel = changed ? Math.hypot(changed.clientX - mobileMapTouch.startX, changed.clientY - mobileMapTouch.startY) : 999;
+  const elapsed = performance.now() - mobileMapTouch.startedAt;
+  const wasTap = travel < 10 && elapsed < 320;
+  mobileMapTouch = null;
+  if (!wasTap || !changed) return;
+  setPointerFromClient(changed.clientX, changed.clientY);
+  updateFocus();
+  inspectFocusedNode();
+}
+
+function touchDistance(a: Touch, b: Touch): number {
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+function setPointerFromClient(clientX: number, clientY: number): void {
+  pointer.x = (clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(clientY / window.innerHeight) * 2 + 1;
+}
+
+function lookAtMapCenter(): void {
+  camera.lookAt(controls.object.position.x, 0, controls.object.position.z - 8);
+}
+
+function isTouchMapDevice(): boolean {
+  return window.matchMedia("(pointer: coarse)").matches || window.innerWidth < 760;
+}
+
 function toggleMapMode(): void {
   if (viewMode === "map") {
     enterWalkMode();
     return;
   }
+  enterMapMode();
+}
+
+function enterMapMode(reason = "manual"): void {
   viewMode = "map";
   navigationEnabled = true;
   keys.clear();
   controls.unlock();
   modeButton.textContent = "3D";
   crosshair.style.display = "none";
-  controls.object.position.set(7, 72, 13);
-  camera.lookAt(7, 0, 5);
+  const height = reason === "mobile" ? 92 : 72;
+  controls.object.position.set(7, height, 13);
+  lookAtMapCenter();
   velocity.set(0, 0, 0);
-  hintLine.textContent = "Map mode. WASD pans the overview. Press M for 3D.";
+  hintLine.textContent = isTouchMapDevice()
+    ? "Mobile map. Drag pans, pinch zooms, tap a node to inspect."
+    : "Map mode. WASD pans the overview. Press M for 3D.";
 }
 
 async function loadMap(refresh: boolean): Promise<void> {
@@ -496,6 +578,7 @@ async function loadMap(refresh: boolean): Promise<void> {
   }
   serverMap = await jsonFetch<ServerMap>("/api/admin/euthernet/map");
   buildCity(serverMap);
+  if (isTouchMapDevice()) enterMapMode("mobile");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
 }
 
@@ -989,7 +1072,7 @@ function updateMapMovement(delta: number): void {
   if (keys.has("KeyS")) controls.object.position.z += step;
   if (keys.has("KeyA")) controls.object.position.x -= step;
   if (keys.has("KeyD")) controls.object.position.x += step;
-  camera.lookAt(controls.object.position.x, 0, controls.object.position.z - 8);
+  lookAtMapCenter();
 }
 
 function updateFocus(): void {
@@ -1004,7 +1087,11 @@ function updateFocus(): void {
   restartButton.disabled = !(node && restartCommandForNode(node));
   updateControlsGuide(node);
   if (viewMode === "map") {
-    hintLine.textContent = node ? `Map target: ${node.label} | E inspect` : "Map mode. WASD pans the overview. Press M for 3D.";
+    hintLine.textContent = node
+      ? `Map target: ${node.label} | tap/press E inspect`
+      : isTouchMapDevice()
+        ? "Mobile map. Drag pans, pinch zooms, tap a node to inspect."
+        : "Map mode. WASD pans the overview. Press M for 3D.";
     return;
   }
   hintLine.textContent = node
@@ -1212,16 +1299,25 @@ function updateControlsGuide(node: SceneNode | null): void {
   const controlsList = document.querySelector<HTMLElement>("#ev-controls-list");
   if (!objective || !controlsList) return;
 
-  const rows: Array<[string, string]> = [
-    ["WASD", viewMode === "map" ? "Pan overview" : "Move"],
-    ["Mouse", viewMode === "map" ? "Disabled in map" : "Look"],
-    ["Scroll", viewMode === "map" ? "Zoom overview" : "Move closer/farther"],
-    ["Space", viewMode === "map" ? "Not used" : "Ascend"],
-    ["Z", viewMode === "map" ? "Not used" : "Descend"],
-    ["E", "Inspect target"],
-    ["M", viewMode === "map" ? "Return to 3D" : "Map mode"],
-    ["R", "Refresh inventory"],
-  ];
+  const mobileMap = viewMode === "map" && isTouchMapDevice();
+  const rows: Array<[string, string]> = mobileMap
+    ? [
+        ["Drag", "Pan map"],
+        ["Pinch", "Zoom map"],
+        ["Tap", "Inspect node"],
+        ["3D", "Enter walk mode"],
+        ["Refresh", "Reload inventory"],
+      ]
+    : [
+        ["WASD", viewMode === "map" ? "Pan overview" : "Move"],
+        ["Mouse", viewMode === "map" ? "Disabled in map" : "Look"],
+        ["Scroll", viewMode === "map" ? "Zoom overview" : "Move closer/farther"],
+        ["Space", viewMode === "map" ? "Not used" : "Ascend"],
+        ["Z", viewMode === "map" ? "Not used" : "Descend"],
+        ["E", "Inspect target"],
+        ["M", viewMode === "map" ? "Return to 3D" : "Map mode"],
+        ["R", "Refresh inventory"],
+      ];
 
   if (roomMode === "eutherbooks") {
     rows.push(["F", "Back through portal"]);
@@ -1240,7 +1336,9 @@ function updateControlsGuide(node: SceneNode | null): void {
     rows.push(["Esc", "Release cursor"]);
     objective.textContent = node
       ? cityObjectiveFor(node)
-      : "Click Enter for mouse look. Move like an inspection diver around the server city: WASD across, Space/Z up and down. Aim at EutherBooks, then press F or Enter Node.";
+      : mobileMap
+        ? "Mobile map mode. Drag to pan, pinch to zoom, tap a node to inspect it. Use 3D when you want to enter walk mode."
+        : "Click Enter for mouse look. Move like an inspection diver around the server city: WASD across, Space/Z up and down. Aim at EutherBooks, then press F or Enter Node.";
   }
 
   controlsList.innerHTML = rows
