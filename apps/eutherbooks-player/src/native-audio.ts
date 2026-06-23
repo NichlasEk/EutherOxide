@@ -10,6 +10,7 @@ export type NativeAudioState = {
   positionSeconds: number;
   durationSeconds: number;
   lastEvent: string;
+  statusEvent: string;
   error: string;
   wakeLockHeld: boolean;
   wifiLockHeld: boolean;
@@ -27,6 +28,7 @@ const unavailableState: NativeAudioState = {
   positionSeconds: 0,
   durationSeconds: 0,
   lastEvent: "Native audio unavailable",
+  statusEvent: "Native audio unavailable",
   error: "",
   wakeLockHeld: false,
   wifiLockHeld: false,

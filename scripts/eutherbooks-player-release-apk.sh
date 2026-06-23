@@ -1619,9 +1619,9 @@ class NativeAudioService : Service() {
         @JvmStatic
         fun stateJson(event: String): String {
             val snapshot = snapshot()
-            val eventText = if (event.isNotBlank()) event else snapshot.lastEvent
+            val statusEvent = if (event.isNotBlank()) event else snapshot.lastEvent
             synchronized(lock) {
-                rememberEvent(eventText)
+                rememberEvent(statusEvent)
             }
             val recent = JSONArray()
             snapshot().recentEvents.forEach { recent.put(it) }
@@ -1634,7 +1634,8 @@ class NativeAudioService : Service() {
                 .put("queueSize", snapshot.queueSize)
                 .put("positionSeconds", snapshot.positionMs / 1000.0)
                 .put("durationSeconds", snapshot.durationMs / 1000.0)
-                .put("lastEvent", eventText)
+                .put("lastEvent", snapshot.lastEvent)
+                .put("statusEvent", statusEvent)
                 .put("error", snapshot.error)
                 .put("wakeLockHeld", snapshot.wakeLockHeld)
                 .put("wifiLockHeld", snapshot.wifiLockHeld)
