@@ -60,6 +60,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
+const SECONDSIGHT_PATH: &str = "/secondsight";
 const SERVER_MAP_PATH: &str = "/server-map";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
@@ -2206,6 +2207,15 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return send_error(stream, 403, &err.to_string());
             }
             send_camera_admin_page(stream)
+        }
+        ("GET", SECONDSIGHT_PATH) => {
+            let Some(user) = authenticated_user(state, &request)? else {
+                return send_login_page(stream, None);
+            };
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            proxy_camera_ai_request_to_path(stream, &request, "/secondsight")
         }
         _ => {
             if is_euthernet_admin_proxy_path(path) {
@@ -7663,6 +7673,14 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
 }
 
 fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    proxy_camera_ai_request_to_path(stream, request, &camera_ai_upstream_path(&request.path))
+}
+
+fn proxy_camera_ai_request_to_path(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    upstream_path: &str,
+) -> io::Result<()> {
     if !matches!(request.method.as_str(), "GET" | "POST") {
         return send_error(stream, 405, "method not allowed");
     }
@@ -7674,7 +7692,6 @@ fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io:
     };
     upstream.set_read_timeout(Some(Duration::from_secs(8)))?;
     upstream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    let upstream_path = camera_ai_upstream_path(&request.path);
     write!(
         upstream,
         "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
@@ -8543,6 +8560,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       </div>
       <nav class="actions">
         <a href="/">EutherHost</a>
+        <a href="/secondsight">SecondSight</a>
         <a href="http://192.168.32.186:8081/" target="_blank" rel="noreferrer">Frigate</a>
       </nav>
     </header>
