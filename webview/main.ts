@@ -7811,6 +7811,7 @@ function renderWorkspaceWindow(): void {
   workspaceWindowDynamic.hidden = showingShopping;
   workspaceWindowLayer.classList.toggle("is-shopping", showingShopping);
   workspaceWindowLayer.classList.toggle("is-books", windowName === "books");
+  workspaceWindowLayer.classList.toggle("is-eutherium", windowName === "eutherium");
   workspaceWindowLayer.classList.toggle("is-social", !showingShopping);
   workspaceWindowLayer.classList.toggle("is-social-chat", windowName === "interaction");
   if (showingShopping) {

@@ -6836,6 +6836,7 @@ h2 {
 .eutherium-balance-panel,
 .eutherium-trophy-panel,
 .eutherium-award-panel,
+.eutherium-jox-offers-panel,
 .eutherium-shop-panel,
 .eutherium-inventory-panel,
 .eutherium-ledger-panel {
@@ -8485,6 +8486,16 @@ h2 {
 
   .workspace-window-dynamic {
     overflow: hidden;
+  }
+
+  .workspace-window-layer.is-eutherium .workspace-window-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workspace-window-layer.is-eutherium .workspace-window-dynamic {
+    overflow: visible;
   }
 
   .workspace-window-layer.is-books .workspace-window-body {
