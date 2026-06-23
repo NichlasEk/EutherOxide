@@ -1390,8 +1390,7 @@ async function playbackWatchdogTick(): Promise<void> {
   }
   stuckPlaybackTicks += 1;
   lastWatchdogDiagnosis = playbackStallDiagnosis(nativeAudioState());
-  const recoveryThreshold = nativePlaybackActive ? 3 : 12;
-  if (stuckPlaybackTicks < recoveryThreshold || watchdogRecovering) {
+  if (stuckPlaybackTicks < 12 || watchdogRecovering) {
     return;
   }
   watchdogRecovering = true;

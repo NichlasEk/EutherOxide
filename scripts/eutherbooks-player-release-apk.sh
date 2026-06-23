@@ -429,9 +429,13 @@ class NativeAudioService : Service() {
     private var noisyReceiverRegistered = false
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                handlePause("Native playback paused: headphones disconnected")
+        if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+            synchronized(lock) {
+                lastEvent = "Paused because headphones disconnected"
+                rememberEvent(lastEvent)
             }
+            handlePause()
+        }
         }
     }
 
@@ -448,7 +452,7 @@ class NativeAudioService : Service() {
         when (intent?.action) {
             ACTION_PLAY_QUEUE -> handlePlayQueue(intent)
             ACTION_UPDATE_QUEUE -> handleUpdateQueue(intent)
-            ACTION_PAUSE -> handlePause("Native playback paused by command")
+            ACTION_PAUSE -> handlePause()
             ACTION_RESUME -> handleResume()
             ACTION_TOGGLE_PLAYBACK -> handleTogglePlayback()
             ACTION_PREVIOUS -> handlePrevious()
@@ -509,7 +513,7 @@ class NativeAudioService : Service() {
         playCurrent(positionMs)
     }
 
-    private fun handlePause(reason: String = "Native playback paused") {
+    private fun handlePause() {
         player?.let {
             if (it.isPlaying) {
                 it.pause()
@@ -518,7 +522,7 @@ class NativeAudioService : Service() {
         synchronized(lock) {
             positionMs = currentPositionMs()
             playing = false
-            lastEvent = reason
+            lastEvent = "Native playback paused"
             rememberEvent(lastEvent)
         }
         releasePlaybackLocks()
@@ -1219,7 +1223,7 @@ class NativeAudioService : Service() {
                 }
 
                 override fun onPause() {
-                    handlePause("Native playback paused by media session")
+                    handlePause()
                 }
 
                 override fun onSkipToNext() {
@@ -1245,7 +1249,7 @@ class NativeAudioService : Service() {
                     }
                     when (event.keyCode) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> handleResume()
-                        KeyEvent.KEYCODE_MEDIA_PAUSE -> handlePause("Native playback paused by media button")
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> handlePause()
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> handleTogglePlayback()
                         KeyEvent.KEYCODE_MEDIA_NEXT -> handleNext()
                         KeyEvent.KEYCODE_MEDIA_PREVIOUS -> handlePrevious()
@@ -1261,7 +1265,7 @@ class NativeAudioService : Service() {
 
     private fun handleTogglePlayback() {
         if (snapshot().playing) {
-            handlePause("Native playback paused by toggle")
+            handlePause()
         } else {
             handleResume()
         }
@@ -1345,7 +1349,7 @@ class NativeAudioService : Service() {
                 )
                 .setOnAudioFocusChangeListener { change ->
                     if (change == AudioManager.AUDIOFOCUS_LOSS) {
-                        handlePause("Native playback paused: audio focus loss")
+                        handlePause()
                     }
                 }
                 .build()
@@ -1450,30 +1454,6 @@ class NativeAudioService : Service() {
         } catch (_err: Exception) {
         }
         noisyReceiverRegistered = false
-    }
-
-    private fun repairPlaybackSessionIfNeeded() {
-        val shouldRepair = synchronized(lock) {
-            active && !ended && (playing || lastEvent.contains("buffering", ignoreCase = true))
-        }
-        if (!shouldRepair) {
-            return
-        }
-        val missingSessionResource = playbackWakeLock?.isHeld != true
-            || playbackWifiLock?.isHeld != true
-            || !noisyReceiverRegistered
-        if (!missingSessionResource) {
-            return
-        }
-        requestAudioFocus()
-        acquirePlaybackLocks()
-        registerNoisyReceiver()
-        ensureMediaSession()
-        startForeground(NOTIFICATION_ID, notification())
-        synchronized(lock) {
-            lastEvent = "Native playback session repaired"
-            rememberEvent(lastEvent)
-        }
     }
 
     private fun ensureChannel() {
@@ -1638,7 +1618,6 @@ class NativeAudioService : Service() {
 
         @JvmStatic
         fun stateJson(event: String): String {
-            currentService?.repairPlaybackSessionIfNeeded()
             val snapshot = snapshot()
             val eventText = if (event.isNotBlank()) event else snapshot.lastEvent
             synchronized(lock) {
