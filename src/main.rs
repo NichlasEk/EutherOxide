@@ -1190,13 +1190,33 @@ struct HostEutheriumLedgerEntry {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HostEutheriumItem {
-    id: &'static str,
-    name: &'static str,
-    item_type: &'static str,
+    id: String,
+    name: String,
+    item_type: String,
     price: i64,
-    description: &'static str,
+    description: String,
     image_path: String,
-    rarity: &'static str,
+    rarity: String,
+    available_for_purchase: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jox_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provenance_status: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxShopListing {
+    id: String,
+    name: String,
+    description: String,
+    price: i64,
+    image_path: String,
+    jox_path: String,
+    provenance_status: String,
+    current_owner: String,
+    listed_by_user_id: String,
+    listed_unix_ms: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1238,6 +1258,19 @@ struct HostEutheriumAwardRequest {
 #[serde(rename_all = "camelCase")]
 struct HostShopBuyRequest {
     item_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxShopListingRequest {
+    artifact_id: String,
+    name: String,
+    description: String,
+    price: i64,
+    image_path: String,
+    jox_path: String,
+    provenance_status: String,
+    current_owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2025,7 +2058,14 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("GET", "/api/shop/items") => {
             require_host_user(state, &request)?;
-            send_json(stream, &serde_json::json!({ "items": host_shop_items() }))
+            send_json(stream, &serde_json::json!({ "items": host_shop_items()? }))
+        }
+        ("POST", "/api/shop/jox/listing") => {
+            let admin = require_host_admin(state, &request)?;
+            let listing: HostJoxShopListingRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            upsert_host_jox_shop_listing(&admin, listing)?;
+            send_json(stream, &serde_json::json!({ "ok": true, "items": host_shop_items()? }))
         }
         ("POST", "/api/shop/buy") => {
             let user = require_host_user(state, &request)?;
@@ -4422,7 +4462,7 @@ fn host_eutherium_me(state: &HostState, user: &str) -> io::Result<serde_json::Va
         "balance": host_eutherium_balance(user)?,
         "ledger": host_eutherium_user_ledger(user, 12)?,
         "inventory": host_inventory_entries(user)?,
-        "items": host_shop_items(),
+        "items": host_shop_items()?,
         "trophyRoom": host_trophy_room_result(user)?,
     }))
 }
@@ -4503,12 +4543,17 @@ fn award_host_eutherium(
 
 fn buy_host_shop_item(user: &str, item_id: &str) -> io::Result<()> {
     let item_id = item_id.trim();
-    let Some(item) = host_shop_items()
+    let Some(item) = host_shop_items()?
         .into_iter()
         .find(|item| item.id == item_id)
     else {
         return Err(invalid_request("shop item not found"));
     };
+    if !item.available_for_purchase || item.item_type == "jox_artifact" {
+        return Err(invalid_request(
+            "JOX artifacts need a receiver acceptance flow before purchase",
+        ));
+    }
     if host_eutherium_balance(user)? < item.price {
         return Err(invalid_request("not enough Eutherium"));
     }
@@ -4536,12 +4581,12 @@ fn host_inventory_result(user: &str) -> io::Result<serde_json::Value> {
     Ok(serde_json::json!({
         "user": user,
         "inventory": host_inventory_entries(user)?,
-        "items": host_shop_items(),
+        "items": host_shop_items()?,
     }))
 }
 
 fn host_inventory_entries(user: &str) -> io::Result<Vec<serde_json::Value>> {
-    let items = host_shop_items();
+    let items = host_shop_items()?;
     Ok(load_host_inventory()?
         .into_iter()
         .filter(|entry| entry.user_id == user)
@@ -4723,72 +4768,184 @@ fn save_host_inventory(inventory: &[HostInventoryEntry]) -> io::Result<()> {
     fs::write(path, bytes)
 }
 
-fn host_shop_items() -> Vec<HostEutheriumItem> {
-    vec![
+fn host_shop_items() -> io::Result<Vec<HostEutheriumItem>> {
+    let mut items = vec![
         HostEutheriumItem {
-            id: "goat",
-            name: "Goat",
-            item_type: "creature",
+            id: "goat".to_string(),
+            name: "Goat".to_string(),
+            item_type: "creature".to_string(),
             price: 1000,
-            description: "A proud trophy goat for serious family infrastructure.",
+            description: "A proud trophy goat for serious family infrastructure.".to_string(),
             image_path: host_trophy_icon("goat"),
-            rarity: "rare",
+            rarity: "rare".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
         HostEutheriumItem {
-            id: "goat-fez",
-            name: "Fez for Goat",
-            item_type: "accessory",
+            id: "goat-fez".to_string(),
+            name: "Fez for Goat".to_string(),
+            item_type: "accessory".to_string(),
             price: 500,
-            description: "Small hat, major authority. Can later be equipped to a goat.",
+            description: "Small hat, major authority. Can later be equipped to a goat.".to_string(),
             image_path: host_trophy_icon("goat-fez"),
-            rarity: "deeply unnecessary",
+            rarity: "deeply unnecessary".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
         HostEutheriumItem {
-            id: "soft-cheese-monument",
-            name: "Soft Cheese Monument",
-            item_type: "monument",
+            id: "soft-cheese-monument".to_string(),
+            name: "Soft Cheese Monument".to_string(),
+            item_type: "monument".to_string(),
             price: 1200,
-            description: "A strange creamy landmark for the trophy shelf.",
+            description: "A strange creamy landmark for the trophy shelf.".to_string(),
             image_path: host_trophy_icon("soft-cheese-monument"),
-            rarity: "rare",
+            rarity: "rare".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
         HostEutheriumItem {
-            id: "angry-duck",
-            name: "Angry Duck",
-            item_type: "creature",
+            id: "angry-duck".to_string(),
+            name: "Angry Duck".to_string(),
+            item_type: "creature".to_string(),
             price: 800,
-            description: "Judges the room silently and often correctly.",
+            description: "Judges the room silently and often correctly.".to_string(),
             image_path: host_trophy_icon("angry-duck"),
-            rarity: "common",
+            rarity: "common".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
         HostEutheriumItem {
-            id: "mpa-inspector-cage",
-            name: "MPA Inspector in Cage",
-            item_type: "oddity",
+            id: "mpa-inspector-cage".to_string(),
+            name: "MPA Inspector in Cage".to_string(),
+            item_type: "oddity".to_string(),
             price: 2500,
-            description: "A regulatory artifact with excellent shelf presence.",
+            description: "A regulatory artifact with excellent shelf presence.".to_string(),
             image_path: host_trophy_icon("mpa-inspector-cage"),
-            rarity: "legendary",
+            rarity: "legendary".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
         HostEutheriumItem {
-            id: "broken-stool",
-            name: "Broken Stool",
-            item_type: "furniture",
+            id: "broken-stool".to_string(),
+            name: "Broken Stool".to_string(),
+            item_type: "furniture".to_string(),
             price: 300,
-            description: "It has seen things. It refuses to elaborate.",
+            description: "It has seen things. It refuses to elaborate.".to_string(),
             image_path: host_trophy_icon("broken-stool"),
-            rarity: "common",
+            rarity: "common".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
         HostEutheriumItem {
-            id: "purple-server-relic",
-            name: "Purple Server Relic",
-            item_type: "relic",
+            id: "purple-server-relic".to_string(),
+            name: "Purple Server Relic".to_string(),
+            item_type: "relic".to_string(),
             price: 5000,
-            description: "A humming relic from an older chamber.",
+            description: "A humming relic from an older chamber.".to_string(),
             image_path: host_trophy_icon("purple-server-relic"),
-            rarity: "legendary",
+            rarity: "legendary".to_string(),
+            available_for_purchase: true,
+            jox_path: None,
+            provenance_status: None,
         },
-    ]
+    ];
+    items.extend(load_host_jox_shop_listings()?.into_iter().map(|listing| {
+        HostEutheriumItem {
+            id: format!("jox:{}", listing.id),
+            name: listing.name,
+            item_type: "jox_artifact".to_string(),
+            price: listing.price,
+            description: listing.description,
+            image_path: listing.image_path,
+            rarity: format!("JOX {}", listing.provenance_status),
+            available_for_purchase: false,
+            jox_path: Some(listing.jox_path),
+            provenance_status: Some(listing.provenance_status),
+        }
+    }));
+    Ok(items)
+}
+
+fn load_host_jox_shop_listings() -> io::Result<Vec<HostJoxShopListing>> {
+    match fs::read_to_string(host_eutherium_jox_shop_path()) {
+        Ok(contents) => {
+            serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_host_jox_shop_listings(listings: &[HostJoxShopListing]) -> io::Result<()> {
+    let path = host_eutherium_jox_shop_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(listings).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn upsert_host_jox_shop_listing(
+    admin: &str,
+    listing: HostJoxShopListingRequest,
+) -> io::Result<()> {
+    let artifact_id = listing.artifact_id.trim();
+    if artifact_id.is_empty() || artifact_id.len() > 96 {
+        return Err(invalid_request("invalid JOX artifact id"));
+    }
+    if listing.provenance_status.trim() != "valid" {
+        return Err(invalid_request("only valid JOX artifacts can enter the Trophy Shop"));
+    }
+    if listing.price < 0 || listing.price > 1_000_000 {
+        return Err(invalid_request("JOX price must be between 0 and 1000000"));
+    }
+    let name = listing.name.trim();
+    if name.is_empty() || name.len() > 120 {
+        return Err(invalid_request("JOX name must be 1-120 characters"));
+    }
+    let description = listing.description.trim();
+    if description.is_empty() || description.len() > 500 {
+        return Err(invalid_request("JOX description must be 1-500 characters"));
+    }
+    let image_path = listing.image_path.trim();
+    let jox_path = listing.jox_path.trim();
+    if image_path.is_empty() || image_path.len() > 1000 {
+        return Err(invalid_request("invalid JOX image path"));
+    }
+    if jox_path.is_empty() || jox_path.len() > 1000 {
+        return Err(invalid_request("invalid JOX path"));
+    }
+
+    let item = HostJoxShopListing {
+        id: artifact_id.to_string(),
+        name: name.to_string(),
+        description: description.to_string(),
+        price: listing.price,
+        image_path: image_path.to_string(),
+        jox_path: jox_path.to_string(),
+        provenance_status: "valid".to_string(),
+        current_owner: listing
+            .current_owner
+            .map(|owner| owner.trim().to_string())
+            .filter(|owner| !owner.is_empty())
+            .unwrap_or_else(|| "SecondSight".to_string()),
+        listed_by_user_id: admin.to_string(),
+        listed_unix_ms: unix_ms_now(),
+    };
+    let mut listings = load_host_jox_shop_listings()?;
+    if let Some(existing) = listings.iter_mut().find(|existing| existing.id == item.id) {
+        *existing = item;
+    } else {
+        listings.push(item);
+    }
+    save_host_jox_shop_listings(&listings)
 }
 
 fn host_trophy_icon(kind: &str) -> String {
@@ -13137,6 +13294,10 @@ fn host_eutherium_ledger_path() -> PathBuf {
 
 fn host_eutherium_inventory_path() -> PathBuf {
     host_eutherium_dir().join("inventory.json")
+}
+
+fn host_eutherium_jox_shop_path() -> PathBuf {
+    host_eutherium_dir().join("jox-shop.json")
 }
 
 fn host_trophy_room_layout_path(user: &str) -> PathBuf {

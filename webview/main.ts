@@ -602,6 +602,9 @@ type EutheriumShopItem = {
   description: string;
   imagePath: string;
   rarity: string;
+  availableForPurchase?: boolean;
+  joxPath?: string | null;
+  provenanceStatus?: string | null;
 };
 
 type EutheriumLedgerEntry = {
@@ -11148,7 +11151,11 @@ function trophyPreviewMarkup(data: EutheriumMeResult): string {
 }
 
 function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
-  const affordable = balance >= item.price;
+  const available = item.availableForPurchase !== false;
+  const affordable = available && balance >= item.price;
+  const actionText = available
+    ? `Buy ${formatEutherium(item.price)} EUX`
+    : "Awaiting accept flow";
   return `
     <article class="eutherium-item-card rarity-${escapeHtml(item.rarity.replaceAll(" ", "-"))}">
       <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
@@ -11158,7 +11165,7 @@ function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
         <p>${escapeHtml(item.description)}</p>
       </div>
       <button data-eutherium-buy="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
-        Buy ${formatEutherium(item.price)} EUX
+        ${escapeHtml(actionText)}
       </button>
     </article>
   `;
@@ -11485,6 +11492,9 @@ function formatEutherium(value: number): string {
 }
 
 function eutheriumItemIconUrl(item: EutheriumShopItem): string {
+  if (item.itemType === "jox_artifact" && item.imagePath) {
+    return item.imagePath;
+  }
   const match = Object.entries(eutheriumIconModules).find(([path]) => path.endsWith(`/${item.id}.png`));
   return match?.[1] ?? item.imagePath;
 }
