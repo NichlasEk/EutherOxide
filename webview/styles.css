@@ -6826,6 +6826,11 @@ h2 {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
   gap: 12px;
+  align-items: start;
+}
+
+.eutherium-mobile-nav {
+  display: none;
 }
 
 .eutherium-balance-panel,
@@ -6868,9 +6873,14 @@ h2 {
   min-height: 420px;
 }
 
+.eutherium-mobile-hint {
+  display: none;
+}
+
 .trophy-room {
   position: relative;
   min-height: 330px;
+  isolation: isolate;
   overflow: hidden;
   touch-action: none;
   border: 1px solid rgba(214, 233, 95, 0.22);
@@ -6879,6 +6889,19 @@ h2 {
     linear-gradient(180deg, rgba(23, 35, 24, 0.95) 0 54%, rgba(42, 31, 19, 0.98) 54%),
     repeating-linear-gradient(0deg, transparent 0 31px, rgba(214, 233, 95, 0.06) 31px 32px);
   box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.45);
+}
+
+.trophy-room-grid-label {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  z-index: 0;
+  color: rgba(214, 233, 95, 0.44);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
 }
 
 .trophy-room::before {
@@ -6894,6 +6917,7 @@ h2 {
 
 .trophy-room-item {
   position: absolute;
+  z-index: 1;
   width: 74px;
   height: 74px;
   padding: 0;
@@ -7025,7 +7049,7 @@ h2 {
 .trophy-controls button,
 .eutherium-item-card button,
 .eutherium-inventory-card button {
-  min-height: 34px;
+  min-height: 38px;
   padding: 0 8px;
   font-size: 0.7rem;
   font-weight: 900;
@@ -7077,6 +7101,14 @@ h2 {
   border: 1px solid rgba(165, 222, 114, 0.16);
   border-radius: 8px;
   background: rgba(4, 10, 7, 0.64);
+}
+
+.eutherium-item-card button,
+.eutherium-inventory-card button,
+.trophy-controls button,
+.eutherium-balance-panel button {
+  border-radius: 8px;
+  touch-action: manipulation;
 }
 
 .eutherium-item-card img,
@@ -7902,6 +7934,32 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .eutherium-mobile-nav {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 7px;
+    padding: 7px;
+    border: 1px solid rgba(165, 222, 114, 0.18);
+    border-radius: 8px;
+    background: rgba(4, 13, 8, 0.94);
+    backdrop-filter: blur(12px);
+  }
+
+  .eutherium-mobile-nav a {
+    display: grid;
+    place-items: center;
+    min-height: 38px;
+    border: 1px solid rgba(165, 222, 114, 0.22);
+    border-radius: 8px;
+    color: #edf6dd;
+    font-size: 0.72rem;
+    font-weight: 900;
+    text-decoration: none;
+  }
+
   .controls-body {
     grid-template-columns: 1fr;
   }
@@ -8229,7 +8287,32 @@ h2 {
     white-space: normal;
   }
   .trophy-controls {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 8px;
+    border: 1px solid rgba(165, 222, 114, 0.18);
+    border-radius: 8px;
+    background: rgba(4, 13, 8, 0.94);
+    backdrop-filter: blur(12px);
+  }
+
+  .eutherium-mobile-hint {
+    display: block;
+    margin: 0;
+    color: #b8c9a8;
+    font-size: 0.76rem;
+    line-height: 1.35;
+  }
+
+  .trophy-room {
+    min-height: clamp(260px, 48dvh, 420px);
+  }
+
+  .trophy-room-item {
+    width: 64px;
+    height: 64px;
   }
 
   .trophy-preview {
@@ -8250,6 +8333,21 @@ h2 {
   .eutherium-inventory-card,
   .eutherium-ledger-entry {
     grid-template-columns: 54px minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .eutherium-item-card img,
+  .eutherium-inventory-card img {
+    width: 54px;
+    height: 54px;
+  }
+
+  .eutherium-item-card button,
+  .eutherium-inventory-card button {
+    min-height: 44px;
+    width: 100%;
+    font-size: 0.76rem;
   }
 
   .eutherium-item-card button,

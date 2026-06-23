@@ -7847,7 +7847,13 @@ function eutheriumWindowMarkup(): string {
         </div>
         <button class="mini-action" data-eutherium-refresh type="button">Sync</button>
       </section>
-      <section class="eutherium-trophy-panel">
+      <nav class="eutherium-mobile-nav" aria-label="Eutherium sections">
+        <a href="#eutherium-room">Room</a>
+        <a href="#eutherium-shop">Shop</a>
+        <a href="#eutherium-inventory">Inventory</a>
+        <a href="#eutherium-ledger">Ledger</a>
+      </nav>
+      <section class="eutherium-trophy-panel" id="eutherium-room">
         <div class="section-head">
           <div>
             <p class="section-label">Trophy Room</p>
@@ -7855,12 +7861,13 @@ function eutheriumWindowMarkup(): string {
           </div>
           <span>${data.trophyRoom.layout.items.length} placed</span>
         </div>
+        <p class="eutherium-mobile-hint">Tap a trophy to select it. Drag it in the room or use the move buttons below.</p>
         ${trophyRoomMarkup(data)}
         ${trophyPreviewMarkup(data)}
         ${trophyControlsMarkup()}
       </section>
       ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
-      <section class="eutherium-shop-panel">
+      <section class="eutherium-shop-panel" id="eutherium-shop">
         <div class="section-head">
           <p class="section-label">Shop</p>
           <span>No real money, only glory</span>
@@ -7869,7 +7876,7 @@ function eutheriumWindowMarkup(): string {
           ${data.items.map((item) => shopItemMarkup(item, data.balance)).join("")}
         </div>
       </section>
-      <section class="eutherium-inventory-panel">
+      <section class="eutherium-inventory-panel" id="eutherium-inventory">
         <div class="section-head">
           <p class="section-label">Inventory</p>
           <span>${data.inventory.length} trophies</span>
@@ -7878,7 +7885,7 @@ function eutheriumWindowMarkup(): string {
           ${data.inventory.length ? data.inventory.map((entry) => inventoryItemMarkup(entry, data.trophyRoom.layout)).join("") : `<span>No trophies yet</span>`}
         </div>
       </section>
-      <section class="eutherium-ledger-panel">
+      <section class="eutherium-ledger-panel" id="eutherium-ledger">
         <div class="section-head">
           <p class="section-label">Recent Ledger</p>
           <span>Traceable</span>
@@ -11064,6 +11071,7 @@ function eutheriumAwardPanelMarkup(): string {
 function trophyRoomMarkup(data: EutheriumMeResult): string {
   return `
     <div class="trophy-room trophy-bg-${escapeHtml(data.trophyRoom.layout.background)}">
+      <span class="trophy-room-grid-label">Drag trophies here</span>
       ${trophyRoomItemsMarkup(data)}
     </div>
   `;
@@ -11150,7 +11158,7 @@ function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
         <p>${escapeHtml(item.description)}</p>
       </div>
       <button data-eutherium-buy="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
-        ${formatEutherium(item.price)} EUX
+        Buy ${formatEutherium(item.price)} EUX
       </button>
     </article>
   `;
@@ -11166,7 +11174,7 @@ function inventoryItemMarkup(entry: EutheriumInventoryEntry, layout: TrophyRoomL
         <strong>${escapeHtml(item?.name ?? entry.itemId)}</strong>
         <span>${placed ? "Placed in room" : "In inventory"}</span>
       </div>
-      <button data-trophy-place="${escapeHtml(entry.id)}" type="button" ${placed ? "disabled" : ""}>Place</button>
+      <button data-trophy-place="${escapeHtml(entry.id)}" type="button" ${placed ? "disabled" : ""}>Place in room</button>
     </article>
   `;
 }
@@ -11328,7 +11336,7 @@ function startTrophyDrag(event: PointerEvent, button: HTMLButtonElement): void {
   };
   button.setPointerCapture(event.pointerId);
   event.preventDefault();
-  renderWorkspaceWindow();
+  highlightSelectedTrophy();
 }
 
 function updateTrophyDrag(event: PointerEvent): void {
@@ -11378,6 +11386,16 @@ function renderTrophyRoomLive(): void {
     return;
   }
   room.innerHTML = trophyRoomItemsMarkup(eutheriumMe);
+  highlightSelectedTrophy();
+}
+
+function highlightSelectedTrophy(): void {
+  if (activeWorkspaceWindow !== "eutherium") {
+    return;
+  }
+  workspaceWindowDynamic
+    .querySelectorAll<HTMLButtonElement>("[data-trophy-select]")
+    .forEach((button) => button.classList.toggle("is-selected", button.dataset.trophySelect === selectedTrophyInventoryId));
 }
 
 async function moveSelectedTrophy(action: string): Promise<void> {
