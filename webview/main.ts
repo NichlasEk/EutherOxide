@@ -11418,6 +11418,9 @@ async function respondJoxOffer(offerId: string, decision: string): Promise<void>
   if (!offerId || !decision) {
     return;
   }
+  const acceptedOffer = decision === "accept"
+    ? eutheriumMe?.joxOffers?.find((offer) => offer.id === offerId) ?? null
+    : null;
   eutheriumSaving = true;
   eutheriumStatus = decision === "accept" ? "Accepting JOX" : "Declining JOX";
   renderWorkspaceWindow();
@@ -11428,12 +11431,44 @@ async function respondJoxOffer(offerId: string, decision: string): Promise<void>
       1600,
     );
     eutheriumLoaded = true;
-    eutheriumStatus = decision === "accept" ? "JOX accepted" : "JOX declined";
+    if (decision === "accept" && acceptedOffer) {
+      await updateAcceptedJoxOwner(acceptedOffer);
+      eutheriumStatus = "JOX accepted and rehashed";
+    } else {
+      eutheriumStatus = decision === "accept" ? "JOX accepted" : "JOX declined";
+    }
   } catch (err) {
     eutheriumStatus = err instanceof Error ? err.message : "JOX response failed";
   } finally {
     eutheriumSaving = false;
     renderWorkspaceWindow();
+  }
+}
+
+async function updateAcceptedJoxOwner(offer: EutheriumJoxOffer): Promise<void> {
+  if (!hostUsername || !offer.joxPath) {
+    return;
+  }
+  const joxUrl = new URL(offer.joxPath, window.location.origin);
+  if (
+    joxUrl.origin !== window.location.origin ||
+    !joxUrl.pathname.startsWith("/api/camera/ai/api/secondsight/jox/")
+  ) {
+    throw new Error("JOX accepted, but file rehash URL was not trusted");
+  }
+  const metadataUrl = `${joxUrl.pathname.replace(/\/$/, "")}/metadata`;
+  const response = await bridgeJson<{ ok?: boolean; error?: string }>(
+    metadataUrl,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        current_owner: hostUsername,
+      }),
+    },
+    1600,
+  );
+  if (!response.ok) {
+    throw new Error(response.error || "JOX accepted, but file rehash failed");
   }
 }
 
