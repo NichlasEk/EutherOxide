@@ -626,6 +626,23 @@ type EutheriumInventoryEntry = {
   item?: EutheriumShopItem | null;
 };
 
+type EutheriumJoxOffer = {
+  id: string;
+  itemId: string;
+  artifactId: string;
+  recipientUserId: string;
+  createdByUserId: string;
+  price: number;
+  status: string;
+  name: string;
+  description: string;
+  imagePath: string;
+  joxPath: string;
+  provenanceStatus: string;
+  createdUnixMs: number;
+  decidedUnixMs?: number | null;
+};
+
 type TrophyRoomLayoutItem = {
   inventoryId: string;
   x: number;
@@ -651,6 +668,7 @@ type EutheriumMeResult = {
   ledger: EutheriumLedgerEntry[];
   inventory: EutheriumInventoryEntry[];
   items: EutheriumShopItem[];
+  joxOffers?: EutheriumJoxOffer[];
   trophyRoom: TrophyRoomResult;
 };
 
@@ -3000,6 +3018,16 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   const buy = target.closest<HTMLButtonElement>("[data-eutherium-buy]");
   if (buy) {
     await buyEutheriumItem(buy.dataset.eutheriumBuy ?? "");
+    return;
+  }
+  const joxOffer = target.closest<HTMLButtonElement>("[data-jox-offer]");
+  if (joxOffer) {
+    await requestJoxOffer(joxOffer.dataset.joxOffer ?? "");
+    return;
+  }
+  const joxResponse = target.closest<HTMLButtonElement>("[data-jox-offer-response]");
+  if (joxResponse) {
+    await respondJoxOffer(joxResponse.dataset.joxOfferResponse ?? "", joxResponse.dataset.joxDecision ?? "");
     return;
   }
   const award = target.closest<HTMLButtonElement>("[data-eutherium-award-submit]");
@@ -7870,6 +7898,7 @@ function eutheriumWindowMarkup(): string {
         ${trophyControlsMarkup()}
       </section>
       ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
+      ${joxOffersPanelMarkup(data)}
       <section class="eutherium-shop-panel" id="eutherium-shop">
         <div class="section-head">
           <p class="section-label">Shop</p>
@@ -11071,6 +11100,42 @@ function eutheriumAwardPanelMarkup(): string {
   `;
 }
 
+function joxOffersPanelMarkup(data: EutheriumMeResult): string {
+  const offers = data.joxOffers ?? [];
+  if (!offers.length) {
+    return "";
+  }
+  return `
+    <section class="eutherium-jox-offers-panel">
+      <div class="section-head">
+        <p class="section-label">JOX Offers</p>
+        <span>${offers.length} pending</span>
+      </div>
+      <div class="eutherium-jox-offers-list">
+        ${offers.map((offer) => joxOfferMarkup(offer, data.balance)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function joxOfferMarkup(offer: EutheriumJoxOffer, balance: number): string {
+  const affordable = balance >= offer.price;
+  return `
+    <article class="eutherium-jox-offer-card">
+      <img src="${escapeHtml(offer.imagePath)}" alt="" />
+      <div>
+        <span>${escapeHtml(offer.provenanceStatus)} / ${formatEutherium(offer.price)} EUX</span>
+        <strong>${escapeHtml(offer.name)}</strong>
+        <p>${escapeHtml(offer.description)}</p>
+      </div>
+      <div class="eutherium-jox-offer-actions">
+        <button data-jox-offer-response="${escapeHtml(offer.id)}" data-jox-decision="accept" type="button" ${affordable ? "" : "disabled"}>Accept</button>
+        <button data-jox-offer-response="${escapeHtml(offer.id)}" data-jox-decision="decline" type="button">Decline</button>
+      </div>
+    </article>
+  `;
+}
+
 function trophyRoomMarkup(data: EutheriumMeResult): string {
   return `
     <div class="trophy-room trophy-bg-${escapeHtml(data.trophyRoom.layout.background)}">
@@ -11151,6 +11216,22 @@ function trophyPreviewMarkup(data: EutheriumMeResult): string {
 }
 
 function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
+  if (item.itemType === "jox_artifact") {
+    const affordable = balance >= item.price;
+    return `
+      <article class="eutherium-item-card rarity-${escapeHtml(item.rarity.replaceAll(" ", "-"))}">
+        <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
+        <div>
+          <span>${escapeHtml(item.rarity)}</span>
+          <strong>${escapeHtml(item.name)}</strong>
+          <p>${escapeHtml(item.description)}</p>
+        </div>
+        <button data-jox-offer="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
+          Request ${formatEutherium(item.price)} EUX
+        </button>
+      </article>
+    `;
+  }
   const available = item.availableForPurchase !== false;
   const affordable = available && balance >= item.price;
   const actionText = available
@@ -11303,6 +11384,52 @@ async function buyEutheriumItem(itemId: string): Promise<void> {
     eutheriumStatus = "Bought";
   } catch (err) {
     eutheriumStatus = err instanceof Error ? err.message : "Buy failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function requestJoxOffer(itemId: string): Promise<void> {
+  if (!itemId) {
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Creating JOX offer";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/jox/offer",
+      { method: "POST", body: JSON.stringify({ itemId }) },
+      1400,
+    );
+    eutheriumLoaded = true;
+    eutheriumStatus = "JOX offer pending";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX offer failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function respondJoxOffer(offerId: string, decision: string): Promise<void> {
+  if (!offerId || !decision) {
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = decision === "accept" ? "Accepting JOX" : "Declining JOX";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/jox/offer/respond",
+      { method: "POST", body: JSON.stringify({ offerId, decision }) },
+      1600,
+    );
+    eutheriumLoaded = true;
+    eutheriumStatus = decision === "accept" ? "JOX accepted" : "JOX declined";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX response failed";
   } finally {
     eutheriumSaving = false;
     renderWorkspaceWindow();

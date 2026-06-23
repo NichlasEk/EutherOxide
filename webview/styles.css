@@ -7063,6 +7063,10 @@ h2 {
   grid-column: 1;
 }
 
+.eutherium-jox-offers-panel {
+  grid-column: 1 / -1;
+}
+
 .eutherium-award-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 92px minmax(0, 1.2fr) 86px;
@@ -7083,6 +7087,7 @@ h2 {
 
 .eutherium-shop-grid,
 .eutherium-inventory-grid,
+.eutherium-jox-offers-list,
 .eutherium-ledger-list {
   display: grid;
   gap: 8px;
@@ -7091,6 +7096,7 @@ h2 {
 
 .eutherium-item-card,
 .eutherium-inventory-card,
+.eutherium-jox-offer-card,
 .eutherium-ledger-entry {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) auto;
@@ -7105,6 +7111,7 @@ h2 {
 
 .eutherium-item-card button,
 .eutherium-inventory-card button,
+.eutherium-jox-offer-card button,
 .trophy-controls button,
 .eutherium-balance-panel button {
   border-radius: 8px;
@@ -7112,14 +7119,17 @@ h2 {
 }
 
 .eutherium-item-card img,
-.eutherium-inventory-card img {
+.eutherium-inventory-card img,
+.eutherium-jox-offer-card img {
   width: 64px;
   height: 64px;
   border-radius: 10px;
+  object-fit: contain;
 }
 
 .eutherium-item-card strong,
-.eutherium-inventory-card strong {
+.eutherium-inventory-card strong,
+.eutherium-jox-offer-card strong {
   display: block;
   overflow: hidden;
   color: #eef8dd;
@@ -7130,6 +7140,7 @@ h2 {
 
 .eutherium-item-card span,
 .eutherium-inventory-card span,
+.eutherium-jox-offer-card span,
 .eutherium-ledger-entry span,
 .eutherium-ledger-entry em {
   color: #9fbd91;
@@ -7143,6 +7154,19 @@ h2 {
   color: #b8c9a8;
   font-size: 0.68rem;
   line-height: 1.25;
+}
+
+.eutherium-jox-offer-card p {
+  margin: 3px 0 0;
+  color: #b8c9a8;
+  font-size: 0.68rem;
+  line-height: 1.25;
+}
+
+.eutherium-jox-offer-actions {
+  display: grid;
+  gap: 6px;
+  min-width: 96px;
 }
 
 .eutherium-inventory-card.is-selected {

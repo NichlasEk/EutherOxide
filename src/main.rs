@@ -1215,8 +1215,33 @@ struct HostJoxShopListing {
     jox_path: String,
     provenance_status: String,
     current_owner: String,
+    #[serde(default = "host_jox_listing_default_status")]
+    shop_status: String,
     listed_by_user_id: String,
     listed_unix_ms: u64,
+}
+
+fn host_jox_listing_default_status() -> String {
+    "listed".to_string()
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxTransferOffer {
+    id: String,
+    item_id: String,
+    artifact_id: String,
+    recipient_user_id: String,
+    created_by_user_id: String,
+    price: i64,
+    status: String,
+    name: String,
+    description: String,
+    image_path: String,
+    jox_path: String,
+    provenance_status: String,
+    created_unix_ms: u64,
+    decided_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1271,6 +1296,19 @@ struct HostJoxShopListingRequest {
     jox_path: String,
     provenance_status: String,
     current_owner: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxTransferOfferRequest {
+    item_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxTransferOfferResponseRequest {
+    offer_id: String,
+    decision: String,
 }
 
 #[derive(Deserialize)]
@@ -2066,6 +2104,20 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|err| invalid_request(err.to_string()))?;
             upsert_host_jox_shop_listing(&admin, listing)?;
             send_json(stream, &serde_json::json!({ "ok": true, "items": host_shop_items()? }))
+        }
+        ("POST", "/api/shop/jox/offer") => {
+            let user = require_host_user(state, &request)?;
+            let offer: HostJoxTransferOfferRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            create_host_jox_transfer_offer(&user, offer)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("POST", "/api/shop/jox/offer/respond") => {
+            let user = require_host_user(state, &request)?;
+            let response: HostJoxTransferOfferResponseRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            respond_host_jox_transfer_offer(&user, response)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
         }
         ("POST", "/api/shop/buy") => {
             let user = require_host_user(state, &request)?;
@@ -4463,6 +4515,7 @@ fn host_eutherium_me(state: &HostState, user: &str) -> io::Result<serde_json::Va
         "ledger": host_eutherium_user_ledger(user, 12)?,
         "inventory": host_inventory_entries(user)?,
         "items": host_shop_items()?,
+        "joxOffers": host_jox_transfer_offers_for_user(user)?,
         "trophyRoom": host_trophy_room_result(user)?,
     }))
 }
@@ -4586,7 +4639,7 @@ fn host_inventory_result(user: &str) -> io::Result<serde_json::Value> {
 }
 
 fn host_inventory_entries(user: &str) -> io::Result<Vec<serde_json::Value>> {
-    let items = host_shop_items()?;
+    let items = host_catalog_items()?;
     Ok(load_host_inventory()?
         .into_iter()
         .filter(|entry| entry.user_id == user)
@@ -4768,8 +4821,8 @@ fn save_host_inventory(inventory: &[HostInventoryEntry]) -> io::Result<()> {
     fs::write(path, bytes)
 }
 
-fn host_shop_items() -> io::Result<Vec<HostEutheriumItem>> {
-    let mut items = vec![
+fn host_static_shop_items() -> Vec<HostEutheriumItem> {
+    vec![
         HostEutheriumItem {
             id: "goat".to_string(),
             name: "Goat".to_string(),
@@ -4854,21 +4907,43 @@ fn host_shop_items() -> io::Result<Vec<HostEutheriumItem>> {
             jox_path: None,
             provenance_status: None,
         },
-    ];
-    items.extend(load_host_jox_shop_listings()?.into_iter().map(|listing| {
-        HostEutheriumItem {
-            id: format!("jox:{}", listing.id),
-            name: listing.name,
-            item_type: "jox_artifact".to_string(),
-            price: listing.price,
-            description: listing.description,
-            image_path: listing.image_path,
-            rarity: format!("JOX {}", listing.provenance_status),
-            available_for_purchase: false,
-            jox_path: Some(listing.jox_path),
-            provenance_status: Some(listing.provenance_status),
-        }
-    }));
+    ]
+}
+
+fn host_jox_listing_item(listing: HostJoxShopListing) -> HostEutheriumItem {
+    let active = listing.shop_status == "listed";
+    HostEutheriumItem {
+        id: format!("jox:{}", listing.id),
+        name: listing.name,
+        item_type: "jox_artifact".to_string(),
+        price: listing.price,
+        description: listing.description,
+        image_path: listing.image_path,
+        rarity: format!("JOX {}", listing.provenance_status),
+        available_for_purchase: active,
+        jox_path: Some(listing.jox_path),
+        provenance_status: Some(listing.provenance_status),
+    }
+}
+
+fn host_shop_items() -> io::Result<Vec<HostEutheriumItem>> {
+    let mut items = host_static_shop_items();
+    items.extend(
+        load_host_jox_shop_listings()?
+            .into_iter()
+            .filter(|listing| listing.shop_status == "listed")
+            .map(host_jox_listing_item),
+    );
+    Ok(items)
+}
+
+fn host_catalog_items() -> io::Result<Vec<HostEutheriumItem>> {
+    let mut items = host_static_shop_items();
+    items.extend(
+        load_host_jox_shop_listings()?
+            .into_iter()
+            .map(host_jox_listing_item),
+    );
     Ok(items)
 }
 
@@ -4936,6 +5011,7 @@ fn upsert_host_jox_shop_listing(
             .map(|owner| owner.trim().to_string())
             .filter(|owner| !owner.is_empty())
             .unwrap_or_else(|| "SecondSight".to_string()),
+        shop_status: "listed".to_string(),
         listed_by_user_id: admin.to_string(),
         listed_unix_ms: unix_ms_now(),
     };
@@ -4946,6 +5022,154 @@ fn upsert_host_jox_shop_listing(
         listings.push(item);
     }
     save_host_jox_shop_listings(&listings)
+}
+
+fn load_host_jox_transfer_offers() -> io::Result<Vec<HostJoxTransferOffer>> {
+    match fs::read_to_string(host_eutherium_jox_offers_path()) {
+        Ok(contents) => {
+            serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_host_jox_transfer_offers(offers: &[HostJoxTransferOffer]) -> io::Result<()> {
+    let path = host_eutherium_jox_offers_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(offers).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn host_jox_transfer_offers_for_user(user: &str) -> io::Result<Vec<HostJoxTransferOffer>> {
+    let mut offers: Vec<_> = load_host_jox_transfer_offers()?
+        .into_iter()
+        .filter(|offer| offer.recipient_user_id == user && offer.status == "pending")
+        .collect();
+    offers.sort_by_key(|offer| std::cmp::Reverse(offer.created_unix_ms));
+    Ok(offers)
+}
+
+fn create_host_jox_transfer_offer(
+    user: &str,
+    request: HostJoxTransferOfferRequest,
+) -> io::Result<()> {
+    let item_id = request.item_id.trim();
+    let artifact_id = item_id
+        .strip_prefix("jox:")
+        .ok_or_else(|| invalid_request("not a JOX shop item"))?;
+    let listing = load_host_jox_shop_listings()?
+        .into_iter()
+        .find(|listing| listing.id == artifact_id && listing.shop_status == "listed")
+        .ok_or_else(|| invalid_request("JOX listing not found"))?;
+    if listing.provenance_status != "valid" {
+        return Err(invalid_request("unknown provenance JOX cannot be offered"));
+    }
+    if host_eutherium_balance(user)? < listing.price {
+        return Err(invalid_request("not enough Eutherium"));
+    }
+    let mut offers = load_host_jox_transfer_offers()?;
+    if offers.iter().any(|offer| {
+        offer.artifact_id == listing.id
+            && offer.recipient_user_id == user
+            && offer.status == "pending"
+    }) {
+        return Err(invalid_request("you already have a pending JOX offer"));
+    }
+    offers.push(HostJoxTransferOffer {
+        id: host_eutherium_entry_id("jox-offer", user),
+        item_id: item_id.to_string(),
+        artifact_id: listing.id,
+        recipient_user_id: user.to_string(),
+        created_by_user_id: user.to_string(),
+        price: listing.price,
+        status: "pending".to_string(),
+        name: listing.name,
+        description: listing.description,
+        image_path: listing.image_path,
+        jox_path: listing.jox_path,
+        provenance_status: listing.provenance_status,
+        created_unix_ms: unix_ms_now(),
+        decided_unix_ms: None,
+    });
+    save_host_jox_transfer_offers(&offers)
+}
+
+fn respond_host_jox_transfer_offer(
+    user: &str,
+    response: HostJoxTransferOfferResponseRequest,
+) -> io::Result<()> {
+    let offer_id = response.offer_id.trim();
+    let decision = response.decision.trim();
+    if decision != "accept" && decision != "decline" {
+        return Err(invalid_request("invalid JOX offer decision"));
+    }
+
+    let mut offers = load_host_jox_transfer_offers()?;
+    let offer_index = offers
+        .iter()
+        .position(|offer| {
+            offer.id == offer_id && offer.recipient_user_id == user && offer.status == "pending"
+        })
+        .ok_or_else(|| invalid_request("pending JOX offer not found"))?;
+
+    if decision == "decline" {
+        offers[offer_index].status = "declined".to_string();
+        offers[offer_index].decided_unix_ms = Some(unix_ms_now());
+        return save_host_jox_transfer_offers(&offers);
+    }
+
+    let offer = offers[offer_index].clone();
+    let mut listings = load_host_jox_shop_listings()?;
+    let listing_index = listings
+        .iter()
+        .position(|listing| listing.id == offer.artifact_id && listing.shop_status == "listed")
+        .ok_or_else(|| invalid_request("JOX listing is no longer available"))?;
+    if listings[listing_index].provenance_status != "valid" || offer.provenance_status != "valid" {
+        return Err(invalid_request("unknown provenance JOX cannot be accepted"));
+    }
+    if host_eutherium_balance(user)? < offer.price {
+        return Err(invalid_request("not enough Eutherium"));
+    }
+
+    append_host_eutherium_ledger(HostEutheriumLedgerEntry {
+        id: host_eutherium_entry_id("jox-buy", user),
+        user_id: user.to_string(),
+        amount: -offer.price,
+        reason: format!("Accepted JOX {}", offer.name),
+        source: "jox_trophy_shop".to_string(),
+        created_by_user_id: user.to_string(),
+        created_unix_ms: unix_ms_now(),
+    })?;
+    let mut inventory = load_host_inventory()?;
+    inventory.push(HostInventoryEntry {
+        id: host_eutherium_entry_id("inv", user),
+        user_id: user.to_string(),
+        item_id: offer.item_id.clone(),
+        acquired_unix_ms: unix_ms_now(),
+        equipped_to_item_id: None,
+    });
+    save_host_inventory(&inventory)?;
+
+    listings[listing_index].shop_status = "owned".to_string();
+    listings[listing_index].current_owner = user.to_string();
+    save_host_jox_shop_listings(&listings)?;
+
+    let decided_at = unix_ms_now();
+    for pending in &mut offers {
+        if pending.artifact_id == offer.artifact_id && pending.status == "pending" {
+            pending.status = if pending.id == offer.id {
+                "accepted".to_string()
+            } else {
+                "expired".to_string()
+            };
+            pending.decided_unix_ms = Some(decided_at);
+        }
+    }
+    save_host_jox_transfer_offers(&offers)
 }
 
 fn host_trophy_icon(kind: &str) -> String {
@@ -13298,6 +13522,10 @@ fn host_eutherium_inventory_path() -> PathBuf {
 
 fn host_eutherium_jox_shop_path() -> PathBuf {
     host_eutherium_dir().join("jox-shop.json")
+}
+
+fn host_eutherium_jox_offers_path() -> PathBuf {
+    host_eutherium_dir().join("jox-offers.json")
 }
 
 fn host_trophy_room_layout_path(user: &str) -> PathBuf {
