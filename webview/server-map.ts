@@ -456,6 +456,10 @@ function bindInput(): void {
 }
 
 function enterWalkMode(): void {
+  if (isTouchMapDevice() && viewMode === "map" && roomMode !== "city") {
+    enterMobileInspectionMode("room");
+    return;
+  }
   viewMode = "walk";
   navigationEnabled = true;
   modeButton.textContent = "Map";
@@ -563,6 +567,10 @@ function toggleMapMode(): void {
 }
 
 function enterMapMode(reason = "manual"): void {
+  if (isTouchMapDevice() && roomMode !== "city") {
+    enterMobileInspectionMode("room");
+    return;
+  }
   viewMode = "map";
   navigationEnabled = true;
   keys.clear();
@@ -578,6 +586,25 @@ function enterMapMode(reason = "manual"): void {
     : "Map mode. WASD pans the overview. Press M for 3D.";
 }
 
+function enterMobileInspectionMode(scope: "city" | "room" = roomMode === "city" ? "city" : "room"): void {
+  viewMode = "map";
+  navigationEnabled = true;
+  keys.clear();
+  controls.unlock();
+  modeButton.textContent = "3D";
+  crosshair.style.display = "none";
+  const height = scope === "room" ? (roomMode === "eutherbooks" ? 44 : 36) : 92;
+  const z = scope === "room" ? (roomMode === "eutherbooks" ? 7 : 6) : 13;
+  controls.object.position.set(0, height, z);
+  lookAtMapCenter();
+  velocity.set(0, 0, 0);
+  updateEnterButton(focusedNode || selectedNode);
+  updateControlsGuide(focusedNode || selectedNode);
+  hintLine.textContent = scope === "room"
+    ? "Mobile room map. Drag pans, pinch zooms, tap nodes, Use activates portals or custodians."
+    : "Mobile map. Drag pans, pinch zooms, tap a node to inspect.";
+}
+
 async function loadMap(refresh: boolean): Promise<void> {
   roomMode = "city";
   currentRoomNode = null;
@@ -589,7 +616,7 @@ async function loadMap(refresh: boolean): Promise<void> {
   }
   serverMap = await jsonFetch<ServerMap>("/api/admin/euthernet/map");
   buildCity(serverMap);
-  if (isTouchMapDevice()) enterMapMode("mobile");
+  if (isTouchMapDevice()) enterMobileInspectionMode("city");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
 }
 
@@ -660,8 +687,9 @@ async function enterEutherBooksRoom(sourceNode: SceneNode): Promise<void> {
   controls.object.position.set(0, 3.2, 34);
   camera.lookAt(0, 2.2, 0);
   showEutherBooksOverview(library.books, library.jobs, library.health, library.source);
+  if (isTouchMapDevice()) enterMobileInspectionMode("room");
   statusLine.textContent = `EutherBooks Library | ${library.books.length} books | ${library.jobs.length} jobs | ${library.health?.status || library.source}`;
-  hintLine.textContent = "EutherBooks room. Aim at Back to EutherVerse and press F to return.";
+  if (!isTouchMapDevice()) hintLine.textContent = "EutherBooks room. Aim at Back to EutherVerse and press F to return.";
 }
 
 function leaveRoom(): void {
@@ -672,7 +700,11 @@ function leaveRoom(): void {
   controls.object.position.copy(lastCityPosition);
   controls.object.position.y = 3.2;
   camera.lookAt(7, 2.2, 0);
-  hintLine.textContent = "Back in EutherVerse. Aim at EutherBooks and press F to enter.";
+  if (isTouchMapDevice()) {
+    enterMobileInspectionMode("city");
+  } else {
+    hintLine.textContent = "Back in EutherVerse. Aim at EutherBooks and press F to enter.";
+  }
 }
 
 function enterGenericNodeRoom(sourceNode: SceneNode): void {
@@ -693,8 +725,9 @@ function enterGenericNodeRoom(sourceNode: SceneNode): void {
   controls.object.position.set(0, 3.2, 28);
   camera.lookAt(0, 2.5, 0);
   showGenericRoomOverview(sourceNode);
+  if (isTouchMapDevice()) enterMobileInspectionMode("room");
   statusLine.textContent = `${sourceNode.label} room | ${sourceNode.type} | ${sourceNode.status || "unknown"}`;
-  hintLine.textContent = `${sourceNode.label} room. Aim at ${sourceNode.label} Entry and press F to return.`;
+  if (!isTouchMapDevice()) hintLine.textContent = `${sourceNode.label} room. Aim at ${sourceNode.label} Entry and press F to return.`;
 }
 
 function buildGenericNodeRoom(sourceNode: SceneNode): void {
@@ -1123,12 +1156,22 @@ function inspectFocusedNode(): void {
 }
 
 function updateEnterButton(node: SceneNode | null): void {
-  const canEnter = Boolean(node && nodeCanEnter(node) && roomMode === "city");
-  enterNodeButton.disabled = !canEnter;
-  enterNodeButton.textContent = canEnter ? "Enter Node" : "Enter Node";
+  const action = mobileNodeAction(node);
+  const canUse = Boolean(action);
+  enterNodeButton.disabled = !canUse;
+  enterNodeButton.textContent = action === "enter" ? "Enter Node" : action === "use" ? "Use" : "Enter Node";
   const topEnter = document.querySelector<HTMLButtonElement>("#ev-enter");
   if (!topEnter) return;
-  topEnter.textContent = viewMode === "map" && isTouchMapDevice() && canEnter ? "Enter Node" : "Enter";
+  topEnter.textContent = viewMode === "map" && isTouchMapDevice() && canUse
+    ? action === "enter" ? "Enter Node" : "Use"
+    : "Enter";
+}
+
+function mobileNodeAction(node: SceneNode | null): "enter" | "use" | null {
+  if (!node) return null;
+  if (roomMode === "city" && nodeCanEnter(node)) return "enter";
+  if (roomMode !== "city" && (isRoomReturnNode(node) || isCustodianNode(node))) return "use";
+  return null;
 }
 
 function showOverview(map: ServerMap): void {
@@ -1344,17 +1387,29 @@ function updateControlsGuide(node: SceneNode | null): void {
       ];
 
   if (roomMode === "eutherbooks") {
-    rows.push(["F", "Back through portal"]);
-    rows.push(["Esc", "Release cursor"]);
+    if (mobileMap) {
+      rows.push(["Use", "Portal/custodian"]);
+    } else {
+      rows.push(["F", "Back through portal"]);
+      rows.push(["Esc", "Release cursor"]);
+    }
     objective.textContent = node
       ? eutherBooksObjectiveFor(node)
-      : "You are inside EutherBooks. Move like an inspection diver: WASD across the room, Space/Z up and down, E to inspect shelves and stations. Aim at EutherBooks Entry or Qwen Librarian and press F to return.";
+      : mobileMap
+        ? "Mobile room map. Drag to pan, pinch to zoom, tap shelves or stations to inspect. Tap EutherBooks Entry or Qwen Librarian, then Use to return."
+        : "You are inside EutherBooks. Move like an inspection diver: WASD across the room, Space/Z up and down, E to inspect shelves and stations. Aim at EutherBooks Entry or Qwen Librarian and press F to return.";
   } else if (roomMode === "node") {
-    rows.push(["F", "Ask/back when targeted"]);
-    rows.push(["Esc", "Release cursor"]);
+    if (mobileMap) {
+      rows.push(["Use", "Ask/back"]);
+    } else {
+      rows.push(["F", "Ask/back when targeted"]);
+      rows.push(["Esc", "Release cursor"]);
+    }
     objective.textContent = node
       ? genericRoomObjectiveFor(node)
-      : `You are inside ${currentRoomNode?.label || "a node"} room. Inspect the core, ask the custodian, or aim at the Entry node and press F to return.`;
+      : mobileMap
+        ? `Mobile room map for ${currentRoomNode?.label || "this node"}. Drag to pan, pinch to zoom, tap room nodes to inspect. Tap Custodian or Entry, then Use.`
+        : `You are inside ${currentRoomNode?.label || "a node"} room. Inspect the core, ask the custodian, or aim at the Entry node and press F to return.`;
   } else {
     rows.push(["F", "Enter node when available"]);
     rows.push(["Esc", "Release cursor"]);
