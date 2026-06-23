@@ -378,9 +378,15 @@ function addGrid(): void {
 }
 
 function bindInput(): void {
-  document.querySelector("#ev-enter")?.addEventListener("click", enterWalkMode);
+  document.querySelector("#ev-enter")?.addEventListener("click", () => {
+    if (viewMode === "map" && isTouchMapDevice()) {
+      void enterFocusedNode().catch(showError);
+      return;
+    }
+    enterWalkMode();
+  });
   renderer.domElement.addEventListener("click", () => {
-    if (viewMode === "walk") enterWalkMode();
+    if (viewMode === "walk" && !isTouchMapDevice()) enterWalkMode();
   });
   renderer.domElement.addEventListener("wheel", handleWheelZoom, { passive: false });
   renderer.domElement.addEventListener("touchstart", handleMapTouchStart, { passive: false });
@@ -456,6 +462,11 @@ function enterWalkMode(): void {
   crosshair.style.display = "";
   controls.object.position.y = Math.max(3.2, controls.object.position.y);
   renderer.domElement.focus();
+  if (isTouchMapDevice()) {
+    controls.unlock();
+    hintLine.textContent = "3D preview. Use Map to return to touch navigation, or tap a node in Map and Enter it.";
+    return;
+  }
   controls.lock();
   hintLine.textContent = "WASD moves. Space/Z changes depth. Mouse look starts when the browser grants pointer lock.";
 }
@@ -612,19 +623,20 @@ function buildCity(map: ServerMap): void {
 }
 
 async function enterFocusedNode(): Promise<void> {
-  if (focusedNode && roomMode !== "city") {
-    if (isRoomReturnNode(focusedNode)) leaveRoom();
-    if (isCustodianNode(focusedNode)) focusCustodian();
+  const target = focusedNode || selectedNode;
+  if (target && roomMode !== "city") {
+    if (isRoomReturnNode(target)) leaveRoom();
+    if (isCustodianNode(target)) focusCustodian();
     return;
   }
-  if (!focusedNode || !nodeCanEnter(focusedNode)) return;
+  if (!target || !nodeCanEnter(target)) return;
   lastCityPosition.copy(controls.object.position);
-  currentRoomNode = focusedNode;
-  if (isEutherBooksNode(focusedNode)) {
-    await enterEutherBooksRoom(focusedNode);
+  currentRoomNode = target;
+  if (isEutherBooksNode(target)) {
+    await enterEutherBooksRoom(target);
     return;
   }
-  enterGenericNodeRoom(focusedNode);
+  enterGenericNodeRoom(target);
 }
 
 async function enterEutherBooksRoom(sourceNode: SceneNode): Promise<void> {
@@ -1085,6 +1097,7 @@ function updateFocus(): void {
   crosshair.style.opacity = node ? "1" : ".45";
   enterNodeButton.disabled = !(node && nodeCanEnter(node) && roomMode === "city");
   restartButton.disabled = !(node && restartCommandForNode(node));
+  updateEnterButton(node);
   updateControlsGuide(node);
   if (viewMode === "map") {
     hintLine.textContent = node
@@ -1106,10 +1119,21 @@ function inspectFocusedNode(): void {
   selectedNode = focusedNode;
   showNode(selectedNode);
   restartButton.disabled = !restartCommandForNode(selectedNode);
+  updateEnterButton(selectedNode);
+}
+
+function updateEnterButton(node: SceneNode | null): void {
+  const canEnter = Boolean(node && nodeCanEnter(node) && roomMode === "city");
+  enterNodeButton.disabled = !canEnter;
+  enterNodeButton.textContent = canEnter ? "Enter Node" : "Enter Node";
+  const topEnter = document.querySelector<HTMLButtonElement>("#ev-enter");
+  if (!topEnter) return;
+  topEnter.textContent = viewMode === "map" && isTouchMapDevice() && canEnter ? "Enter Node" : "Enter";
 }
 
 function showOverview(map: ServerMap): void {
   restartButton.disabled = true;
+  updateEnterButton(null);
   updateControlsGuide(null);
   const alerts = map.nodes.filter(nodeIsAlerting).length;
   document.querySelector("#ev-target")!.textContent = "EutherVerse";
