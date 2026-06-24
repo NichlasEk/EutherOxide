@@ -865,6 +865,26 @@ class NativeAudioService : Service() {
         startForeground(NOTIFICATION_ID, notification())
     }
 
+    private fun refreshPlaybackRetentionIfNeeded() {
+        val shouldRefresh = synchronized(lock) {
+            active && !ended && (playing || lastEvent.contains("buffering", ignoreCase = true))
+        }
+        if (!shouldRefresh) {
+            return
+        }
+        val missingRetention = playbackWakeLock?.isHeld != true
+            || playbackWifiLock?.isHeld != true
+            || !noisyReceiverRegistered
+        if (!missingRetention) {
+            return
+        }
+        acquirePlaybackLocks()
+        registerNoisyReceiver()
+        synchronized(lock) {
+            rememberEvent("Native playback retention refreshed")
+        }
+    }
+
     private fun prefetchQueueFrom(startIndex: Int) {
         val urls = synchronized(lock) {
             queue.drop(startIndex.coerceAtLeast(0)).take(AUDIO_PREFETCH_LIMIT)
@@ -1637,6 +1657,7 @@ class NativeAudioService : Service() {
 
         @JvmStatic
         fun stateJson(event: String): String {
+            currentService?.refreshPlaybackRetentionIfNeeded()
             val snapshot = snapshot()
             val statusEvent = if (event.isNotBlank()) event else snapshot.lastEvent
             synchronized(lock) {
