@@ -6840,6 +6840,7 @@ h2 {
 .eutherium-jox-details-panel,
 .eutherium-jox-admin-panel,
 .eutherium-joxbox-panel,
+.eutherium-room-browser-panel,
 .eutherium-shop-panel,
 .eutherium-inventory-panel,
 .eutherium-ledger-panel {
@@ -6875,6 +6876,10 @@ h2 {
 
 .eutherium-trophy-panel {
   min-height: 420px;
+}
+
+.eutherium-room-browser-panel {
+  grid-row: span 2;
 }
 
 .eutherium-mobile-hint {
@@ -6937,6 +6942,11 @@ h2 {
 
 .trophy-room-item:active {
   cursor: grabbing;
+}
+
+.trophy-room-item.is-readonly {
+  cursor: default;
+  pointer-events: none;
 }
 
 .trophy-room-item.is-selected {
@@ -7099,6 +7109,7 @@ h2 {
 
 .eutherium-shop-grid,
 .eutherium-inventory-grid,
+.eutherium-room-list,
 .eutherium-jox-offers-list,
 .eutherium-joxbox-catalog,
 .eutherium-ledger-list {
@@ -7109,6 +7120,7 @@ h2 {
 
 .eutherium-item-card,
 .eutherium-inventory-card,
+.eutherium-room-card,
 .eutherium-jox-offer-card,
 .eutherium-ledger-entry {
   display: grid;
@@ -7122,11 +7134,42 @@ h2 {
   background: rgba(4, 10, 7, 0.64);
 }
 
+.eutherium-room-browser {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.eutherium-room-card {
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  color: #edf6dd;
+  text-align: left;
+}
+
+.eutherium-room-card span {
+  color: #a8c89a;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.eutherium-room-card.is-selected {
+  border-color: rgba(238, 255, 176, 0.55);
+  background: rgba(75, 81, 18, 0.34);
+}
+
+.eutherium-room-view {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
 .eutherium-item-card button,
 .eutherium-inventory-card button,
 .eutherium-inventory-card a,
 .eutherium-import-jox,
 .eutherium-jox-offer-card button,
+.eutherium-room-card,
 .trophy-controls button,
 .eutherium-balance-panel button {
   border-radius: 8px;
@@ -7372,6 +7415,22 @@ h2 {
 .eutherium-inventory-card.is-selected {
   border-color: rgba(238, 255, 176, 0.55);
   background: rgba(75, 81, 18, 0.34);
+}
+
+.eutherium-inventory-card.is-draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.eutherium-inventory-card.is-draggable:active {
+  cursor: grabbing;
+}
+
+.eutherium-status-line {
+  margin: 0;
+  color: #a8c89a;
+  font-size: 0.72rem;
+  font-weight: 900;
 }
 
 .eutherium-ledger-entry {
@@ -8175,7 +8234,7 @@ h2 {
     top: 0;
     z-index: 4;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
     gap: 7px;
     padding: 7px;
     border: 1px solid rgba(165, 222, 114, 0.18);

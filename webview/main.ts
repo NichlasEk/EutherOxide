@@ -689,6 +689,12 @@ type TrophyRoomResult = {
   inventory: EutheriumInventoryEntry[];
 };
 
+type TrophyRoomSummary = {
+  user: string;
+  placed: number;
+  inventoryCount: number;
+};
+
 type EutheriumMeResult = {
   user: string;
   isAdmin: boolean;
@@ -700,6 +706,7 @@ type EutheriumMeResult = {
   joxListings?: EutheriumJoxListing[];
   joxboxCatalog?: EutheriumJoxboxCatalogItem[];
   trophyRoom: TrophyRoomResult;
+  trophyRooms?: TrophyRoomSummary[];
 };
 
 type EutheriumAdminResult = {
@@ -1530,7 +1537,10 @@ let eutheriumLobbyStatus = "Not loaded";
 let eutheriumLobbyBalance: number | null = null;
 let eutheriumLobbyAwards: EutheriumLedgerEntry[] = [];
 let selectedTrophyInventoryId: string | null = null;
+let viewedTrophyRoom: TrophyRoomResult | null = null;
+let viewedTrophyRoomStatus = "";
 let trophyDrag: {
+  source: "placed" | "inventory";
   inventoryId: string;
   pointerId: number;
   startX: number;
@@ -1538,6 +1548,7 @@ let trophyDrag: {
   startItemX: number;
   startItemY: number;
   layout: TrophyRoomLayout;
+  enteredRoom: boolean;
 } | null = null;
 let videoChatJoined = false;
 let videoChatSending = false;
@@ -3103,6 +3114,18 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await placeTrophyItem(place.dataset.trophyPlace ?? "");
     return;
   }
+  const viewRoom = target.closest<HTMLButtonElement>("[data-trophy-room-view]");
+  if (viewRoom) {
+    await loadPublicTrophyRoom(viewRoom.dataset.trophyRoomView ?? "");
+    return;
+  }
+  const ownRoom = target.closest<HTMLButtonElement>("[data-trophy-room-own]");
+  if (ownRoom) {
+    viewedTrophyRoom = null;
+    viewedTrophyRoomStatus = "";
+    renderWorkspaceWindow();
+    return;
+  }
   const select = target.closest<HTMLButtonElement>("[data-trophy-select]");
   if (select) {
     selectedTrophyInventoryId = select.dataset.trophySelect ?? null;
@@ -3368,10 +3391,18 @@ workspaceWindowDynamic.addEventListener("pointerdown", (event) => {
     socialChatPullTriggered = false;
   }
   const trophy = target.closest<HTMLButtonElement>("[data-trophy-select]");
-  if (!trophy) {
+  if (trophy) {
+    startTrophyDrag(event, trophy);
     return;
   }
-  startTrophyDrag(event, trophy);
+  const interactive = target.closest("button, a, input, textarea, select, label");
+  if (interactive) {
+    return;
+  }
+  const inventoryTrophy = target.closest<HTMLElement>("[data-trophy-drag-inventory]");
+  if (inventoryTrophy) {
+    startInventoryTrophyDrag(event, inventoryTrophy);
+  }
 });
 
 workspaceWindowDynamic.addEventListener("pointermove", (event) => {
@@ -3396,7 +3427,10 @@ workspaceWindowDynamic.addEventListener("pointerup", (event) => {
 workspaceWindowDynamic.addEventListener("pointercancel", () => {
   socialChatPullStartY = null;
   socialChatPullTriggered = false;
-  trophyDrag = null;
+  if (trophyDrag) {
+    trophyDrag = null;
+    renderWorkspaceWindow();
+  }
 });
 
 window.addEventListener("focus", () => {
@@ -7985,6 +8019,7 @@ function eutheriumWindowMarkup(): string {
       </section>
       <nav class="eutherium-mobile-nav" aria-label="Eutherium sections">
         <a href="#eutherium-room">Room</a>
+        <a href="#eutherium-rooms">Rooms</a>
         <a href="#eutherium-shop">Shop</a>
         ${data.isAdmin ? `<a href="#eutherium-joxbox">Joxbox</a>` : ""}
         <a href="#eutherium-inventory">Inventory</a>
@@ -8002,6 +8037,16 @@ function eutheriumWindowMarkup(): string {
         ${trophyRoomMarkup(data)}
         ${trophyPreviewMarkup(data)}
         ${trophyControlsMarkup()}
+      </section>
+      <section class="eutherium-room-browser-panel" id="eutherium-rooms">
+        <div class="section-head">
+          <div>
+            <p class="section-label">Trophy Rooms</p>
+            <strong>Skrytrum</strong>
+          </div>
+          <button data-trophy-room-own type="button">My room</button>
+        </div>
+        ${trophyRoomBrowserMarkup(data)}
       </section>
       ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
       ${joxOffersPanelMarkup(data)}
@@ -11410,17 +11455,25 @@ function joxAdminRowMarkup(listing: EutheriumJoxListing): string {
 }
 
 function trophyRoomMarkup(data: EutheriumMeResult): string {
+  return trophyRoomMarkupFor(data.trophyRoom, data.inventory, true);
+}
+
+function trophyRoomMarkupFor(room: TrophyRoomResult, inventory: EutheriumInventoryEntry[], editable: boolean): string {
   return `
-    <div class="trophy-room trophy-bg-${escapeHtml(data.trophyRoom.layout.background)}">
-      <span class="trophy-room-grid-label">Drag trophies here</span>
-      ${trophyRoomItemsMarkup(data)}
+    <div class="trophy-room ${editable ? "" : "is-readonly"} trophy-bg-${escapeHtml(room.layout.background)}">
+      <span class="trophy-room-grid-label">${editable ? "Drag trophies here" : "Viewing room"}</span>
+      ${trophyRoomItemsMarkupFor(room.layout, inventory, editable)}
     </div>
   `;
 }
 
 function trophyRoomItemsMarkup(data: EutheriumMeResult): string {
-  const inventory = new Map(data.inventory.map((entry) => [entry.id, entry]));
-  return data.trophyRoom.layout.items
+  return trophyRoomItemsMarkupFor(data.trophyRoom.layout, data.inventory, true);
+}
+
+function trophyRoomItemsMarkupFor(layout: TrophyRoomLayout, inventoryEntries: EutheriumInventoryEntry[], editable: boolean): string {
+  const inventory = new Map(inventoryEntries.map((entry) => [entry.id, entry]));
+  return layout.items
     .map((placed) => {
       const entry = inventory.get(placed.inventoryId);
       const item = entry?.item;
@@ -11429,18 +11482,50 @@ function trophyRoomItemsMarkup(data: EutheriumMeResult): string {
       }
       const selected = selectedTrophyInventoryId === entry.id;
       return `
-        <button
-          class="trophy-room-item ${selected ? "is-selected" : ""}"
-          data-trophy-select="${escapeHtml(entry.id)}"
-          type="button"
+        <${editable ? "button" : "div"}
+          class="trophy-room-item ${selected && editable ? "is-selected" : ""} ${editable ? "" : "is-readonly"}"
+          ${editable ? `data-trophy-select="${escapeHtml(entry.id)}" type="button"` : ""}
           style="left:${placed.x}%; top:${placed.y}%; --trophy-scale:${placed.scale};"
           aria-label="${escapeHtml(item.name)}"
         >
           <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
-        </button>
+        </${editable ? "button" : "div"}>
       `;
     })
     .join("");
+}
+
+function trophyRoomBrowserMarkup(data: EutheriumMeResult): string {
+  const rooms = data.trophyRooms ?? [];
+  const selectedRoom = viewedTrophyRoom ?? data.trophyRoom;
+  const viewingOwnRoom = selectedRoom.user === data.user;
+  return `
+    <div class="eutherium-room-browser">
+      <div class="eutherium-room-list" role="list">
+        ${rooms.length ? rooms.map((room) => `
+          <button
+            class="eutherium-room-card ${selectedRoom.user === room.user ? "is-selected" : ""}"
+            data-trophy-room-view="${escapeHtml(room.user)}"
+            type="button"
+          >
+            <strong>${escapeHtml(displayUserName(room.user))}</strong>
+            <span>${room.placed} placed / ${room.inventoryCount} owned</span>
+          </button>
+        `).join("") : `<span>No rooms yet</span>`}
+      </div>
+      <div class="eutherium-room-view">
+        <div class="section-head">
+          <div>
+            <p class="section-label">${viewingOwnRoom ? "Your trophy room" : "Viewing trophy room"}</p>
+            <strong>${escapeHtml(displayUserName(selectedRoom.user))}'s room</strong>
+          </div>
+          <span>${selectedRoom.layout.items.length} placed</span>
+        </div>
+        ${viewedTrophyRoomStatus ? `<p class="eutherium-status-line">${escapeHtml(viewedTrophyRoomStatus)}</p>` : ""}
+        ${trophyRoomMarkupFor(selectedRoom, selectedRoom.inventory, false)}
+      </div>
+    </div>
+  `;
 }
 
 function trophyControlsMarkup(): string {
@@ -11533,7 +11618,10 @@ function inventoryItemMarkup(entry: EutheriumInventoryEntry, layout: TrophyRoomL
     ? `<button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button>${item.joxPath ? `<a href="${escapeHtml(item.joxPath)}" download>Download .jox</a>` : ""}<button data-jox-relist="${escapeHtml(entry.id)}" type="button">Relist</button>`
     : "";
   return `
-    <article class="eutherium-inventory-card ${selectedTrophyInventoryId === entry.id ? "is-selected" : ""}">
+    <article
+      class="eutherium-inventory-card is-draggable ${selectedTrophyInventoryId === entry.id ? "is-selected" : ""}"
+      data-trophy-drag-inventory="${escapeHtml(entry.id)}"
+    >
       ${item ? `<img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />` : ""}
       <div>
         <strong>${escapeHtml(item?.name ?? entry.itemId)}</strong>
@@ -11985,12 +12073,34 @@ async function placeTrophyItem(inventoryId: string): Promise<void> {
     return;
   }
   const layout = cloneTrophyLayout(eutheriumMe.trophyRoom.layout);
-  if (!layout.items.some((item) => item.inventoryId === inventoryId)) {
-    const offset = layout.items.length % 5;
-    layout.items.push({ inventoryId, x: 22 + offset * 14, y: 54 + (layout.items.length % 2) * 16, scale: 1 });
-  }
+  placeTrophyInLayout(layout, inventoryId);
   selectedTrophyInventoryId = inventoryId;
   await saveTrophyLayout(layout);
+}
+
+async function loadPublicTrophyRoom(user: string): Promise<void> {
+  if (!user) {
+    return;
+  }
+  if (eutheriumMe && user === eutheriumMe.user) {
+    viewedTrophyRoom = null;
+    viewedTrophyRoomStatus = "";
+    renderWorkspaceWindow();
+    return;
+  }
+  viewedTrophyRoomStatus = "Loading room";
+  renderWorkspaceWindow();
+  try {
+    viewedTrophyRoom = await bridgeJson<TrophyRoomResult>(
+      `/api/trophy-room/${encodeURIComponent(user)}`,
+      {},
+      1400,
+    );
+    viewedTrophyRoomStatus = "Room loaded";
+  } catch (err) {
+    viewedTrophyRoomStatus = err instanceof Error ? err.message : "Room load failed";
+  }
+  renderWorkspaceWindow();
 }
 
 function startTrophyDrag(event: PointerEvent, button: HTMLButtonElement): void {
@@ -12004,6 +12114,7 @@ function startTrophyDrag(event: PointerEvent, button: HTMLButtonElement): void {
   }
   selectedTrophyInventoryId = inventoryId;
   trophyDrag = {
+    source: "placed",
     inventoryId,
     pointerId: event.pointerId,
     startX: event.clientX,
@@ -12011,10 +12122,37 @@ function startTrophyDrag(event: PointerEvent, button: HTMLButtonElement): void {
     startItemX: item.x,
     startItemY: item.y,
     layout: cloneTrophyLayout(eutheriumMe.trophyRoom.layout),
+    enteredRoom: true,
   };
   button.setPointerCapture(event.pointerId);
   event.preventDefault();
   highlightSelectedTrophy();
+}
+
+function startInventoryTrophyDrag(event: PointerEvent, card: HTMLElement): void {
+  if (!eutheriumMe || eutheriumSaving) {
+    return;
+  }
+  const inventoryId = card.dataset.trophyDragInventory ?? "";
+  if (!inventoryId) {
+    return;
+  }
+  const layout = cloneTrophyLayout(eutheriumMe.trophyRoom.layout);
+  selectedTrophyInventoryId = inventoryId;
+  trophyDrag = {
+    source: "inventory",
+    inventoryId,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startItemX: 50,
+    startItemY: 60,
+    layout,
+    enteredRoom: false,
+  };
+  card.setPointerCapture(event.pointerId);
+  updateTrophyDrag(event);
+  event.preventDefault();
 }
 
 function updateTrophyDrag(event: PointerEvent): void {
@@ -12026,14 +12164,32 @@ function updateTrophyDrag(event: PointerEvent): void {
     return;
   }
   const rect = room.getBoundingClientRect();
-  const item = trophyDrag.layout.items.find((candidate) => candidate.inventoryId === trophyDrag?.inventoryId);
-  if (!item || rect.width <= 0 || rect.height <= 0) {
+  if (rect.width <= 0 || rect.height <= 0) {
     return;
   }
-  const deltaX = ((event.clientX - trophyDrag.startX) / rect.width) * 100;
-  const deltaY = ((event.clientY - trophyDrag.startY) / rect.height) * 100;
-  item.x = clampTrophyPercent(trophyDrag.startItemX + deltaX);
-  item.y = clampTrophyPercent(trophyDrag.startItemY + deltaY);
+  let item = trophyDrag.layout.items.find((candidate) => candidate.inventoryId === trophyDrag?.inventoryId);
+  if (trophyDrag.source === "inventory") {
+    const insideRoom =
+      event.clientX >= rect.left
+      && event.clientX <= rect.right
+      && event.clientY >= rect.top
+      && event.clientY <= rect.bottom;
+    if (!insideRoom) {
+      return;
+    }
+    trophyDrag.enteredRoom = true;
+    item = placeTrophyInLayout(trophyDrag.layout, trophyDrag.inventoryId, 50, 60);
+    item.x = clampTrophyPercent(((event.clientX - rect.left) / rect.width) * 100);
+    item.y = clampTrophyPercent(((event.clientY - rect.top) / rect.height) * 100);
+  } else if (item) {
+    const deltaX = ((event.clientX - trophyDrag.startX) / rect.width) * 100;
+    const deltaY = ((event.clientY - trophyDrag.startY) / rect.height) * 100;
+    item.x = clampTrophyPercent(trophyDrag.startItemX + deltaX);
+    item.y = clampTrophyPercent(trophyDrag.startItemY + deltaY);
+  }
+  if (!item) {
+    return;
+  }
   eutheriumMe = {
     ...eutheriumMe,
     trophyRoom: {
@@ -12049,9 +12205,14 @@ async function finishTrophyDrag(event: PointerEvent): Promise<void> {
   if (!trophyDrag || event.pointerId !== trophyDrag.pointerId) {
     return;
   }
+  const shouldSave = trophyDrag.source === "placed" || trophyDrag.enteredRoom;
   const layout = cloneTrophyLayout(trophyDrag.layout);
   trophyDrag = null;
   event.preventDefault();
+  if (!shouldSave) {
+    renderWorkspaceWindow();
+    return;
+  }
   await saveTrophyLayout(layout);
 }
 
@@ -12121,15 +12282,27 @@ async function moveSelectedTrophy(action: string): Promise<void> {
 async function saveTrophyLayout(layout: TrophyRoomLayout): Promise<void> {
   eutheriumSaving = true;
   eutheriumStatus = "Saving room";
+  if (eutheriumMe) {
+    eutheriumMe = {
+      ...eutheriumMe,
+      trophyRoom: {
+        ...eutheriumMe.trophyRoom,
+        layout: cloneTrophyLayout(layout),
+      },
+    };
+  }
   renderWorkspaceWindow();
   try {
     const result = await bridgeJson<TrophyRoomResult>(
       "/api/trophy-room/layout",
       { method: "POST", body: JSON.stringify({ layout }) },
-      1400,
+      2400,
     );
     if (eutheriumMe) {
-      eutheriumMe = { ...eutheriumMe, trophyRoom: result };
+      const trophyRooms = (eutheriumMe.trophyRooms ?? []).map((room) => room.user === result.user
+        ? { ...room, placed: result.layout.items.length, inventoryCount: result.inventory.length }
+        : room);
+      eutheriumMe = { ...eutheriumMe, trophyRoom: result, trophyRooms };
     }
     eutheriumStatus = "Room saved";
   } catch (err) {
@@ -12138,6 +12311,21 @@ async function saveTrophyLayout(layout: TrophyRoomLayout): Promise<void> {
     eutheriumSaving = false;
     renderWorkspaceWindow();
   }
+}
+
+function placeTrophyInLayout(layout: TrophyRoomLayout, inventoryId: string, x?: number, y?: number): TrophyRoomLayoutItem {
+  let item = layout.items.find((candidate) => candidate.inventoryId === inventoryId);
+  if (!item) {
+    const offset = layout.items.length % 5;
+    item = {
+      inventoryId,
+      x: x ?? 22 + offset * 14,
+      y: y ?? 54 + (layout.items.length % 2) * 16,
+      scale: 1,
+    };
+    layout.items.push(item);
+  }
+  return item;
 }
 
 function cloneTrophyLayout(layout: TrophyRoomLayout): TrophyRoomLayout {

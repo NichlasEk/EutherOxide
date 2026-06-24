@@ -4649,6 +4649,7 @@ fn host_eutherium_me(state: &HostState, user: &str) -> io::Result<serde_json::Va
         "joxListings": host_jox_listings_for_user(state, user)?,
         "joxboxCatalog": if is_host_admin(state, user)? { host_joxbox_catalog_items()? } else { Vec::<serde_json::Value>::new() },
         "trophyRoom": host_trophy_room_result(user)?,
+        "trophyRooms": host_trophy_room_directory(state)?,
     }))
 }
 
@@ -4795,6 +4796,35 @@ fn host_trophy_room_result(user: &str) -> io::Result<serde_json::Value> {
         "layout": load_host_trophy_room_layout(user)?,
         "inventory": host_inventory_entries(user)?,
     }))
+}
+
+fn host_trophy_room_directory(state: &HostState) -> io::Result<Vec<serde_json::Value>> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let inventory = load_host_inventory()?;
+    let mut rooms = Vec::new();
+    for user in users.iter().filter(|user| !user.banned) {
+        let layout = load_host_trophy_room_layout(&user.name)?;
+        let inventory_count = inventory
+            .iter()
+            .filter(|entry| entry.user_id == user.name)
+            .count();
+        rooms.push(serde_json::json!({
+            "user": user.name,
+            "placed": layout.items.len(),
+            "inventoryCount": inventory_count,
+        }));
+    }
+    rooms.sort_by_key(|room| {
+        std::cmp::Reverse(
+            room.get("placed")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        )
+    });
+    Ok(rooms)
 }
 
 fn save_host_trophy_room_layout(user: &str, mut layout: HostTrophyRoomLayout) -> io::Result<()> {
