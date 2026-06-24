@@ -11262,8 +11262,10 @@ function joxboxPanelMarkup(data: EutheriumMeResult): string {
         <input id="joxbox-name" type="text" placeholder="artifact name" aria-label="JOX artifact name" />
         <input id="joxbox-price" type="number" min="0" step="1" value="1000" aria-label="JOX artifact price" />
         <input id="joxbox-image" type="text" placeholder="image path or URL" aria-label="JOX image path" />
+        <input id="joxbox-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="JOX image upload" />
         <textarea id="joxbox-description" rows="3" placeholder="description" aria-label="JOX artifact description"></textarea>
         <textarea id="joxbox-lore" rows="3" placeholder="lore" aria-label="JOX artifact lore"></textarea>
+        <textarea id="joxbox-toml" rows="8" aria-label="JOX TOML">${escapeHtml(joxboxDefaultToml())}</textarea>
         <button data-joxbox-mint-custom type="button">Create .jox</button>
       </div>
       <div class="eutherium-joxbox-catalog">
@@ -11716,9 +11718,20 @@ async function mintCustomJoxboxArtifact(): Promise<void> {
   const description = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>("#joxbox-description")?.value.trim() ?? "";
   const lore = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>("#joxbox-lore")?.value.trim() ?? "";
   const imagePath = workspaceWindowDynamic.querySelector<HTMLInputElement>("#joxbox-image")?.value.trim() ?? "";
+  const imageFile = workspaceWindowDynamic.querySelector<HTMLInputElement>("#joxbox-image-file")?.files?.[0] ?? null;
+  const tomlInput = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>("#joxbox-toml");
   const price = Math.max(0, Math.round(Number(workspaceWindowDynamic.querySelector<HTMLInputElement>("#joxbox-price")?.value ?? "0") || 0));
-  if (!name || !description || !imagePath) {
-    eutheriumStatus = "Joxbox needs name, description and image";
+  const generatedToml = joxboxTomlFromFields({ name, description, lore, price, imagePath });
+  const toml = tomlInput && tomlInput.value.trim() && tomlInput.value.trim() !== joxboxDefaultToml().trim()
+    ? tomlInput.value.trim()
+    : generatedToml;
+  if ((!name || !description) && !toml.trim()) {
+    eutheriumStatus = "Joxbox needs TOML or name and description";
+    renderWorkspaceWindow();
+    return;
+  }
+  if (!imagePath && !imageFile && !toml.includes("image_path")) {
+    eutheriumStatus = "Joxbox needs image path or upload";
     renderWorkspaceWindow();
     return;
   }
@@ -11726,6 +11739,13 @@ async function mintCustomJoxboxArtifact(): Promise<void> {
   eutheriumStatus = "Minting .jox";
   renderWorkspaceWindow();
   try {
+    const imagePayload = imageFile
+      ? {
+          imageDataBase64: await fileToBase64(imageFile),
+          imageContentType: imageFile.type || contentTypeFromFileName(imageFile.name),
+          imageName: imageFile.name || "joxbox.png",
+        }
+      : {};
     eutheriumMe = await bridgeJson<EutheriumMeResult>(
       "/api/shop/joxbox/mint",
       {
@@ -11734,12 +11754,14 @@ async function mintCustomJoxboxArtifact(): Promise<void> {
           name,
           description,
           lore,
+          toml,
           price,
           imagePath,
           thumbnailPath: imagePath,
           rarity: "joxbox",
           currentOwner: "Joxbox",
           listInShop: true,
+          ...imagePayload,
         }),
       },
       1600,
@@ -11753,6 +11775,33 @@ async function mintCustomJoxboxArtifact(): Promise<void> {
     eutheriumSaving = false;
     renderWorkspaceWindow();
   }
+}
+
+function joxboxDefaultToml(): string {
+  return joxboxTomlFromFields({
+    name: "New Joxbox Artifact",
+    description: "A new artifact waiting for lore.",
+    lore: "Forged in Joxbox.",
+    price: 1000,
+    imagePath: "",
+  });
+}
+
+function joxboxTomlFromFields(input: { name: string; description: string; lore: string; price: number; imagePath: string }): string {
+  return [
+    `name = "${tomlEscape(input.name || "New Joxbox Artifact")}"`,
+    `description = "${tomlEscape(input.description || "A new artifact waiting for lore.")}"`,
+    `lore = "${tomlEscape(input.lore || "Forged in Joxbox.")}"`,
+    `rarity = "joxbox"`,
+    `current_owner = "Joxbox"`,
+    `price = ${Math.max(0, Math.round(input.price || 0))}`,
+    `image_path = "${tomlEscape(input.imagePath)}"`,
+    `thumbnail_path = "${tomlEscape(input.imagePath)}"`,
+  ].join("\n");
+}
+
+function tomlEscape(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
 }
 
 async function loadJoxDetails(itemId: string): Promise<void> {

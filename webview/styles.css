@@ -7255,7 +7255,7 @@ h2 {
 
 .eutherium-joxbox-create {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) 96px minmax(0, 1.4fr) auto;
+  grid-template-columns: minmax(0, 1.1fr) 96px minmax(0, 1.4fr) minmax(160px, 0.8fr) auto;
   gap: 8px;
   align-items: stretch;
 }
@@ -7276,7 +7276,15 @@ h2 {
   resize: vertical;
 }
 
+.eutherium-joxbox-create #joxbox-toml {
+  grid-column: 1 / -1;
+  min-height: 180px;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  line-height: 1.35;
+}
+
 .eutherium-joxbox-create button {
+  grid-column: 1 / -1;
   min-height: 38px;
   border-radius: 8px;
   font-size: 0.72rem;

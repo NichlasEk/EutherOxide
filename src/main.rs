@@ -1328,12 +1328,16 @@ struct HostJoxboxMintRequest {
     name: String,
     description: String,
     lore: Option<String>,
+    toml: Option<String>,
     price: i64,
     image_path: String,
     thumbnail_path: Option<String>,
     rarity: Option<String>,
     current_owner: Option<String>,
     list_in_shop: Option<bool>,
+    image_data_base64: Option<String>,
+    image_content_type: Option<String>,
+    image_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2156,6 +2160,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if path.starts_with("/api/shop/joxbox/artifacts/") => {
             require_host_user(state, &request)?;
             send_host_joxbox_artifact(stream, path)
+        }
+        ("GET", path) if path.starts_with("/api/shop/joxbox/media/") => {
+            require_host_user(state, &request)?;
+            send_host_joxbox_media(stream, path)
         }
         ("POST", "/api/shop/jox/offer") => {
             let user = require_host_user(state, &request)?;
@@ -4987,13 +4995,19 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
 
 fn host_jox_listing_item(listing: HostJoxShopListing) -> HostEutheriumItem {
     let active = listing.shop_status == "listed";
+    let fallback_image_path = listing.source_item_id.as_ref().and_then(|source_item_id| {
+        host_static_shop_items()
+            .into_iter()
+            .find(|item| item.id == *source_item_id)
+            .map(|item| item.image_path)
+    });
     HostEutheriumItem {
         id: format!("jox:{}", listing.id),
         name: listing.name,
         item_type: "jox_artifact".to_string(),
         price: listing.price,
         description: listing.description,
-        image_path: listing.image_path,
+        image_path: fallback_image_path.unwrap_or(listing.image_path),
         rarity: format!("JOX {}", listing.provenance_status),
         available_for_purchase: active,
         jox_path: Some(listing.jox_path),
@@ -5128,7 +5142,17 @@ fn upsert_host_jox_shop_listing(admin: &str, listing: HostJoxShopListingRequest)
 }
 
 fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io::Result<()> {
-    if request.price < 0 || request.price > 1_000_000 {
+    let toml = request.toml.as_deref().unwrap_or("");
+    let toml_name = parse_toml_string(toml, "name");
+    let toml_description = parse_toml_string(toml, "description");
+    let toml_lore = parse_toml_string(toml, "lore");
+    let toml_rarity = parse_toml_string(toml, "rarity");
+    let toml_owner = parse_toml_string(toml, "current_owner");
+    let toml_image = parse_toml_string(toml, "image_path");
+    let toml_thumbnail = parse_toml_string(toml, "thumbnail_path");
+    let toml_price = parse_toml_u64(toml, "price").map(|value| value as i64);
+    let price = toml_price.unwrap_or(request.price);
+    if price < 0 || price > 1_000_000 {
         return Err(invalid_request("JOX price must be between 0 and 1000000"));
     }
     let source_item = if let Some(source_item_id) = request.source_item_id.as_deref() {
@@ -5141,15 +5165,31 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
     } else {
         None
     };
-    let name = request.name.trim();
+    let name = toml_name.as_deref().unwrap_or(&request.name).trim();
     if name.is_empty() || name.len() > 120 {
         return Err(invalid_request("JOX name must be 1-120 characters"));
     }
-    let description = request.description.trim();
+    let description = toml_description
+        .as_deref()
+        .unwrap_or(&request.description)
+        .trim();
     if description.is_empty() || description.len() > 500 {
         return Err(invalid_request("JOX description must be 1-500 characters"));
     }
-    let image_path = request.image_path.trim();
+    let uploaded_image_path = if let Some(data_base64) = request.image_data_base64.as_deref() {
+        Some(save_host_joxbox_image_upload(
+            data_base64,
+            request.image_content_type.as_deref().unwrap_or(""),
+            request.image_name.as_deref().unwrap_or("joxbox.png"),
+        )?)
+    } else {
+        None
+    };
+    let image_path_value = uploaded_image_path
+        .as_deref()
+        .or(toml_image.as_deref())
+        .unwrap_or(&request.image_path);
+    let image_path = image_path_value.trim();
     if image_path.is_empty() || image_path.len() > 1000 {
         return Err(invalid_request("invalid JOX image path"));
     }
@@ -5162,32 +5202,41 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
         .or_else(|| source_item_id.as_ref().map(|id| format!("joxbox-{id}")))
         .unwrap_or_else(|| format!("joxbox-{}", unix_ms_now()));
     let artifact_id = sanitize_host_joxbox_artifact_id(&base_id)?;
-    let current_owner = request
-        .current_owner
+    let current_owner = toml_owner
         .as_deref()
+        .or(request.current_owner.as_deref())
         .map(str::trim)
         .filter(|owner| !owner.is_empty())
         .unwrap_or("Joxbox");
-    let rarity = request
-        .rarity
+    let rarity = toml_rarity
         .as_deref()
+        .or(request.rarity.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .or_else(|| source_item.as_ref().map(|item| item.rarity.as_str()))
         .unwrap_or("joxbox");
-    let thumbnail_path = request
-        .thumbnail_path
+    let thumbnail_path = toml_thumbnail
         .as_deref()
+        .or(request.thumbnail_path.as_deref())
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .unwrap_or(image_path);
+    let lore = toml_lore
+        .as_deref()
+        .or(request.lore.as_deref())
+        .map(str::trim)
+        .filter(|lore| !lore.is_empty())
+        .unwrap_or(
+            "Minted in Joxbox so the Trophy Shop can treat this artifact as a proper .jox relic.",
+        );
     let minted_at = unix_ms_now();
     let payload = serde_json::json!({
         "artifactId": artifact_id.clone(),
         "name": name,
         "description": description,
-        "lore": request.lore.as_deref().map(str::trim).filter(|lore| !lore.is_empty()).unwrap_or("Minted in Joxbox so the Trophy Shop can treat this artifact as a proper .jox relic."),
-        "intrinsicValue": request.price,
+        "lore": lore,
+        "toml": toml,
+        "intrinsicValue": price,
         "rarity": rarity,
         "imagePath": image_path,
         "thumbnailPath": thumbnail_path,
@@ -5214,7 +5263,7 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
         id: artifact_id.clone(),
         name: name.to_string(),
         description: description.to_string(),
-        price: request.price,
+        price,
         image_path: image_path.to_string(),
         jox_path: host_joxbox_artifact_url(&artifact_id),
         provenance_status: "valid".to_string(),
@@ -5731,6 +5780,59 @@ fn send_host_joxbox_artifact(stream: &mut TcpStream, path: &str) -> io::Result<(
         &bytes,
         &[("Content-Disposition", &disposition)],
     )
+}
+
+fn save_host_joxbox_image_upload(
+    data_base64: &str,
+    content_type: &str,
+    name: &str,
+) -> io::Result<String> {
+    let (content_type, is_image) =
+        validate_host_social_attachment_content_type(content_type, name)?;
+    if !is_image {
+        return Err(invalid_request("Joxbox image upload must be an image"));
+    }
+    let bytes = decode_base64(data_base64.trim())?;
+    if bytes.is_empty() || bytes.len() > HOST_SOCIAL_ATTACHMENT_MAX_BYTES {
+        return Err(invalid_request("Joxbox image is too large"));
+    }
+    validate_host_social_attachment_magic(&content_type, &bytes)?;
+    let extension = host_social_attachment_extension(&content_type, name);
+    let id = format!("joxbox-{}-{:016x}", unix_ms_now(), random_u64()?);
+    let file_name = format!("{id}.{extension}");
+    fs::create_dir_all(host_eutherium_joxbox_media_dir())?;
+    fs::write(host_eutherium_joxbox_media_dir().join(&file_name), bytes)?;
+    Ok(format!("/api/shop/joxbox/media/{file_name}"))
+}
+
+fn send_host_joxbox_media(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let file_name = path
+        .strip_prefix("/api/shop/joxbox/media/")
+        .ok_or_else(|| invalid_request("invalid Joxbox media path"))?;
+    if file_name.is_empty()
+        || file_name.len() > 160
+        || !file_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(invalid_request("invalid Joxbox media file"));
+    }
+    let file_path = host_eutherium_joxbox_media_dir().join(file_name);
+    let bytes = fs::read(&file_path)?;
+    let content_type = match file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    };
+    send_response(stream, 200, content_type, &bytes)
 }
 
 fn host_trophy_icon(kind: &str) -> String {
@@ -14091,6 +14193,10 @@ fn host_eutherium_jox_offers_path() -> PathBuf {
 
 fn host_eutherium_joxbox_dir() -> PathBuf {
     host_eutherium_dir().join("joxbox")
+}
+
+fn host_eutherium_joxbox_media_dir() -> PathBuf {
+    host_eutherium_joxbox_dir().join("media")
 }
 
 fn host_trophy_room_layout_path(user: &str) -> PathBuf {
