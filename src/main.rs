@@ -1268,6 +1268,13 @@ struct HostJoxDetailsRequest {
     item_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxImportRequest {
+    name: String,
+    data_base64: String,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HostInventoryEntry {
@@ -2172,6 +2179,20 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let offer: HostJoxTransferOfferRequest = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             create_host_jox_transfer_offer(&user, offer)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("POST", "/api/shop/jox/buy") => {
+            let user = require_host_user(state, &request)?;
+            let buy: HostJoxTransferOfferRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            buy_listed_host_jox(state, &user, buy)?;
+            send_json(stream, &host_eutherium_me(state, &user)?)
+        }
+        ("POST", "/api/shop/jox/import") => {
+            let user = require_host_user(state, &request)?;
+            let import: HostJoxImportRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            import_host_jox_artifact(&user, import)?;
             send_json(stream, &host_eutherium_me(state, &user)?)
         }
         ("POST", "/api/shop/jox/offer/respond") => {
@@ -5462,6 +5483,280 @@ fn respond_host_jox_transfer_offer(
         }
     }
     save_host_jox_transfer_offers(&offers)
+}
+
+fn buy_listed_host_jox(
+    state: &HostState,
+    user: &str,
+    request: HostJoxTransferOfferRequest,
+) -> io::Result<()> {
+    let item_id = request.item_id.trim();
+    let artifact_id = item_id
+        .strip_prefix("jox:")
+        .ok_or_else(|| invalid_request("not a JOX shop item"))?;
+    let mut listings = load_host_jox_shop_listings()?;
+    let listing_index = listings
+        .iter()
+        .position(|listing| listing.id == artifact_id && listing.shop_status == "listed")
+        .ok_or_else(|| invalid_request("JOX listing not found"))?;
+    let listing = listings[listing_index].clone();
+    if listing.provenance_status != "valid" {
+        return Err(invalid_request("unknown provenance JOX cannot be bought"));
+    }
+    if host_eutherium_balance(user)? < listing.price {
+        return Err(invalid_request("not enough Eutherium"));
+    }
+
+    let seller = listing.current_owner.clone();
+    let seller_is_user = seller != user && require_existing_host_user(state, &seller).is_ok();
+    update_remote_jox_owner(&listing.jox_path, user)?;
+
+    append_host_eutherium_ledger(HostEutheriumLedgerEntry {
+        id: host_eutherium_entry_id("jox-buy", user),
+        user_id: user.to_string(),
+        amount: -listing.price,
+        reason: format!("Bought JOX {}", listing.name),
+        source: "jox_trophy_shop".to_string(),
+        created_by_user_id: user.to_string(),
+        created_unix_ms: unix_ms_now(),
+    })?;
+    if seller_is_user {
+        append_host_eutherium_ledger(HostEutheriumLedgerEntry {
+            id: host_eutherium_entry_id("jox-sale", &seller),
+            user_id: seller.clone(),
+            amount: listing.price,
+            reason: format!("Sold JOX {}", listing.name),
+            source: "jox_trophy_shop".to_string(),
+            created_by_user_id: user.to_string(),
+            created_unix_ms: unix_ms_now(),
+        })?;
+    }
+
+    let mut inventory = load_host_inventory()?;
+    if seller_is_user {
+        inventory.retain(|entry| !(entry.user_id == seller && entry.item_id == item_id));
+        prune_host_trophy_layout_item(&seller, item_id)?;
+    }
+    inventory.push(HostInventoryEntry {
+        id: host_eutherium_entry_id("inv", user),
+        user_id: user.to_string(),
+        item_id: item_id.to_string(),
+        acquired_unix_ms: unix_ms_now(),
+        equipped_to_item_id: None,
+    });
+    save_host_inventory(&inventory)?;
+
+    listings[listing_index].shop_status = "owned".to_string();
+    listings[listing_index].current_owner = user.to_string();
+    save_host_jox_shop_listings(&listings)?;
+
+    let mut offers = load_host_jox_transfer_offers()?;
+    let decided_at = unix_ms_now();
+    for pending in &mut offers {
+        if pending.artifact_id == artifact_id && pending.status == "pending" {
+            pending.status = "expired".to_string();
+            pending.decided_unix_ms = Some(decided_at);
+        }
+    }
+    save_host_jox_transfer_offers(&offers)
+}
+
+fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Result<()> {
+    let bytes = decode_base64(request.data_base64.trim())?;
+    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        return Err(invalid_request("JOX file is too large"));
+    }
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|err| invalid_request(err.to_string()))?;
+    let payload = document
+        .get("payload")
+        .cloned()
+        .ok_or_else(|| invalid_request("JOX payload missing"))?;
+    let expected_hash = document
+        .get("integrity")
+        .and_then(|integrity| integrity.get("payloadSha256"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let actual_hash = host_jox_payload_hash(&payload)?;
+    let payload_object = payload
+        .as_object()
+        .ok_or_else(|| invalid_request("JOX payload must be an object"))?;
+    let declared_owner = payload_object
+        .get("currentOwner")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    let provenance_status =
+        if expected_hash == actual_hash && (declared_owner.is_empty() || declared_owner == user) {
+            "valid"
+        } else {
+            "unknown"
+        };
+    if user_owns_host_jox_payload_hash(user, &actual_hash)? {
+        return Err(invalid_request("you have already imported this JOX"));
+    }
+    let imported_name = payload_object
+        .get("name")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            Path::new(&request.name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+        })
+        .unwrap_or("Imported JOX")
+        .chars()
+        .take(120)
+        .collect::<String>();
+    let imported_description = payload_object
+        .get("description")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Imported JOX artifact")
+        .chars()
+        .take(500)
+        .collect::<String>();
+    let image_path = payload_object
+        .get("imagePath")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(1000)
+        .collect::<String>();
+    let base_id = payload_object
+        .get("artifactId")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&imported_name);
+    let artifact_id = format!(
+        "{}-import-{}",
+        sanitize_host_joxbox_artifact_id(base_id)?,
+        unix_ms_now()
+    );
+
+    if let Some(payload) = document
+        .get_mut("payload")
+        .and_then(|value| value.as_object_mut())
+    {
+        payload.insert(
+            "currentOwner".to_string(),
+            serde_json::Value::String(user.to_string()),
+        );
+        payload.insert(
+            "importProvenanceStatus".to_string(),
+            serde_json::Value::String(provenance_status.to_string()),
+        );
+        payload.insert(
+            "importSourcePayloadSha256".to_string(),
+            serde_json::Value::String(actual_hash.clone()),
+        );
+        let history = payload
+            .entry("ownershipHistory")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let Some(history) = history.as_array_mut() {
+            history.push(serde_json::json!({
+                "owner": user,
+                "event": "imported",
+                "byUserId": user,
+                "unixMs": unix_ms_now(),
+                "previousOwner": declared_owner,
+                "sourcePayloadSha256": actual_hash,
+                "note": if provenance_status == "valid" { "Imported by declared owner with matching payload hash" } else { "Imported with unknown provenance" }
+            }));
+        }
+        let refreshed = host_joxbox_document(serde_json::Value::Object(payload.clone()))?;
+        document = refreshed;
+    }
+
+    let path = host_joxbox_artifact_path(&artifact_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(&document).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)?;
+
+    let mut listings = load_host_jox_shop_listings()?;
+    let listing = HostJoxShopListing {
+        id: artifact_id.clone(),
+        name: imported_name,
+        description: imported_description,
+        price: 0,
+        image_path,
+        jox_path: host_joxbox_artifact_url(&artifact_id),
+        provenance_status: provenance_status.to_string(),
+        current_owner: user.to_string(),
+        shop_status: "owned".to_string(),
+        listed_by_user_id: user.to_string(),
+        listed_unix_ms: unix_ms_now(),
+        source_item_id: None,
+    };
+    listings.push(listing);
+    save_host_jox_shop_listings(&listings)?;
+
+    let mut inventory = load_host_inventory()?;
+    inventory.push(HostInventoryEntry {
+        id: host_eutherium_entry_id("inv", user),
+        user_id: user.to_string(),
+        item_id: format!("jox:{artifact_id}"),
+        acquired_unix_ms: unix_ms_now(),
+        equipped_to_item_id: None,
+    });
+    save_host_inventory(&inventory)
+}
+
+fn user_owns_host_jox_payload_hash(user: &str, payload_hash: &str) -> io::Result<bool> {
+    let owned_artifact_ids: HashSet<String> = load_host_inventory()?
+        .into_iter()
+        .filter(|entry| entry.user_id == user)
+        .filter_map(|entry| {
+            entry
+                .item_id
+                .strip_prefix("jox:")
+                .map(|artifact_id| artifact_id.to_string())
+        })
+        .collect();
+    if owned_artifact_ids.is_empty() {
+        return Ok(false);
+    }
+    for listing in load_host_jox_shop_listings()? {
+        if !owned_artifact_ids.contains(&listing.id) {
+            continue;
+        }
+        if host_jox_path_has_payload_hash(&listing.jox_path, payload_hash)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn host_jox_path_has_payload_hash(jox_path: &str, payload_hash: &str) -> io::Result<bool> {
+    let Some(artifact_id) = host_joxbox_artifact_id_from_url(jox_path)? else {
+        return Ok(false);
+    };
+    let contents = match fs::read_to_string(host_joxbox_artifact_path(&artifact_id)?) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let document: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    if document
+        .get("integrity")
+        .and_then(|integrity| integrity.get("payloadSha256"))
+        .and_then(|value| value.as_str())
+        == Some(payload_hash)
+    {
+        return Ok(true);
+    }
+    let Some(payload) = document.get("payload") else {
+        return Ok(false);
+    };
+    if payload
+        .get("importSourcePayloadSha256")
+        .and_then(|value| value.as_str())
+        == Some(payload_hash)
+    {
+        return Ok(true);
+    }
+    Ok(host_jox_payload_hash(payload)? == payload_hash)
 }
 
 fn relist_owned_host_jox(user: &str, request: HostJoxRelistRequest) -> io::Result<()> {

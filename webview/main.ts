@@ -3058,6 +3058,11 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await requestJoxOffer(joxOffer.dataset.joxOffer ?? "");
     return;
   }
+  const joxBuy = target.closest<HTMLButtonElement>("[data-jox-buy]");
+  if (joxBuy) {
+    await buyJoxItem(joxBuy.dataset.joxBuy ?? "");
+    return;
+  }
   const joxResponse = target.closest<HTMLButtonElement>("[data-jox-offer-response]");
   if (joxResponse) {
     await respondJoxOffer(joxResponse.dataset.joxOfferResponse ?? "", joxResponse.dataset.joxDecision ?? "");
@@ -3445,6 +3450,15 @@ workspaceWindowLayer.addEventListener("input", (event) => {
 });
 
 workspaceWindowLayer.addEventListener("change", (event) => {
+  const joxImport = (event.target as HTMLElement).closest<HTMLInputElement>("#jox-import-file");
+  if (joxImport) {
+    const file = joxImport.files?.[0] ?? null;
+    joxImport.value = "";
+    if (file) {
+      void importJoxFile(file);
+    }
+    return;
+  }
   const joxboxConverted = (event.target as HTMLElement).closest<HTMLInputElement>("#joxbox-show-converted");
   if (!joxboxConverted) {
     return;
@@ -7996,7 +8010,7 @@ function eutheriumWindowMarkup(): string {
       <section class="eutherium-shop-panel" id="eutherium-shop">
         <div class="section-head">
           <p class="section-label">Shop</p>
-          <span>No real money, only glory</span>
+          <span>Balance ${formatEutherium(data.balance)} EUX</span>
         </div>
         <div class="eutherium-shop-grid">
           ${data.items.map((item) => shopItemMarkup(item, data.balance)).join("")}
@@ -8004,8 +8018,14 @@ function eutheriumWindowMarkup(): string {
       </section>
       <section class="eutherium-inventory-panel" id="eutherium-inventory">
         <div class="section-head">
-          <p class="section-label">Inventory</p>
-          <span>${data.inventory.length} trophies</span>
+          <div>
+            <p class="section-label">Inventory</p>
+            <span>${data.inventory.length} trophies</span>
+          </div>
+          <label class="eutherium-import-jox">
+            Upload .jox
+            <input id="jox-import-file" type="file" accept=".jox,application/json" />
+          </label>
         </div>
         <div class="eutherium-inventory-grid">
           ${data.inventory.length ? data.inventory.map((entry) => inventoryItemMarkup(entry, data.trophyRoom.layout)).join("") : `<span>No trophies yet</span>`}
@@ -11479,8 +11499,8 @@ function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
           <strong>${escapeHtml(item.name)}</strong>
           <p>${escapeHtml(item.description)}</p>
         </div>
-        <button data-jox-offer="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
-          Request ${formatEutherium(item.price)} EUX
+        <button data-jox-buy="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
+          Buy ${formatEutherium(item.price)} EUX
         </button>
         <button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button>
       </article>
@@ -11510,7 +11530,7 @@ function inventoryItemMarkup(entry: EutheriumInventoryEntry, layout: TrophyRoomL
   const item = entry.item;
   const placed = layout.items.some((placedItem) => placedItem.inventoryId === entry.id);
   const joxControls = item?.itemType === "jox_artifact"
-    ? `<button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button><button data-jox-relist="${escapeHtml(entry.id)}" type="button">Relist</button>`
+    ? `<button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button>${item.joxPath ? `<a href="${escapeHtml(item.joxPath)}" download>Download .jox</a>` : ""}<button data-jox-relist="${escapeHtml(entry.id)}" type="button">Relist</button>`
     : "";
   return `
     <article class="eutherium-inventory-card ${selectedTrophyInventoryId === entry.id ? "is-selected" : ""}">
@@ -11665,6 +11685,57 @@ async function requestJoxOffer(itemId: string): Promise<void> {
     eutheriumStatus = "JOX offer pending";
   } catch (err) {
     eutheriumStatus = err instanceof Error ? err.message : "JOX offer failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function buyJoxItem(itemId: string): Promise<void> {
+  if (!itemId) {
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Buying JOX";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/jox/buy",
+      { method: "POST", body: JSON.stringify({ itemId }) },
+      1600,
+    );
+    eutheriumLoaded = true;
+    selectedJoxDetails = null;
+    eutheriumStatus = "JOX bought";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX buy failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function importJoxFile(file: File): Promise<void> {
+  eutheriumSaving = true;
+  eutheriumStatus = "Importing JOX";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/jox/import",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: file.name || "artifact.jox",
+          dataBase64: await fileToBase64(file),
+        }),
+      },
+      1800,
+    );
+    eutheriumLoaded = true;
+    selectedJoxDetails = null;
+    eutheriumStatus = "JOX imported";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "JOX import failed";
   } finally {
     eutheriumSaving = false;
     renderWorkspaceWindow();

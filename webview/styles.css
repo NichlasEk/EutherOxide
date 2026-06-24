@@ -7052,7 +7052,9 @@ h2 {
 
 .trophy-controls button,
 .eutherium-item-card button,
-.eutherium-inventory-card button {
+.eutherium-inventory-card button,
+.eutherium-inventory-card a,
+.eutherium-import-jox {
   min-height: 38px;
   padding: 0 8px;
   font-size: 0.7rem;
@@ -7122,11 +7124,37 @@ h2 {
 
 .eutherium-item-card button,
 .eutherium-inventory-card button,
+.eutherium-inventory-card a,
+.eutherium-import-jox,
 .eutherium-jox-offer-card button,
 .trophy-controls button,
 .eutherium-balance-panel button {
   border-radius: 8px;
   touch-action: manipulation;
+}
+
+.eutherium-inventory-card a,
+.eutherium-import-jox {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(214, 233, 95, 0.2);
+  background: rgba(26, 15, 38, 0.78);
+  color: #f1e7aa;
+  text-align: center;
+  text-decoration: none;
+}
+
+.eutherium-import-jox {
+  min-width: 118px;
+  cursor: pointer;
+}
+
+.eutherium-import-jox input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .eutherium-item-card img,
