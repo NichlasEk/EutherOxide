@@ -5848,15 +5848,30 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .trim();
-    let provenance_status =
-        if expected_hash == actual_hash && (declared_owner.is_empty() || declared_owner == user) {
-            "valid"
-        } else {
-            "unknown"
-        };
     if user_owns_host_jox_payload_hash(user, &actual_hash)? {
         return Err(invalid_request("you have already imported this JOX"));
     }
+    let base_id = payload_object
+        .get("artifactId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Imported JOX");
+    let source_artifact_id = sanitize_host_joxbox_artifact_id(base_id)?;
+    let duplicate_payload_owner = host_jox_payload_hash_owner(&actual_hash)?;
+    let duplicate_artifact_owner = host_jox_artifact_owner(&source_artifact_id)?;
+    let duplicate_elsewhere = duplicate_payload_owner
+        .as_deref()
+        .is_some_and(|owner| owner != user)
+        || duplicate_artifact_owner
+            .as_deref()
+            .is_some_and(|owner| owner != user);
+    let provenance_status = if expected_hash == actual_hash
+        && (declared_owner.is_empty() || declared_owner == user)
+        && !duplicate_elsewhere
+    {
+        "valid"
+    } else {
+        "unknown"
+    };
     let imported_name = payload_object
         .get("name")
         .and_then(|value| value.as_str())
@@ -5884,15 +5899,7 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
         .take(1000)
         .collect::<String>();
     let imported_assets = host_jox_assets_from_document(&document);
-    let base_id = payload_object
-        .get("artifactId")
-        .and_then(|value| value.as_str())
-        .unwrap_or(&imported_name);
-    let artifact_id = format!(
-        "{}-import-{}",
-        sanitize_host_joxbox_artifact_id(base_id)?,
-        unix_ms_now()
-    );
+    let artifact_id = format!("{}-import-{}", source_artifact_id, unix_ms_now());
     let embedded_image_path = host_jox_primary_asset_id(&imported_assets)
         .map(|asset_id| host_jox_embedded_asset_url(&artifact_id, &asset_id));
 
@@ -5923,6 +5930,8 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
                 "unixMs": unix_ms_now(),
                 "previousOwner": declared_owner,
                 "sourcePayloadSha256": actual_hash,
+                "duplicatePayloadOwner": duplicate_payload_owner,
+                "duplicateArtifactOwner": duplicate_artifact_owner,
                 "note": if provenance_status == "valid" { "Imported by declared owner with matching payload hash" } else { "Imported with unknown provenance" }
             }));
         }
@@ -5994,6 +6003,23 @@ fn user_owns_host_jox_payload_hash(user: &str, payload_hash: &str) -> io::Result
         }
     }
     Ok(false)
+}
+
+fn host_jox_payload_hash_owner(payload_hash: &str) -> io::Result<Option<String>> {
+    for listing in load_host_jox_shop_listings()? {
+        if host_jox_path_has_payload_hash(&listing.jox_path, payload_hash)? {
+            return Ok(Some(listing.current_owner));
+        }
+    }
+    Ok(None)
+}
+
+fn host_jox_artifact_owner(artifact_id: &str) -> io::Result<Option<String>> {
+    let artifact_id = sanitize_host_joxbox_artifact_id(artifact_id)?;
+    Ok(load_host_jox_shop_listings()?
+        .into_iter()
+        .find(|listing| listing.id == artifact_id)
+        .map(|listing| listing.current_owner))
 }
 
 fn host_jox_path_has_payload_hash(jox_path: &str, payload_hash: &str) -> io::Result<bool> {
