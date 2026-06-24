@@ -5292,6 +5292,21 @@ function visibleInteractionFriends(): InteractionFriend[] {
   return filtered.length > 0 ? filtered : source;
 }
 
+function eutheriumAwardCandidates(): InteractionFriend[] {
+  const source = interactionUsers.length > 0 ? interactionUsers : fallbackInteractionFriends;
+  const currentUser = hostUsername?.toLowerCase();
+  const candidates = source.filter((friend) => friend.name.toLowerCase() !== currentUser || hostIsAdmin);
+  if (hostIsAdmin && hostUsername && !candidates.some((friend) => friend.name.toLowerCase() === currentUser)) {
+    candidates.unshift({
+      name: hostUsername,
+      status: "Online",
+      location: "Current user",
+      isCurrentUser: true,
+    });
+  }
+  return candidates;
+}
+
 function friendRowsMarkup(friends: InteractionFriend[]): string {
   if (friends.length === 0) {
     return `<span class="interaction-empty">No users loaded</span>`;
@@ -11117,7 +11132,7 @@ function formatCompactNumber(value: number): string {
 }
 
 function eutheriumAwardPanelMarkup(): string {
-  const candidates = visibleInteractionFriends().filter((friend) => !friend.isCurrentUser || hostIsAdmin);
+  const candidates = eutheriumAwardCandidates();
   const options = candidates.length
     ? candidates.map((friend) => `<option value="${escapeHtml(friend.name)}">${escapeHtml(displayUserName(friend.name))}</option>`).join("")
     : `<option value="">No users loaded</option>`;
@@ -11456,7 +11471,7 @@ function renderEutheriumLobby(): void {
 }
 
 function eutheriumLobbyAwardPanelMarkup(): string {
-  const candidates = visibleInteractionFriends().filter((friend) => !friend.isCurrentUser || hostIsAdmin);
+  const candidates = eutheriumAwardCandidates();
   const options = candidates.length
     ? candidates.map((friend) => `<option value="${escapeHtml(friend.name)}">${escapeHtml(displayUserName(friend.name))}</option>`).join("")
     : `<option value="">No users loaded</option>`;
