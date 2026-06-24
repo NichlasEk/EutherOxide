@@ -7553,6 +7553,7 @@ h2 {
   padding: 22px;
   background: rgba(0, 0, 0, 0.68);
   backdrop-filter: blur(12px);
+  overflow: hidden;
 }
 
 .admin-modal.is-open {
@@ -7564,7 +7565,9 @@ h2 {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   width: min(980px, 94vw);
+  height: min(720px, 92dvh);
   max-height: min(720px, 92vh);
+  min-height: 0;
   padding: 18px;
   border: 1px solid rgba(165, 222, 114, 0.32);
   border-radius: 8px;
@@ -7574,6 +7577,7 @@ h2 {
   box-shadow:
     0 30px 90px rgba(0, 0, 0, 0.58),
     inset 0 0 80px rgba(165, 222, 114, 0.08);
+  overflow: hidden;
 }
 
 .admin-dialog-head {
@@ -7591,7 +7595,9 @@ h2 {
   display: grid;
   grid-template-columns: minmax(340px, 1fr) minmax(280px, 0.72fr);
   gap: 14px;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .admin-list-panel,
@@ -7599,6 +7605,7 @@ h2 {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
+  min-width: 0;
   min-height: 0;
   padding: 12px;
   border: 1px solid rgba(165, 222, 114, 0.18);
@@ -7608,10 +7615,14 @@ h2 {
 
 .admin-edit-panel {
   grid-template-rows: auto auto auto minmax(0, 1fr);
+  align-content: start;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .admin-users {
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .admin-user {
@@ -7619,6 +7630,7 @@ h2 {
   grid-template-columns: minmax(0, 1fr) 72px 70px;
   align-items: stretch;
   gap: 7px;
+  min-width: 0;
 }
 
 .admin-user > button {
@@ -8166,6 +8178,17 @@ h2 {
 
   .admin-dialog-body {
     grid-template-columns: 1fr;
+    grid-auto-rows: max-content;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-list-panel {
+    max-height: min(52dvh, 520px);
+  }
+
+  .admin-edit-panel {
+    overflow: visible;
   }
 }
 
@@ -8184,19 +8207,46 @@ h2 {
   .admin-modal {
     align-items: stretch;
     padding: 10px;
+    overflow: hidden;
   }
 
   .admin-dialog {
     width: 100%;
+    height: calc(100dvh - 20px);
     max-height: calc(100dvh - 20px);
+    padding: 12px;
+    gap: 10px;
   }
 
   .admin-dialog-head {
     display: grid;
+    gap: 8px;
+  }
+
+  .admin-dialog-body {
+    grid-template-columns: 1fr;
+    grid-auto-rows: max-content;
+    gap: 10px;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 2px;
+  }
+
+  .admin-list-panel,
+  .admin-edit-panel {
+    overflow: visible;
+  }
+
+  .admin-list-panel {
+    max-height: min(58dvh, 520px);
+  }
+
+  .admin-users {
+    max-height: min(46dvh, 430px);
   }
 
   .admin-user {
-    grid-template-columns: minmax(0, 1fr) 62px 62px;
+    grid-template-columns: minmax(0, 1fr) minmax(62px, 0.38fr) minmax(62px, 0.38fr);
   }
 
   .admin-form,
