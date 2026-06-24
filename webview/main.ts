@@ -11307,18 +11307,18 @@ function joxOffersPanelMarkup(data: EutheriumMeResult): string {
   `;
 }
 
-function joxOfferMarkup(offer: EutheriumJoxOffer, balance: number): string {
-  const affordable = balance >= offer.price;
+function joxOfferMarkup(offer: EutheriumJoxOffer, _balance: number): string {
+  const buyer = displayUserName(offer.createdByUserId);
   return `
     <article class="eutherium-jox-offer-card">
       <img src="${escapeHtml(offer.imagePath)}" alt="" />
       <div>
-        <span>${escapeHtml(offer.provenanceStatus)} / ${formatEutherium(offer.price)} EUX</span>
+        <span>${escapeHtml(offer.provenanceStatus)} / ${formatEutherium(offer.price)} EUX from ${escapeHtml(buyer)}</span>
         <strong>${escapeHtml(offer.name)}</strong>
         <p>${escapeHtml(offer.description)}</p>
       </div>
       <div class="eutherium-jox-offer-actions">
-        <button data-jox-offer-response="${escapeHtml(offer.id)}" data-jox-decision="accept" type="button" ${affordable ? "" : "disabled"}>Accept</button>
+        <button data-jox-offer-response="${escapeHtml(offer.id)}" data-jox-decision="accept" type="button">Accept</button>
         <button data-jox-offer-response="${escapeHtml(offer.id)}" data-jox-decision="decline" type="button">Decline</button>
       </div>
     </article>
@@ -11395,7 +11395,7 @@ function joxHistoryRowMarkup(offer: EutheriumJoxOffer): string {
   return `
     <div class="eutherium-jox-history-row">
       <strong>${escapeHtml(offer.status)}</strong>
-      <span>${escapeHtml(displayUserName(offer.recipientUserId))}</span>
+      <span>${escapeHtml(displayUserName(offer.createdByUserId))} to ${escapeHtml(displayUserName(offer.recipientUserId))}</span>
       <em>${formatEutherium(offer.price)} EUX</em>
     </div>
   `;
@@ -11654,6 +11654,9 @@ function shopItemMarkup(item: EutheriumShopItem, balance: number): string {
         <button data-jox-buy="${escapeHtml(item.id)}" type="button" ${affordable ? "" : "disabled"}>
           Buy ${formatEutherium(item.price)} EUX
         </button>
+        <button data-jox-offer="${escapeHtml(item.id)}" type="button">
+          Offer
+        </button>
         <button data-jox-details="${escapeHtml(item.id)}" type="button">Details</button>
       </article>
     `;
@@ -11827,13 +11830,21 @@ async function requestJoxOffer(itemId: string): Promise<void> {
   if (!itemId) {
     return;
   }
+  const item = eutheriumMe?.items.find((candidate) => candidate.id === itemId)
+    ?? eutheriumMe?.joxListings?.find((listing) => `jox:${listing.id}` === itemId);
+  const defaultPrice = item?.price ?? 1000;
+  const raw = window.prompt("JOX offer in EUX", String(defaultPrice));
+  if (raw === null) {
+    return;
+  }
+  const price = Math.max(0, Math.round(Number(raw) || 0));
   eutheriumSaving = true;
   eutheriumStatus = "Creating JOX offer";
   renderWorkspaceWindow();
   try {
     eutheriumMe = await bridgeJson<EutheriumMeResult>(
       "/api/shop/jox/offer",
-      { method: "POST", body: JSON.stringify({ itemId }) },
+      { method: "POST", body: JSON.stringify({ itemId, price }) },
       1400,
     );
     eutheriumLoaded = true;

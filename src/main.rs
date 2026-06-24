@@ -1371,6 +1371,7 @@ struct HostJoxboxMintRequest {
 #[serde(rename_all = "camelCase")]
 struct HostJoxTransferOfferRequest {
     item_id: String,
+    price: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -5603,13 +5604,20 @@ fn create_host_jox_transfer_offer(
     if listing.provenance_status != "valid" {
         return Err(invalid_request("unknown provenance JOX cannot be offered"));
     }
-    if host_eutherium_balance(user)? < listing.price {
+    if listing.current_owner == user {
+        return Err(invalid_request("you already own this JOX"));
+    }
+    let offer_price = request.price.unwrap_or(listing.price);
+    if offer_price < 0 || offer_price > 1_000_000 {
+        return Err(invalid_request("JOX offer must be between 0 and 1000000"));
+    }
+    if host_eutherium_balance(user)? < offer_price {
         return Err(invalid_request("not enough Eutherium"));
     }
     let mut offers = load_host_jox_transfer_offers()?;
     if offers.iter().any(|offer| {
         offer.artifact_id == listing.id
-            && offer.recipient_user_id == user
+            && offer.created_by_user_id == user
             && offer.status == "pending"
     }) {
         return Err(invalid_request("you already have a pending JOX offer"));
@@ -5618,9 +5626,9 @@ fn create_host_jox_transfer_offer(
         id: host_eutherium_entry_id("jox-offer", user),
         item_id: item_id.to_string(),
         artifact_id: listing.id,
-        recipient_user_id: user.to_string(),
+        recipient_user_id: listing.current_owner,
         created_by_user_id: user.to_string(),
-        price: listing.price,
+        price: offer_price,
         status: "pending".to_string(),
         name: listing.name,
         description: listing.description,
@@ -5667,20 +5675,26 @@ fn respond_host_jox_transfer_offer(
     if listings[listing_index].provenance_status != "valid" || offer.provenance_status != "valid" {
         return Err(invalid_request("unknown provenance JOX cannot be accepted"));
     }
-    if host_eutherium_balance(user)? < offer.price {
+    let buyer = offer.created_by_user_id.clone();
+    if buyer == user {
+        return Err(invalid_request("you already own this JOX"));
+    }
+    if host_eutherium_balance(&buyer)? < offer.price {
         return Err(invalid_request("not enough Eutherium"));
     }
 
     let seller = listings[listing_index].current_owner.clone();
-    if seller == user {
-        return Err(invalid_request("you already own this JOX"));
+    if seller != user {
+        return Err(invalid_request(
+            "only the current JOX owner can accept this offer",
+        ));
     }
-    let seller_is_user = seller != user && require_existing_host_user(state, &seller).is_ok();
-    update_remote_jox_sale(&offer.jox_path, &seller, user, offer.price)?;
+    let seller_is_user = require_existing_host_user(state, &seller).is_ok();
+    update_remote_jox_sale(&offer.jox_path, &seller, &buyer, offer.price)?;
 
     append_host_eutherium_ledger(HostEutheriumLedgerEntry {
-        id: host_eutherium_entry_id("jox-buy", user),
-        user_id: user.to_string(),
+        id: host_eutherium_entry_id("jox-buy", &buyer),
+        user_id: buyer.clone(),
         amount: -offer.price,
         reason: format!("Accepted JOX {}", offer.name),
         source: "jox_trophy_shop".to_string(),
@@ -5704,8 +5718,8 @@ fn respond_host_jox_transfer_offer(
         prune_host_trophy_layout_item(&seller, &offer.item_id)?;
     }
     inventory.push(HostInventoryEntry {
-        id: host_eutherium_entry_id("inv", user),
-        user_id: user.to_string(),
+        id: host_eutherium_entry_id("inv", &buyer),
+        user_id: buyer.clone(),
         item_id: offer.item_id.clone(),
         acquired_unix_ms: unix_ms_now(),
         equipped_to_item_id: None,
@@ -5713,7 +5727,7 @@ fn respond_host_jox_transfer_offer(
     save_host_inventory(&inventory)?;
 
     listings[listing_index].shop_status = "owned".to_string();
-    listings[listing_index].current_owner = user.to_string();
+    listings[listing_index].current_owner = buyer;
     save_host_jox_shop_listings(&listings)?;
 
     let decided_at = unix_ms_now();
