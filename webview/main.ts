@@ -675,12 +675,14 @@ type EutheriumJoxArtifactDetails = {
   artifactId: string;
   format: string;
   version: number;
+  schemaVersion?: number;
   intrinsicValue: number;
   lastSalePrice?: number | null;
   lastSaleUnixMs?: number | null;
   lore?: string;
   currentOwner?: string;
   ownershipHistory: EutheriumJoxOwnershipEvent[];
+  mutationCount?: number;
   assetCount: number;
   payloadSha256?: string;
   assetsSha256?: string;
@@ -11397,6 +11399,8 @@ function joxArtifactSummaryMarkup(artifact: EutheriumJoxArtifactDetails): string
   return `
     <div class="eutherium-jox-meta">
       <span>Format: ${escapeHtml(artifact.format)} v${artifact.version}</span>
+      <span>Schema: ${artifact.schemaVersion ?? 0}</span>
+      <span>Mutations: ${artifact.mutationCount ?? 0}</span>
       <span>Assets: ${artifact.assetCount}</span>
       <span>Payload hash: ${artifact.payloadHashValid ? "valid" : "changed"}</span>
       <span>Assets hash: ${artifact.assetsHashValid ? "valid" : "changed"}</span>

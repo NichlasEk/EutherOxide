@@ -41,6 +41,7 @@ const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
 const HOST_SOCIAL_ATTACHMENT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const HOST_JOX_MAX_BYTES: usize = 16 * 1024 * 1024;
 const HOST_JOX_ASSET_MAX_BYTES: usize = 8 * 1024 * 1024;
+const HOST_JOX_PAYLOAD_SCHEMA_VERSION: u64 = 1;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
@@ -5347,6 +5348,7 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
     let minted_at = unix_ms_now();
     let payload = serde_json::json!({
         "artifactId": artifact_id.clone(),
+        "schemaVersion": HOST_JOX_PAYLOAD_SCHEMA_VERSION,
         "name": name,
         "description": description,
         "lore": lore,
@@ -5366,6 +5368,14 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
             {
                 "owner": current_owner,
                 "event": "minted",
+                "byUserId": admin,
+                "unixMs": minted_at,
+                "note": "Created by Joxbox"
+            }
+        ],
+        "mutationLog": [
+            {
+                "event": "created",
                 "byUserId": admin,
                 "unixMs": minted_at,
                 "note": "Created by Joxbox"
@@ -5429,6 +5439,7 @@ fn repack_remote_secondsight_jox_listing(
     let minted_at = unix_ms_now();
     let payload = serde_json::json!({
         "artifactId": artifact_id,
+        "schemaVersion": HOST_JOX_PAYLOAD_SCHEMA_VERSION,
         "name": name,
         "description": description,
         "lore": format!("{name} crossed from SecondSight into Joxbox as a self-contained artifact."),
@@ -5449,6 +5460,14 @@ fn repack_remote_secondsight_jox_listing(
             {
                 "owner": current_owner,
                 "event": "repacked_from_secondsight",
+                "byUserId": admin,
+                "unixMs": minted_at,
+                "note": "Imported into Joxbox with embedded primary image"
+            }
+        ],
+        "mutationLog": [
+            {
+                "event": "repacked",
                 "byUserId": admin,
                 "unixMs": minted_at,
                 "note": "Imported into Joxbox with embedded primary image"
@@ -5907,6 +5926,7 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
         .get_mut("payload")
         .and_then(|value| value.as_object_mut())
     {
+        ensure_host_jox_payload_schema(payload)?;
         payload.insert(
             "currentOwner".to_string(),
             serde_json::Value::String(user.to_string()),
@@ -5929,12 +5949,23 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
                 "byUserId": user,
                 "unixMs": unix_ms_now(),
                 "previousOwner": declared_owner,
-                "sourcePayloadSha256": actual_hash,
+                "sourcePayloadSha256": actual_hash.clone(),
                 "duplicatePayloadOwner": duplicate_payload_owner,
                 "duplicateArtifactOwner": duplicate_artifact_owner,
                 "note": if provenance_status == "valid" { "Imported by declared owner with matching payload hash" } else { "Imported with unknown provenance" }
             }));
         }
+        append_host_jox_mutation(
+            payload,
+            serde_json::json!({
+                "event": "imported",
+                "byUserId": user,
+                "unixMs": unix_ms_now(),
+                "provenanceStatus": provenance_status,
+                "sourcePayloadSha256": actual_hash,
+                "note": if provenance_status == "valid" { "Imported by declared owner with matching payload hash" } else { "Imported with unknown provenance" }
+            }),
+        )?;
         let refreshed = host_joxbox_document_with_assets(
             serde_json::Value::Object(payload.clone()),
             imported_assets.clone(),
@@ -6192,12 +6223,14 @@ fn host_jox_artifact_details_summary(artifact_id: &str) -> io::Result<Option<ser
         "artifactId": artifact_id,
         "format": document.get("format").and_then(|value| value.as_str()).unwrap_or("unknown"),
         "version": document.get("version").and_then(|value| value.as_u64()).unwrap_or(1),
+        "schemaVersion": payload.get("schemaVersion").and_then(|value| value.as_u64()).unwrap_or(0),
         "intrinsicValue": payload.get("intrinsicValue").and_then(|value| value.as_i64()).unwrap_or(0),
         "lastSalePrice": payload.get("lastSalePrice").and_then(|value| value.as_i64()),
         "lastSaleUnixMs": payload.get("lastSaleUnixMs").and_then(|value| value.as_u64()),
         "lore": payload.get("lore").and_then(|value| value.as_str()).unwrap_or(""),
         "currentOwner": payload.get("currentOwner").and_then(|value| value.as_str()).unwrap_or(""),
         "ownershipHistory": payload.get("ownershipHistory").and_then(|value| value.as_array()).cloned().unwrap_or_default(),
+        "mutationCount": payload.get("mutationLog").and_then(|value| value.as_array()).map(|value| value.len()).unwrap_or(0),
         "assetCount": assets.len(),
         "payloadSha256": stored_payload_hash,
         "assetsSha256": stored_assets_hash,
@@ -6495,6 +6528,37 @@ fn write_host_joxbox_artifact_with_assets(
     fs::write(path, bytes)
 }
 
+fn ensure_host_jox_payload_schema(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+) -> io::Result<()> {
+    payload
+        .entry("schemaVersion")
+        .or_insert_with(|| serde_json::json!(HOST_JOX_PAYLOAD_SCHEMA_VERSION));
+    payload
+        .entry("mutationLog")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if !payload
+        .get("mutationLog")
+        .is_some_and(|value| value.is_array())
+    {
+        return Err(invalid_request("invalid Joxbox mutation log"));
+    }
+    Ok(())
+}
+
+fn append_host_jox_mutation(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+    event: serde_json::Value,
+) -> io::Result<()> {
+    ensure_host_jox_payload_schema(payload)?;
+    let log = payload
+        .get_mut("mutationLog")
+        .and_then(|value| value.as_array_mut())
+        .ok_or_else(|| invalid_request("invalid Joxbox mutation log"))?;
+    log.push(event);
+    Ok(())
+}
+
 fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
     let path = host_joxbox_artifact_path(artifact_id)?;
     let contents = fs::read_to_string(&path)?;
@@ -6505,6 +6569,7 @@ fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
         .get_mut("payload")
         .and_then(|payload| payload.as_object_mut())
         .ok_or_else(|| invalid_request("invalid Joxbox payload"))?;
+    ensure_host_jox_payload_schema(payload)?;
     payload.insert(
         "currentOwner".to_string(),
         serde_json::Value::String(owner.to_string()),
@@ -6521,6 +6586,15 @@ fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
             "note": "Accepted through Eutherium Trophy Shop"
         }));
     }
+    append_host_jox_mutation(
+        payload,
+        serde_json::json!({
+            "event": "transferred",
+            "byUserId": owner,
+            "unixMs": unix_ms_now(),
+            "note": "Accepted through Eutherium Trophy Shop"
+        }),
+    )?;
     let payload_value = serde_json::Value::Object(payload.clone());
     let refreshed = host_joxbox_document_with_assets(payload_value, assets)?;
     let bytes =
@@ -6543,6 +6617,7 @@ fn update_host_joxbox_sale(
         .get_mut("payload")
         .and_then(|payload| payload.as_object_mut())
         .ok_or_else(|| invalid_request("invalid Joxbox payload"))?;
+    ensure_host_jox_payload_schema(payload)?;
     payload.insert(
         "currentOwner".to_string(),
         serde_json::Value::String(owner.to_string()),
@@ -6581,6 +6656,18 @@ fn update_host_joxbox_sale(
             "note": "Sold through Eutherium Trophy Shop"
         }));
     }
+    append_host_jox_mutation(
+        payload,
+        serde_json::json!({
+            "event": "sold",
+            "byUserId": owner,
+            "salePrice": sale_price,
+            "currency": "EUX",
+            "intrinsicValueAfterSale": intrinsic_after_sale,
+            "unixMs": sale_unix_ms,
+            "note": "Sold through Eutherium Trophy Shop"
+        }),
+    )?;
     let payload_value = serde_json::Value::Object(payload.clone());
     let refreshed = host_joxbox_document_with_assets(payload_value, assets)?;
     let bytes =
