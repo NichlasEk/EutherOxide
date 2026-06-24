@@ -92,6 +92,7 @@ fn run() -> io::Result<()> {
     let mut web_bridge = false;
     let mut web_bridge_addr = "127.0.0.1:32161".to_string();
     let mut host_server = false;
+    let mut host_repack_joxbox = false;
     let mut host_hash_password: Option<String> = None;
     let mut host_verify_password: Option<String> = None;
     let mut eutherdogs_demo = false;
@@ -162,6 +163,9 @@ fn run() -> io::Result<()> {
             }
             "--host-server" => {
                 host_server = true;
+            }
+            "--host-repack-joxbox" => {
+                host_repack_joxbox = true;
             }
             "--eutherdogs-demo" => {
                 eutherdogs_demo = true;
@@ -234,6 +238,16 @@ fn run() -> io::Result<()> {
 
     if eutherdogs_demo {
         run_eutherdogs_demo(eutherdogs_config.as_deref())?;
+        return Ok(());
+    }
+
+    if host_repack_joxbox {
+        let report = repack_all_host_joxbox_artifacts("maintenance")?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|err| io::Error::other(err.to_string()))?
+        );
         return Ok(());
     }
 
@@ -2169,6 +2183,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|err| invalid_request(err.to_string()))?;
             mint_host_joxbox_artifact(&admin, mint)?;
             send_json(stream, &host_eutherium_me(state, &admin)?)
+        }
+        ("POST", "/api/shop/joxbox/repack-all") => {
+            let admin = require_host_admin(state, &request)?;
+            send_json(stream, &repack_all_host_joxbox_artifacts(&admin)?)
         }
         ("GET", path) if path.starts_with("/api/shop/joxbox/artifacts/") => {
             require_host_user(state, &request)?;
@@ -5411,6 +5429,60 @@ fn repack_remote_secondsight_jox_listing(
         .map(|asset_id| host_jox_embedded_asset_url(artifact_id, &asset_id));
     write_host_joxbox_artifact_with_assets(artifact_id, payload, assets)?;
     Ok((host_joxbox_artifact_url(artifact_id), embedded_image_path))
+}
+
+fn repack_all_host_joxbox_artifacts(admin: &str) -> io::Result<serde_json::Value> {
+    let mut listings = load_host_jox_shop_listings()?;
+    let mut converted = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    for listing in &mut listings {
+        if listing.embedded_image_path.is_some() {
+            skipped.push(serde_json::json!({
+                "id": listing.id,
+                "reason": "already_embedded",
+            }));
+            continue;
+        }
+        if !is_camera_ai_secondsight_jox_url(&listing.jox_path) {
+            skipped.push(serde_json::json!({
+                "id": listing.id,
+                "reason": "not_secondsight_remote",
+            }));
+            continue;
+        }
+        match repack_remote_secondsight_jox_listing(
+            &listing.id,
+            &listing.name,
+            &listing.description,
+            listing.price,
+            &listing.image_path,
+            &listing.jox_path,
+            &listing.current_owner,
+            admin,
+        ) {
+            Ok((jox_path, embedded_image_path)) => {
+                listing.jox_path = jox_path;
+                listing.embedded_image_path = embedded_image_path;
+                converted.push(serde_json::json!({
+                    "id": listing.id,
+                    "name": listing.name,
+                }));
+            }
+            Err(err) => failed.push(serde_json::json!({
+                "id": listing.id,
+                "name": listing.name,
+                "error": err.to_string(),
+            })),
+        }
+    }
+    save_host_jox_shop_listings(&listings)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "converted": converted,
+        "skipped": skipped,
+        "failed": failed,
+    }))
 }
 
 fn load_host_jox_transfer_offers() -> io::Result<Vec<HostJoxTransferOffer>> {
