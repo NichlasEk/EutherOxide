@@ -39,6 +39,8 @@ const HOST_VIDEO_CHAT_PARTICIPANT_TIMEOUT_MS: u64 = 12_000;
 const HOST_VIDEO_CHAT_SIGNAL_TIMEOUT_MS: u64 = 60_000;
 const HOST_VIDEO_CHAT_MAX_SIGNALS: usize = 160;
 const HOST_SOCIAL_ATTACHMENT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const HOST_JOX_MAX_BYTES: usize = 16 * 1024 * 1024;
+const HOST_JOX_ASSET_MAX_BYTES: usize = 8 * 1024 * 1024;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
@@ -1215,6 +1217,8 @@ struct HostJoxShopListing {
     description: String,
     price: i64,
     image_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embedded_image_path: Option<String>,
     jox_path: String,
     provenance_status: String,
     current_owner: String,
@@ -2168,7 +2172,11 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("GET", path) if path.starts_with("/api/shop/joxbox/artifacts/") => {
             require_host_user(state, &request)?;
-            send_host_joxbox_artifact(stream, path)
+            if path.contains("/assets/") {
+                send_host_joxbox_artifact_asset(stream, path)
+            } else {
+                send_host_joxbox_artifact(stream, path)
+            }
         }
         ("GET", path) if path.starts_with("/api/shop/joxbox/media/") => {
             require_host_user(state, &request)?;
@@ -5025,6 +5033,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
 
 fn host_jox_listing_item(listing: HostJoxShopListing) -> HostEutheriumItem {
     let active = listing.shop_status == "listed";
+    let embedded_image_path = listing.embedded_image_path.clone();
     let fallback_image_path = listing.source_item_id.as_ref().and_then(|source_item_id| {
         host_static_shop_items()
             .into_iter()
@@ -5037,7 +5046,9 @@ fn host_jox_listing_item(listing: HostJoxShopListing) -> HostEutheriumItem {
         item_type: "jox_artifact".to_string(),
         price: listing.price,
         description: listing.description,
-        image_path: fallback_image_path.unwrap_or(listing.image_path),
+        image_path: embedded_image_path
+            .or(fallback_image_path)
+            .unwrap_or(listing.image_path),
         rarity: format!("JOX {}", listing.provenance_status),
         available_for_purchase: active,
         jox_path: Some(listing.jox_path),
@@ -5151,6 +5162,7 @@ fn upsert_host_jox_shop_listing(admin: &str, listing: HostJoxShopListingRequest)
         description: description.to_string(),
         price: listing.price,
         image_path: image_path.to_string(),
+        embedded_image_path: None,
         jox_path: jox_path.to_string(),
         provenance_status: "valid".to_string(),
         current_owner: listing
@@ -5207,6 +5219,17 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
     if description.is_empty() || description.len() > 500 {
         return Err(invalid_request("JOX description must be 1-500 characters"));
     }
+    let embedded_primary_asset = if let Some(data_base64) = request.image_data_base64.as_deref() {
+        Some(host_jox_asset_from_upload(
+            "primary",
+            "primary_image",
+            data_base64,
+            request.image_content_type.as_deref().unwrap_or(""),
+            request.image_name.as_deref().unwrap_or("joxbox.png"),
+        )?)
+    } else {
+        None
+    };
     let uploaded_image_path = if let Some(data_base64) = request.image_data_base64.as_deref() {
         Some(save_host_joxbox_image_upload(
             data_base64,
@@ -5288,7 +5311,10 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
             }
         ]
     });
-    write_host_joxbox_artifact(&artifact_id, payload)?;
+    let embedded_assets = embedded_primary_asset.into_iter().collect::<Vec<_>>();
+    let embedded_image_path = host_jox_primary_asset_id(&embedded_assets)
+        .map(|asset_id| host_jox_embedded_asset_url(&artifact_id, &asset_id));
+    write_host_joxbox_artifact_with_assets(&artifact_id, payload, embedded_assets)?;
 
     let item = HostJoxShopListing {
         id: artifact_id.clone(),
@@ -5296,6 +5322,7 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
         description: description.to_string(),
         price,
         image_path: image_path.to_string(),
+        embedded_image_path,
         jox_path: host_joxbox_artifact_url(&artifact_id),
         provenance_status: "valid".to_string(),
         current_owner: current_owner.to_string(),
@@ -5563,7 +5590,7 @@ fn buy_listed_host_jox(
 
 fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Result<()> {
     let bytes = decode_base64(request.data_base64.trim())?;
-    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+    if bytes.is_empty() || bytes.len() > HOST_JOX_MAX_BYTES {
         return Err(invalid_request("JOX file is too large"));
     }
     let mut document: serde_json::Value =
@@ -5621,6 +5648,7 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
         .chars()
         .take(1000)
         .collect::<String>();
+    let imported_assets = host_jox_assets_from_document(&document);
     let base_id = payload_object
         .get("artifactId")
         .and_then(|value| value.as_str())
@@ -5630,6 +5658,8 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
         sanitize_host_joxbox_artifact_id(base_id)?,
         unix_ms_now()
     );
+    let embedded_image_path = host_jox_primary_asset_id(&imported_assets)
+        .map(|asset_id| host_jox_embedded_asset_url(&artifact_id, &asset_id));
 
     if let Some(payload) = document
         .get_mut("payload")
@@ -5661,7 +5691,10 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
                 "note": if provenance_status == "valid" { "Imported by declared owner with matching payload hash" } else { "Imported with unknown provenance" }
             }));
         }
-        let refreshed = host_joxbox_document(serde_json::Value::Object(payload.clone()))?;
+        let refreshed = host_joxbox_document_with_assets(
+            serde_json::Value::Object(payload.clone()),
+            imported_assets.clone(),
+        )?;
         document = refreshed;
     }
 
@@ -5680,6 +5713,7 @@ fn import_host_jox_artifact(user: &str, request: HostJoxImportRequest) -> io::Re
         description: imported_description,
         price: 0,
         image_path,
+        embedded_image_path,
         jox_path: host_joxbox_artifact_url(&artifact_id),
         provenance_status: provenance_status.to_string(),
         current_owner: user.to_string(),
@@ -5983,6 +6017,10 @@ fn host_joxbox_artifact_url(artifact_id: &str) -> String {
     format!("/api/shop/joxbox/artifacts/{artifact_id}.jox")
 }
 
+fn host_jox_embedded_asset_url(artifact_id: &str, asset_id: &str) -> String {
+    format!("/api/shop/joxbox/artifacts/{artifact_id}/assets/{asset_id}")
+}
+
 fn host_joxbox_artifact_id_from_url(value: &str) -> io::Result<Option<String>> {
     let path = if let Some(rest) = value.strip_prefix("http://") {
         rest.split_once('/').map(|(_, path)| format!("/{path}"))
@@ -6015,25 +6053,63 @@ fn host_jox_payload_hash(payload: &serde_json::Value) -> io::Result<String> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn host_joxbox_document(payload: serde_json::Value) -> io::Result<serde_json::Value> {
+fn host_jox_assets_from_document(document: &serde_json::Value) -> Vec<serde_json::Value> {
+    document
+        .get("assets")
+        .and_then(|assets| assets.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn host_jox_primary_asset_id(assets: &[serde_json::Value]) -> Option<String> {
+    assets.iter().find_map(|asset| {
+        let role = asset.get("role").and_then(|value| value.as_str())?;
+        if role != "primary_image" && role != "image" && role != "thumbnail" {
+            return None;
+        }
+        asset
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    })
+}
+
+fn host_jox_assets_hash(assets: &[serde_json::Value]) -> io::Result<String> {
+    let asset_bytes =
+        serde_json::to_vec(assets).map_err(|err| io::Error::other(err.to_string()))?;
+    let digest = Sha256::digest(&asset_bytes);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn host_joxbox_document_with_assets(
+    payload: serde_json::Value,
+    assets: Vec<serde_json::Value>,
+) -> io::Result<serde_json::Value> {
     let payload_sha256 = host_jox_payload_hash(&payload)?;
+    let assets_sha256 = host_jox_assets_hash(&assets)?;
     Ok(serde_json::json!({
         "format": "jox",
-        "version": 1,
+        "version": if assets.is_empty() { 1 } else { 2 },
         "payload": payload,
+        "assets": assets,
         "integrity": {
             "algorithm": "sha256",
             "payloadSha256": payload_sha256,
+            "assetsSha256": assets_sha256,
         }
     }))
 }
 
-fn write_host_joxbox_artifact(artifact_id: &str, payload: serde_json::Value) -> io::Result<()> {
+fn write_host_joxbox_artifact_with_assets(
+    artifact_id: &str,
+    payload: serde_json::Value,
+    assets: Vec<serde_json::Value>,
+) -> io::Result<()> {
     let path = host_joxbox_artifact_path(artifact_id)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let document = host_joxbox_document(payload)?;
+    let document = host_joxbox_document_with_assets(payload, assets)?;
     let bytes =
         serde_json::to_vec_pretty(&document).map_err(|err| io::Error::other(err.to_string()))?;
     fs::write(path, bytes)
@@ -6044,6 +6120,7 @@ fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
     let contents = fs::read_to_string(&path)?;
     let mut document: serde_json::Value =
         serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    let assets = host_jox_assets_from_document(&document);
     let payload = document
         .get_mut("payload")
         .and_then(|payload| payload.as_object_mut())
@@ -6065,7 +6142,7 @@ fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
         }));
     }
     let payload_value = serde_json::Value::Object(payload.clone());
-    let refreshed = host_joxbox_document(payload_value)?;
+    let refreshed = host_joxbox_document_with_assets(payload_value, assets)?;
     let bytes =
         serde_json::to_vec_pretty(&refreshed).map_err(|err| io::Error::other(err.to_string()))?;
     fs::write(path, bytes)
@@ -6085,6 +6162,90 @@ fn send_host_joxbox_artifact(stream: &mut TcpStream, path: &str) -> io::Result<(
         &bytes,
         &[("Content-Disposition", &disposition)],
     )
+}
+
+fn send_host_joxbox_artifact_asset(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let stripped = path
+        .strip_prefix("/api/shop/joxbox/artifacts/")
+        .ok_or_else(|| invalid_request("invalid Joxbox asset path"))?;
+    let (artifact_id, asset_id) = stripped
+        .split_once("/assets/")
+        .ok_or_else(|| invalid_request("invalid Joxbox asset path"))?;
+    let artifact_id = sanitize_host_joxbox_artifact_id(artifact_id.trim_end_matches(".jox"))?;
+    validate_host_jox_asset_id(asset_id)?;
+    let contents = fs::read_to_string(host_joxbox_artifact_path(&artifact_id)?)?;
+    let document: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    let asset = host_jox_assets_from_document(&document)
+        .into_iter()
+        .find(|asset| asset.get("id").and_then(|value| value.as_str()) == Some(asset_id))
+        .ok_or_else(|| invalid_request("JOX asset not found"))?;
+    let content_type = asset
+        .get("contentType")
+        .and_then(|value| value.as_str())
+        .unwrap_or("application/octet-stream");
+    let data_base64 = asset
+        .get("dataBase64")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| invalid_request("JOX asset data missing"))?;
+    let bytes = decode_base64(data_base64)?;
+    let expected_hash = asset
+        .get("sha256")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if !expected_hash.is_empty() && sha256_hex(&bytes) != expected_hash {
+        return Err(invalid_request("JOX asset hash mismatch"));
+    }
+    send_response(stream, 200, content_type, &bytes)
+}
+
+fn host_jox_asset_from_upload(
+    asset_id: &str,
+    role: &str,
+    data_base64: &str,
+    content_type: &str,
+    name: &str,
+) -> io::Result<serde_json::Value> {
+    validate_host_jox_asset_id(asset_id)?;
+    let (content_type, is_image) =
+        validate_host_social_attachment_content_type(content_type, name)?;
+    if !is_image {
+        return Err(invalid_request("JOX asset must be an image"));
+    }
+    let bytes = decode_base64(data_base64.trim())?;
+    if bytes.is_empty() || bytes.len() > HOST_JOX_ASSET_MAX_BYTES {
+        return Err(invalid_request("JOX asset is too large"));
+    }
+    validate_host_social_attachment_magic(&content_type, &bytes)?;
+    let filename = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("asset.bin")
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        .take(96)
+        .collect::<String>();
+    Ok(serde_json::json!({
+        "id": asset_id,
+        "role": role,
+        "contentType": content_type,
+        "filename": if filename.is_empty() { "asset.bin" } else { filename.as_str() },
+        "size": bytes.len(),
+        "sha256": sha256_hex(&bytes),
+        "dataBase64": encode_base64(&bytes),
+    }))
+}
+
+fn validate_host_jox_asset_id(asset_id: &str) -> io::Result<()> {
+    if asset_id.is_empty()
+        || asset_id.len() > 80
+        || !asset_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid_request("invalid JOX asset id"));
+    }
+    Ok(())
 }
 
 fn save_host_joxbox_image_upload(
@@ -15692,6 +15853,34 @@ fn decode_base64(value: &str) -> io::Result<Vec<u8>> {
         return Err(invalid_request("invalid base64 length"));
     }
     Ok(output)
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        output.push(TABLE[(b0 >> 2) as usize] as char);
+        output.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
