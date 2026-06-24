@@ -659,6 +659,35 @@ type EutheriumJoxListing = {
   sourceItemId?: string | null;
 };
 
+type EutheriumJoxOwnershipEvent = {
+  owner?: string;
+  previousOwner?: string;
+  event?: string;
+  byUserId?: string;
+  salePrice?: number;
+  currency?: string;
+  intrinsicValueAfterSale?: number;
+  unixMs?: number;
+  note?: string;
+};
+
+type EutheriumJoxArtifactDetails = {
+  artifactId: string;
+  format: string;
+  version: number;
+  intrinsicValue: number;
+  lastSalePrice?: number | null;
+  lastSaleUnixMs?: number | null;
+  lore?: string;
+  currentOwner?: string;
+  ownershipHistory: EutheriumJoxOwnershipEvent[];
+  assetCount: number;
+  payloadSha256?: string;
+  assetsSha256?: string;
+  payloadHashValid: boolean;
+  assetsHashValid: boolean;
+};
+
 type EutheriumJoxboxCatalogItem = {
   item: EutheriumShopItem;
   converted: boolean;
@@ -669,6 +698,7 @@ type EutheriumJoxDetails = {
   ok?: boolean;
   listing: EutheriumJoxListing;
   offers: EutheriumJoxOffer[];
+  artifact?: EutheriumJoxArtifactDetails | null;
 };
 
 type TrophyRoomLayoutItem = {
@@ -11301,6 +11331,7 @@ function joxDetailsPanelMarkup(): string {
     return "";
   }
   const listing = details.listing;
+  const artifact = details.artifact ?? null;
   return `
     <section class="eutherium-jox-details-panel">
       <div class="section-head">
@@ -11313,14 +11344,50 @@ function joxDetailsPanelMarkup(): string {
           <strong>${escapeHtml(listing.name)}</strong>
           <p>${escapeHtml(listing.description)}</p>
           <span>Owner: ${escapeHtml(displayUserName(listing.currentOwner))}</span>
-          <span>Value: ${formatEutherium(listing.price)} EUX</span>
+          <span>Ask price: ${formatEutherium(listing.price)} EUX</span>
+          <span>Intrinsic: ${formatEutherium(artifact?.intrinsicValue ?? listing.price)} EUX</span>
+          ${artifact?.lastSalePrice !== undefined && artifact?.lastSalePrice !== null ? `<span>Last sale: ${formatEutherium(artifact.lastSalePrice)} EUX${artifact.lastSaleUnixMs ? ` / ${escapeHtml(formatDateTime(artifact.lastSaleUnixMs))}` : ""}</span>` : ""}
           <a href="${escapeHtml(listing.joxPath)}" download>Download .jox</a>
         </div>
       </div>
+      ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
+      ${artifact?.lore ? `<p class="eutherium-jox-lore">${escapeHtml(artifact.lore)}</p>` : ""}
+      ${artifact?.ownershipHistory?.length ? `
+        <div class="eutherium-jox-history">
+          ${artifact.ownershipHistory.slice().reverse().slice(0, 8).map(joxOwnershipHistoryRowMarkup).join("")}
+        </div>
+      ` : ""}
       <div class="eutherium-jox-history">
         ${details.offers.length ? details.offers.map(joxHistoryRowMarkup).join("") : `<span>No offer history yet</span>`}
       </div>
     </section>
+  `;
+}
+
+function joxArtifactSummaryMarkup(artifact: EutheriumJoxArtifactDetails): string {
+  return `
+    <div class="eutherium-jox-meta">
+      <span>Format: ${escapeHtml(artifact.format)} v${artifact.version}</span>
+      <span>Assets: ${artifact.assetCount}</span>
+      <span>Payload hash: ${artifact.payloadHashValid ? "valid" : "changed"}</span>
+      <span>Assets hash: ${artifact.assetsHashValid ? "valid" : "changed"}</span>
+      ${artifact.payloadSha256 ? `<span>Payload: ${escapeHtml(shortHash(artifact.payloadSha256))}</span>` : ""}
+      ${artifact.assetsSha256 ? `<span>Assets: ${escapeHtml(shortHash(artifact.assetsSha256))}</span>` : ""}
+    </div>
+  `;
+}
+
+function joxOwnershipHistoryRowMarkup(event: EutheriumJoxOwnershipEvent): string {
+  const title = event.event ?? "event";
+  const owner = event.owner ? displayUserName(event.owner) : "Unknown";
+  const price = typeof event.salePrice === "number" ? `${formatEutherium(event.salePrice)} ${event.currency ?? "EUX"}` : "";
+  const note = event.note ? ` / ${event.note}` : "";
+  return `
+    <div class="eutherium-jox-history-row">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(owner)}${event.previousOwner ? ` from ${escapeHtml(displayUserName(event.previousOwner))}` : ""}${escapeHtml(note)}</span>
+      <em>${escapeHtml(price || (event.unixMs ? formatDateTime(event.unixMs) : ""))}</em>
+    </div>
   `;
 }
 
@@ -12994,6 +13061,22 @@ function formatClockTime(unixMs: number): string {
     return "";
   }
   return new Date(unixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDateTime(unixMs: number): string {
+  if (!Number.isFinite(unixMs) || unixMs <= 0) {
+    return "";
+  }
+  return new Date(unixMs).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function shortHash(value: string): string {
+  return value.length <= 16 ? value : `${value.slice(0, 8)}...${value.slice(-6)}`;
 }
 
 async function loadSocialChatConversations(force = false): Promise<void> {

@@ -7317,6 +7317,38 @@ h2 {
   line-height: 1.25;
 }
 
+.eutherium-jox-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.eutherium-jox-meta span {
+  min-width: 0;
+  padding: 7px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(165, 222, 114, 0.14);
+  border-radius: 8px;
+  background: rgba(4, 10, 7, 0.48);
+  color: #9fbd91;
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eutherium-jox-lore {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(165, 222, 114, 0.14);
+  border-radius: 8px;
+  background: rgba(26, 15, 38, 0.42);
+  color: #d7e8c2;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .eutherium-jox-history,
 .eutherium-jox-admin-list,
 .eutherium-joxbox-catalog {

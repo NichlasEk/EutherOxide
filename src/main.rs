@@ -6123,7 +6123,51 @@ fn host_jox_details_result(
         "ok": true,
         "listing": listing,
         "offers": offers,
+        "artifact": host_jox_artifact_details_summary(&artifact_id)?,
     }))
+}
+
+fn host_jox_artifact_details_summary(artifact_id: &str) -> io::Result<Option<serde_json::Value>> {
+    let artifact_id = sanitize_host_joxbox_artifact_id(artifact_id)?;
+    let path = host_joxbox_artifact_path(&artifact_id)?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let document: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    let payload = document
+        .get("payload")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let assets = host_jox_assets_from_document(&document);
+    let stored_payload_hash = document
+        .pointer("/integrity/payloadSha256")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let computed_payload_hash = host_jox_payload_hash(&payload)?;
+    let stored_assets_hash = document
+        .pointer("/integrity/assetsSha256")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let computed_assets_hash = host_jox_assets_hash(&assets)?;
+    Ok(Some(serde_json::json!({
+        "artifactId": artifact_id,
+        "format": document.get("format").and_then(|value| value.as_str()).unwrap_or("unknown"),
+        "version": document.get("version").and_then(|value| value.as_u64()).unwrap_or(1),
+        "intrinsicValue": payload.get("intrinsicValue").and_then(|value| value.as_i64()).unwrap_or(0),
+        "lastSalePrice": payload.get("lastSalePrice").and_then(|value| value.as_i64()),
+        "lastSaleUnixMs": payload.get("lastSaleUnixMs").and_then(|value| value.as_u64()),
+        "lore": payload.get("lore").and_then(|value| value.as_str()).unwrap_or(""),
+        "currentOwner": payload.get("currentOwner").and_then(|value| value.as_str()).unwrap_or(""),
+        "ownershipHistory": payload.get("ownershipHistory").and_then(|value| value.as_array()).cloned().unwrap_or_default(),
+        "assetCount": assets.len(),
+        "payloadSha256": stored_payload_hash,
+        "assetsSha256": stored_assets_hash,
+        "payloadHashValid": !stored_payload_hash.is_empty() && stored_payload_hash == computed_payload_hash,
+        "assetsHashValid": !stored_assets_hash.is_empty() && stored_assets_hash == computed_assets_hash,
+    })))
 }
 
 fn prune_host_trophy_layout_item(user: &str, item_id: &str) -> io::Result<()> {
