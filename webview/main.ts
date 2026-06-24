@@ -11374,6 +11374,7 @@ function joxDetailsPanelMarkup(): string {
         </div>
       </div>
       ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
+      ${artifact ? joxArtifactSagaMarkup(listing, artifact) : ""}
       ${artifact?.lore ? `<p class="eutherium-jox-lore">${escapeHtml(artifact.lore)}</p>` : ""}
       ${artifact?.ownershipHistory?.length ? `
         <div class="eutherium-jox-history">
@@ -11406,6 +11407,30 @@ function joxArtifactSummaryMarkup(artifact: EutheriumJoxArtifactDetails): string
       <span>Assets hash: ${artifact.assetsHashValid ? "valid" : "changed"}</span>
       ${artifact.payloadSha256 ? `<span>Payload: ${escapeHtml(shortHash(artifact.payloadSha256))}</span>` : ""}
       ${artifact.assetsSha256 ? `<span>Assets: ${escapeHtml(shortHash(artifact.assetsSha256))}</span>` : ""}
+    </div>
+  `;
+}
+
+function joxArtifactSagaMarkup(listing: EutheriumJoxListing, artifact: EutheriumJoxArtifactDetails): string {
+  const owner = displayUserName(artifact.currentOwner || listing.currentOwner);
+  const firstEvent = artifact.ownershipHistory?.[0];
+  const travels = artifact.ownershipHistory?.length ?? 0;
+  const origin = firstEvent?.event ? firstEvent.event : "created";
+  const value = artifact.intrinsicValue ?? listing.price;
+  const lastSale = artifact.lastSalePrice !== undefined && artifact.lastSalePrice !== null
+    ? `Last traded for ${formatEutherium(artifact.lastSalePrice)} EUX.`
+    : "No EUX trade has changed its value yet.";
+  const provenance = artifact.payloadHashValid && artifact.assetsHashValid
+    ? "Its JOX seal is intact."
+    : "Its seal has changed, so Eutherium treats it as unknown provenance.";
+  return `
+    <div class="eutherium-jox-saga">
+      <p class="section-label">Artifact Saga</p>
+      <strong>${escapeHtml(listing.name)}</strong>
+      <p>${escapeHtml(listing.description)}</p>
+      <span>First recorded as ${escapeHtml(origin)} and now guarded by ${escapeHtml(owner)}.</span>
+      <span>${escapeHtml(lastSale)} Intrinsic value: ${formatEutherium(value)} EUX.</span>
+      <span>${travels > 1 ? `It has ${travels} recorded steps in its journey.` : "Its journey has just begun."} ${escapeHtml(provenance)}</span>
     </div>
   `;
 }
