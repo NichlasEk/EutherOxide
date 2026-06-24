@@ -1561,6 +1561,12 @@ let eutheriumStatus = "Not loaded";
 let eutheriumMe: EutheriumMeResult | null = null;
 let eutheriumAdmin: EutheriumAdminResult | null = null;
 let selectedJoxDetails: EutheriumJoxDetails | null = null;
+let eutheriumShopSearchQuery = localStorage.getItem("eutherium-shop-search-query") ?? "";
+let eutheriumShopJoxOnly = localStorage.getItem("eutherium-shop-jox-only") === "true";
+let eutheriumShopValidOnly = localStorage.getItem("eutherium-shop-valid-only") === "true";
+let eutheriumShopOwnerQuery = localStorage.getItem("eutherium-shop-owner-query") ?? "";
+let eutheriumShopMinPrice = localStorage.getItem("eutherium-shop-min-price") ?? "";
+let eutheriumShopMaxPrice = localStorage.getItem("eutherium-shop-max-price") ?? "";
 let joxboxSearchQuery = localStorage.getItem("joxbox-search-query") ?? "";
 let joxboxShowConverted = localStorage.getItem("joxbox-show-converted") === "true";
 let eutheriumLobbyStatus = "Not loaded";
@@ -3495,6 +3501,12 @@ workspaceWindowLayer.addEventListener("click", (event) => {
 });
 
 workspaceWindowLayer.addEventListener("input", (event) => {
+  const shopFilter = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherium-shop-filter]");
+  if (shopFilter) {
+    updateEutheriumShopFilter(shopFilter);
+    renderEutheriumShopLive();
+    return;
+  }
   const joxboxSearch = (event.target as HTMLElement).closest<HTMLInputElement>("#joxbox-search");
   if (joxboxSearch) {
     joxboxSearchQuery = joxboxSearch.value;
@@ -3521,6 +3533,12 @@ workspaceWindowLayer.addEventListener("change", (event) => {
     if (file) {
       void importJoxFile(file);
     }
+    return;
+  }
+  const shopToggle = (event.target as HTMLElement).closest<HTMLInputElement>("[data-eutherium-shop-toggle]");
+  if (shopToggle) {
+    updateEutheriumShopFilter(shopToggle);
+    renderEutheriumShopLive();
     return;
   }
   const joxboxConverted = (event.target as HTMLElement).closest<HTMLInputElement>("#joxbox-show-converted");
@@ -8037,6 +8055,7 @@ function eutheriumWindowMarkup(): string {
   if (!data) {
     return `<div class="interaction-panel eutherium-loading"><p class="section-label">Eutherium</p><strong>${escapeHtml(eutheriumStatus)}</strong></div>`;
   }
+  const filteredShopItems = filteredEutheriumShopItems(data.items);
   return `
     <div class="eutherium-window">
       <section class="eutherium-balance-panel">
@@ -8085,10 +8104,11 @@ function eutheriumWindowMarkup(): string {
       <section class="eutherium-shop-panel" id="eutherium-shop">
         <div class="section-head">
           <p class="section-label">Shop</p>
-          <span>Balance ${formatEutherium(data.balance)} EUX</span>
+          <span>Balance ${formatEutherium(data.balance)} EUX / <span id="eutherium-shop-visible-count">${filteredShopItems.length}</span> visible</span>
         </div>
-        <div class="eutherium-shop-grid">
-          ${data.items.map((item) => shopItemMarkup(item, data.balance)).join("")}
+        ${eutheriumShopFiltersMarkup()}
+        <div class="eutherium-shop-grid" id="eutherium-shop-grid">
+          ${filteredShopItems.length ? filteredShopItems.map((item) => shopItemMarkup(item, data.balance)).join("") : `<span>No matching artifacts</span>`}
         </div>
       </section>
       <section class="eutherium-inventory-panel" id="eutherium-inventory">
@@ -11649,6 +11669,99 @@ function trophyPreviewMarkup(data: EutheriumMeResult): string {
       </div>
     </div>
   `;
+}
+
+function eutheriumShopFiltersMarkup(): string {
+  return `
+    <div class="eutherium-shop-filter">
+      <input data-eutherium-shop-filter="search" type="search" value="${escapeHtml(eutheriumShopSearchQuery)}" placeholder="Search shop" aria-label="Search shop" />
+      <input data-eutherium-shop-filter="owner" type="search" value="${escapeHtml(eutheriumShopOwnerQuery)}" placeholder="owner" aria-label="Filter shop owner" />
+      <input data-eutherium-shop-filter="min-price" type="number" min="0" step="1" value="${escapeHtml(eutheriumShopMinPrice)}" placeholder="min EUX" aria-label="Minimum price" />
+      <input data-eutherium-shop-filter="max-price" type="number" min="0" step="1" value="${escapeHtml(eutheriumShopMaxPrice)}" placeholder="max EUX" aria-label="Maximum price" />
+      <label>
+        <input data-eutherium-shop-toggle="jox-only" type="checkbox" ${eutheriumShopJoxOnly ? "checked" : ""} />
+        JOX only
+      </label>
+      <label>
+        <input data-eutherium-shop-toggle="valid-only" type="checkbox" ${eutheriumShopValidOnly ? "checked" : ""} />
+        valid only
+      </label>
+    </div>
+  `;
+}
+
+function filteredEutheriumShopItems(items: EutheriumShopItem[]): EutheriumShopItem[] {
+  const query = eutheriumShopSearchQuery.trim().toLowerCase();
+  const ownerQuery = eutheriumShopOwnerQuery.trim().toLowerCase();
+  const minPrice = eutheriumShopMinPrice.trim() ? Number(eutheriumShopMinPrice) : null;
+  const maxPrice = eutheriumShopMaxPrice.trim() ? Number(eutheriumShopMaxPrice) : null;
+  return items.filter((item) => {
+    if (eutheriumShopJoxOnly && item.itemType !== "jox_artifact") {
+      return false;
+    }
+    if (eutheriumShopValidOnly && item.provenanceStatus !== "valid") {
+      return false;
+    }
+    if (Number.isFinite(minPrice) && minPrice !== null && item.price < minPrice) {
+      return false;
+    }
+    if (Number.isFinite(maxPrice) && maxPrice !== null && item.price > maxPrice) {
+      return false;
+    }
+    const haystack = `${item.name} ${item.description} ${item.rarity} ${item.provenanceStatus ?? ""}`.toLowerCase();
+    if (query && !haystack.includes(query)) {
+      return false;
+    }
+    if (ownerQuery) {
+      const listing = eutheriumMe?.joxListings?.find((candidate) => `jox:${candidate.id}` === item.id);
+      const owner = listing?.currentOwner.toLowerCase() ?? "";
+      if (!owner.includes(ownerQuery)) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function updateEutheriumShopFilter(input: HTMLInputElement): void {
+  const key = input.dataset.eutheriumShopFilter ?? input.dataset.eutheriumShopToggle ?? "";
+  if (key === "search") {
+    eutheriumShopSearchQuery = input.value;
+    localStorage.setItem("eutherium-shop-search-query", eutheriumShopSearchQuery);
+  } else if (key === "owner") {
+    eutheriumShopOwnerQuery = input.value;
+    localStorage.setItem("eutherium-shop-owner-query", eutheriumShopOwnerQuery);
+  } else if (key === "min-price") {
+    eutheriumShopMinPrice = input.value;
+    localStorage.setItem("eutherium-shop-min-price", eutheriumShopMinPrice);
+  } else if (key === "max-price") {
+    eutheriumShopMaxPrice = input.value;
+    localStorage.setItem("eutherium-shop-max-price", eutheriumShopMaxPrice);
+  } else if (key === "jox-only") {
+    eutheriumShopJoxOnly = input.checked;
+    localStorage.setItem("eutherium-shop-jox-only", String(eutheriumShopJoxOnly));
+  } else if (key === "valid-only") {
+    eutheriumShopValidOnly = input.checked;
+    localStorage.setItem("eutherium-shop-valid-only", String(eutheriumShopValidOnly));
+  }
+}
+
+function renderEutheriumShopLive(): void {
+  if (!eutheriumMe || activeWorkspaceWindow !== "eutherium") {
+    return;
+  }
+  const grid = workspaceWindowDynamic.querySelector<HTMLElement>("#eutherium-shop-grid");
+  const count = workspaceWindowDynamic.querySelector<HTMLElement>("#eutherium-shop-visible-count");
+  if (!grid) {
+    return;
+  }
+  const items = filteredEutheriumShopItems(eutheriumMe.items);
+  grid.innerHTML = items.length
+    ? items.map((item) => shopItemMarkup(item, eutheriumMe?.balance ?? 0)).join("")
+    : `<span>No matching artifacts</span>`;
+  if (count) {
+    count.textContent = String(items.length);
+  }
 }
 
 function shopItemMarkup(item: EutheriumShopItem, balance: number): string {

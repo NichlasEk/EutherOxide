@@ -7123,6 +7123,35 @@ h2 {
   min-width: 0;
 }
 
+.eutherium-shop-filter {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.3fr) minmax(90px, 0.8fr) minmax(76px, 0.55fr) minmax(76px, 0.55fr) auto auto;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+}
+
+.eutherium-shop-filter input[type="search"],
+.eutherium-shop-filter input[type="number"] {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(165, 222, 114, 0.16);
+  border-radius: 8px;
+  background: rgba(3, 9, 5, 0.78);
+  color: #edf6dd;
+}
+
+.eutherium-shop-filter label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: #9fbd91;
+  font-size: 0.72rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .eutherium-item-card,
 .eutherium-inventory-card,
 .eutherium-room-card,
@@ -8290,6 +8319,10 @@ h2 {
     font-size: 0.72rem;
     font-weight: 900;
     text-decoration: none;
+  }
+
+  .eutherium-shop-filter {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .controls-body {
