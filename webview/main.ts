@@ -11858,7 +11858,9 @@ async function relistJoxItem(inventoryId: string): Promise<void> {
   if (!inventoryId) {
     return;
   }
-  const raw = window.prompt("JOX price in EUX", "1000");
+  const entry = eutheriumMe?.inventory.find((candidate) => candidate.id === inventoryId);
+  const defaultPrice = entry?.item?.price ?? 1000;
+  const raw = window.prompt("JOX ask price in EUX", String(defaultPrice));
   if (raw === null) {
     return;
   }

@@ -5672,8 +5672,11 @@ fn respond_host_jox_transfer_offer(
     }
 
     let seller = listings[listing_index].current_owner.clone();
+    if seller == user {
+        return Err(invalid_request("you already own this JOX"));
+    }
     let seller_is_user = seller != user && require_existing_host_user(state, &seller).is_ok();
-    update_remote_jox_owner(&offer.jox_path, user)?;
+    update_remote_jox_sale(&offer.jox_path, &seller, user, offer.price)?;
 
     append_host_eutherium_ledger(HostEutheriumLedgerEntry {
         id: host_eutherium_entry_id("jox-buy", user),
@@ -5750,8 +5753,11 @@ fn buy_listed_host_jox(
     }
 
     let seller = listing.current_owner.clone();
+    if seller == user {
+        return Err(invalid_request("you already own this JOX"));
+    }
     let seller_is_user = seller != user && require_existing_host_user(state, &seller).is_ok();
-    update_remote_jox_owner(&listing.jox_path, user)?;
+    update_remote_jox_sale(&listing.jox_path, &seller, user, listing.price)?;
 
     append_host_eutherium_ledger(HostEutheriumLedgerEntry {
         id: host_eutherium_entry_id("jox-buy", user),
@@ -6187,6 +6193,18 @@ fn update_remote_jox_owner(jox_path: &str, owner: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn update_remote_jox_sale(
+    jox_path: &str,
+    previous_owner: &str,
+    owner: &str,
+    sale_price: i64,
+) -> io::Result<()> {
+    if let Some(artifact_id) = host_joxbox_artifact_id_from_url(jox_path)? {
+        return update_host_joxbox_sale(&artifact_id, previous_owner, owner, sale_price);
+    }
+    update_remote_jox_owner(jox_path, owner)
+}
+
 fn camera_ai_jox_metadata_path(jox_path: &str) -> io::Result<String> {
     let path = if let Some(rest) = jox_path.strip_prefix("http://") {
         rest.split_once('/').map(|(_, path)| format!("/{path}"))
@@ -6421,6 +6439,66 @@ fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
             "byUserId": owner,
             "unixMs": unix_ms_now(),
             "note": "Accepted through Eutherium Trophy Shop"
+        }));
+    }
+    let payload_value = serde_json::Value::Object(payload.clone());
+    let refreshed = host_joxbox_document_with_assets(payload_value, assets)?;
+    let bytes =
+        serde_json::to_vec_pretty(&refreshed).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn update_host_joxbox_sale(
+    artifact_id: &str,
+    previous_owner: &str,
+    owner: &str,
+    sale_price: i64,
+) -> io::Result<()> {
+    let path = host_joxbox_artifact_path(artifact_id)?;
+    let contents = fs::read_to_string(&path)?;
+    let mut document: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    let assets = host_jox_assets_from_document(&document);
+    let payload = document
+        .get_mut("payload")
+        .and_then(|payload| payload.as_object_mut())
+        .ok_or_else(|| invalid_request("invalid Joxbox payload"))?;
+    payload.insert(
+        "currentOwner".to_string(),
+        serde_json::Value::String(owner.to_string()),
+    );
+    let old_intrinsic = payload
+        .get("intrinsicValue")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let sale_unix_ms = unix_ms_now();
+    let intrinsic_after_sale = old_intrinsic.max(sale_price);
+    payload.insert(
+        "intrinsicValue".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(intrinsic_after_sale)),
+    );
+    payload.insert(
+        "lastSalePrice".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(sale_price)),
+    );
+    payload.insert(
+        "lastSaleUnixMs".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(sale_unix_ms)),
+    );
+    let history = payload
+        .entry("ownershipHistory")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if let Some(history) = history.as_array_mut() {
+        history.push(serde_json::json!({
+            "owner": owner,
+            "previousOwner": previous_owner,
+            "event": "sold",
+            "byUserId": owner,
+            "salePrice": sale_price,
+            "currency": "EUX",
+            "intrinsicValueAfterSale": intrinsic_after_sale,
+            "unixMs": sale_unix_ms,
+            "note": "Sold through Eutherium Trophy Shop"
         }));
     }
     let payload_value = serde_json::Value::Object(payload.clone());
