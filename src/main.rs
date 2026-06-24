@@ -5156,20 +5156,32 @@ fn upsert_host_jox_shop_listing(admin: &str, listing: HostJoxShopListingRequest)
         return Err(invalid_request("invalid JOX path"));
     }
 
+    let current_owner = listing
+        .current_owner
+        .map(|owner| owner.trim().to_string())
+        .filter(|owner| !owner.is_empty())
+        .unwrap_or_else(|| "SecondSight".to_string());
+    let (local_jox_path, embedded_image_path) = repack_remote_secondsight_jox_listing(
+        artifact_id,
+        name,
+        description,
+        listing.price,
+        image_path,
+        jox_path,
+        &current_owner,
+        admin,
+    )?;
+
     let item = HostJoxShopListing {
         id: artifact_id.to_string(),
         name: name.to_string(),
         description: description.to_string(),
         price: listing.price,
         image_path: image_path.to_string(),
-        embedded_image_path: None,
-        jox_path: jox_path.to_string(),
+        embedded_image_path,
+        jox_path: local_jox_path,
         provenance_status: "valid".to_string(),
-        current_owner: listing
-            .current_owner
-            .map(|owner| owner.trim().to_string())
-            .filter(|owner| !owner.is_empty())
-            .unwrap_or_else(|| "SecondSight".to_string()),
+        current_owner,
         shop_status: "listed".to_string(),
         listed_by_user_id: admin.to_string(),
         listed_unix_ms: unix_ms_now(),
@@ -5342,6 +5354,63 @@ fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io:
         listings.push(item);
     }
     save_host_jox_shop_listings(&listings)
+}
+
+fn repack_remote_secondsight_jox_listing(
+    artifact_id: &str,
+    name: &str,
+    description: &str,
+    price: i64,
+    image_path: &str,
+    jox_path: &str,
+    current_owner: &str,
+    admin: &str,
+) -> io::Result<(String, Option<String>)> {
+    if !is_camera_ai_secondsight_jox_url(jox_path) {
+        return Ok((jox_path.to_string(), None));
+    }
+    let (image_bytes, content_type) = fetch_camera_ai_binary_url(image_path)?;
+    let primary_asset = host_jox_asset_from_bytes(
+        "primary",
+        "primary_image",
+        image_bytes,
+        &content_type,
+        "secondsight.png",
+    )?;
+    let minted_at = unix_ms_now();
+    let payload = serde_json::json!({
+        "artifactId": artifact_id,
+        "name": name,
+        "description": description,
+        "lore": format!("{name} crossed from SecondSight into Joxbox as a self-contained artifact."),
+        "toml": "",
+        "intrinsicValue": price,
+        "rarity": "secondsight",
+        "imagePath": image_path,
+        "thumbnailPath": image_path,
+        "currentOwner": current_owner,
+        "origin": {
+            "system": "SecondSight",
+            "sourceJoxPath": jox_path,
+            "sourceImagePath": image_path,
+            "importedByUserId": admin,
+            "createdUnixMs": minted_at,
+        },
+        "ownershipHistory": [
+            {
+                "owner": current_owner,
+                "event": "repacked_from_secondsight",
+                "byUserId": admin,
+                "unixMs": minted_at,
+                "note": "Imported into Joxbox with embedded primary image"
+            }
+        ]
+    });
+    let assets = vec![primary_asset];
+    let embedded_image_path = host_jox_primary_asset_id(&assets)
+        .map(|asset_id| host_jox_embedded_asset_url(artifact_id, &asset_id));
+    write_host_joxbox_artifact_with_assets(artifact_id, payload, assets)?;
+    Ok((host_joxbox_artifact_url(artifact_id), embedded_image_path))
 }
 
 fn load_host_jox_transfer_offers() -> io::Result<Vec<HostJoxTransferOffer>> {
@@ -5990,6 +6059,73 @@ fn camera_ai_jox_metadata_path(jox_path: &str) -> io::Result<String> {
     Ok(format!("{}/metadata", stripped.trim_end_matches('/')))
 }
 
+fn is_camera_ai_secondsight_jox_url(value: &str) -> bool {
+    camera_ai_trusted_upstream_path(value)
+        .is_ok_and(|path| path.starts_with("/api/secondsight/jox/"))
+}
+
+fn fetch_camera_ai_binary_url(value: &str) -> io::Result<(Vec<u8>, String)> {
+    let upstream_path = camera_ai_trusted_upstream_path(value)?;
+    let upstream_base =
+        env::var("EUTHERSIGHT_AI_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15101".to_string());
+    let mut upstream = TcpStream::connect(&upstream_base)
+        .map_err(|_| invalid_request("EutherSight AI upstream unavailable"))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(8)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    write!(
+        upstream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: image/*,application/octet-stream\r\n\r\n",
+        upstream_path, upstream_base
+    )?;
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response)?;
+    let header_end = find_subslice(&response, b"\r\n\r\n")
+        .ok_or_else(|| invalid_request("invalid EutherSight asset response"))?;
+    let headers = String::from_utf8_lossy(&response[..header_end]);
+    let status_ok = headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "));
+    if !status_ok {
+        return Err(invalid_request("EutherSight asset fetch failed"));
+    }
+    let content_type = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-type") {
+                Some(value.trim().split(';').next().unwrap_or("").to_string())
+            } else {
+                None
+            }
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let body = response[header_end + 4..].to_vec();
+    if body.is_empty() || body.len() > HOST_JOX_ASSET_MAX_BYTES {
+        return Err(invalid_request("EutherSight asset is too large"));
+    }
+    Ok((body, content_type))
+}
+
+fn camera_ai_trusted_upstream_path(value: &str) -> io::Result<String> {
+    let path = if let Some(rest) = value.strip_prefix("http://") {
+        rest.split_once('/').map(|(_, path)| format!("/{path}"))
+    } else if let Some(rest) = value.strip_prefix("https://") {
+        rest.split_once('/').map(|(_, path)| format!("/{path}"))
+    } else {
+        Some(value.to_string())
+    }
+    .ok_or_else(|| invalid_request("invalid EutherSight URL"))?;
+    let stripped = path
+        .strip_prefix(CAMERA_AI_PROXY_PREFIX)
+        .ok_or_else(|| invalid_request("untrusted EutherSight URL"))?;
+    if !stripped.starts_with("/api/secondsight/") {
+        return Err(invalid_request("untrusted EutherSight path"));
+    }
+    Ok(stripped.to_string())
+}
+
 fn sanitize_host_joxbox_artifact_id(value: &str) -> io::Result<String> {
     let id: String = value
         .trim()
@@ -6213,6 +6349,25 @@ fn host_jox_asset_from_upload(
         return Err(invalid_request("JOX asset must be an image"));
     }
     let bytes = decode_base64(data_base64.trim())?;
+    if bytes.is_empty() || bytes.len() > HOST_JOX_ASSET_MAX_BYTES {
+        return Err(invalid_request("JOX asset is too large"));
+    }
+    host_jox_asset_from_bytes(asset_id, role, bytes, &content_type, name)
+}
+
+fn host_jox_asset_from_bytes(
+    asset_id: &str,
+    role: &str,
+    bytes: Vec<u8>,
+    content_type: &str,
+    name: &str,
+) -> io::Result<serde_json::Value> {
+    validate_host_jox_asset_id(asset_id)?;
+    let (content_type, is_image) =
+        validate_host_social_attachment_content_type(content_type, name)?;
+    if !is_image {
+        return Err(invalid_request("JOX asset must be an image"));
+    }
     if bytes.is_empty() || bytes.len() > HOST_JOX_ASSET_MAX_BYTES {
         return Err(invalid_request("JOX asset is too large"));
     }
