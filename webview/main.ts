@@ -605,6 +605,7 @@ type EutheriumShopItem = {
   availableForPurchase?: boolean;
   joxPath?: string | null;
   provenanceStatus?: string | null;
+  sourceItemId?: string | null;
 };
 
 type EutheriumLedgerEntry = {
@@ -11262,7 +11263,10 @@ function joxboxPanelMarkup(data: EutheriumMeResult): string {
         <input id="joxbox-name" type="text" placeholder="artifact name" aria-label="JOX artifact name" />
         <input id="joxbox-price" type="number" min="0" step="1" value="1000" aria-label="JOX artifact price" />
         <input id="joxbox-image" type="text" placeholder="image path or URL" aria-label="JOX image path" />
-        <input id="joxbox-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="JOX image upload" />
+        <label class="joxbox-upload-button">
+          Upload picture
+          <input id="joxbox-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="JOX image upload" />
+        </label>
         <textarea id="joxbox-description" rows="3" placeholder="description" aria-label="JOX artifact description"></textarea>
         <textarea id="joxbox-lore" rows="3" placeholder="lore" aria-label="JOX artifact lore"></textarea>
         <textarea id="joxbox-toml" rows="8" aria-label="JOX TOML">${escapeHtml(joxboxDefaultToml())}</textarea>
@@ -11296,9 +11300,19 @@ function joxboxCatalogRowMarkup(entry: EutheriumJoxboxCatalogItem): string {
 
 function joxAdminRowMarkup(listing: EutheriumJoxListing): string {
   const itemId = `jox:${listing.id}`;
+  const imageItem: EutheriumShopItem = {
+    id: itemId,
+    name: listing.name,
+    itemType: "jox_artifact",
+    price: listing.price,
+    description: listing.description,
+    imagePath: listing.imagePath,
+    rarity: `JOX ${listing.provenanceStatus}`,
+    sourceItemId: listing.sourceItemId,
+  };
   return `
     <div class="eutherium-jox-admin-row">
-      <img src="${escapeHtml(listing.imagePath)}" alt="" />
+      <img src="${escapeHtml(eutheriumItemIconUrl(imageItem))}" alt="" />
       <div>
         <strong>${escapeHtml(listing.name)}</strong>
         <span>${escapeHtml(listing.shopStatus)} / ${escapeHtml(displayUserName(listing.currentOwner))} / ${formatEutherium(listing.price)} EUX</span>
@@ -12012,6 +12026,12 @@ function formatEutherium(value: number): string {
 }
 
 function eutheriumItemIconUrl(item: EutheriumShopItem): string {
+  if (item.itemType === "jox_artifact" && item.sourceItemId) {
+    const sourceMatch = Object.entries(eutheriumIconModules).find(([path]) => path.endsWith(`/${item.sourceItemId}.png`));
+    if (sourceMatch) {
+      return sourceMatch[1];
+    }
+  }
   if (item.itemType === "jox_artifact" && item.imagePath) {
     return item.imagePath;
   }

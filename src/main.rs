@@ -1203,6 +1203,8 @@ struct HostEutheriumItem {
     jox_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     provenance_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_item_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -4917,6 +4919,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
         HostEutheriumItem {
             id: "goat-fez".to_string(),
@@ -4929,6 +4932,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
         HostEutheriumItem {
             id: "soft-cheese-monument".to_string(),
@@ -4941,6 +4945,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
         HostEutheriumItem {
             id: "angry-duck".to_string(),
@@ -4953,6 +4958,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
         HostEutheriumItem {
             id: "mpa-inspector-cage".to_string(),
@@ -4965,6 +4971,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
         HostEutheriumItem {
             id: "broken-stool".to_string(),
@@ -4977,6 +4984,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
         HostEutheriumItem {
             id: "purple-server-relic".to_string(),
@@ -4989,6 +4997,7 @@ fn host_static_shop_items() -> Vec<HostEutheriumItem> {
             available_for_purchase: true,
             jox_path: None,
             provenance_status: None,
+            source_item_id: None,
         },
     ]
 }
@@ -5012,6 +5021,7 @@ fn host_jox_listing_item(listing: HostJoxShopListing) -> HostEutheriumItem {
         available_for_purchase: active,
         jox_path: Some(listing.jox_path),
         provenance_status: Some(listing.provenance_status),
+        source_item_id: listing.source_item_id,
     }
 }
 

@@ -7261,7 +7261,8 @@ h2 {
 }
 
 .eutherium-joxbox-create input,
-.eutherium-joxbox-create textarea {
+.eutherium-joxbox-create textarea,
+.joxbox-upload-button {
   min-width: 0;
   border: 1px solid rgba(207, 240, 178, 0.16);
   border-radius: 8px;
@@ -7269,6 +7270,23 @@ h2 {
   color: #edf6dd;
   padding: 9px 10px;
   font-size: 0.78rem;
+}
+
+.joxbox-upload-button {
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-weight: 900;
+  text-align: center;
+  touch-action: manipulation;
+}
+
+.joxbox-upload-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .eutherium-joxbox-create textarea {
