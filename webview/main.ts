@@ -1524,6 +1524,8 @@ let eutheriumStatus = "Not loaded";
 let eutheriumMe: EutheriumMeResult | null = null;
 let eutheriumAdmin: EutheriumAdminResult | null = null;
 let selectedJoxDetails: EutheriumJoxDetails | null = null;
+let joxboxSearchQuery = localStorage.getItem("joxbox-search-query") ?? "";
+let joxboxShowConverted = localStorage.getItem("joxbox-show-converted") === "true";
 let eutheriumLobbyStatus = "Not loaded";
 let eutheriumLobbyBalance: number | null = null;
 let eutheriumLobbyAwards: EutheriumLedgerEntry[] = [];
@@ -3424,6 +3426,13 @@ workspaceWindowLayer.addEventListener("click", (event) => {
 });
 
 workspaceWindowLayer.addEventListener("input", (event) => {
+  const joxboxSearch = (event.target as HTMLElement).closest<HTMLInputElement>("#joxbox-search");
+  if (joxboxSearch) {
+    joxboxSearchQuery = joxboxSearch.value;
+    localStorage.setItem("joxbox-search-query", joxboxSearchQuery);
+    renderJoxboxCatalogLive();
+    return;
+  }
   const slider = (event.target as HTMLElement).closest<HTMLInputElement>("[data-settings-audio-slider]");
   if (!slider) {
     return;
@@ -3433,6 +3442,16 @@ workspaceWindowLayer.addEventListener("input", (event) => {
   } else if (slider.dataset.settingsAudioSlider === "mic") {
     setMicVolume(Number(slider.value) / 100);
   }
+});
+
+workspaceWindowLayer.addEventListener("change", (event) => {
+  const joxboxConverted = (event.target as HTMLElement).closest<HTMLInputElement>("#joxbox-show-converted");
+  if (!joxboxConverted) {
+    return;
+  }
+  joxboxShowConverted = joxboxConverted.checked;
+  localStorage.setItem("joxbox-show-converted", String(joxboxShowConverted));
+  renderJoxboxCatalogLive();
 });
 
 shoppingListItems.addEventListener("change", (event) => {
@@ -11253,6 +11272,7 @@ function joxHistoryRowMarkup(offer: EutheriumJoxOffer): string {
 function joxboxPanelMarkup(data: EutheriumMeResult): string {
   const listings = data.joxListings ?? [];
   const catalog = data.joxboxCatalog ?? [];
+  const filteredCatalog = filteredJoxboxCatalog(catalog);
   return `
     <section class="eutherium-joxbox-panel" id="eutherium-joxbox">
       <div class="section-head">
@@ -11272,14 +11292,60 @@ function joxboxPanelMarkup(data: EutheriumMeResult): string {
         <textarea id="joxbox-toml" rows="8" aria-label="JOX TOML">${escapeHtml(joxboxDefaultToml())}</textarea>
         <button data-joxbox-mint-custom type="button">Create .jox</button>
       </div>
-      <div class="eutherium-joxbox-catalog">
-        ${catalog.length ? catalog.map(joxboxCatalogRowMarkup).join("") : `<span>No catalog items loaded</span>`}
+      <div class="eutherium-joxbox-filter">
+        <input id="joxbox-search" type="search" value="${escapeHtml(joxboxSearchQuery)}" placeholder="Search artifacts" aria-label="Search Joxbox artifacts" />
+        <label>
+          <input id="joxbox-show-converted" type="checkbox" ${joxboxShowConverted ? "checked" : ""} />
+          Show converted
+        </label>
+        <span id="joxbox-visible-count">${filteredCatalog.length} visible</span>
+      </div>
+      <div class="eutherium-joxbox-catalog" id="joxbox-catalog">
+        ${filteredCatalog.length ? filteredCatalog.map(joxboxCatalogRowMarkup).join("") : `<span>No matching artifacts</span>`}
       </div>
       <div class="eutherium-jox-admin-list">
         ${listings.length ? listings.map(joxAdminRowMarkup).join("") : `<span>No JOX artifacts yet</span>`}
       </div>
     </section>
   `;
+}
+
+function filteredJoxboxCatalog(catalog: EutheriumJoxboxCatalogItem[]): EutheriumJoxboxCatalogItem[] {
+  const query = joxboxSearchQuery.trim().toLowerCase();
+  return catalog.filter((entry) => {
+    if (entry.converted && !joxboxShowConverted) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    const haystack = [
+      entry.item.id,
+      entry.item.name,
+      entry.item.description,
+      entry.item.rarity,
+      entry.listing?.id ?? "",
+      entry.listing?.name ?? "",
+      entry.listing?.description ?? "",
+    ].join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function renderJoxboxCatalogLive(): void {
+  if (!eutheriumMe || activeWorkspaceWindow !== "eutherium") {
+    return;
+  }
+  const catalogEl = workspaceWindowDynamic.querySelector<HTMLElement>("#joxbox-catalog");
+  const countEl = workspaceWindowDynamic.querySelector<HTMLElement>("#joxbox-visible-count");
+  if (!catalogEl || !countEl) {
+    return;
+  }
+  const filteredCatalog = filteredJoxboxCatalog(eutheriumMe.joxboxCatalog ?? []);
+  catalogEl.innerHTML = filteredCatalog.length
+    ? filteredCatalog.map(joxboxCatalogRowMarkup).join("")
+    : `<span>No matching artifacts</span>`;
+  countEl.textContent = `${filteredCatalog.length} visible`;
 }
 
 function joxboxCatalogRowMarkup(entry: EutheriumJoxboxCatalogItem): string {
