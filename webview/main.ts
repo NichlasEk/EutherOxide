@@ -11348,6 +11348,7 @@ function joxDetailsPanelMarkup(): string {
           <span>Intrinsic: ${formatEutherium(artifact?.intrinsicValue ?? listing.price)} EUX</span>
           ${artifact?.lastSalePrice !== undefined && artifact?.lastSalePrice !== null ? `<span>Last sale: ${formatEutherium(artifact.lastSalePrice)} EUX${artifact.lastSaleUnixMs ? ` / ${escapeHtml(formatDateTime(artifact.lastSaleUnixMs))}` : ""}</span>` : ""}
           <a href="${escapeHtml(listing.joxPath)}" download>Download .jox</a>
+          ${canOfferOnJoxListing(listing) ? `<button data-jox-offer="${escapeHtml(`jox:${listing.id}`)}" type="button">Make offer</button>` : ""}
         </div>
       </div>
       ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
@@ -11362,6 +11363,14 @@ function joxDetailsPanelMarkup(): string {
       </div>
     </section>
   `;
+}
+
+function canOfferOnJoxListing(listing: EutheriumJoxListing): boolean {
+  return Boolean(
+    eutheriumMe
+    && listing.provenanceStatus === "valid"
+    && listing.currentOwner !== eutheriumMe.user,
+  );
 }
 
 function joxArtifactSummaryMarkup(artifact: EutheriumJoxArtifactDetails): string {
@@ -11548,15 +11557,17 @@ function trophyRoomItemsMarkupFor(layout: TrophyRoomLayout, inventoryEntries: Eu
         return "";
       }
       const selected = selectedTrophyInventoryId === entry.id;
+      const inspectable = !editable && item.itemType === "jox_artifact";
       return `
-        <${editable ? "button" : "div"}
-          class="trophy-room-item ${selected && editable ? "is-selected" : ""} ${editable ? "" : "is-readonly"}"
+        <${editable || inspectable ? "button" : "div"}
+          class="trophy-room-item ${selected && editable ? "is-selected" : ""} ${editable ? "" : "is-readonly"} ${inspectable ? "is-inspectable" : ""}"
           ${editable ? `data-trophy-select="${escapeHtml(entry.id)}" type="button"` : ""}
+          ${inspectable ? `data-jox-details="${escapeHtml(item.id)}" type="button"` : ""}
           style="left:${placed.x}%; top:${placed.y}%; --trophy-scale:${placed.scale};"
           aria-label="${escapeHtml(item.name)}"
         >
           <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
-        </${editable ? "button" : "div"}>
+        </${editable || inspectable ? "button" : "div"}>
       `;
     })
     .join("");

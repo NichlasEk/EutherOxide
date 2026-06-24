@@ -6949,6 +6949,11 @@ h2 {
   pointer-events: none;
 }
 
+.trophy-room-item.is-readonly.is-inspectable {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
 .trophy-room-item.is-selected {
   border-color: rgba(238, 255, 176, 0.8);
   box-shadow:

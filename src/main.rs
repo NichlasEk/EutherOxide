@@ -5599,7 +5599,7 @@ fn create_host_jox_transfer_offer(
         .ok_or_else(|| invalid_request("not a JOX shop item"))?;
     let listing = load_host_jox_shop_listings()?
         .into_iter()
-        .find(|listing| listing.id == artifact_id && listing.shop_status == "listed")
+        .find(|listing| listing.id == artifact_id)
         .ok_or_else(|| invalid_request("JOX listing not found"))?;
     if listing.provenance_status != "valid" {
         return Err(invalid_request("unknown provenance JOX cannot be offered"));
@@ -6120,11 +6120,7 @@ fn host_jox_details_result(
     let owns_inventory = load_host_inventory()?
         .into_iter()
         .any(|entry| entry.user_id == user && entry.item_id == request.item_id);
-    if !is_host_admin(state, user)?
-        && listing.current_owner != user
-        && listing.shop_status != "listed"
-        && !owns_inventory
-    {
+    if !is_host_admin(state, user)? && listing.provenance_status != "valid" && !owns_inventory {
         return Err(invalid_request("JOX details not available"));
     }
     let mut offers: Vec<_> = load_host_jox_transfer_offers()?
