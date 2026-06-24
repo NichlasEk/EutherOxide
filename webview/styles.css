@@ -6839,6 +6839,7 @@ h2 {
 .eutherium-jox-offers-panel,
 .eutherium-jox-details-panel,
 .eutherium-jox-admin-panel,
+.eutherium-joxbox-panel,
 .eutherium-shop-panel,
 .eutherium-inventory-panel,
 .eutherium-ledger-panel {
@@ -7071,7 +7072,8 @@ h2 {
 }
 
 .eutherium-jox-details-panel,
-.eutherium-jox-admin-panel {
+.eutherium-jox-admin-panel,
+.eutherium-joxbox-panel {
   grid-column: 1 / -1;
 }
 
@@ -7096,6 +7098,7 @@ h2 {
 .eutherium-shop-grid,
 .eutherium-inventory-grid,
 .eutherium-jox-offers-list,
+.eutherium-joxbox-catalog,
 .eutherium-ledger-list {
   display: grid;
   gap: 8px;
@@ -7179,6 +7182,7 @@ h2 {
 
 .eutherium-jox-details,
 .eutherium-jox-admin-row,
+.eutherium-joxbox-row,
 .eutherium-jox-history-row {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) auto auto;
@@ -7200,7 +7204,8 @@ h2 {
 }
 
 .eutherium-jox-details img,
-.eutherium-jox-admin-row img {
+.eutherium-jox-admin-row img,
+.eutherium-joxbox-row img {
   width: 64px;
   height: 64px;
   object-fit: contain;
@@ -7214,6 +7219,7 @@ h2 {
 
 .eutherium-jox-details strong,
 .eutherium-jox-admin-row strong,
+.eutherium-joxbox-row strong,
 .eutherium-jox-history-row strong {
   display: block;
   color: #eef8dd;
@@ -7223,6 +7229,7 @@ h2 {
 .eutherium-jox-details span,
 .eutherium-jox-details a,
 .eutherium-jox-admin-row span,
+.eutherium-joxbox-row span,
 .eutherium-jox-history-row span,
 .eutherium-jox-history-row em {
   display: block;
@@ -7240,9 +7247,40 @@ h2 {
 }
 
 .eutherium-jox-history,
-.eutherium-jox-admin-list {
+.eutherium-jox-admin-list,
+.eutherium-joxbox-catalog {
   display: grid;
   gap: 8px;
+}
+
+.eutherium-joxbox-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) 96px minmax(0, 1.4fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.eutherium-joxbox-create input,
+.eutherium-joxbox-create textarea {
+  min-width: 0;
+  border: 1px solid rgba(207, 240, 178, 0.16);
+  border-radius: 8px;
+  background: rgba(5, 11, 8, 0.78);
+  color: #edf6dd;
+  padding: 9px 10px;
+  font-size: 0.78rem;
+}
+
+.eutherium-joxbox-create textarea {
+  grid-column: span 2;
+  resize: vertical;
+}
+
+.eutherium-joxbox-create button {
+  min-height: 38px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 900;
 }
 
 .eutherium-inventory-card.is-selected {

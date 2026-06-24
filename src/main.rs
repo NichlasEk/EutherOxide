@@ -25,6 +25,7 @@ use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use gilrs::{Axis, Button, Gilrs};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const BRIDGE_STREAM_VIDEO_DIVISOR: u64 = 2;
 const WEBRTC_UDP_PORT_MIN: u16 = 49_152;
@@ -1219,6 +1220,8 @@ struct HostJoxShopListing {
     shop_status: String,
     listed_by_user_id: String,
     listed_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_item_id: Option<String>,
 }
 
 fn host_jox_listing_default_status() -> String {
@@ -1315,6 +1318,22 @@ struct HostJoxShopListingRequest {
     jox_path: String,
     provenance_status: String,
     current_owner: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostJoxboxMintRequest {
+    source_item_id: Option<String>,
+    artifact_id: Option<String>,
+    name: String,
+    description: String,
+    lore: Option<String>,
+    price: i64,
+    image_path: String,
+    thumbnail_path: Option<String>,
+    rarity: Option<String>,
+    current_owner: Option<String>,
+    list_in_shop: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -2122,7 +2141,21 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let listing: HostJoxShopListingRequest = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             upsert_host_jox_shop_listing(&admin, listing)?;
-            send_json(stream, &serde_json::json!({ "ok": true, "items": host_shop_items()? }))
+            send_json(
+                stream,
+                &serde_json::json!({ "ok": true, "items": host_shop_items()? }),
+            )
+        }
+        ("POST", "/api/shop/joxbox/mint") => {
+            let admin = require_host_admin(state, &request)?;
+            let mint: HostJoxboxMintRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            mint_host_joxbox_artifact(&admin, mint)?;
+            send_json(stream, &host_eutherium_me(state, &admin)?)
+        }
+        ("GET", path) if path.starts_with("/api/shop/joxbox/artifacts/") => {
+            require_host_user(state, &request)?;
+            send_host_joxbox_artifact(stream, path)
         }
         ("POST", "/api/shop/jox/offer") => {
             let user = require_host_user(state, &request)?;
@@ -2133,8 +2166,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/shop/jox/offer/respond") => {
             let user = require_host_user(state, &request)?;
-            let response: HostJoxTransferOfferResponseRequest = serde_json::from_slice(&request.body)
-                .map_err(|err| invalid_request(err.to_string()))?;
+            let response: HostJoxTransferOfferResponseRequest =
+                serde_json::from_slice(&request.body)
+                    .map_err(|err| invalid_request(err.to_string()))?;
             respond_host_jox_transfer_offer(state, &user, response)?;
             send_json(stream, &host_eutherium_me(state, &user)?)
         }
@@ -4556,6 +4590,7 @@ fn host_eutherium_me(state: &HostState, user: &str) -> io::Result<serde_json::Va
         "items": host_shop_items()?,
         "joxOffers": host_jox_transfer_offers_for_user(user)?,
         "joxListings": host_jox_listings_for_user(state, user)?,
+        "joxboxCatalog": if is_host_admin(state, user)? { host_joxbox_catalog_items()? } else { Vec::<serde_json::Value>::new() },
         "trophyRoom": host_trophy_room_result(user)?,
     }))
 }
@@ -4966,8 +5001,19 @@ fn host_jox_listing_item(listing: HostJoxShopListing) -> HostEutheriumItem {
     }
 }
 
+fn host_visible_static_shop_items() -> io::Result<Vec<HostEutheriumItem>> {
+    let converted: HashSet<String> = load_host_jox_shop_listings()?
+        .into_iter()
+        .filter_map(|listing| listing.source_item_id)
+        .collect();
+    Ok(host_static_shop_items()
+        .into_iter()
+        .filter(|item| !converted.contains(&item.id))
+        .collect())
+}
+
 fn host_shop_items() -> io::Result<Vec<HostEutheriumItem>> {
-    let mut items = host_static_shop_items();
+    let mut items = host_visible_static_shop_items()?;
     items.extend(
         load_host_jox_shop_listings()?
             .into_iter()
@@ -4985,6 +5031,23 @@ fn host_catalog_items() -> io::Result<Vec<HostEutheriumItem>> {
             .map(host_jox_listing_item),
     );
     Ok(items)
+}
+
+fn host_joxbox_catalog_items() -> io::Result<Vec<serde_json::Value>> {
+    let listings = load_host_jox_shop_listings()?;
+    Ok(host_static_shop_items()
+        .into_iter()
+        .map(|item| {
+            let converted_listing = listings
+                .iter()
+                .find(|listing| listing.source_item_id.as_deref() == Some(item.id.as_str()));
+            serde_json::json!({
+                "item": item,
+                "converted": converted_listing.is_some(),
+                "listing": converted_listing,
+            })
+        })
+        .collect())
 }
 
 fn load_host_jox_shop_listings() -> io::Result<Vec<HostJoxShopListing>> {
@@ -5007,16 +5070,15 @@ fn save_host_jox_shop_listings(listings: &[HostJoxShopListing]) -> io::Result<()
     fs::write(path, bytes)
 }
 
-fn upsert_host_jox_shop_listing(
-    admin: &str,
-    listing: HostJoxShopListingRequest,
-) -> io::Result<()> {
+fn upsert_host_jox_shop_listing(admin: &str, listing: HostJoxShopListingRequest) -> io::Result<()> {
     let artifact_id = listing.artifact_id.trim();
     if artifact_id.is_empty() || artifact_id.len() > 96 {
         return Err(invalid_request("invalid JOX artifact id"));
     }
     if listing.provenance_status.trim() != "valid" {
-        return Err(invalid_request("only valid JOX artifacts can enter the Trophy Shop"));
+        return Err(invalid_request(
+            "only valid JOX artifacts can enter the Trophy Shop",
+        ));
     }
     if listing.price < 0 || listing.price > 1_000_000 {
         return Err(invalid_request("JOX price must be between 0 and 1000000"));
@@ -5054,6 +5116,117 @@ fn upsert_host_jox_shop_listing(
         shop_status: "listed".to_string(),
         listed_by_user_id: admin.to_string(),
         listed_unix_ms: unix_ms_now(),
+        source_item_id: None,
+    };
+    let mut listings = load_host_jox_shop_listings()?;
+    if let Some(existing) = listings.iter_mut().find(|existing| existing.id == item.id) {
+        *existing = item;
+    } else {
+        listings.push(item);
+    }
+    save_host_jox_shop_listings(&listings)
+}
+
+fn mint_host_joxbox_artifact(admin: &str, request: HostJoxboxMintRequest) -> io::Result<()> {
+    if request.price < 0 || request.price > 1_000_000 {
+        return Err(invalid_request("JOX price must be between 0 and 1000000"));
+    }
+    let source_item = if let Some(source_item_id) = request.source_item_id.as_deref() {
+        Some(
+            host_static_shop_items()
+                .into_iter()
+                .find(|item| item.id == source_item_id)
+                .ok_or_else(|| invalid_request("source shop item not found"))?,
+        )
+    } else {
+        None
+    };
+    let name = request.name.trim();
+    if name.is_empty() || name.len() > 120 {
+        return Err(invalid_request("JOX name must be 1-120 characters"));
+    }
+    let description = request.description.trim();
+    if description.is_empty() || description.len() > 500 {
+        return Err(invalid_request("JOX description must be 1-500 characters"));
+    }
+    let image_path = request.image_path.trim();
+    if image_path.is_empty() || image_path.len() > 1000 {
+        return Err(invalid_request("invalid JOX image path"));
+    }
+    let source_item_id = source_item.as_ref().map(|item| item.id.clone());
+    let base_id = request
+        .artifact_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| source_item_id.as_ref().map(|id| format!("joxbox-{id}")))
+        .unwrap_or_else(|| format!("joxbox-{}", unix_ms_now()));
+    let artifact_id = sanitize_host_joxbox_artifact_id(&base_id)?;
+    let current_owner = request
+        .current_owner
+        .as_deref()
+        .map(str::trim)
+        .filter(|owner| !owner.is_empty())
+        .unwrap_or("Joxbox");
+    let rarity = request
+        .rarity
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| source_item.as_ref().map(|item| item.rarity.as_str()))
+        .unwrap_or("joxbox");
+    let thumbnail_path = request
+        .thumbnail_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .unwrap_or(image_path);
+    let minted_at = unix_ms_now();
+    let payload = serde_json::json!({
+        "artifactId": artifact_id.clone(),
+        "name": name,
+        "description": description,
+        "lore": request.lore.as_deref().map(str::trim).filter(|lore| !lore.is_empty()).unwrap_or("Minted in Joxbox so the Trophy Shop can treat this artifact as a proper .jox relic."),
+        "intrinsicValue": request.price,
+        "rarity": rarity,
+        "imagePath": image_path,
+        "thumbnailPath": thumbnail_path,
+        "currentOwner": current_owner,
+        "origin": {
+            "system": "Joxbox",
+            "sourceItemId": source_item_id.clone(),
+            "createdByUserId": admin,
+            "createdUnixMs": minted_at,
+        },
+        "ownershipHistory": [
+            {
+                "owner": current_owner,
+                "event": "minted",
+                "byUserId": admin,
+                "unixMs": minted_at,
+                "note": "Created by Joxbox"
+            }
+        ]
+    });
+    write_host_joxbox_artifact(&artifact_id, payload)?;
+
+    let item = HostJoxShopListing {
+        id: artifact_id.clone(),
+        name: name.to_string(),
+        description: description.to_string(),
+        price: request.price,
+        image_path: image_path.to_string(),
+        jox_path: host_joxbox_artifact_url(&artifact_id),
+        provenance_status: "valid".to_string(),
+        current_owner: current_owner.to_string(),
+        shop_status: if request.list_in_shop.unwrap_or(true) {
+            "listed".to_string()
+        } else {
+            "owned".to_string()
+        },
+        listed_by_user_id: admin.to_string(),
+        listed_unix_ms: minted_at,
+        source_item_id,
     };
     let mut listings = load_host_jox_shop_listings()?;
     if let Some(existing) = listings.iter_mut().find(|existing| existing.id == item.id) {
@@ -5366,6 +5539,9 @@ fn prune_host_trophy_layout_item(user: &str, item_id: &str) -> io::Result<()> {
 }
 
 fn update_remote_jox_owner(jox_path: &str, owner: &str) -> io::Result<()> {
+    if let Some(artifact_id) = host_joxbox_artifact_id_from_url(jox_path)? {
+        return update_host_joxbox_owner(&artifact_id, owner);
+    }
     let upstream_path = camera_ai_jox_metadata_path(jox_path)?;
     let upstream_base =
         env::var("EUTHERSIGHT_AI_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15101".to_string());
@@ -5424,6 +5600,137 @@ fn camera_ai_jox_metadata_path(jox_path: &str) -> io::Result<String> {
         return Err(invalid_request("untrusted JOX metadata path"));
     }
     Ok(format!("{}/metadata", stripped.trim_end_matches('/')))
+}
+
+fn sanitize_host_joxbox_artifact_id(value: &str) -> io::Result<String> {
+    let id: String = value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if id.is_empty() || id.len() > 96 {
+        return Err(invalid_request("invalid Joxbox artifact id"));
+    }
+    Ok(id)
+}
+
+fn host_joxbox_artifact_url(artifact_id: &str) -> String {
+    format!("/api/shop/joxbox/artifacts/{artifact_id}.jox")
+}
+
+fn host_joxbox_artifact_id_from_url(value: &str) -> io::Result<Option<String>> {
+    let path = if let Some(rest) = value.strip_prefix("http://") {
+        rest.split_once('/').map(|(_, path)| format!("/{path}"))
+    } else if let Some(rest) = value.strip_prefix("https://") {
+        rest.split_once('/').map(|(_, path)| format!("/{path}"))
+    } else {
+        Some(value.to_string())
+    }
+    .ok_or_else(|| invalid_request("invalid JOX URL"))?;
+    let Some(file_name) = path.strip_prefix("/api/shop/joxbox/artifacts/") else {
+        return Ok(None);
+    };
+    let Some(id) = file_name.strip_suffix(".jox") else {
+        return Ok(None);
+    };
+    Ok(Some(sanitize_host_joxbox_artifact_id(id)?))
+}
+
+fn host_joxbox_artifact_path(artifact_id: &str) -> io::Result<PathBuf> {
+    Ok(host_eutherium_joxbox_dir().join(format!(
+        "{}.jox",
+        sanitize_host_joxbox_artifact_id(artifact_id)?
+    )))
+}
+
+fn host_jox_payload_hash(payload: &serde_json::Value) -> io::Result<String> {
+    let payload_bytes =
+        serde_json::to_vec(payload).map_err(|err| io::Error::other(err.to_string()))?;
+    let digest = Sha256::digest(&payload_bytes);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn host_joxbox_document(payload: serde_json::Value) -> io::Result<serde_json::Value> {
+    let payload_sha256 = host_jox_payload_hash(&payload)?;
+    Ok(serde_json::json!({
+        "format": "jox",
+        "version": 1,
+        "payload": payload,
+        "integrity": {
+            "algorithm": "sha256",
+            "payloadSha256": payload_sha256,
+        }
+    }))
+}
+
+fn write_host_joxbox_artifact(artifact_id: &str, payload: serde_json::Value) -> io::Result<()> {
+    let path = host_joxbox_artifact_path(artifact_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let document = host_joxbox_document(payload)?;
+    let bytes =
+        serde_json::to_vec_pretty(&document).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn update_host_joxbox_owner(artifact_id: &str, owner: &str) -> io::Result<()> {
+    let path = host_joxbox_artifact_path(artifact_id)?;
+    let contents = fs::read_to_string(&path)?;
+    let mut document: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    let payload = document
+        .get_mut("payload")
+        .and_then(|payload| payload.as_object_mut())
+        .ok_or_else(|| invalid_request("invalid Joxbox payload"))?;
+    payload.insert(
+        "currentOwner".to_string(),
+        serde_json::Value::String(owner.to_string()),
+    );
+    let history = payload
+        .entry("ownershipHistory")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if let Some(history) = history.as_array_mut() {
+        history.push(serde_json::json!({
+            "owner": owner,
+            "event": "transferred",
+            "byUserId": owner,
+            "unixMs": unix_ms_now(),
+            "note": "Accepted through Eutherium Trophy Shop"
+        }));
+    }
+    let payload_value = serde_json::Value::Object(payload.clone());
+    let refreshed = host_joxbox_document(payload_value)?;
+    let bytes =
+        serde_json::to_vec_pretty(&refreshed).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(path, bytes)
+}
+
+fn send_host_joxbox_artifact(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let artifact_id = host_joxbox_artifact_id_from_url(path)?
+        .ok_or_else(|| invalid_request("invalid Joxbox artifact path"))?;
+    let file_path = host_joxbox_artifact_path(&artifact_id)?;
+    let bytes = fs::read(file_path)?;
+    let filename = format!("{artifact_id}.jox");
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    send_response_with_headers(
+        stream,
+        200,
+        "application/json",
+        &bytes,
+        &[("Content-Disposition", &disposition)],
+    )
 }
 
 fn host_trophy_icon(kind: &str) -> String {
@@ -13780,6 +14087,10 @@ fn host_eutherium_jox_shop_path() -> PathBuf {
 
 fn host_eutherium_jox_offers_path() -> PathBuf {
     host_eutherium_dir().join("jox-offers.json")
+}
+
+fn host_eutherium_joxbox_dir() -> PathBuf {
+    host_eutherium_dir().join("joxbox")
 }
 
 fn host_trophy_room_layout_path(user: &str) -> PathBuf {

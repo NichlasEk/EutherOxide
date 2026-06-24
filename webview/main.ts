@@ -655,6 +655,13 @@ type EutheriumJoxListing = {
   shopStatus: string;
   listedByUserId: string;
   listedUnixMs: number;
+  sourceItemId?: string | null;
+};
+
+type EutheriumJoxboxCatalogItem = {
+  item: EutheriumShopItem;
+  converted: boolean;
+  listing?: EutheriumJoxListing | null;
 };
 
 type EutheriumJoxDetails = {
@@ -690,6 +697,7 @@ type EutheriumMeResult = {
   items: EutheriumShopItem[];
   joxOffers?: EutheriumJoxOffer[];
   joxListings?: EutheriumJoxListing[];
+  joxboxCatalog?: EutheriumJoxboxCatalogItem[];
   trophyRoom: TrophyRoomResult;
 };
 
@@ -3065,6 +3073,16 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
   const joxUnlist = target.closest<HTMLButtonElement>("[data-jox-unlist]");
   if (joxUnlist) {
     await unlistJoxItem(joxUnlist.dataset.joxUnlist ?? "");
+    return;
+  }
+  const joxboxConvert = target.closest<HTMLButtonElement>("[data-joxbox-convert]");
+  if (joxboxConvert) {
+    await convertShopItemToJox(joxboxConvert.dataset.joxboxConvert ?? "");
+    return;
+  }
+  const joxboxMintCustom = target.closest<HTMLButtonElement>("[data-joxbox-mint-custom]");
+  if (joxboxMintCustom) {
+    await mintCustomJoxboxArtifact();
     return;
   }
   const award = target.closest<HTMLButtonElement>("[data-eutherium-award-submit]");
@@ -7934,6 +7952,7 @@ function eutheriumWindowMarkup(): string {
       <nav class="eutherium-mobile-nav" aria-label="Eutherium sections">
         <a href="#eutherium-room">Room</a>
         <a href="#eutherium-shop">Shop</a>
+        ${data.isAdmin ? `<a href="#eutherium-joxbox">Joxbox</a>` : ""}
         <a href="#eutherium-inventory">Inventory</a>
         <a href="#eutherium-ledger">Ledger</a>
       </nav>
@@ -7953,7 +7972,7 @@ function eutheriumWindowMarkup(): string {
       ${hostPermissions.canAwardEutherium ? eutheriumAwardPanelMarkup() : ""}
       ${joxOffersPanelMarkup(data)}
       ${joxDetailsPanelMarkup()}
-      ${data.isAdmin ? joxAdminPanelMarkup(data) : ""}
+      ${data.isAdmin ? joxboxPanelMarkup(data) : ""}
       <section class="eutherium-shop-panel" id="eutherium-shop">
         <div class="section-head">
           <p class="section-label">Shop</p>
@@ -11230,18 +11249,46 @@ function joxHistoryRowMarkup(offer: EutheriumJoxOffer): string {
   `;
 }
 
-function joxAdminPanelMarkup(data: EutheriumMeResult): string {
+function joxboxPanelMarkup(data: EutheriumMeResult): string {
   const listings = data.joxListings ?? [];
+  const catalog = data.joxboxCatalog ?? [];
   return `
-    <section class="eutherium-jox-admin-panel">
+    <section class="eutherium-joxbox-panel" id="eutherium-joxbox">
       <div class="section-head">
-        <p class="section-label">JOX Admin</p>
-        <span>${listings.length} artifacts</span>
+        <p class="section-label">Joxbox</p>
+        <span>${listings.length} JOX / ${catalog.filter((entry) => entry.converted).length} converted</span>
+      </div>
+      <div class="eutherium-joxbox-create">
+        <input id="joxbox-name" type="text" placeholder="artifact name" aria-label="JOX artifact name" />
+        <input id="joxbox-price" type="number" min="0" step="1" value="1000" aria-label="JOX artifact price" />
+        <input id="joxbox-image" type="text" placeholder="image path or URL" aria-label="JOX image path" />
+        <textarea id="joxbox-description" rows="3" placeholder="description" aria-label="JOX artifact description"></textarea>
+        <textarea id="joxbox-lore" rows="3" placeholder="lore" aria-label="JOX artifact lore"></textarea>
+        <button data-joxbox-mint-custom type="button">Create .jox</button>
+      </div>
+      <div class="eutherium-joxbox-catalog">
+        ${catalog.length ? catalog.map(joxboxCatalogRowMarkup).join("") : `<span>No catalog items loaded</span>`}
       </div>
       <div class="eutherium-jox-admin-list">
         ${listings.length ? listings.map(joxAdminRowMarkup).join("") : `<span>No JOX artifacts yet</span>`}
       </div>
     </section>
+  `;
+}
+
+function joxboxCatalogRowMarkup(entry: EutheriumJoxboxCatalogItem): string {
+  const item = entry.item;
+  return `
+    <div class="eutherium-joxbox-row">
+      <img src="${escapeHtml(eutheriumItemIconUrl(item))}" alt="" />
+      <div>
+        <strong>${escapeHtml(item.name)}</strong>
+        <span>${entry.converted ? `JOX: ${escapeHtml(entry.listing?.id ?? "converted")}` : `${escapeHtml(item.rarity)} / ${formatEutherium(item.price)} EUX`}</span>
+      </div>
+      <button data-joxbox-convert="${escapeHtml(item.id)}" type="button" ${entry.converted ? "disabled" : ""}>
+        ${entry.converted ? "Converted" : "Make .jox"}
+      </button>
+    </div>
   `;
 }
 
@@ -11613,6 +11660,95 @@ async function unlistJoxItem(itemId: string): Promise<void> {
     eutheriumStatus = "JOX unlisted";
   } catch (err) {
     eutheriumStatus = err instanceof Error ? err.message : "JOX unlist failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function convertShopItemToJox(itemId: string): Promise<void> {
+  if (!itemId || !eutheriumMe) {
+    return;
+  }
+  const catalogEntry = (eutheriumMe.joxboxCatalog ?? []).find((entry) => entry.item.id === itemId);
+  const item = catalogEntry?.item ?? eutheriumMe.items.find((candidate) => candidate.id === itemId);
+  if (!item) {
+    eutheriumStatus = "Joxbox item not found";
+    renderWorkspaceWindow();
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = `Joxboxing ${item.name}`;
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/joxbox/mint",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sourceItemId: item.id,
+          name: item.name,
+          description: item.description,
+          lore: `${item.name} was sealed into a .jox container by Joxbox so it can travel through the Eutherium universe with provenance.`,
+          price: item.price,
+          imagePath: item.imagePath,
+          thumbnailPath: item.imagePath,
+          rarity: item.rarity,
+          currentOwner: "Joxbox",
+          listInShop: true,
+        }),
+      },
+      1600,
+    );
+    eutheriumLoaded = true;
+    selectedJoxDetails = null;
+    eutheriumStatus = `${item.name} is now .jox`;
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "Joxbox conversion failed";
+  } finally {
+    eutheriumSaving = false;
+    renderWorkspaceWindow();
+  }
+}
+
+async function mintCustomJoxboxArtifact(): Promise<void> {
+  const name = workspaceWindowDynamic.querySelector<HTMLInputElement>("#joxbox-name")?.value.trim() ?? "";
+  const description = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>("#joxbox-description")?.value.trim() ?? "";
+  const lore = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>("#joxbox-lore")?.value.trim() ?? "";
+  const imagePath = workspaceWindowDynamic.querySelector<HTMLInputElement>("#joxbox-image")?.value.trim() ?? "";
+  const price = Math.max(0, Math.round(Number(workspaceWindowDynamic.querySelector<HTMLInputElement>("#joxbox-price")?.value ?? "0") || 0));
+  if (!name || !description || !imagePath) {
+    eutheriumStatus = "Joxbox needs name, description and image";
+    renderWorkspaceWindow();
+    return;
+  }
+  eutheriumSaving = true;
+  eutheriumStatus = "Minting .jox";
+  renderWorkspaceWindow();
+  try {
+    eutheriumMe = await bridgeJson<EutheriumMeResult>(
+      "/api/shop/joxbox/mint",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          description,
+          lore,
+          price,
+          imagePath,
+          thumbnailPath: imagePath,
+          rarity: "joxbox",
+          currentOwner: "Joxbox",
+          listInShop: true,
+        }),
+      },
+      1600,
+    );
+    eutheriumLoaded = true;
+    selectedJoxDetails = null;
+    eutheriumStatus = "JOX minted";
+  } catch (err) {
+    eutheriumStatus = err instanceof Error ? err.message : "Joxbox mint failed";
   } finally {
     eutheriumSaving = false;
     renderWorkspaceWindow();
