@@ -650,6 +650,7 @@ type EutheriumJoxListing = {
   description: string;
   price: number;
   imagePath: string;
+  embeddedImagePath?: string | null;
   joxPath: string;
   provenanceStatus: string;
   currentOwner: string;
@@ -676,6 +677,7 @@ type EutheriumJoxArtifactDetails = {
   format: string;
   version: number;
   schemaVersion?: number;
+  primaryAssetPath?: string | null;
   intrinsicValue: number;
   lastSalePrice?: number | null;
   lastSaleUnixMs?: number | null;
@@ -11354,6 +11356,7 @@ function joxDetailsPanelMarkup(): string {
   }
   const listing = details.listing;
   const artifact = details.artifact ?? null;
+  const detailImagePath = joxDetailsImagePath(listing, artifact);
   return `
     <section class="eutherium-jox-details-panel">
       <div class="section-head">
@@ -11361,7 +11364,7 @@ function joxDetailsPanelMarkup(): string {
         <span>${escapeHtml(listing.provenanceStatus)} / ${escapeHtml(listing.shopStatus)}</span>
       </div>
       <div class="eutherium-jox-details">
-        <img src="${escapeHtml(listing.imagePath)}" alt="" />
+        <img src="${escapeHtml(detailImagePath)}" alt="" />
         <div>
           <strong>${escapeHtml(listing.name)}</strong>
           <p>${escapeHtml(listing.description)}</p>
@@ -11386,6 +11389,10 @@ function joxDetailsPanelMarkup(): string {
       </div>
     </section>
   `;
+}
+
+function joxDetailsImagePath(listing: EutheriumJoxListing, artifact: EutheriumJoxArtifactDetails | null): string {
+  return artifact?.primaryAssetPath || listing.embeddedImagePath || listing.imagePath;
 }
 
 function canOfferOnJoxListing(listing: EutheriumJoxListing): boolean {

@@ -6224,6 +6224,8 @@ fn host_jox_artifact_details_summary(artifact_id: &str) -> io::Result<Option<ser
         "format": document.get("format").and_then(|value| value.as_str()).unwrap_or("unknown"),
         "version": document.get("version").and_then(|value| value.as_u64()).unwrap_or(1),
         "schemaVersion": payload.get("schemaVersion").and_then(|value| value.as_u64()).unwrap_or(0),
+        "primaryAssetPath": host_jox_primary_asset_id(&assets)
+            .map(|asset_id| host_jox_embedded_asset_url(&artifact_id, &asset_id)),
         "intrinsicValue": payload.get("intrinsicValue").and_then(|value| value.as_i64()).unwrap_or(0),
         "lastSalePrice": payload.get("lastSalePrice").and_then(|value| value.as_i64()),
         "lastSaleUnixMs": payload.get("lastSaleUnixMs").and_then(|value| value.as_u64()),
