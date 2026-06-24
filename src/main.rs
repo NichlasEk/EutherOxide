@@ -5445,11 +5445,24 @@ fn repack_all_host_joxbox_artifacts(admin: &str) -> io::Result<serde_json::Value
             continue;
         }
         if !is_camera_ai_secondsight_jox_url(&listing.jox_path) {
-            skipped.push(serde_json::json!({
-                "id": listing.id,
-                "reason": "not_secondsight_remote",
-            }));
-            continue;
+            if let Some(asset) = repack_static_joxbox_listing_asset(listing)? {
+                let embedded_image_path = host_jox_embedded_asset_url(&listing.id, "primary");
+                listing.embedded_image_path = Some(embedded_image_path);
+                listing.jox_path = host_joxbox_artifact_url(&listing.id);
+                converted.push(serde_json::json!({
+                    "id": listing.id,
+                    "name": listing.name,
+                    "source": "static_joxbox",
+                    "asset": asset,
+                }));
+                continue;
+            } else {
+                skipped.push(serde_json::json!({
+                    "id": listing.id,
+                    "reason": "not_secondsight_remote",
+                }));
+                continue;
+            }
         }
         match repack_remote_secondsight_jox_listing(
             &listing.id,
@@ -5483,6 +5496,37 @@ fn repack_all_host_joxbox_artifacts(admin: &str) -> io::Result<serde_json::Value
         "skipped": skipped,
         "failed": failed,
     }))
+}
+
+fn repack_static_joxbox_listing_asset(listing: &HostJoxShopListing) -> io::Result<Option<String>> {
+    let Some(source_item_id) = listing.source_item_id.as_deref() else {
+        return Ok(None);
+    };
+    let icon_path = PathBuf::from("assets")
+        .join("eutherium")
+        .join("icons")
+        .join(format!("{source_item_id}.png"));
+    let bytes = match fs::read(&icon_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let primary_asset = host_jox_asset_from_bytes(
+        "primary",
+        "primary_image",
+        bytes,
+        "image/png",
+        &format!("{source_item_id}.png"),
+    )?;
+    let contents = fs::read_to_string(host_joxbox_artifact_path(&listing.id)?)?;
+    let mut document: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|err| invalid_request(err.to_string()))?;
+    let payload = document
+        .get_mut("payload")
+        .cloned()
+        .ok_or_else(|| invalid_request("invalid Joxbox payload"))?;
+    write_host_joxbox_artifact_with_assets(&listing.id, payload, vec![primary_asset])?;
+    Ok(Some(icon_path.display().to_string()))
 }
 
 fn load_host_jox_transfer_offers() -> io::Result<Vec<HostJoxTransferOffer>> {
