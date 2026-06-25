@@ -11388,30 +11388,37 @@ function joxDetailsPanelMarkup(): string {
         <p class="section-label">JOX Details</p>
         <span>${escapeHtml(listing.provenanceStatus)} / ${escapeHtml(listing.shopStatus)}</span>
       </div>
-      <div class="eutherium-jox-details">
-        <img src="${escapeHtml(detailImagePath)}" alt="" />
-        <div>
-          <strong>${escapeHtml(listing.name)}</strong>
-          <p>${escapeHtml(listing.description)}</p>
-          <span>Owner: ${escapeHtml(displayUserName(listing.currentOwner))}</span>
-          <span>Ask price: ${formatEutherium(listing.price)} EUX</span>
-          <span>Intrinsic: ${formatEutherium(artifact?.intrinsicValue ?? listing.price)} EUX</span>
-          ${artifact ? joxBirdMagicInlineMarkup(artifact) : ""}
-          ${artifact?.lastSalePrice !== undefined && artifact?.lastSalePrice !== null ? `<span>Last sale: ${formatEutherium(artifact.lastSalePrice)} EUX${artifact.lastSaleUnixMs ? ` / ${escapeHtml(formatDateTime(artifact.lastSaleUnixMs))}` : ""}</span>` : ""}
-          <a href="${escapeHtml(listing.joxPath)}" download>Download .jox</a>
-          ${canOfferOnJoxListing(listing) ? `<button data-jox-offer="${escapeHtml(`jox:${listing.id}`)}" type="button">Make offer</button>` : ""}
+      <div class="eutherium-jox-details-layout">
+        <div class="eutherium-jox-details-copy">
+          <div class="eutherium-jox-details">
+            <img src="${escapeHtml(detailImagePath)}" alt="" />
+            <div>
+              <strong>${escapeHtml(listing.name)}</strong>
+              <p>${escapeHtml(listing.description)}</p>
+              <span>Owner: ${escapeHtml(displayUserName(listing.currentOwner))}</span>
+              <span>Ask price: ${formatEutherium(listing.price)} EUX</span>
+              <span>Intrinsic: ${formatEutherium(artifact?.intrinsicValue ?? listing.price)} EUX</span>
+              ${artifact ? joxBirdMagicInlineMarkup(artifact) : ""}
+              ${artifact?.lastSalePrice !== undefined && artifact?.lastSalePrice !== null ? `<span>Last sale: ${formatEutherium(artifact.lastSalePrice)} EUX${artifact.lastSaleUnixMs ? ` / ${escapeHtml(formatDateTime(artifact.lastSaleUnixMs))}` : ""}</span>` : ""}
+              <a href="${escapeHtml(listing.joxPath)}" download>Download .jox</a>
+              ${canOfferOnJoxListing(listing) ? `<button data-jox-offer="${escapeHtml(`jox:${listing.id}`)}" type="button">Make offer</button>` : ""}
+            </div>
+          </div>
+          ${artifact ? joxBirdMagicBadgesMarkup(artifact) : ""}
+          ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
+          ${artifact ? joxArtifactSagaMarkup(listing, artifact) : ""}
+          ${artifact?.ownershipHistory?.length ? `
+            <div class="eutherium-jox-history">
+              ${artifact.ownershipHistory.slice().reverse().slice(0, 8).map(joxOwnershipHistoryRowMarkup).join("")}
+            </div>
+          ` : ""}
+          <div class="eutherium-jox-history">
+            ${details.offers.length ? details.offers.map(joxHistoryRowMarkup).join("") : `<span>No offer history yet</span>`}
+          </div>
         </div>
-      </div>
-      ${artifact ? joxBirdMagicBadgesMarkup(artifact) : ""}
-      ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
-      ${artifact ? joxArtifactSagaMarkup(listing, artifact) : ""}
-      ${artifact?.ownershipHistory?.length ? `
-        <div class="eutherium-jox-history">
-          ${artifact.ownershipHistory.slice().reverse().slice(0, 8).map(joxOwnershipHistoryRowMarkup).join("")}
-        </div>
-      ` : ""}
-      <div class="eutherium-jox-history">
-        ${details.offers.length ? details.offers.map(joxHistoryRowMarkup).join("") : `<span>No offer history yet</span>`}
+        <figure class="eutherium-jox-hero-art">
+          <img src="${escapeHtml(detailImagePath)}" alt="${escapeHtml(listing.name)}" />
+        </figure>
       </div>
     </section>
   `;
