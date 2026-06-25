@@ -11378,7 +11378,6 @@ function joxDetailsPanelMarkup(): string {
       </div>
       ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
       ${artifact ? joxArtifactSagaMarkup(listing, artifact) : ""}
-      ${artifact?.lore ? `<p class="eutherium-jox-lore">${escapeHtml(artifact.lore)}</p>` : ""}
       ${artifact?.ownershipHistory?.length ? `
         <div class="eutherium-jox-history">
           ${artifact.ownershipHistory.slice().reverse().slice(0, 8).map(joxOwnershipHistoryRowMarkup).join("")}
@@ -11435,6 +11434,7 @@ function joxArtifactSagaMarkup(listing: EutheriumJoxListing, artifact: Eutherium
       <p class="section-label">Artifact Saga</p>
       <strong>${escapeHtml(listing.name)}</strong>
       <p>${escapeHtml(listing.description)}</p>
+      ${artifact.lore ? `<p class="eutherium-jox-lore">${escapeHtml(artifact.lore)}</p>` : ""}
       <span>First recorded as ${escapeHtml(origin)} and now guarded by ${escapeHtml(owner)}.</span>
       <span>${escapeHtml(lastSale)} Intrinsic value: ${formatEutherium(value)} EUX.</span>
       <span>${travels > 1 ? `It has ${travels} recorded steps in its journey.` : "Its journey has just begun."} ${escapeHtml(provenance)}</span>
