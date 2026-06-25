@@ -65,6 +65,7 @@ const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
 const SECONDSIGHT_PATH: &str = "/secondsight";
+const EUTHERBIRD_PATH: &str = "/eutherbird";
 const SERVER_MAP_PATH: &str = "/server-map";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
@@ -2440,6 +2441,15 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return send_error(stream, 403, &err.to_string());
             }
             proxy_camera_ai_request_to_path(stream, &request, "/secondsight")
+        }
+        ("GET", EUTHERBIRD_PATH) => {
+            let Some(user) = authenticated_user(state, &request)? else {
+                return send_login_page(stream, None);
+            };
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            proxy_camera_ai_request_to_path(stream, &request, "/eutherbird")
         }
         _ => {
             if is_euthernet_admin_proxy_path(path) {
@@ -10619,6 +10629,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       <nav class="actions">
         <a href="/">EutherHost</a>
         <a href="/secondsight">SecondSight</a>
+        <a href="/eutherbird">EutherBird</a>
         <a href="http://192.168.32.186:8081/" target="_blank" rel="noreferrer">Frigate</a>
       </nav>
     </header>
