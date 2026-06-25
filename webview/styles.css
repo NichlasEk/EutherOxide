@@ -7351,6 +7351,25 @@ h2 {
   line-height: 1.25;
 }
 
+
+.eutherium-jox-bird-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.65rem 0;
+}
+
+.eutherium-jox-bird-badges span {
+  border: 1px solid rgba(195, 230, 142, 0.35);
+  background: rgba(42, 80, 38, 0.28);
+  color: #dff5c4;
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .eutherium-jox-meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));

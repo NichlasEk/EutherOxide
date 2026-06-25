@@ -672,6 +672,28 @@ type EutheriumJoxOwnershipEvent = {
   note?: string;
 };
 
+type EutheriumJoxBirdnetObservation = {
+  commonName?: string;
+  species?: string;
+  confidence?: number;
+  review?: string;
+};
+
+type EutheriumJoxBirdnetObservationBlock = {
+  enabled?: boolean;
+  windowSeconds?: number;
+  minConfidence?: number;
+  summary?: string;
+  uniqueSpecies?: string[];
+  maxConfidence?: number;
+  magicBonus?: number;
+  observations?: EutheriumJoxBirdnetObservation[];
+};
+
+type EutheriumJoxObservation = {
+  birdnet?: EutheriumJoxBirdnetObservationBlock;
+};
+
 type EutheriumJoxArtifactDetails = {
   artifactId: string;
   format: string;
@@ -682,6 +704,9 @@ type EutheriumJoxArtifactDetails = {
   lastSalePrice?: number | null;
   lastSaleUnixMs?: number | null;
   lore?: string;
+  birdMagicBonus?: number;
+  birdMagicSummary?: string;
+  observation?: EutheriumJoxObservation;
   currentOwner?: string;
   ownershipHistory: EutheriumJoxOwnershipEvent[];
   mutationCount?: number;
@@ -11371,11 +11396,13 @@ function joxDetailsPanelMarkup(): string {
           <span>Owner: ${escapeHtml(displayUserName(listing.currentOwner))}</span>
           <span>Ask price: ${formatEutherium(listing.price)} EUX</span>
           <span>Intrinsic: ${formatEutherium(artifact?.intrinsicValue ?? listing.price)} EUX</span>
+          ${artifact ? joxBirdMagicInlineMarkup(artifact) : ""}
           ${artifact?.lastSalePrice !== undefined && artifact?.lastSalePrice !== null ? `<span>Last sale: ${formatEutherium(artifact.lastSalePrice)} EUX${artifact.lastSaleUnixMs ? ` / ${escapeHtml(formatDateTime(artifact.lastSaleUnixMs))}` : ""}</span>` : ""}
           <a href="${escapeHtml(listing.joxPath)}" download>Download .jox</a>
           ${canOfferOnJoxListing(listing) ? `<button data-jox-offer="${escapeHtml(`jox:${listing.id}`)}" type="button">Make offer</button>` : ""}
         </div>
       </div>
+      ${artifact ? joxBirdMagicBadgesMarkup(artifact) : ""}
       ${artifact ? joxArtifactSummaryMarkup(artifact) : `<div class="eutherium-jox-meta"><span>No local JOX container metadata available yet</span></div>`}
       ${artifact ? joxArtifactSagaMarkup(listing, artifact) : ""}
       ${artifact?.ownershipHistory?.length ? `
@@ -11400,6 +11427,51 @@ function canOfferOnJoxListing(listing: EutheriumJoxListing): boolean {
     && listing.provenanceStatus === "valid"
     && listing.currentOwner !== eutheriumMe.user,
   );
+}
+
+function joxBirdMagicData(artifact: EutheriumJoxArtifactDetails): { bonus: number; summary: string; species: string[]; maxConfidence: number; count: number } {
+  const birdnet = artifact.observation?.birdnet ?? {};
+  const observations = Array.isArray(birdnet.observations) ? birdnet.observations : [];
+  const species = Array.from(new Set([
+    ...(Array.isArray(birdnet.uniqueSpecies) ? birdnet.uniqueSpecies : []),
+    ...observations.map((item) => item.commonName || item.species || "").filter(Boolean),
+  ])).slice(0, 5);
+  const maxConfidence = Number(birdnet.maxConfidence ?? Math.max(0, ...observations.map((item) => Number(item.confidence) || 0)));
+  const bonus = Number(artifact.birdMagicBonus ?? birdnet.magicBonus ?? 0) || 0;
+  const summary = (artifact.birdMagicSummary || birdnet.summary || (species.length ? `Observed with ${species.join(", ")}` : "")).trim();
+  return { bonus, summary, species, maxConfidence, count: observations.length };
+}
+
+function joxBirdMagicInlineMarkup(artifact: EutheriumJoxArtifactDetails): string {
+  const data = joxBirdMagicData(artifact);
+  if (!data.summary && data.bonus <= 0 && data.species.length === 0) {
+    return "";
+  }
+  return `<span>Bird magic: ${data.bonus > 0 ? `+${data.bonus}` : "observed"}${data.summary ? ` / ${escapeHtml(data.summary)}` : ""}</span>`;
+}
+
+function joxBirdMagicBadgesMarkup(artifact: EutheriumJoxArtifactDetails): string {
+  const data = joxBirdMagicData(artifact);
+  const badges: string[] = [];
+  if (data.bonus > 0) {
+    badges.push(`Bird magic +${data.bonus}`);
+  }
+  for (const name of data.species.slice(0, 3)) {
+    badges.push(`Observed with ${name}`);
+  }
+  if (data.maxConfidence > 0) {
+    badges.push(`Bird confidence ${Math.round(data.maxConfidence * 100)}%`);
+  }
+  if (data.count > 0) {
+    badges.push(`${data.count} audio traces`);
+  }
+  if (!badges.length && data.summary) {
+    badges.push(data.summary);
+  }
+  if (!badges.length) {
+    return "";
+  }
+  return `<div class="eutherium-jox-bird-badges">${badges.map((badge) => `<span>${escapeHtml(badge)}</span>`).join("")}</div>`;
 }
 
 function joxArtifactSummaryMarkup(artifact: EutheriumJoxArtifactDetails): string {
@@ -11435,6 +11507,7 @@ function joxArtifactSagaMarkup(listing: EutheriumJoxListing, artifact: Eutherium
       <strong>${escapeHtml(listing.name)}</strong>
       <p>${escapeHtml(listing.description)}</p>
       ${artifact.lore ? `<p class="eutherium-jox-lore">${escapeHtml(artifact.lore)}</p>` : ""}
+      ${joxBirdMagicBadgesMarkup(artifact)}
       <span>First recorded as ${escapeHtml(origin)} and now guarded by ${escapeHtml(owner)}.</span>
       <span>${escapeHtml(lastSale)} Intrinsic value: ${formatEutherium(value)} EUX.</span>
       <span>${travels > 1 ? `It has ${travels} recorded steps in its journey.` : "Its journey has just begun."} ${escapeHtml(provenance)}</span>

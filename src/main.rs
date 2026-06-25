@@ -5439,6 +5439,41 @@ fn repack_remote_secondsight_jox_listing(
         return Ok((jox_path.to_string(), None));
     }
     let (image_bytes, content_type) = fetch_camera_ai_binary_url(image_path)?;
+    let source_metadata =
+        fetch_camera_ai_jox_metadata(jox_path).unwrap_or_else(|_| serde_json::json!({}));
+    let source_observation = source_metadata
+        .get("observation")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let source_manifest = source_metadata
+        .get("manifest")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let source_birdnet = source_observation
+        .get("birdnet")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let bird_magic_bonus = source_manifest
+        .get("bird_magic_bonus")
+        .and_then(|value| value.as_i64())
+        .or_else(|| {
+            source_birdnet
+                .get("magicBonus")
+                .and_then(|value| value.as_i64())
+        })
+        .unwrap_or(0);
+    let bird_magic_summary = source_manifest
+        .get("bird_magic_summary")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            source_birdnet
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| format!("Observed with {value}"))
+        })
+        .unwrap_or_default();
     let primary_asset = host_jox_asset_from_bytes(
         "primary",
         "primary_image",
@@ -5446,15 +5481,26 @@ fn repack_remote_secondsight_jox_listing(
         &content_type,
         "secondsight.png",
     )?;
+    let lore = source_manifest
+        .get("lore")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!("{name} crossed from SecondSight into Joxbox as a self-contained artifact.")
+        });
     let minted_at = unix_ms_now();
     let payload = serde_json::json!({
         "artifactId": artifact_id,
         "schemaVersion": HOST_JOX_PAYLOAD_SCHEMA_VERSION,
         "name": name,
         "description": description,
-        "lore": format!("{name} crossed from SecondSight into Joxbox as a self-contained artifact."),
+        "lore": lore,
         "toml": "",
         "intrinsicValue": price,
+        "birdMagicBonus": bird_magic_bonus,
+        "birdMagicSummary": bird_magic_summary,
+        "observation": source_observation,
         "rarity": "secondsight",
         "imagePath": image_path,
         "thumbnailPath": image_path,
@@ -6229,6 +6275,40 @@ fn host_jox_artifact_details_summary(artifact_id: &str) -> io::Result<Option<ser
         .and_then(|value| value.as_str())
         .unwrap_or("");
     let computed_assets_hash = host_jox_assets_hash(&assets)?;
+    let observation = payload
+        .get("observation")
+        .cloned()
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+        .or_else(|| {
+            payload
+                .pointer("/origin/sourceJoxPath")
+                .and_then(|value| value.as_str())
+                .and_then(|source_jox_path| fetch_camera_ai_jox_metadata(source_jox_path).ok())
+                .and_then(|metadata| metadata.get("observation").cloned())
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
+    let birdnet = observation
+        .get("birdnet")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let bird_magic_bonus = payload
+        .get("birdMagicBonus")
+        .and_then(|value| value.as_i64())
+        .or_else(|| birdnet.get("magicBonus").and_then(|value| value.as_i64()))
+        .unwrap_or(0);
+    let bird_magic_summary = payload
+        .get("birdMagicSummary")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            birdnet
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
     Ok(Some(serde_json::json!({
         "artifactId": artifact_id,
         "format": document.get("format").and_then(|value| value.as_str()).unwrap_or("unknown"),
@@ -6240,6 +6320,9 @@ fn host_jox_artifact_details_summary(artifact_id: &str) -> io::Result<Option<ser
         "lastSalePrice": payload.get("lastSalePrice").and_then(|value| value.as_i64()),
         "lastSaleUnixMs": payload.get("lastSaleUnixMs").and_then(|value| value.as_u64()),
         "lore": payload.get("lore").and_then(|value| value.as_str()).unwrap_or(""),
+        "birdMagicBonus": bird_magic_bonus,
+        "birdMagicSummary": bird_magic_summary,
+        "observation": observation,
         "currentOwner": payload.get("currentOwner").and_then(|value| value.as_str()).unwrap_or(""),
         "ownershipHistory": payload.get("ownershipHistory").and_then(|value| value.as_array()).cloned().unwrap_or_default(),
         "mutationCount": payload.get("mutationLog").and_then(|value| value.as_array()).map(|value| value.len()).unwrap_or(0),
@@ -6351,6 +6434,35 @@ fn camera_ai_jox_metadata_path(jox_path: &str) -> io::Result<String> {
 fn is_camera_ai_secondsight_jox_url(value: &str) -> bool {
     camera_ai_trusted_upstream_path(value)
         .is_ok_and(|path| path.starts_with("/api/secondsight/jox/"))
+}
+
+fn fetch_camera_ai_jox_metadata(jox_path: &str) -> io::Result<serde_json::Value> {
+    let upstream_path = camera_ai_jox_metadata_path(jox_path)?;
+    let upstream_base =
+        env::var("EUTHERSIGHT_AI_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15101".to_string());
+    let mut upstream = TcpStream::connect(&upstream_base)
+        .map_err(|_| invalid_request("EutherSight AI upstream unavailable"))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(8)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    write!(
+        upstream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: application/json\r\n\r\n",
+        upstream_path, upstream_base
+    )?;
+    let mut response = Vec::new();
+    upstream.read_to_end(&mut response)?;
+    let header_end = find_subslice(&response, b"\r\n\r\n")
+        .ok_or_else(|| invalid_request("invalid EutherSight JOX metadata response"))?;
+    let headers = String::from_utf8_lossy(&response[..header_end]);
+    let status_ok = headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "));
+    if !status_ok {
+        return Err(invalid_request("EutherSight JOX metadata fetch failed"));
+    }
+    serde_json::from_slice(&response[header_end + 4..])
+        .map_err(|err| invalid_request(format!("invalid JOX metadata response: {err}")))
 }
 
 fn fetch_camera_ai_binary_url(value: &str) -> io::Result<(Vec<u8>, String)> {
