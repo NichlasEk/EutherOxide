@@ -10734,6 +10734,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const eventLightboxMedia = document.getElementById("event-lightbox-media");
     const eventLightboxImage = document.getElementById("event-lightbox-image");
     let csrfToken = "";
+    const LIVE_MSE_ROTATION_DEGREES = 90;
     let rotationDegrees = 0;
     let refreshMs = 500;
     let refreshTimer = 0;
@@ -10762,9 +10763,9 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     function applyRotation(value) {
       rotationDegrees = ((Number(value) || 0) % 360 + 360) % 360;
       frame.dataset.rotation = String(rotationDegrees);
-      liveFrame.dataset.rotation = String(rotationDegrees);
+      liveFrame.dataset.rotation = String(LIVE_MSE_ROTATION_DEGREES);
       frame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
-      liveFrame.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
+      liveFrame.style.setProperty("--camera-rotation", `${LIVE_MSE_ROTATION_DEGREES}deg`);
       eventsGrid.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       eventLightboxMedia.style.setProperty("--camera-rotation", `${rotationDegrees}deg`);
       rotationStatus.textContent = `Rotation ${rotationDegrees} grader`;
@@ -10796,7 +10797,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       const bounds = frameElement.getBoundingClientRect();
       if (bounds.width <= 0 || bounds.height <= 0) return;
       const aspect = mediaAspect(mediaElement);
-      const rotated = rotationDegrees === 90 || rotationDegrees === 270;
+      const frameRotation = Number(frameElement.dataset.rotation || rotationDegrees) || 0;
+      const rotated = frameRotation === 90 || frameRotation === 270;
       const maxWidth = rotated ? bounds.height : bounds.width;
       const maxHeight = rotated ? bounds.width : bounds.height;
       let width = maxWidth;
