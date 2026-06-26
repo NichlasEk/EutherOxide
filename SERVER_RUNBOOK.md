@@ -119,6 +119,8 @@ Default outputs:
 /home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk
 /home/nichlas/EutherBooksPlayer-release-signed.apk
 /home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk
+/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk
+/home/nichlas/EutherPal/android-tv/dist/eutherpal-tv.apk
 ```
 
 The download route `/downloads/EutherList-release-signed.apk` uses
@@ -138,6 +140,18 @@ The download route `/downloads/EutherBooksPlayer-release-signed.apk` uses
 `/home/nichlas/EutherBooksPlayer-release-signed.apk`, otherwise the repo
 release copy. The shorter aliases `/downloads/eutherbooksplayer.apk` and
 `/downloads/EutherBooksPlayer.apk` are also accepted.
+
+The download route `/downloads/EutherPalMobile-release-signed.apk` uses
+`EUTHERPAL_MOBILE_APK_PATH` when set, otherwise
+`/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk`. The shorter
+aliases `/downloads/eutherpal-mobile.apk` and `/downloads/EutherPalMobile.apk`
+are also accepted.
+
+The download route `/downloads/EutherPalTV-release-signed.apk` uses
+`EUTHERPAL_TV_APK_PATH` when set, otherwise
+`/home/nichlas/EutherPal/android-tv/dist/eutherpal-tv.apk`. The shorter aliases
+`/downloads/eutherpal-tv.apk` and `/downloads/EutherPalTV.apk` are also
+accepted.
 
 The release script also syncs `apps/eutherbooks-player/src-tauri/icons/android` into the generated Android project before each build, so launcher icons stay deterministic.
 

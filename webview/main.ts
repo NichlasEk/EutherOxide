@@ -351,7 +351,7 @@ type VideoChatResult = {
 
 type PlayMode = "megadrive" | "eutherdogs" | "euthercivet" | "eutheralert" | "eutherdoom" | "eutherduke";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
-type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "books" | "friends" | "spaces" | "profile" | "settings";
+type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "books" | "apps" | "friends" | "spaces" | "profile" | "settings";
 
 type InteractionFriend = {
   name: string;
@@ -1997,6 +1997,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
             <button data-workspace-window="books" type="button">Audiobooks</button>
             <button data-workspace-window="shopping" type="button">Shopping</button>
+            <button data-workspace-window="apps" type="button">Apps</button>
             <button data-workspace-window="interaction" type="button">Social Desk</button>
             <button data-camera-admin-link type="button" hidden>EutherSight</button>
             <button data-server-map-link type="button" hidden>Serverkarta</button>
@@ -2463,13 +2464,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </div>
     <div id="user-menu-dropdown" class="user-menu-dropdown" role="menu" aria-label="user menu">
       <button data-user-menu-action="profile" type="button" role="menuitem">Profile</button>
-      <button data-user-menu-action="get-sync-app" type="button" role="menuitem">Get the EutherSync app</button>
+      <button data-user-menu-action="apps" type="button" role="menuitem">Apps</button>
       <button data-user-menu-action="reaction-lobby" type="button" role="menuitem">Reaction Lobby</button>
       <button data-user-menu-action="shopping-list" type="button" role="menuitem">Shopping List</button>
       <button data-user-menu-action="audiobooks" type="button" role="menuitem">Audiobooks</button>
-      <button data-user-menu-action="get-books-player-app" type="button" role="menuitem">Get the audiobook player app</button>
       <button data-user-menu-action="eutherium" type="button" role="menuitem">Eutherium</button>
-      <button data-user-menu-action="get-list-app" type="button" role="menuitem">Get the list app</button>
       <button data-user-menu-action="admin" type="button" role="menuitem" hidden>Admin</button>
       <button data-user-menu-action="friends" type="button" role="menuitem">Friends</button>
       <button data-user-menu-action="shared-spaces" type="button" role="menuitem">Shared Spaces</button>
@@ -7816,6 +7815,7 @@ function isWorkspaceWindow(value: unknown): value is WorkspaceWindow {
     value === "shopping" ||
     value === "eutherium" ||
     value === "books" ||
+    value === "apps" ||
     value === "friends" ||
     value === "spaces" ||
     value === "profile" ||
@@ -7956,6 +7956,8 @@ function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
       return "Eutherium";
     case "books":
       return "Audiobooks";
+    case "apps":
+      return "Apps";
     case "friends":
       return "Friends";
     case "spaces":
@@ -8026,6 +8028,7 @@ function renderWorkspaceWindow(): void {
   workspaceWindowDynamic.hidden = showingShopping;
   workspaceWindowLayer.classList.toggle("is-shopping", showingShopping);
   workspaceWindowLayer.classList.toggle("is-books", windowName === "books");
+  workspaceWindowLayer.classList.toggle("is-apps", windowName === "apps");
   workspaceWindowLayer.classList.toggle("is-eutherium", windowName === "eutherium");
   workspaceWindowLayer.classList.toggle("is-social", !showingShopping);
   workspaceWindowLayer.classList.toggle("is-social-chat", windowName === "interaction");
@@ -8071,9 +8074,97 @@ function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
       return "";
     case "books":
       return eutherBooksWindowMarkup();
+    case "apps":
+      return appsWindowMarkup();
     case "eutherium":
       return eutheriumWindowMarkup();
   }
+}
+
+type AppDownload = {
+  title: string;
+  detail: string;
+  platform: string;
+  href: string;
+  status: string;
+};
+
+const appDownloads: AppDownload[] = [
+  {
+    title: "EutherSync",
+    detail: "Family feed, camera upload and sync app",
+    platform: "Android phone",
+    href: "/downloads/EutherSync-release-signed.apk",
+    status: "Signed APK",
+  },
+  {
+    title: "EutherBooks Player",
+    detail: "Native audiobook playback with background audio",
+    platform: "Android phone",
+    href: "/downloads/EutherBooksPlayer-release-signed.apk",
+    status: "Signed APK",
+  },
+  {
+    title: "EutherList",
+    detail: "Shopping list wrapper for the shared household list",
+    platform: "Android phone",
+    href: "/downloads/EutherList-release-signed.apk",
+    status: "Signed APK",
+  },
+  {
+    title: "EutherPål Mobile",
+    detail: "Monopoly controller with player and admin swipe views",
+    platform: "Android phone",
+    href: "/downloads/EutherPalMobile-release-signed.apk",
+    status: "WebView APK",
+  },
+  {
+    title: "EutherPål TV",
+    detail: "Fullscreen Android TV board wrapper",
+    platform: "Android TV",
+    href: "/downloads/EutherPalTV-release-signed.apk",
+    status: "TV APK",
+  },
+];
+
+function appsWindowMarkup(): string {
+  return `
+    <div class="apps-window">
+      <section class="apps-window-hero">
+        <div>
+          <p class="section-label">LAN Apps</p>
+          <strong>Installera Euther-appar</strong>
+          <span>Alla kända signerade Android-paket på en plats.</span>
+        </div>
+      </section>
+      <section class="apps-download-grid" aria-label="APK downloads">
+        ${appDownloads.map(appDownloadCardMarkup).join("")}
+      </section>
+    </div>
+  `;
+}
+
+function appDownloadCardMarkup(app: AppDownload): string {
+  return `
+    <article class="app-download-card">
+      <div class="app-download-icon" aria-hidden="true">${escapeHtml(app.title.slice(0, 2).toUpperCase())}</div>
+      <div>
+        <strong>${escapeHtml(app.title)}</strong>
+        <span>${escapeHtml(app.detail)}</span>
+      </div>
+      <dl>
+        <div>
+          <dt>Typ</dt>
+          <dd>${escapeHtml(app.platform)}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>${escapeHtml(app.status)}</dd>
+        </div>
+      </dl>
+      <a class="app-download-link" href="${escapeHtml(app.href)}">Ladda ner APK</a>
+    </article>
+  `;
 }
 
 function eutheriumWindowMarkup(): string {
@@ -13801,6 +13892,9 @@ async function handleUserMenuAction(action: string): Promise<void> {
       return;
     case "audiobooks":
       openWorkspaceWindow("books");
+      return;
+    case "apps":
+      openWorkspaceWindow("apps");
       return;
     case "get-list-app":
       window.location.href = "/downloads/EutherList-release-signed.apk";

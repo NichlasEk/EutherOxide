@@ -61,6 +61,10 @@ const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
+const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
+    "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
+const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
+    "/home/nichlas/EutherPal/android-tv/dist/eutherpal-tv.apk";
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
@@ -1660,6 +1664,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherbooks_player_apk_download_path(path) => {
             send_eutherbooks_player_apk(stream)
         }
+        ("GET", path) if is_eutherpal_mobile_apk_download_path(path) => {
+            send_eutherpal_mobile_apk(stream)
+        }
+        ("GET", path) if is_eutherpal_tv_apk_download_path(path) => send_eutherpal_tv_apk(stream),
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
                 let csrf_token = csrf_token_for_request(state, &request)?;
@@ -9694,10 +9702,56 @@ fn is_eutherbooks_player_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_eutherpal_mobile_apk(stream: &mut TcpStream) -> io::Result<()> {
+    let apk_path = env::var("EUTHERPAL_MOBILE_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPAL_MOBILE_APK_PATH));
+    send_android_apk(
+        stream,
+        &apk_path,
+        "EutherPalMobile-release-signed.apk",
+        "EutherPal Mobile APK is not available",
+    )
+}
+
+fn is_eutherpal_mobile_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherpal-mobile.apk"
+            | "/downloads/EutherPalMobile.apk"
+            | "/downloads/EutherPalMobile-release-signed.apk"
+            | "/downloads/eutherpal-mobile-release-signed.apk"
+    )
+}
+
+fn send_eutherpal_tv_apk(stream: &mut TcpStream) -> io::Result<()> {
+    let apk_path = env::var("EUTHERPAL_TV_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPAL_TV_APK_PATH));
+    send_android_apk(
+        stream,
+        &apk_path,
+        "EutherPalTV-release-signed.apk",
+        "EutherPal TV APK is not available",
+    )
+}
+
+fn is_eutherpal_tv_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherpal-tv.apk"
+            | "/downloads/EutherPalTV.apk"
+            | "/downloads/EutherPalTV-release-signed.apk"
+            | "/downloads/eutherpal-tv-release-signed.apk"
+    )
+}
+
 fn is_android_apk_download_path(path: &str) -> bool {
     is_eutherlist_apk_download_path(path)
         || is_euthersync_apk_download_path(path)
         || is_eutherbooks_player_apk_download_path(path)
+        || is_eutherpal_mobile_apk_download_path(path)
+        || is_eutherpal_tv_apk_download_path(path)
 }
 
 fn send_android_apk(

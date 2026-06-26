@@ -4803,6 +4803,10 @@ h2 {
   width: min(1040px, 100%);
 }
 
+.workspace-window-layer.is-apps .workspace-window {
+  width: min(920px, 100%);
+}
+
 .workspace-window-layer.is-social-chat .workspace-window-body {
   overflow: hidden;
 }
@@ -4846,6 +4850,116 @@ h2 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.apps-window {
+  display: grid;
+  gap: 12px;
+}
+
+.apps-window-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(5, 13, 10, 0.58);
+}
+
+.apps-window-hero > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.apps-window-hero strong {
+  color: #e8ffd2;
+  font-size: 1.2rem;
+}
+
+.apps-window-hero span {
+  color: #c8dab8;
+}
+
+.apps-download-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.app-download-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid rgba(207, 240, 178, 0.12);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(5, 13, 10, 0.58);
+}
+
+.app-download-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  aspect-ratio: 1;
+  border: 1px solid rgba(245, 215, 125, 0.4);
+  border-radius: 8px;
+  background: rgba(245, 215, 125, 0.12);
+  color: #f5d77d;
+  font-weight: 900;
+}
+
+.app-download-card strong {
+  display: block;
+  min-width: 0;
+  color: #e8ffd2;
+  overflow-wrap: anywhere;
+}
+
+.app-download-card span {
+  display: block;
+  margin-top: 3px;
+  color: #c8dab8;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.app-download-card dl {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.app-download-card dt {
+  color: #8fbf94;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.app-download-card dd {
+  margin: 2px 0 0;
+  color: #f3fbdc;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.app-download-link {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  border: 1px solid rgba(245, 215, 125, 0.42);
+  border-radius: 8px;
+  background: rgba(245, 215, 125, 0.14);
+  color: #f5d77d;
+  font-weight: 900;
+  text-decoration: none;
 }
 
 .social-chat-shell {
@@ -8934,7 +9048,8 @@ h2 {
 
   .workspace-window,
   .workspace-window-layer.is-shopping .workspace-window,
-  .workspace-window-layer.is-books .workspace-window {
+  .workspace-window-layer.is-books .workspace-window,
+  .workspace-window-layer.is-apps .workspace-window {
     width: 100%;
     max-height: calc(100dvh - 82px);
     min-height: calc(100dvh - 82px);
@@ -8982,9 +9097,23 @@ h2 {
     -webkit-overflow-scrolling: touch;
   }
 
+  .workspace-window-layer.is-apps .workspace-window-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .workspace-window-layer.is-books .workspace-window-dynamic,
   .workspace-window-layer.is-books .interaction-panel {
     overflow: visible;
+  }
+
+  .workspace-window-layer.is-apps .workspace-window-dynamic {
+    overflow: visible;
+  }
+
+  .apps-download-grid {
+    grid-template-columns: 1fr;
   }
 
   .workspace-window-section,
