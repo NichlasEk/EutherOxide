@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 
 const host = process.env.TAURI_DEV_HOST;
+const buildInfo = readFileSync(new URL("./webview/build-info.ts", import.meta.url), "utf8");
+const assetTag = buildInfo.match(/WEB_BUILD_ID = "([^"]+)"/)?.[1].replace(/[^a-zA-Z0-9_-]/g, "_") ?? "dev";
 
 export default defineConfig({
   clearScreen: false,
@@ -32,7 +35,12 @@ export default defineConfig({
       },
       output: {
         entryFileNames: (chunk) =>
-          chunk.name === "serverMap" ? "assets/server-map.js" : "assets/[name]-[hash].js",
+          chunk.name === "serverMap" ? "assets/server-map.js" : `assets/[name]-[hash]-${assetTag}.js`,
+        chunkFileNames: `assets/[name]-[hash]-${assetTag}.js`,
+        assetFileNames: (assetInfo) =>
+          assetInfo.name?.endsWith(".css")
+            ? `assets/[name]-[hash]-${assetTag}[extname]`
+            : "assets/[name]-[hash][extname]",
       },
     },
   },
