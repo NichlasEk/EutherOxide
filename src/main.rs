@@ -1611,7 +1611,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         return send_empty(stream, 204);
     }
     let path = request.path.split('?').next().unwrap_or(&request.path);
-    if !is_android_apk_download_path(path) {
+    if !is_android_apk_download_path(path) && !host_internal_plaintext_app_login(path, &request) {
         if let Some(location) = host_canonical_redirect(state, &request) {
             return send_redirect(stream, 308, &location);
         }
@@ -9502,6 +9502,21 @@ fn is_tauri_app_origin(origin: &str) -> bool {
             | "http://localhost:5181"
             | "http://127.0.0.1:5181"
     )
+}
+
+fn host_internal_plaintext_app_login(path: &str, request: &HttpRequest) -> bool {
+    if request.method != "POST" || path != "/api/app/login" {
+        return false;
+    }
+    let Some(host) = header_value(request, "host") else {
+        return false;
+    };
+    let host = host
+        .split_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(host)
+        .trim_matches(['[', ']']);
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 fn host_canonical_redirect(state: &HostState, request: &HttpRequest) -> Option<String> {
