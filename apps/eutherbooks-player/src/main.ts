@@ -502,6 +502,11 @@ async function pollJobs(): Promise<void> {
         nextJob = null;
         nextJobKey = "";
         void ensureNextJob();
+      } else if (isCompleteJob(nextJob) && shouldAutoAdvanceBufferedNextChapter()) {
+        advanceToNextJobSession(0, 0, "Next chapter ready");
+        render();
+        await playFromSession("auto");
+        return;
       }
       warmAudioCacheForJob(nextJob);
       void updateNativeQueue("poll-next");
@@ -1115,7 +1120,7 @@ async function playNextPartOrChapter(): Promise<void> {
   if (!nextJob) {
     await ensureNextJob();
   }
-  if (nextJob?.audio_files.length) {
+  if (nextJob && isCompleteJob(nextJob)) {
     advanceToNextJobSession(0, 0, "Chapter advanced");
     render();
     await playFromSession("auto");
@@ -1623,8 +1628,12 @@ function nativeLookaheadJobs(): Job[] {
     .filter((job): job is Job => job !== null && job.status !== "failed");
 }
 
+function nativePlayableLookaheadJobs(): Job[] {
+  return nativeLookaheadJobs().filter(isCompleteJob);
+}
+
 function nativeManifestJobs(): Job[] {
-  return [currentJob, ...nativeLookaheadJobs()]
+  return [currentJob, ...nativePlayableLookaheadJobs()]
     .filter((job): job is Job => job !== null && job.status !== "failed");
 }
 
@@ -1633,7 +1642,7 @@ function nativeQueueUrlsWithNext(): string[] {
     return [];
   }
   const currentUrls = session.audioFiles.map((candidate) => api.audioUrl(candidate));
-  const lookaheadUrls = nativeLookaheadJobs()
+  const lookaheadUrls = nativePlayableLookaheadJobs()
     .flatMap((job) => job.audio_files.map((candidate) => api.audioUrl(candidate)));
   return [...currentUrls, ...lookaheadUrls];
 }
@@ -1660,6 +1669,21 @@ function nativeQueueManifest(): NativeQueueManifest | null {
     audioBaseUrl: `${baseUrl}/audio/`,
     startIndex: nativeServiceQueuePrefix.length,
   };
+}
+
+function shouldAutoAdvanceBufferedNextChapter(): boolean {
+  if (!settings.autoNext || userPausedPlayback || !session || !currentJob || currentJob.status !== "done" || !nextJob) {
+    return false;
+  }
+  if (!isCompleteJob(nextJob) || !sessionMatchesCurrentSelection()) {
+    return false;
+  }
+  const atGeneratedEnd = session.currentIndex >= session.audioFiles.length - 1
+    && session.generatedSeconds - currentPlaybackPosition() < 2;
+  const waitingEvent = lastPlaybackEvent.includes("Waiting for next chapter")
+    || lastPlaybackEvent.includes("waiting for next chapter")
+    || lastPlaybackEvent.includes("waiting for next chapter buffer");
+  return isPlaybackPaused() && (atGeneratedEnd || waitingEvent);
 }
 
 function currentApiBaseUrl(): string {
