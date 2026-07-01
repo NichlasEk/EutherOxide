@@ -1624,6 +1624,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
         && !is_eutherbooks_proxy_path(path)
+        && !is_eutherpal_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
         && !app_token_request
         && !valid_csrf_token(state, &request)?
@@ -1668,6 +1669,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_eutherpal_mobile_apk(stream)
         }
         ("GET", path) if is_eutherpal_tv_apk_download_path(path) => send_eutherpal_tv_apk(stream),
+        ("GET", path) | ("POST", path) if is_eutherpal_proxy_path(path) => {
+            proxy_eutherpal_request(stream, &request)
+        }
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
                 let csrf_token = csrf_token_for_request(state, &request)?;
@@ -2493,6 +2497,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     }
                 }
                 return proxy_eutherbooks_request(stream, &request);
+            }
+            if is_eutherpal_proxy_path(path) {
+                return proxy_eutherpal_request(stream, &request);
             }
             let Some(user) = authenticated_user(state, &request)? else {
                 return if path.starts_with("/api/") {
@@ -3383,6 +3390,10 @@ fn eutherbooks_route_requires_manage_library(path: &str, method: &str) -> bool {
 
 fn is_eutherbooks_proxy_path(path: &str) -> bool {
     path == "/eutherbooks" || path.starts_with("/eutherbooks/")
+}
+
+fn is_eutherpal_proxy_path(path: &str) -> bool {
+    path == "/eutherpal" || path.starts_with("/eutherpal/")
 }
 
 fn is_camera_frigate_proxy_path(path: &str) -> bool {
@@ -9834,6 +9845,54 @@ fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> i
     }
     io::copy(&mut upstream, stream)?;
     Ok(())
+}
+
+fn proxy_eutherpal_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if request.method != "GET" && request.method != "POST" {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_base =
+        env::var("EUTHERPAL_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8793".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherPal upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let upstream_path = eutherpal_upstream_path(&request.path);
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, upstream_path, upstream_base
+    )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    io::copy(&mut upstream, stream)?;
+    Ok(())
+}
+
+fn eutherpal_upstream_path(path: &str) -> String {
+    let stripped = path
+        .strip_prefix("/eutherpal")
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/");
+    stripped.to_string()
 }
 
 fn eutherbooks_upstream_path(path: &str) -> String {
