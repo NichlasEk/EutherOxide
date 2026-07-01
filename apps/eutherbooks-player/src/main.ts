@@ -2191,12 +2191,39 @@ function isNativePlayRequestPending(state = nativeAudioState()): boolean {
     );
 }
 
-function currentBookmarkId(): string {
+function currentBookmarkBaseId(): string {
   return bookmarkKey(selectedBookId, selectedChapterIndex, settings.modelBackend, settings.voiceId);
 }
 
+function currentBookmarkId(auto: boolean): string {
+  return `${currentBookmarkBaseId()}::${auto ? "auto" : "manual"}`;
+}
+
+function legacyCurrentBookmark(bookmarks = loadBookmarks()): Bookmark | undefined {
+  return bookmarks[currentBookmarkBaseId()];
+}
+
+function currentAutoBookmark(bookmarks = loadBookmarks()): Bookmark | undefined {
+  const bookmark = bookmarks[currentBookmarkId(true)];
+  if (bookmark) {
+    return bookmark;
+  }
+  const legacy = legacyCurrentBookmark(bookmarks);
+  return legacy?.auto !== false ? legacy : undefined;
+}
+
+function currentManualBookmark(bookmarks = loadBookmarks()): Bookmark | undefined {
+  const bookmark = bookmarks[currentBookmarkId(false)];
+  if (bookmark) {
+    return bookmark;
+  }
+  const legacy = legacyCurrentBookmark(bookmarks);
+  return legacy?.auto === false ? legacy : undefined;
+}
+
 function currentBookmark(): Bookmark | undefined {
-  return loadBookmarks()[currentBookmarkId()];
+  const bookmarks = loadBookmarks();
+  return currentManualBookmark(bookmarks) ?? currentAutoBookmark(bookmarks);
 }
 
 function saveCurrentBookmark(auto: boolean): void {
@@ -2209,7 +2236,7 @@ function saveCurrentBookmark(auto: boolean): void {
   const chapter = selectedChapter();
   const positionSeconds = sessionPosition(session);
   saveBookmark({
-    id: currentBookmarkId(),
+    id: currentBookmarkId(auto),
     bookId: selectedBookId,
     chapterIndex: selectedChapterIndex,
     modelBackend: settings.modelBackend,
@@ -2235,13 +2262,33 @@ function maybeSaveAutoBookmark(force = false): void {
   saveCurrentBookmark(true);
 }
 
-function applyBookmarkToSession(): void {
-  const bookmark = currentBookmark();
+function applyBookmarkToSession(bookmark = currentAutoBookmark() ?? currentManualBookmark()): void {
   if (!session || !bookmark || bookmark.bookId !== selectedBookId || bookmark.chapterIndex !== selectedChapterIndex) {
     return;
   }
-  session.currentIndex = Math.max(0, Math.min(bookmark.partIndex, Math.max(0, session.audioFiles.length - 1)));
-  session.currentSeconds = Math.max(0, bookmark.partSeconds);
+  applyBookmarkPosition(bookmark);
+}
+
+function applyBookmarkPosition(bookmark: Bookmark): void {
+  if (!session) {
+    return;
+  }
+  const hasDurations = session.durations.some((duration) => duration > 0);
+  const positionSeconds = Number.isFinite(bookmark.positionSeconds) ? Math.max(0, bookmark.positionSeconds) : 0;
+  if (hasDurations && positionSeconds > 0) {
+    const target = Math.min(positionSeconds, Math.max(0, session.generatedSeconds - 0.25));
+    let elapsed = 0;
+    for (let index = 0; index < session.durations.length; index += 1) {
+      const duration = session.durations[index] || 0;
+      if (target <= elapsed + duration || index === session.durations.length - 1) {
+        setSessionPartPosition(index, Math.max(0, target - elapsed));
+        return;
+      }
+      elapsed += duration;
+    }
+  }
+  const partIndex = Math.max(0, Math.min(bookmark.partIndex, Math.max(0, session.audioFiles.length - 1)));
+  setSessionPartPosition(partIndex, Math.max(0, bookmark.partSeconds));
 }
 
 async function refreshJobsForCurrentSelection(reason: string): Promise<void> {
@@ -2285,7 +2332,7 @@ async function resumeBookmark(): Promise<void> {
     render();
     return;
   }
-  applyBookmarkToSession();
+  applyBookmarkToSession(bookmark);
   userPausedPlayback = false;
   await playFromSession("manual");
 }
