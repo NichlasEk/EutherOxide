@@ -65,6 +65,7 @@ const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
 const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-tv/dist/eutherpal-tv.apk";
+const MIN_EUTHERPAL_RELEASE_APK_BYTES: u64 = 1024 * 1024;
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
@@ -9732,6 +9733,9 @@ fn send_eutherpal_mobile_apk(stream: &mut TcpStream) -> io::Result<()> {
     let apk_path = env::var("EUTHERPAL_MOBILE_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPAL_MOBILE_APK_PATH));
+    if !is_release_sized_apk(&apk_path, MIN_EUTHERPAL_RELEASE_APK_BYTES) {
+        return send_error(stream, 404, "EutherPal Mobile release APK is not available");
+    }
     send_android_apk(
         stream,
         &apk_path,
@@ -9754,6 +9758,9 @@ fn send_eutherpal_tv_apk(stream: &mut TcpStream) -> io::Result<()> {
     let apk_path = env::var("EUTHERPAL_TV_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPAL_TV_APK_PATH));
+    if !is_release_sized_apk(&apk_path, MIN_EUTHERPAL_RELEASE_APK_BYTES) {
+        return send_error(stream, 404, "EutherPal TV release APK is not available");
+    }
     send_android_apk(
         stream,
         &apk_path,
@@ -9805,6 +9812,12 @@ fn send_android_apk(
             ("Pragma", "no-cache"),
         ],
     )
+}
+
+fn is_release_sized_apk(apk_path: &Path, minimum_bytes: u64) -> bool {
+    fs::metadata(apk_path)
+        .map(|metadata| metadata.is_file() && metadata.len() >= minimum_bytes)
+        .unwrap_or(false)
 }
 
 fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
