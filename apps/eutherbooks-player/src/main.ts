@@ -1633,7 +1633,7 @@ function nativePlayableLookaheadJobs(): Job[] {
 }
 
 function nativeManifestJobs(): Job[] {
-  return [currentJob, ...nativePlayableLookaheadJobs()]
+  return [currentJob, ...nativeLookaheadJobs()]
     .filter((job): job is Job => job !== null && job.status !== "failed");
 }
 

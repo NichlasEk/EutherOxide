@@ -1128,6 +1128,11 @@ class NativeAudioService : Service() {
         return connection.inputStream.bufferedReader().use { reader ->
             val json = JSONObject(reader.readText())
             val files = json.optJSONArray("audio_files") ?: JSONArray()
+            val totalFiles = json.optInt("total_audio_files", files.length()).coerceAtLeast(files.length())
+            val isComplete = json.optString("status") == "done" || (totalFiles > 0 && files.length() >= totalFiles)
+            if (!isComplete) {
+                return@use emptyList()
+            }
             (0 until files.length())
                 .mapNotNull { files.optString(it).takeIf { value -> value.isNotBlank() } }
                 .map { value ->
