@@ -8111,6 +8111,20 @@ const appDownloads: AppDownload[] = [
     href: "/downloads/EutherList-release-signed.apk",
     status: "Signed APK",
   },
+  {
+    title: "EutherPål Mobile",
+    detail: "Monopoly controller with player and admin swipe views",
+    platform: "Android phone",
+    href: "/downloads/EutherPalMobile-release-signed.apk",
+    status: "Signed APK",
+  },
+  {
+    title: "EutherPål TV",
+    detail: "Fullscreen Android TV board wrapper",
+    platform: "Android TV",
+    href: "/downloads/EutherPalTV-release-signed.apk",
+    status: "Signed APK",
+  },
 ];
 
 function appsWindowMarkup(): string {
