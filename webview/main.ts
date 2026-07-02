@@ -1988,6 +1988,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-play-mode="eutheralert" type="button">EutherAlert</button>
             <button data-play-mode="eutherdoom" type="button">EutherDoom</button>
             <button data-play-mode="eutherduke" type="button">EutherDuke</button>
+            <button data-eutherpal-tv-link type="button">EutherPål</button>
           </div>
         </div>
         <div class="app-nav-group">
@@ -2871,6 +2872,11 @@ reactionCorePage.addEventListener("click", (event) => {
   const chatLinkButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-eutherpunk-chat-link]");
   if (chatLinkButton) {
     window.location.href = "/eutherpunk";
+    return;
+  }
+  const eutherPalTvButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-eutherpal-tv-link]");
+  if (eutherPalTvButton) {
+    window.location.href = "/eutherpal/tv";
     return;
   }
   const workspaceButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-workspace-window]");
