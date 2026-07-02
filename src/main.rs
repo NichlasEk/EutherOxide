@@ -1611,13 +1611,25 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         return send_empty(stream, 204);
     }
     let path = request.path.split('?').next().unwrap_or(&request.path);
-    if !is_android_apk_download_path(path) && !host_internal_plaintext_app_login(path, &request) {
+    if !is_android_apk_download_path(path)
+        && !host_internal_plaintext_app_login(path, &request)
+        && !eutherpal_lan_proxy_path(path, &request)
+    {
         if let Some(location) = host_canonical_redirect(state, &request) {
             return send_redirect(stream, 308, &location);
         }
     }
     let app_token_request =
         host_app_token_path(path) && authenticated_app_user(state, &request)?.is_some();
+    let eutherpal_public_request = is_eutherpal_proxy_path(path)
+        && eutherpal_public_route_requires_login(state, &request, path);
+    if eutherpal_public_request && authenticated_user(state, &request)?.is_none() {
+        return if request.method == "GET" && eutherpal_public_route_prefers_login_page(path) {
+            send_login_page(stream, None)
+        } else {
+            send_error(stream, 401, "login required")
+        };
+    }
     if request.method != "GET"
         && path != "/api/login"
         && path != "/api/app/login"
@@ -2499,6 +2511,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return proxy_eutherbooks_request(stream, &request);
             }
             if is_eutherpal_proxy_path(path) {
+                if eutherpal_public_route_requires_login(state, &request, path)
+                    && authenticated_user(state, &request)?.is_none()
+                {
+                    return if request.method == "GET"
+                        && eutherpal_public_route_prefers_login_page(path)
+                    {
+                        send_login_page(stream, None)
+                    } else {
+                        send_error(stream, 401, "login required")
+                    };
+                }
                 return proxy_eutherpal_request(stream, &request);
             }
             let Some(user) = authenticated_user(state, &request)? else {
@@ -3394,6 +3417,72 @@ fn is_eutherbooks_proxy_path(path: &str) -> bool {
 
 fn is_eutherpal_proxy_path(path: &str) -> bool {
     path == "/eutherpal" || path.starts_with("/eutherpal/")
+}
+
+fn eutherpal_lan_proxy_path(path: &str, request: &HttpRequest) -> bool {
+    is_eutherpal_proxy_path(path)
+        && header_value(request, "host").is_some_and(is_lan_or_loopback_host)
+}
+
+fn is_lan_or_loopback_host(host: &str) -> bool {
+    let host = host_without_port(host);
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return true;
+    }
+    let octets: Vec<u8> = host
+        .split('.')
+        .map(str::parse::<u8>)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    if octets.len() != 4 {
+        return false;
+    }
+    octets[0] == 10
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 168)
+}
+
+fn host_without_port(host: &str) -> &str {
+    host.split_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(host)
+        .trim_matches(['[', ']'])
+}
+
+fn is_eutherpal_public_request(state: &HostState, request: &HttpRequest) -> bool {
+    host_request_uses_https(state, request)
+}
+
+fn eutherpal_public_route_requires_login(
+    state: &HostState,
+    request: &HttpRequest,
+    path: &str,
+) -> bool {
+    if !is_eutherpal_public_request(state, request) {
+        return false;
+    }
+    if request.method != "GET" {
+        return true;
+    }
+    let upstream_path = eutherpal_upstream_path(path);
+    matches!(
+        upstream_path
+            .split('?')
+            .next()
+            .unwrap_or(upstream_path.as_str()),
+        "/" | "/tv" | "/admin"
+    )
+}
+
+fn eutherpal_public_route_prefers_login_page(path: &str) -> bool {
+    let upstream_path = eutherpal_upstream_path(path);
+    matches!(
+        upstream_path
+            .split('?')
+            .next()
+            .unwrap_or(upstream_path.as_str()),
+        "/" | "/tv" | "/admin"
+    )
 }
 
 fn is_camera_frigate_proxy_path(path: &str) -> bool {
@@ -9522,11 +9611,7 @@ fn host_internal_plaintext_app_login(path: &str, request: &HttpRequest) -> bool 
     let Some(host) = header_value(request, "host") else {
         return false;
     };
-    let host = host
-        .split_once(':')
-        .map(|(name, _)| name)
-        .unwrap_or(host)
-        .trim_matches(['[', ']']);
+    let host = host_without_port(host);
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
