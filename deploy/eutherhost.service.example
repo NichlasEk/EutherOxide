@@ -17,7 +17,7 @@ RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/home/nichlas/EutherOxide/.euther-host /home/nichlas/EutherOxide/.euther-bridge /home/nichlas/EutherOxide/target /home/nichlas/roms
+ReadWritePaths=/home/nichlas/EutherOxide/.euther-host /home/nichlas/EutherOxide/.euther-bridge /home/nichlas/EutherOxide/target /home/nichlas/roms /srv/eutherstudio
 
 [Install]
 WantedBy=multi-user.target

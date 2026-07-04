@@ -267,6 +267,7 @@ type HostPermissions = {
   canAwardEutherium: boolean;
   canCameraAdmin: boolean;
   canServerMap: boolean;
+  canGenerateMusic: boolean;
   canEuthersyncMediaBackup: boolean;
   canEuthersyncFeedPost: boolean;
 };
@@ -1450,6 +1451,7 @@ let hostPermissions: HostPermissions = {
   canAwardEutherium: false,
   canCameraAdmin: false,
   canServerMap: false,
+  canGenerateMusic: false,
   canEuthersyncMediaBackup: false,
   canEuthersyncFeedPost: false,
 };
@@ -2000,6 +2002,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-workspace-window="shopping" type="button">Shopping</button>
             <button data-workspace-window="apps" type="button">Apps</button>
             <button data-workspace-window="interaction" type="button">Social Desk</button>
+            <button data-eutherstudio-link type="button" hidden>Studio</button>
             <button data-camera-admin-link type="button" hidden>EutherSight</button>
             <button data-server-map-link type="button" hidden>Serverkarta</button>
           </div>
@@ -2625,6 +2628,7 @@ const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-drop
 const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu-action="admin"]')!;
 const cameraAdminLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-camera-admin-link]"));
 const serverMapLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-server-map-link]"));
+const eutherStudioLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-eutherstudio-link]"));
 const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
 const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
 const workspaceWindowEyebrow = document.querySelector<HTMLElement>("#workspace-window-eyebrow")!;
@@ -3822,6 +3826,12 @@ serverMapLinks.forEach((button) => {
   });
 });
 
+eutherStudioLinks.forEach((button) => {
+  button.addEventListener("click", () => {
+    window.location.href = "/studio";
+  });
+});
+
 adminClose.addEventListener("click", () => {
   adminModal.classList.remove("is-open");
   adminModal.setAttribute("aria-hidden", "true");
@@ -3905,6 +3915,7 @@ adminUsers.addEventListener("click", async (event) => {
         can_award_eutherium: String(next.canAwardEutherium),
         can_camera_admin: String(next.canCameraAdmin),
         can_server_map: String(next.canServerMap),
+        can_generate_music: String(next.canGenerateMusic),
         can_euthersync_media_backup: String(next.canEuthersyncMediaBackup),
         can_euthersync_feed_post: String(next.canEuthersyncFeedPost),
       }),
@@ -6511,7 +6522,7 @@ async function refreshAuthStatus(): Promise<void> {
   }
   const previousUser = hostUsername;
   try {
-    const status = await bridgeJson<AuthStatus>("/api/auth/status", {}, 700);
+    const status = await bridgeJson<AuthStatus>("/api/auth/status", {}, 3000);
     hostUsername = status.authenticated ? status.user ?? null : null;
     hostIsAdmin = Boolean(status.authenticated && status.isAdmin);
     hostCsrfToken = status.authenticated ? status.csrfToken ?? null : null;
@@ -6525,6 +6536,7 @@ async function refreshAuthStatus(): Promise<void> {
           canAwardEutherium: false,
           canCameraAdmin: false,
           canServerMap: false,
+          canGenerateMusic: false,
           canEuthersyncMediaBackup: false,
           canEuthersyncFeedPost: false,
         };
@@ -6544,6 +6556,7 @@ async function refreshAuthStatus(): Promise<void> {
       canAwardEutherium: false,
       canCameraAdmin: false,
       canServerMap: false,
+      canGenerateMusic: false,
       canEuthersyncMediaBackup: false,
       canEuthersyncFeedPost: false,
     };
@@ -15292,6 +15305,9 @@ function renderAdminAccess(): void {
   serverMapLinks.forEach((button) => {
     button.hidden = !hostPermissions.canServerMap;
   });
+  eutherStudioLinks.forEach((button) => {
+    button.hidden = !hostPermissions.canGenerateMusic && !hostUsername;
+  });
   if (!hostIsAdmin) {
     adminModal.classList.remove("is-open");
     adminModal.setAttribute("aria-hidden", "true");
@@ -15333,6 +15349,7 @@ function renderHostUsers(): void {
                 ${hostPermissionButton(user, "canAwardEutherium", "Eutherium")}
                 ${hostPermissionButton(user, "canCameraAdmin", "Camera")}
                 ${hostPermissionButton(user, "canServerMap", "Server Map")}
+                ${hostPermissionButton(user, "canGenerateMusic", "Music")}
                 ${hostPermissionButton(user, "canEuthersyncMediaBackup", "Sync Files")}
                 ${hostPermissionButton(user, "canEuthersyncFeedPost", "Sync Posts")}
               </div>
@@ -15352,6 +15369,7 @@ function hostPermissionSummary(permissions: HostPermissions): string {
     permissions.canAwardEutherium ? "Eutherium" : "",
     permissions.canCameraAdmin ? "Camera" : "",
     permissions.canServerMap ? "Server Map" : "",
+    permissions.canGenerateMusic ? "Music" : "",
     permissions.canEuthersyncMediaBackup ? "Sync Files" : "",
     permissions.canEuthersyncFeedPost ? "Sync Posts" : "",
   ].filter(Boolean);
