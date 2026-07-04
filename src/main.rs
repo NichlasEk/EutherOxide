@@ -2856,11 +2856,14 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
             &[("Retry-After", "60")],
         );
     }
-    let users = state
-        .users
-        .lock()
-        .map_err(|err| io::Error::other(err.to_string()))?;
-    let Some(user) = users.iter().find(|user| user.name == username) else {
+    let user = {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        users.iter().find(|user| user.name == username).cloned()
+    };
+    let Some(user) = user else {
         record_login_failure(state, &remote_addr, username)?;
         audit_host_event(
             state,
@@ -3162,29 +3165,42 @@ fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Op
     let Some(token) = session_token(request) else {
         return Ok(None);
     };
-    let mut sessions = state
-        .sessions
-        .lock()
-        .map_err(|err| io::Error::other(err.to_string()))?;
     let now = unix_ms_now();
     let timeout_ms = state
         .config
         .session_timeout_minutes
         .saturating_mul(60 * 1000);
-    sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < timeout_ms);
-    if let Some(session) = sessions.iter_mut().find(|session| session.token == token) {
+    let session_user = {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        sessions.retain(|session| now.saturating_sub(session.updated_unix_ms) < timeout_ms);
+        sessions
+            .iter()
+            .find(|session| session.token == token)
+            .map(|session| session.user.clone())
+    };
+    if let Some(user_name) = session_user {
         let users = state
             .users
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
         if users
             .iter()
-            .any(|user| user.name == session.user && user.banned)
+            .any(|user| user.name == user_name && user.banned)
         {
             return Ok(None);
         }
-        session.updated_unix_ms = now;
-        return Ok(Some(session.user.clone()));
+        drop(users);
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if let Some(session) = sessions.iter_mut().find(|session| session.token == token) {
+            session.updated_unix_ms = now;
+        }
+        return Ok(Some(user_name));
     }
     Ok(None)
 }
