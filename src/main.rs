@@ -1451,6 +1451,7 @@ struct EutherStudioJobRequest {
     prompt: String,
     lyrics: Option<String>,
     instrumental: Option<bool>,
+    vocal_language: Option<String>,
     negative_prompt: Option<String>,
     model: Option<String>,
     duration_seconds: Option<f64>,
@@ -1486,6 +1487,7 @@ struct EutherStudioJobSummary {
     model: String,
     prompt: String,
     lyrics: String,
+    vocal_language: String,
     negative_prompt: String,
     duration_seconds: u32,
     format: String,
@@ -12104,7 +12106,7 @@ fn send_eutherstudio_page(stream: &mut TcpStream, user: &str) -> io::Result<()> 
     label {{ display: grid; gap: 6px; color: #c8d2dd; font-size: .9rem; }}
     textarea, input, select {{ width: 100%; box-sizing: border-box; border: 1px solid #344252; border-radius: 6px; background: #0b0f14; color: #f5f8fb; padding: 10px; font: inherit; }}
     textarea {{ min-height: 130px; resize: vertical; }}
-    .grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }}
     .actions {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }}
     .lyrics-tools {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }}
     .lyrics-tools label {{ display: inline-flex; width: auto; grid-auto-flow: column; align-items: center; gap: 8px; }}
@@ -12177,6 +12179,9 @@ Simple hook here"></textarea>
           <label>Format
             <select id="format"><option value="wav">WAV</option><option value="mp3">MP3</option></select>
           </label>
+          <label>Language
+            <select id="language"><option value="english">English</option><option value="swedish">Svenska</option></select>
+          </label>
         </div>
         <div class="actions">
           <button id="generate" type="submit">Generate</button>
@@ -12212,6 +12217,7 @@ Simple hook here"></textarea>
     const modelInput = document.getElementById("model");
     const durationInput = document.getElementById("duration");
     const formatInput = document.getElementById("format");
+    const languageInput = document.getElementById("language");
     async function api(path, options = {{}}) {{
       const headers = {{ ...(options.headers || {{}}) }};
       if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
@@ -12247,7 +12253,7 @@ Simple hook here"></textarea>
       return `
         <article class="job ${{running ? "running" : ""}}">
           <strong>${{running ? `<span class="pulse"></span>` : ""}}${{escapeHtml(job.jobId)}} · ${{escapeHtml(job.status)}}</strong>
-          <span>${{escapeHtml(job.model)}} · ${{job.durationSeconds}}s · ${{escapeHtml(job.format)}} · ${{escapeHtml(job.workerMode)}}${{owned ? "" : ` · from ${{escapeHtml(job.owner)}}`}}</span>
+          <span>${{escapeHtml(job.model)}} · ${{job.durationSeconds}}s · ${{escapeHtml(job.format)}} · ${{escapeHtml(job.vocalLanguage || "english")}} · ${{escapeHtml(job.workerMode)}}${{owned ? "" : ` · from ${{escapeHtml(job.owner)}}`}}</span>
           <div class="progress"><span style="width: ${{progressPercent(job)}}%"></span></div>
           <small>${{escapeHtml(progressLabel(job))}}</small>
           <p>${{escapeHtml(job.prompt)}}</p>
@@ -12352,7 +12358,7 @@ Simple hook here"></textarea>
             prompt: promptInput.value,
             instrumental: instrumentalInput.checked,
             durationSeconds: Number(durationInput.value),
-            vocalLanguage: "english",
+            vocalLanguage: languageInput.value,
           }}),
         }});
         const data = result.data || {{}};
@@ -12377,6 +12383,7 @@ Simple hook here"></textarea>
             prompt: promptInput.value,
             lyrics: lyricsInput.value,
             durationSeconds: Number(durationInput.value),
+            vocalLanguage: languageInput.value,
           }}),
         }});
         const data = result.data || {{}};
@@ -12434,6 +12441,7 @@ Simple hook here"></textarea>
             prompt: promptInput.value,
             lyrics: lyricsInput.value,
             instrumental: instrumentalInput.checked,
+            vocalLanguage: languageInput.value,
             negativePrompt: negativeInput.value,
             model: modelInput.value,
             durationSeconds: Number(durationInput.value),
@@ -16702,6 +16710,9 @@ fn eutherstudio_job_summary_from_metadata(
         model: parse_toml_string(contents, "model").unwrap_or_else(|| "ace-step-1.5".to_string()),
         prompt: parse_toml_string(contents, "prompt").unwrap_or_default(),
         lyrics: parse_toml_string(contents, "lyrics").unwrap_or_default(),
+        vocal_language: parse_toml_string(contents, "vocal_language")
+            .map(|value| clean_eutherstudio_language(&value))
+            .unwrap_or_else(|| "english".to_string()),
         negative_prompt: parse_toml_string(contents, "negative_prompt").unwrap_or_default(),
         duration_seconds: parse_toml_u64(contents, "duration_seconds")
             .unwrap_or(0)
@@ -16905,6 +16916,11 @@ fn create_eutherstudio_job(
             .map(clean_eutherstudio_lyrics)
             .unwrap_or_default()
     };
+    let vocal_language = request
+        .vocal_language
+        .as_deref()
+        .map(clean_eutherstudio_language)
+        .unwrap_or_else(|| "english".to_string());
     let negative_prompt = request
         .negative_prompt
         .as_deref()
@@ -16954,7 +16970,7 @@ fn create_eutherstudio_job(
     let mut worker_port = 8795u16;
     let mut finished_unix_ms = 0u64;
     let mut metadata = format!(
-        "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
+        "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nvocal_language = \"{}\"\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
         toml_escape(&job_id),
         toml_escape(user),
         toml_escape(&status),
@@ -16967,6 +16983,7 @@ fn create_eutherstudio_job(
         toml_escape(&prompt),
         toml_escape(&lyrics),
         instrumental,
+        toml_escape(&vocal_language),
         toml_escape(&negative_prompt),
         duration_seconds,
         toml_escape(&format),
@@ -16984,6 +17001,7 @@ fn create_eutherstudio_job(
         &prompt,
         &lyrics,
         instrumental,
+        &vocal_language,
         &negative_prompt,
         duration_seconds,
         &format,
@@ -17000,7 +17018,7 @@ fn create_eutherstudio_job(
                 .unwrap_or(worker_port);
             finished_unix_ms = unix_ms_now();
             metadata = format!(
-                "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"\"\n",
+                "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nvocal_language = \"{}\"\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"\"\n",
                 toml_escape(&job_id),
                 toml_escape(user),
                 toml_escape(&status),
@@ -17013,6 +17031,7 @@ fn create_eutherstudio_job(
                 toml_escape(&prompt),
                 toml_escape(&lyrics),
                 instrumental,
+                toml_escape(&vocal_language),
                 toml_escape(&negative_prompt),
                 duration_seconds,
                 toml_escape(&format),
@@ -17035,7 +17054,7 @@ fn create_eutherstudio_job(
             worker_mode = "submit-failed".to_string();
             worker_error = err.to_string();
             metadata = format!(
-                "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
+                "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nvocal_language = \"{}\"\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
                 toml_escape(&job_id),
                 toml_escape(user),
                 toml_escape(&status),
@@ -17048,6 +17067,7 @@ fn create_eutherstudio_job(
                 toml_escape(&prompt),
                 toml_escape(&lyrics),
                 instrumental,
+                toml_escape(&vocal_language),
                 toml_escape(&negative_prompt),
                 duration_seconds,
                 toml_escape(&format),
@@ -17070,6 +17090,7 @@ fn create_eutherstudio_job(
         model,
         prompt,
         lyrics,
+        vocal_language,
         negative_prompt,
         duration_seconds,
         format,
@@ -17432,7 +17453,7 @@ fn eutherstudio_metadata_from_existing(
     worker_status_text: &str,
 ) -> String {
     format!(
-        "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"{}\"\nstatus = \"{}\"\nphase = \"{}\"\nstatus_text = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
+        "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"{}\"\nstatus = \"{}\"\nphase = \"{}\"\nstatus_text = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nvocal_language = \"{}\"\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
         toml_escape(&parse_toml_string(contents, "job_id").unwrap_or_default()),
         toml_escape(&parse_toml_string(contents, "user").unwrap_or_default()),
         toml_escape(&parse_toml_string(contents, "shared_with").unwrap_or_default()),
@@ -17449,6 +17470,11 @@ fn eutherstudio_metadata_from_existing(
         toml_escape(&parse_toml_string(contents, "prompt").unwrap_or_default()),
         toml_escape(&parse_toml_string(contents, "lyrics").unwrap_or_default()),
         parse_toml_bool(contents, "instrumental").unwrap_or(false),
+        toml_escape(
+            &parse_toml_string(contents, "vocal_language")
+                .map(|value| clean_eutherstudio_language(&value))
+                .unwrap_or_else(|| "english".to_string())
+        ),
         toml_escape(&parse_toml_string(contents, "negative_prompt").unwrap_or_default()),
         parse_toml_u64(contents, "duration_seconds").unwrap_or(0),
         toml_escape(&parse_toml_string(contents, "format").unwrap_or_else(|| "wav".to_string())),
@@ -17580,6 +17606,7 @@ fn submit_eutherstudio_worker_job(
     prompt: &str,
     lyrics: &str,
     instrumental: bool,
+    vocal_language: &str,
     negative_prompt: &str,
     duration_seconds: u32,
     format: &str,
@@ -17598,6 +17625,7 @@ fn submit_eutherstudio_worker_job(
         "prompt": prompt,
         "lyrics": lyrics,
         "instrumental": instrumental,
+        "vocal_language": vocal_language,
         "negative_prompt": negative_prompt,
         "duration_seconds": duration_seconds,
         "format": format,
@@ -18150,6 +18178,13 @@ fn clean_eutherstudio_prompt(value: &str, fallback: &str) -> String {
 
 fn clean_eutherstudio_lyrics(value: &str) -> String {
     clean_eutherbooks_text(value, "", 5000)
+}
+
+fn clean_eutherstudio_language(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sv" | "swe" | "swedish" | "svenska" => "swedish".to_string(),
+        _ => "english".to_string(),
+    }
 }
 
 fn clean_host_user_theme(value: &str) -> String {
