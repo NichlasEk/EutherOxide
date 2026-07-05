@@ -1033,6 +1033,8 @@ struct HostSocialConversation {
     created_unix_ms: u64,
     updated_unix_ms: u64,
     last_message: Option<HostSocialMessagePreview>,
+    #[serde(default)]
+    last_read_unix_ms_by_user: HashMap<String, u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3929,6 +3931,10 @@ fn host_social_conversation_list(user: &str) -> io::Result<serde_json::Value> {
         .filter(|conversation| conversation.participants.iter().any(|entry| entry == user))
         .collect::<Vec<_>>();
     conversations.sort_by(|a, b| b.updated_unix_ms.cmp(&a.updated_unix_ms));
+    let conversations = conversations
+        .into_iter()
+        .map(|conversation| host_social_conversation_json(&conversation, user))
+        .collect::<Vec<_>>();
     Ok(serde_json::json!({ "conversations": conversations }))
 }
 
@@ -3961,7 +3967,9 @@ fn host_social_create_conversation(
             })
             .cloned()
         {
-            return Ok(serde_json::json!({ "conversation": existing }));
+            return Ok(serde_json::json!({
+                "conversation": host_social_conversation_json(&existing, current_user)
+            }));
         }
     }
 
@@ -3997,10 +4005,13 @@ fn host_social_create_conversation(
         created_unix_ms: now,
         updated_unix_ms: now,
         last_message: None,
+        last_read_unix_ms_by_user: HashMap::from([(current_user.to_string(), now)]),
     };
     conversations.push(conversation.clone());
     write_host_social_conversations(&conversations)?;
-    Ok(serde_json::json!({ "conversation": conversation }))
+    Ok(serde_json::json!({
+        "conversation": host_social_conversation_json(&conversation, current_user)
+    }))
 }
 
 fn host_social_message_list(
@@ -4009,7 +4020,7 @@ fn host_social_message_list(
     before_id: Option<u64>,
     limit: usize,
 ) -> io::Result<serde_json::Value> {
-    let conversation = host_social_conversation_for_user(user, conversation_id)?;
+    let conversation = mark_host_social_conversation_read(user, conversation_id)?;
     let mut messages = read_host_social_messages(conversation_id)?;
     if let Some(before_id) = before_id {
         messages.retain(|message| message.id < before_id);
@@ -4021,7 +4032,7 @@ fn host_social_message_list(
     }
     let has_older = messages.first().map(|first| first.id > 1).unwrap_or(false);
     Ok(serde_json::json!({
-        "conversation": conversation,
+        "conversation": host_social_conversation_json(&conversation, user),
         "messages": messages,
         "hasOlder": has_older,
     }))
@@ -4084,7 +4095,7 @@ fn host_social_post_message(
     write_host_social_conversations(&conversations)?;
     mirror_host_social_message_to_codex_inbox(&conversation, &message)?;
     Ok(serde_json::json!({
-        "conversation": conversation,
+        "conversation": host_social_conversation_json(&conversation, user),
         "message": message,
     }))
 }
@@ -4198,7 +4209,7 @@ fn host_social_toggle_reaction(
     let message = message.clone();
     write_host_social_messages(conversation_id, &messages)?;
     Ok(serde_json::json!({
-        "conversation": conversation,
+        "conversation": host_social_conversation_json(&conversation, user),
         "message": message,
     }))
 }
@@ -4547,6 +4558,66 @@ fn host_social_conversation_for_user(
                 && conversation.participants.iter().any(|entry| entry == user)
         })
         .ok_or_else(|| invalid_request("conversation not found"))
+}
+
+fn mark_host_social_conversation_read(
+    user: &str,
+    conversation_id: &str,
+) -> io::Result<HostSocialConversation> {
+    let mut conversations = read_host_social_conversations()?;
+    let conversation = conversations
+        .iter_mut()
+        .find(|conversation| {
+            conversation.id == conversation_id
+                && conversation.participants.iter().any(|entry| entry == user)
+        })
+        .ok_or_else(|| invalid_request("conversation not found"))?;
+    conversation
+        .last_read_unix_ms_by_user
+        .insert(user.to_string(), unix_ms_now());
+    let conversation = conversation.clone();
+    write_host_social_conversations(&conversations)?;
+    Ok(conversation)
+}
+
+fn host_social_conversation_json(
+    conversation: &HostSocialConversation,
+    user: &str,
+) -> serde_json::Value {
+    let last_read_unix_ms = conversation
+        .last_read_unix_ms_by_user
+        .get(user)
+        .copied()
+        .unwrap_or(0);
+    serde_json::json!({
+        "id": &conversation.id,
+        "kind": &conversation.kind,
+        "title": &conversation.title,
+        "participants": &conversation.participants,
+        "createdBy": &conversation.created_by,
+        "createdUnixMs": conversation.created_unix_ms,
+        "updatedUnixMs": conversation.updated_unix_ms,
+        "lastMessage": &conversation.last_message,
+        "lastReadUnixMs": last_read_unix_ms,
+        "unreadCount": host_social_unread_count(conversation, user, last_read_unix_ms),
+    })
+}
+
+fn host_social_unread_count(
+    conversation: &HostSocialConversation,
+    user: &str,
+    last_read_unix_ms: u64,
+) -> usize {
+    read_host_social_messages(&conversation.id)
+        .map(|messages| {
+            messages
+                .into_iter()
+                .filter(|message| {
+                    message.user != user && message.created_unix_ms > last_read_unix_ms
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn host_interaction_user_list(

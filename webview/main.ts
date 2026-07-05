@@ -406,6 +406,8 @@ type SocialChatConversation = {
   createdUnixMs: number;
   updatedUnixMs: number;
   lastMessage?: SocialChatMessagePreview | null;
+  lastReadUnixMs?: number;
+  unreadCount?: number;
 };
 
 type SocialChatMessage = {
@@ -1472,6 +1474,7 @@ let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
+let socialChatPollTimer: number | null = null;
 let shoppingListName = "shopping-list.md";
 let shoppingListSharedId = "hemmet";
 let shoppingListMarkdown = defaultShoppingListMarkdown();
@@ -2463,6 +2466,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button id="user-menu-toggle" class="user-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false">
         <span class="user-presence-dot"></span>
         <strong id="user-menu-name">Nichlas</strong>
+        <span id="user-menu-unread" class="user-menu-unread" hidden aria-label="unread social messages">0</span>
       </button>
       <button id="user-settings-toggle" class="user-settings-toggle" type="button" aria-label="Open user settings" title="User settings">&#9881;</button>
     </div>
@@ -2624,6 +2628,7 @@ const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
 const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
 const userSettingsToggle = document.querySelector<HTMLButtonElement>("#user-settings-toggle")!;
 const userMenuName = document.querySelector<HTMLElement>("#user-menu-name")!;
+const userMenuUnread = document.querySelector<HTMLElement>("#user-menu-unread")!;
 const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-dropdown")!;
 const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu-action="admin"]')!;
 const cameraAdminLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-camera-admin-link]"));
@@ -6579,6 +6584,10 @@ async function refreshAuthStatus(): Promise<void> {
     selectedTrophyInventoryId = null;
     interactionUsersLoaded = false;
     interactionUsers = [];
+    socialChatConversations = [];
+    socialChatMessages = [];
+    socialChatSelectedConversationId = null;
+    socialChatSelectedUsers = new Set();
     userPreferencesLoadedFor = null;
     userPreferencesLoadingFor = null;
     if (hostUsername) {
@@ -7592,11 +7601,19 @@ function updateChatPolling(enabled: boolean): void {
       window.clearInterval(chatPollTimer);
       chatPollTimer = null;
     }
+    if (socialChatPollTimer !== null) {
+      window.clearInterval(socialChatPollTimer);
+      socialChatPollTimer = null;
+    }
     return;
   }
   if (chatPollTimer === null) {
     void refreshChat();
     chatPollTimer = window.setInterval(() => void refreshChat(), 2200);
+  }
+  if (socialChatPollTimer === null) {
+    void refreshSocialChatBadge();
+    socialChatPollTimer = window.setInterval(() => void refreshSocialChatBadge(), 5000);
   }
 }
 
@@ -13358,7 +13375,11 @@ function setUserMenuOpen(open: boolean): void {
 
 function renderUserMenu(): void {
   userMenuName.textContent = displayUserName(hostUsername ?? "Nichlas");
+  const unreadCount = socialChatUnreadCount();
+  userMenuUnread.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+  userMenuUnread.hidden = unreadCount === 0;
   userMenuToggle.classList.toggle("is-selected", activeWorkspaceWindow !== null || appRoute === "interactionLobby");
+  userMenuToggle.classList.toggle("has-unread", unreadCount > 0);
   userSettingsToggle.classList.toggle("is-selected", activeWorkspaceWindow === "settings");
   userMenuAdmin.hidden = !hostIsAdmin;
 }
@@ -13482,7 +13503,24 @@ async function loadSocialChatConversations(force = false): Promise<void> {
   } finally {
     socialChatLoading = false;
   }
+  renderUserMenu();
   renderActiveSocialChatWindow();
+}
+
+async function refreshSocialChatBadge(): Promise<void> {
+  if (isTauri || !hostUsername || socialChatLoading) {
+    return;
+  }
+  try {
+    const result = await bridgeJson<SocialChatConversationsResult>("/api/social/conversations", {}, 1200);
+    socialChatConversations = result.conversations;
+    renderUserMenu();
+    if (activeWorkspaceWindow === "interaction") {
+      renderActiveSocialChatWindow();
+    }
+  } catch {
+    renderUserMenu();
+  }
 }
 
 async function searchSocialChatUsers(): Promise<void> {
@@ -13891,6 +13929,21 @@ function upsertSocialChatConversation(conversation: SocialChatConversation): voi
     conversation,
     ...socialChatConversations.filter((entry) => entry.id !== conversation.id),
   ].sort((a, b) => b.updatedUnixMs - a.updatedUnixMs);
+  renderUserMenu();
+}
+
+function socialChatUnreadCount(): number {
+  if (!hostUsername) {
+    return 0;
+  }
+  return socialChatConversations.filter((conversation) => {
+    const lastMessage = conversation.lastMessage;
+    return Boolean(
+      lastMessage &&
+      lastMessage.user !== hostUsername &&
+      lastMessage.createdUnixMs > (conversation.lastReadUnixMs ?? 0),
+    );
+  }).reduce((total, conversation) => total + Math.max(1, conversation.unreadCount ?? 0), 0);
 }
 
 function renderActiveSocialChatWindow(): void {
