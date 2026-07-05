@@ -1431,6 +1431,7 @@ struct HostUserPreferences {
     eutherstudio_default_model: String,
     eutherstudio_default_duration_seconds: f64,
     eutherstudio_default_format: String,
+    eutherstudio_default_vocal_language: String,
     eutherstudio_last_prompt: String,
     eutherstudio_negative_prompt: String,
 }
@@ -1441,6 +1442,7 @@ struct EutherStudioSettingsRequest {
     default_model: String,
     default_duration_seconds: f64,
     default_format: String,
+    default_vocal_language: Option<String>,
     last_prompt: String,
     negative_prompt: String,
 }
@@ -1545,7 +1547,8 @@ impl Default for HostUserPreferences {
             eutherbooks_own_voice_en_locked: false,
             eutherstudio_default_model: "ace-step-1.5".to_string(),
             eutherstudio_default_duration_seconds: 120.0,
-            eutherstudio_default_format: "wav".to_string(),
+            eutherstudio_default_format: "mp3".to_string(),
+            eutherstudio_default_vocal_language: "swedish".to_string(),
             eutherstudio_last_prompt: String::new(),
             eutherstudio_negative_prompt: "distorted vocals, clipping, harsh noise".to_string(),
         }
@@ -12193,10 +12196,10 @@ Simple hook here"></textarea>
             <input id="duration" type="number" min="15" max="180" step="15" value="120" />
           </label>
           <label>Format
-            <select id="format"><option value="wav">WAV</option><option value="mp3">MP3</option></select>
+            <select id="format"><option value="wav">WAV</option><option value="mp3" selected>MP3</option></select>
           </label>
           <label>Language
-            <select id="language"><option value="english">English</option><option value="swedish">Svenska</option></select>
+            <select id="language"><option value="english">English</option><option value="swedish" selected>Svenska</option></select>
           </label>
         </div>
         <div class="actions">
@@ -12252,7 +12255,8 @@ Simple hook here"></textarea>
       negativeInput.value = settings.negativePrompt || "";
       modelInput.value = settings.defaultModel || "ace-step-1.5";
       durationInput.value = String(settings.defaultDurationSeconds || 120);
-      formatInput.value = settings.defaultFormat || "wav";
+      formatInput.value = settings.defaultFormat || "mp3";
+      languageInput.value = settings.defaultVocalLanguage || "swedish";
       try {{
         const users = await api("/api/studio/share-users");
         shareUsers = users.users || [];
@@ -16604,6 +16608,9 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_string(&contents, "eutherstudio_default_format") {
         preferences.eutherstudio_default_format = clean_eutherstudio_format(&value);
     }
+    if let Some(value) = parse_toml_string(&contents, "eutherstudio_default_vocal_language") {
+        preferences.eutherstudio_default_vocal_language = clean_eutherstudio_language(&value);
+    }
     if let Some(value) = parse_toml_string(&contents, "eutherstudio_last_prompt") {
         preferences.eutherstudio_last_prompt =
             clean_eutherstudio_prompt(&value, &preferences.eutherstudio_last_prompt);
@@ -16620,6 +16627,7 @@ fn eutherstudio_settings_json(preferences: &HostUserPreferences) -> serde_json::
         "defaultModel": preferences.eutherstudio_default_model,
         "defaultDurationSeconds": preferences.eutherstudio_default_duration_seconds as u32,
         "defaultFormat": preferences.eutherstudio_default_format,
+        "defaultVocalLanguage": preferences.eutherstudio_default_vocal_language,
         "lastPrompt": preferences.eutherstudio_last_prompt,
         "negativePrompt": preferences.eutherstudio_negative_prompt,
     })
@@ -16903,6 +16911,11 @@ fn save_eutherstudio_settings(
         120.0,
     );
     preferences.eutherstudio_default_format = clean_eutherstudio_format(&settings.default_format);
+    preferences.eutherstudio_default_vocal_language = settings
+        .default_vocal_language
+        .as_deref()
+        .map(clean_eutherstudio_language)
+        .unwrap_or_else(|| preferences.eutherstudio_default_vocal_language.clone());
     preferences.eutherstudio_last_prompt = clean_eutherstudio_prompt(&settings.last_prompt, "");
     preferences.eutherstudio_negative_prompt = clean_eutherstudio_prompt(
         &settings.negative_prompt,
@@ -16936,7 +16949,7 @@ fn create_eutherstudio_job(
         .vocal_language
         .as_deref()
         .map(clean_eutherstudio_language)
-        .unwrap_or_else(|| "english".to_string());
+        .unwrap_or_else(|| preferences.eutherstudio_default_vocal_language.clone());
     let negative_prompt = request
         .negative_prompt
         .as_deref()
@@ -16966,6 +16979,7 @@ fn create_eutherstudio_job(
     preferences.eutherstudio_negative_prompt = negative_prompt.clone();
     preferences.eutherstudio_default_model = model.clone();
     preferences.eutherstudio_default_format = format.clone();
+    preferences.eutherstudio_default_vocal_language = vocal_language.clone();
     preferences.eutherstudio_default_duration_seconds = duration_seconds as f64;
     save_host_user_preferences(user, preferences)?;
 
@@ -17815,6 +17829,9 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
         eutherstudio_default_format: clean_eutherstudio_format(
             &preferences.eutherstudio_default_format,
         ),
+        eutherstudio_default_vocal_language: clean_eutherstudio_language(
+            &preferences.eutherstudio_default_vocal_language,
+        ),
         eutherstudio_last_prompt: clean_eutherstudio_prompt(
             &preferences.eutherstudio_last_prompt,
             "",
@@ -17827,7 +17844,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_player_server_url = \"{}\"\neutherbooks_player_username = \"{}\"\neutherbooks_player_model_backend = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\neutherstudio_default_model = \"{}\"\neutherstudio_default_duration_seconds = {:.0}\neutherstudio_default_format = \"{}\"\neutherstudio_last_prompt = \"{}\"\neutherstudio_negative_prompt = \"{}\"\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_player_server_url = \"{}\"\neutherbooks_player_username = \"{}\"\neutherbooks_player_model_backend = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\neutherstudio_default_model = \"{}\"\neutherstudio_default_duration_seconds = {:.0}\neutherstudio_default_format = \"{}\"\neutherstudio_default_vocal_language = \"{}\"\neutherstudio_last_prompt = \"{}\"\neutherstudio_negative_prompt = \"{}\"\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
@@ -17859,6 +17876,7 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             toml_escape(&preferences.eutherstudio_default_model),
             preferences.eutherstudio_default_duration_seconds,
             toml_escape(&preferences.eutherstudio_default_format),
+            toml_escape(&preferences.eutherstudio_default_vocal_language),
             toml_escape(&preferences.eutherstudio_last_prompt),
             toml_escape(&preferences.eutherstudio_negative_prompt),
         ),
