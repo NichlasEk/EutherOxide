@@ -2966,6 +2966,11 @@ workspaceWindowDynamic.addEventListener("click", async (event) => {
     await selectSocialChatConversation(socialConversation.dataset.socialConversation);
     return;
   }
+  const socialStartUser = target.closest<HTMLButtonElement>("[data-social-start-user]");
+  if (socialStartUser?.dataset.socialStartUser) {
+    await createDirectSocialChat(socialStartUser.dataset.socialStartUser);
+    return;
+  }
   const socialUser = target.closest<HTMLButtonElement>("[data-social-user]");
   if (socialUser?.dataset.socialUser) {
     toggleSocialChatUser(socialUser.dataset.socialUser);
@@ -12815,9 +12820,6 @@ function interactionDeskWindowMarkup(): string {
             <button data-social-chat-refresh class="mini-action" type="button">Sync</button>
           </div>
         </div>
-        <div class="social-conversation-list">
-          ${socialChatConversationListMarkup()}
-        </div>
         <div class="social-new-chat">
           <div class="section-head">
             <p class="section-label">New Chat</p>
@@ -12837,6 +12839,15 @@ function interactionDeskWindowMarkup(): string {
           <button data-social-create-chat type="button" ${socialChatSelectedUsers.size === 0 ? "disabled" : ""}>
             Start ${socialChatSelectedUsers.size > 1 ? "group chat" : "private chat"}
           </button>
+        </div>
+        <div class="social-chat-section">
+          <div class="section-head">
+            <p class="section-label">Recent Chats</p>
+            <span>${socialChatConversations.length}</span>
+          </div>
+          <div class="social-conversation-list">
+            ${socialChatConversationListMarkup()}
+          </div>
         </div>
       </aside>
       <section class="social-chat-thread">
@@ -12899,11 +12910,14 @@ function socialChatUserResultsMarkup(): string {
       const selected = socialChatSelectedUsers.has(user.name);
       const status = user.special === "codex" ? user.location : user.online ? user.location : "Offline";
       return `
-        <button class="social-user-row ${selected ? "is-selected" : ""} ${user.special === "codex" ? "is-special" : ""}" data-social-user="${escapeHtml(user.name)}" type="button">
-          <span class="user-presence-dot ${user.online ? "" : "is-offline"}"></span>
-          <strong>${escapeHtml(user.displayName || displayUserName(user.name))}</strong>
-          <small>${escapeHtml(status)}</small>
-        </button>
+        <div class="social-user-row ${selected ? "is-selected" : ""} ${user.special === "codex" ? "is-special" : ""}">
+          <button class="social-user-pick" data-social-user="${escapeHtml(user.name)}" type="button" aria-pressed="${selected ? "true" : "false"}">
+            <span class="user-presence-dot ${user.online ? "" : "is-offline"}"></span>
+            <strong>${escapeHtml(user.displayName || displayUserName(user.name))}</strong>
+            <small>${escapeHtml(status)}</small>
+          </button>
+          <button class="mini-action social-user-start" data-social-start-user="${escapeHtml(user.name)}" type="button">Chat</button>
+        </div>
       `;
     })
     .join("");
@@ -13520,6 +13534,11 @@ async function createSocialChatFromSelection(): Promise<void> {
     socialChatStatus = err instanceof Error ? err.message : "Could not create chat";
     renderActiveSocialChatWindow();
   }
+}
+
+async function createDirectSocialChat(user: string): Promise<void> {
+  socialChatSelectedUsers = new Set([user]);
+  await createSocialChatFromSelection();
 }
 
 async function selectSocialChatConversation(conversationId: string): Promise<void> {
