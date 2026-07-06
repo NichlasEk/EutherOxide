@@ -1662,6 +1662,10 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         match stream {
             Ok(mut stream) => {
                 let Some(guard) = try_acquire_host_request(&state.active_requests) else {
+                    eprintln!(
+                        "host request limit reached: {} active requests",
+                        state.active_requests.load(Ordering::Relaxed)
+                    );
                     let _ = send_error(&mut stream, 503, "server busy");
                     continue;
                 };
@@ -10438,9 +10442,9 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
         Ok(upstream) => upstream,
         Err(_) => return send_error(stream, 502, "EutherSight camera upstream unavailable"),
     };
-    upstream.set_read_timeout(Some(Duration::from_secs(60)))?;
-    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let upstream_path = camera_frigate_upstream_path(&request.path);
+    upstream.set_read_timeout(Some(camera_frigate_read_timeout(&upstream_path)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
     write!(
         upstream,
         "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
@@ -10521,6 +10525,15 @@ fn camera_frigate_should_rewrite_response(
         || upstream_path.ends_with(".css")
         || body.starts_with(b"<!doctype html")
         || body.starts_with(b"<!DOCTYPE html")
+}
+
+fn camera_frigate_read_timeout(upstream_path: &str) -> Duration {
+    let path = upstream_path.split('?').next().unwrap_or(upstream_path);
+    if path.ends_with(".mp4") || path.contains("/recordings/") {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(8)
+    }
 }
 
 fn rewrite_camera_frigate_text(input: &str) -> String {
@@ -10671,9 +10684,7 @@ fn normalize_camera_rotation(rotation_degrees: i32) -> u16 {
 
 fn normalize_camera_refresh_ms(refresh_ms: u16) -> u16 {
     match refresh_ms {
-        0..=124 => 125,
-        125..=249 => 125,
-        250..=499 => 250,
+        0..=499 => 500,
         500..=999 => 500,
         1000..=1999 => 1000,
         2000..=4999 => 2000,
@@ -11273,8 +11284,6 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
           <label>
             <span class="sr-only">Refresh</span>
             <select id="refresh-rate">
-              <option value="125">8 fps</option>
-              <option value="250">4 fps</option>
               <option value="500">2 fps</option>
               <option value="1000">1 fps</option>
               <option value="2000">0.5 fps</option>
@@ -11377,6 +11386,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let rotationDegrees = 0;
     let refreshMs = 500;
     let refreshTimer = 0;
+    let snapshotInFlight = false;
+    let snapshotWatchdog = 0;
     let fallbackFullscreen = false;
     let liveFullscreen = false;
     let liveSocket = null;
@@ -11472,17 +11483,31 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
 
     function normalizeRefresh(value) {
       const requested = Number(value) || 500;
-      if (requested <= 125) return 125;
-      if (requested <= 250) return 250;
       if (requested <= 500) return 500;
       if (requested <= 1000) return 1000;
       if (requested <= 2000) return 2000;
       return 5000;
     }
 
+    function finishSnapshotRequest() {
+      snapshotInFlight = false;
+      window.clearTimeout(snapshotWatchdog);
+      snapshotWatchdog = 0;
+    }
+
     function refreshSnapshot() {
+      if (snapshotInFlight) return;
+      snapshotInFlight = true;
+      window.clearTimeout(snapshotWatchdog);
+      snapshotWatchdog = window.setTimeout(finishSnapshotRequest, 10000);
       live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
     }
+
+    live.addEventListener("load", () => {
+      finishSnapshotRequest();
+      layoutCameraMedia();
+    });
+    live.addEventListener("error", finishSnapshotRequest);
 
     function formatEventTime(value) {
       const seconds = Number(value) || 0;

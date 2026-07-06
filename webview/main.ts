@@ -13946,11 +13946,72 @@ function socialChatUnreadCount(): number {
   }).reduce((total, conversation) => total + Math.max(1, conversation.unreadCount ?? 0), 0);
 }
 
+type SocialChatScrollState = {
+  bodyScrollTop: number;
+  dynamicScrollTop: number;
+  messageScrollTop: number;
+  messageScrollHeight: number;
+  messageClientHeight: number;
+  stickToBottom: boolean;
+};
+
+function captureSocialChatScrollState(): SocialChatScrollState | null {
+  if (activeWorkspaceWindow !== "interaction") {
+    return null;
+  }
+  const body = workspaceWindowDynamic.closest<HTMLDivElement>(".workspace-window-body");
+  const messageList = workspaceWindowDynamic.querySelector<HTMLDivElement>(".social-message-list");
+  if (!body && !messageList) {
+    return null;
+  }
+  const messageScrollTop = messageList?.scrollTop ?? 0;
+  const messageScrollHeight = messageList?.scrollHeight ?? 0;
+  const messageClientHeight = messageList?.clientHeight ?? 0;
+  return {
+    bodyScrollTop: body?.scrollTop ?? 0,
+    dynamicScrollTop: workspaceWindowDynamic.scrollTop,
+    messageScrollTop,
+    messageScrollHeight,
+    messageClientHeight,
+    stickToBottom: messageList
+      ? messageScrollHeight - messageScrollTop - messageClientHeight < 32
+      : false,
+  };
+}
+
+function restoreSocialChatScrollState(state: SocialChatScrollState | null): void {
+  if (!state || activeWorkspaceWindow !== "interaction") {
+    return;
+  }
+  const restore = () => {
+    const body = workspaceWindowDynamic.closest<HTMLDivElement>(".workspace-window-body");
+    const messageList = workspaceWindowDynamic.querySelector<HTMLDivElement>(".social-message-list");
+    if (messageList) {
+      if (state.stickToBottom) {
+        messageList.scrollTop = messageList.scrollHeight;
+      } else {
+        const heightDelta = Math.max(0, messageList.scrollHeight - state.messageScrollHeight);
+        messageList.scrollTop = state.messageScrollTop + heightDelta;
+      }
+    }
+    if (body) {
+      body.scrollTop = state.bodyScrollTop;
+    }
+    workspaceWindowDynamic.scrollTop = state.dynamicScrollTop;
+  };
+  window.requestAnimationFrame(() => {
+    restore();
+    window.requestAnimationFrame(restore);
+  });
+}
+
 function renderActiveSocialChatWindow(): void {
   if (activeWorkspaceWindow === "interaction") {
+    const scrollState = captureSocialChatScrollState();
     const restoreSearchFocus = document.activeElement instanceof HTMLElement
       && document.activeElement.matches("[data-social-user-search]");
     renderWorkspaceWindow();
+    restoreSocialChatScrollState(scrollState);
     if (restoreSearchFocus) {
       const search = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-social-user-search]");
       if (search) {

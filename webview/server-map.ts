@@ -1304,6 +1304,7 @@ function restartCommandForService(service: ServiceReport): string | null {
   if (units.includes("caddy.service")) return "restart-caddy";
   if (units.includes("eutherbooks.service")) return "restart-eutherbooks";
   if (units.includes("eutherpunkd.service")) return "restart-eutherpunkd";
+  if (service.name.toLowerCase() === "euthersight") return "restart-euthersight-frigate";
   return null;
 }
 
