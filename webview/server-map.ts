@@ -91,6 +91,51 @@ type EutherBooksHealth = {
   };
 };
 
+type GpuSchedulerJob = {
+  id: string;
+  owner: string;
+  owner_id: string;
+  label: string;
+  kind: string;
+  priority: number;
+  status: string;
+  progress: number;
+  message?: string;
+  updated_at?: number;
+  expires_at?: number | null;
+};
+
+type GpuLeaseState = {
+  active?: Record<string, unknown> | null;
+  queue?: Array<Record<string, unknown>>;
+  queue_length?: number;
+};
+
+type EutherLinkResources = {
+  gpu_lease?: GpuLeaseState;
+  tts?: {
+    dots_tts?: {
+      status?: string;
+      model_loaded?: boolean;
+      loaded_model?: string | null;
+    };
+    queued_or_running?: number;
+    voxcpm_loaded?: boolean;
+  };
+  gpu?: {
+    memory_used_mib?: number;
+    memory_total_mib?: number;
+    utilization_gpu_percent?: number;
+    temperature_c?: number;
+  };
+};
+
+type GpuSchedulerOverview = {
+  resources: EutherLinkResources | null;
+  jobs: GpuSchedulerJob[];
+  error?: string;
+};
+
 const statusColors: Record<string, number> = {
   running: 0x39d77b,
   online: 0x39d7d2,
@@ -120,6 +165,7 @@ const alertDark = 0x4b0710;
 
 let csrfToken = "";
 let serverMap: ServerMap | null = null;
+let gpuScheduler: GpuSchedulerOverview | null = null;
 let selectedNode: SceneNode | null = null;
 let focusedNode: SceneNode | null = null;
 let viewMode: ViewMode = "walk";
@@ -614,10 +660,31 @@ async function loadMap(refresh: boolean): Promise<void> {
   if (refresh) {
     await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
   }
-  serverMap = await jsonFetch<ServerMap>("/api/admin/euthernet/map");
+  const [map, gpu] = await Promise.all([
+    jsonFetch<ServerMap>("/api/admin/euthernet/map"),
+    loadGpuSchedulerOverview(),
+  ]);
+  serverMap = map;
+  gpuScheduler = gpu;
   buildCity(serverMap);
   if (isTouchMapDevice()) enterMobileInspectionMode("city");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
+}
+
+async function loadGpuSchedulerOverview(): Promise<GpuSchedulerOverview> {
+  try {
+    const [resources, jobs] = await Promise.all([
+      jsonFetch<EutherLinkResources>("/api/admin/eutherlink/resources"),
+      jsonFetch<GpuSchedulerJob[]>("/api/admin/eutherlink/gpu/jobs").catch(() => []),
+    ]);
+    return { resources, jobs };
+  } catch (error) {
+    return {
+      resources: null,
+      jobs: [],
+      error: error instanceof Error ? error.message : "EutherLink unavailable",
+    };
+  }
 }
 
 function buildCity(map: ServerMap): void {
@@ -1186,7 +1253,45 @@ function showOverview(map: ServerMap): void {
     <div><strong>${alerts}</strong> active alerts</div>
     <div><strong>${map.services.filter((service) => service.status === "running").length}</strong> running services</div>
     <div><strong>${map.listening_services.length || map.ports.length}</strong> observed ports</div>
+    ${gpuSchedulerHtml(gpuScheduler)}
   `;
+}
+
+function gpuSchedulerHtml(overview: GpuSchedulerOverview | null): string {
+  if (!overview) return `<div><strong>GPU:</strong> loading</div>`;
+  if (overview.error) return `<div><strong>GPU:</strong> ${escapeHtml(overview.error)}</div>`;
+  const resources = overview.resources;
+  const lease = resources?.gpu_lease;
+  const active = lease?.active || null;
+  const running = overview.jobs.find((job) => job.status === "running");
+  const queued = overview.jobs.filter((job) => job.status === "queued");
+  const activeLabel = gpuActiveLabel(active, running);
+  const vram = resources?.gpu?.memory_used_mib != null && resources.gpu.memory_total_mib != null
+    ? `${resources.gpu.memory_used_mib}/${resources.gpu.memory_total_mib} MiB`
+    : "unknown";
+  const dots = resources?.tts?.dots_tts;
+  const recent = overview.jobs
+    .slice(0, 4)
+    .map((job) => `${job.owner}:${job.status}`)
+    .join(", ");
+  return `
+    <div><strong>GPU active:</strong> ${escapeHtml(activeLabel)}</div>
+    <div><strong>GPU queue:</strong> ${lease?.queue_length ?? queued.length} waiting</div>
+    <div><strong>VRAM:</strong> ${escapeHtml(vram)} | ${resources?.gpu?.utilization_gpu_percent ?? 0}% util</div>
+    <div><strong>Dots:</strong> ${escapeHtml(dots?.status || "unknown")}${dots?.model_loaded ? " loaded" : ""}</div>
+    <div><strong>GPU jobs:</strong> ${escapeHtml(recent || "none")}</div>
+  `;
+}
+
+function gpuActiveLabel(active: Record<string, unknown> | null, running: GpuSchedulerJob | undefined): string {
+  if (active) {
+    const label = typeof active.label === "string" ? active.label : "";
+    const owner = typeof active.owner === "string" ? active.owner : "";
+    const ownerId = typeof active.owner_id === "string" ? active.owner_id : "";
+    return label || [owner, ownerId].filter(Boolean).join(" ") || "busy";
+  }
+  if (running) return running.label || `${running.owner} ${running.owner_id}`;
+  return "free";
 }
 
 function showGenericRoomOverview(node: SceneNode): void {

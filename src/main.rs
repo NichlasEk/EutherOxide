@@ -75,6 +75,7 @@ const EUTHERSTUDIO_PATH: &str = "/studio";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
 const EUTHERNET_ADMIN_PROXY_PREFIX: &str = "/api/admin/euthernet";
+const EUTHERLINK_ADMIN_PROXY_PREFIX: &str = "/api/admin/eutherlink";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2695,6 +2696,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     return send_error(stream, 403, &err.to_string());
                 }
                 return proxy_euthernet_admin_request(stream, &request);
+            }
+            if is_eutherlink_admin_proxy_path(path) {
+                let user = require_host_user(state, &request)?;
+                if let Err(err) = require_host_permission(state, &user, HostPermission::ServerMap) {
+                    return send_error(stream, 403, &err.to_string());
+                }
+                return proxy_eutherlink_admin_request(stream, &request);
             }
             if is_camera_ai_proxy_path(path) {
                 let user = require_host_user(state, &request)?;
@@ -10368,6 +10376,52 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
         return Err(invalid_request("unsupported EutherNet endpoint"));
     }
     Ok(format!("/api/euthernet{relative}"))
+}
+
+fn is_eutherlink_admin_proxy_path(path: &str) -> bool {
+    path == EUTHERLINK_ADMIN_PROXY_PREFIX
+        || path
+            .strip_prefix(EUTHERLINK_ADMIN_PROXY_PREFIX)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn proxy_eutherlink_admin_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if request.method != "GET" {
+        return send_error(stream, 405, "method not allowed");
+    }
+    let upstream_path = eutherlink_admin_upstream_path(&request.path)?;
+    let upstream_base =
+        env::var("EUTHERLINK_UPSTREAM").unwrap_or_else(|_| "192.168.32.88:8765".to_string());
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherLink upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: application/json\r\n\r\n",
+        upstream_path, upstream_base
+    )?;
+    io::copy(&mut upstream, stream)?;
+    Ok(())
+}
+
+fn eutherlink_admin_upstream_path(path: &str) -> io::Result<String> {
+    let stripped = path
+        .strip_prefix(EUTHERLINK_ADMIN_PROXY_PREFIX)
+        .unwrap_or_default();
+    let relative = if stripped.is_empty() {
+        "/resources"
+    } else {
+        stripped
+    };
+    let allowed = ["/resources", "/gpu/jobs"];
+    let endpoint = relative.split('?').next().unwrap_or(relative);
+    if !allowed.contains(&endpoint) {
+        return Err(invalid_request("unsupported EutherLink endpoint"));
+    }
+    Ok(format!("/v1{relative}"))
 }
 
 fn proxy_camera_ai_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
