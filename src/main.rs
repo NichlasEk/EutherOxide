@@ -17489,6 +17489,9 @@ fn refresh_eutherstudio_job_from_worker(
         Err(_) => return Ok(contents.to_string()),
     };
     if response.status != 200 {
+        if response.status == 404 {
+            return resubmit_or_fail_lost_eutherstudio_job(metadata_path, contents, &config, token);
+        }
         return Ok(contents.to_string());
     }
     let value: serde_json::Value =
@@ -17563,6 +17566,127 @@ fn refresh_eutherstudio_job_from_worker(
         fs::write(failed_path, &updated)?;
     } else {
         fs::write(queued_path, &updated)?;
+    }
+    Ok(updated)
+}
+
+fn resubmit_or_fail_lost_eutherstudio_job(
+    metadata_path: &Path,
+    contents: &str,
+    config: &EutherStudioWorkerConfig,
+    token: &str,
+) -> io::Result<String> {
+    let job_id = parse_toml_string(contents, "job_id").unwrap_or_default();
+    let user = eutherstudio_metadata_user(contents);
+    let model = parse_toml_string(contents, "model").unwrap_or_else(|| "ace-step-1.5".to_string());
+    let prompt = parse_toml_string(contents, "prompt").unwrap_or_default();
+    let lyrics = parse_toml_string(contents, "lyrics").unwrap_or_default();
+    let instrumental = parse_toml_bool(contents, "instrumental").unwrap_or(false);
+    let vocal_language =
+        parse_toml_string(contents, "vocal_language").unwrap_or_else(|| "english".to_string());
+    let negative_prompt = parse_toml_string(contents, "negative_prompt").unwrap_or_default();
+    let duration_seconds = parse_toml_u64(contents, "duration_seconds")
+        .unwrap_or(120)
+        .clamp(15, 180) as u32;
+    let format = parse_toml_string(contents, "format").unwrap_or_else(|| "mp3".to_string());
+    let output_path = PathBuf::from(parse_toml_string(contents, "output_path").unwrap_or_default());
+    if job_id.is_empty() || user.is_empty() || prompt.is_empty() || output_path.as_os_str().is_empty() {
+        return fail_eutherstudio_metadata(
+            metadata_path,
+            contents,
+            config,
+            "lost-worker-job",
+            "worker forgot queued job and metadata cannot be resubmitted",
+        );
+    }
+
+    match submit_eutherstudio_worker_job_with_config(
+        config,
+        token,
+        &job_id,
+        &user,
+        &model,
+        &prompt,
+        &lyrics,
+        instrumental,
+        &vocal_language,
+        &negative_prompt,
+        duration_seconds,
+        &format,
+        &output_path,
+        true,
+    ) {
+        Ok(result) => {
+            let worker_status =
+                parse_toml_string(&result, "status").unwrap_or_else(|| "queued".to_string());
+            let worker_mode =
+                parse_toml_string(&result, "mode").unwrap_or_else(|| "resubmitted".to_string());
+            let updated = eutherstudio_metadata_from_existing(
+                contents,
+                &worker_status,
+                parse_toml_u64(contents, "finished_unix_ms").unwrap_or(0),
+                &config.host,
+                config.port,
+                &worker_mode,
+                "resubmitted",
+                "",
+                "Worker lost this queued job after restart; resubmitted automatically.",
+            );
+            fs::write(metadata_path, &updated)?;
+            sync_eutherstudio_state_metadata(&job_id, &updated)?;
+            Ok(updated)
+        }
+        Err(err) => {
+            let error = err.to_string();
+            if error.contains("HTTP 429") || error.to_lowercase().contains("worker busy") {
+                let updated = eutherstudio_metadata_from_existing(
+                    contents,
+                    "queued",
+                    parse_toml_u64(contents, "finished_unix_ms").unwrap_or(0),
+                    &config.host,
+                    config.port,
+                    "waiting-worker-slot",
+                    "waiting-worker-slot",
+                    "",
+                    "Worker is busy; this queued job will be resubmitted on the next refresh.",
+                );
+                fs::write(metadata_path, &updated)?;
+                sync_eutherstudio_state_metadata(&job_id, &updated)?;
+                Ok(updated)
+            } else {
+                fail_eutherstudio_metadata(
+                    metadata_path,
+                    contents,
+                    config,
+                    "lost-worker-job",
+                    &format!("worker forgot queued job and resubmit failed: {err}"),
+                )
+            }
+        }
+    }
+}
+
+fn fail_eutherstudio_metadata(
+    metadata_path: &Path,
+    contents: &str,
+    config: &EutherStudioWorkerConfig,
+    phase: &str,
+    error: &str,
+) -> io::Result<String> {
+    let updated = eutherstudio_metadata_from_existing(
+        contents,
+        "failed",
+        unix_ms_now(),
+        &config.host,
+        config.port,
+        "worker",
+        phase,
+        error,
+        error,
+    );
+    fs::write(metadata_path, &updated)?;
+    if let Some(job_id) = parse_toml_string(contents, "job_id") {
+        sync_eutherstudio_state_metadata(&job_id, &updated)?;
     }
     Ok(updated)
 }
@@ -17744,6 +17868,40 @@ fn submit_eutherstudio_worker_job(
         .token
         .as_deref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing worker token"))?;
+    submit_eutherstudio_worker_job_with_config(
+        &config,
+        token,
+        job_id,
+        user,
+        model,
+        prompt,
+        lyrics,
+        instrumental,
+        vocal_language,
+        negative_prompt,
+        duration_seconds,
+        format,
+        _output_path,
+        pause_gpu_services,
+    )
+}
+
+fn submit_eutherstudio_worker_job_with_config(
+    config: &EutherStudioWorkerConfig,
+    token: &str,
+    job_id: &str,
+    user: &str,
+    model: &str,
+    prompt: &str,
+    lyrics: &str,
+    instrumental: bool,
+    vocal_language: &str,
+    negative_prompt: &str,
+    duration_seconds: u32,
+    format: &str,
+    _output_path: &Path,
+    pause_gpu_services: bool,
+) -> io::Result<String> {
     let body = serde_json::json!({
         "job_id": job_id,
         "user": user,
