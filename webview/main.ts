@@ -8186,6 +8186,7 @@ function appsWindowMarkup(): string {
 }
 
 function appDownloadCardMarkup(app: AppDownload): string {
+  const downloadHref = `${app.href}${app.href.includes("?") ? "&" : "?"}cache-bust=${Date.now()}`;
   return `
     <article class="app-download-card">
       <div class="app-download-icon" aria-hidden="true">${escapeHtml(app.title.slice(0, 2).toUpperCase())}</div>
@@ -8203,7 +8204,7 @@ function appDownloadCardMarkup(app: AppDownload): string {
           <dd>${escapeHtml(app.status)}</dd>
         </div>
       </dl>
-      <a class="app-download-link" href="${escapeHtml(app.href)}">Ladda ner APK</a>
+      <a class="app-download-link" href="${escapeHtml(downloadHref)}">Ladda ner APK</a>
     </article>
   `;
 }
