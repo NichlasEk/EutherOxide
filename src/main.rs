@@ -1776,7 +1776,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherlist_apk_download_path(path) => send_eutherlist_apk(stream),
         ("GET", path) if is_euthersync_apk_download_path(path) => send_euthersync_apk(stream),
         ("GET", path) if is_eutherbooks_player_apk_download_path(path) => {
-            send_eutherbooks_player_apk(stream)
+            send_eutherbooks_player_apk(stream, path)
         }
         ("GET", path) if is_eutherpal_mobile_apk_download_path(path) => {
             send_eutherpal_mobile_apk(stream)
@@ -10087,7 +10087,7 @@ fn is_euthersync_apk_download_path(path: &str) -> bool {
     )
 }
 
-fn send_eutherbooks_player_apk(stream: &mut TcpStream) -> io::Result<()> {
+fn send_eutherbooks_player_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let apk_path = env::var("EUTHERBOOKS_PLAYER_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -10098,10 +10098,15 @@ fn send_eutherbooks_player_apk(stream: &mut TcpStream) -> io::Result<()> {
                 PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH)
             }
         });
+    let download_filename = if path == "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk" {
+        "EutherBooksPlayer-0.1.77-release-signed.apk"
+    } else {
+        "EutherBooksPlayer-release-signed.apk"
+    };
     send_android_apk(
         stream,
         &apk_path,
-        "EutherBooksPlayer-release-signed.apk",
+        download_filename,
         "EutherBooks Player APK is not available",
     )
 }
@@ -10114,6 +10119,7 @@ fn is_eutherbooks_player_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherBooksPlayer.apk"
             | "/downloads/EutherBooksPlayer-release.apk"
             | "/downloads/EutherBooksPlayer-release-signed.apk"
+            | "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk"
             | "/downloads/eutherbooks-player-release-signed.apk"
             | "/downloads/eutherbooksplayer-release-signed.apk"
     )

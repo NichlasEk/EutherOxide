@@ -8142,7 +8142,7 @@ const appDownloads: AppDownload[] = [
     title: "EutherBooks Player",
     detail: "Native audiobook playback with background audio",
     platform: "Android phone",
-    href: "/downloads/EutherBooksPlayer-release-signed.apk",
+    href: "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk",
     status: "Signed APK",
   },
   {
