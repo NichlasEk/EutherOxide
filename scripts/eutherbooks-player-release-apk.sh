@@ -562,7 +562,8 @@ class NativeAudioService : Service() {
             return
         }
         if (synchronized(lock) { active }) {
-            ensurePlaybackSessionActive()
+            refreshPlaybackRetentionIfNeeded()
+            ensureMediaSession()
         }
         prefetchQueueFrom(synchronized(lock) { index })
         updatePlaybackState()
@@ -1435,6 +1436,9 @@ class NativeAudioService : Service() {
     private fun requestAudioFocus() {
         val manager = getSystemService(AUDIO_SERVICE) as AudioManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (audioFocusRequest != null) {
+                return
+            }
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -1444,12 +1448,19 @@ class NativeAudioService : Service() {
                 )
                 .setOnAudioFocusChangeListener { change ->
                     if (change == AudioManager.AUDIOFOCUS_LOSS) {
-                        handlePause()
+                        audioFocusRequest = null
+                        handlePause("Native playback paused: audio focus loss")
                     }
                 }
                 .build()
-            audioFocusRequest = request
-            manager.requestAudioFocus(request)
+            if (manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                audioFocusRequest = request
+            } else {
+                synchronized(lock) {
+                    error = "Native audio focus request denied"
+                    rememberEvent(error)
+                }
+            }
         } else {
             @Suppress("DEPRECATION")
             manager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)

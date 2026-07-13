@@ -490,11 +490,15 @@ async function pollJobs(): Promise<void> {
         schedulePoll(1000);
         return;
       }
+      const nativeStateBeforePoll = nativeAudioState();
+      const playbackNeedsInitialStart = nativePlaybackActive
+        ? !nativeStateBeforePoll.active
+        : audio.paused;
       const shouldAutoPlayCurrent = settings.autoPlay
         && !userPausedPlayback
         && currentJob.audio_files.length > 0
         && currentJob.status !== "failed"
-        && (!session || session.jobId !== currentJob.id || isPlaybackPaused());
+        && (!session || session.jobId !== currentJob.id || playbackNeedsInitialStart);
       session = sessionFromJob(currentJob, session);
       warmAudioCacheForSession();
       void updateNativeQueue("poll-current");
