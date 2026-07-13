@@ -697,17 +697,12 @@ class NativeAudioService : Service() {
                 }
                 preparePlayer(source, startPositionMs, requestId)
             } catch (err: Exception) {
-                synchronized(lock) {
-                    if (requestId != playRequestId) {
-                        return@Thread
-                    }
-                    error = "Native cache failed: ${err.message ?: err.javaClass.simpleName}"
-                    playing = false
-                    lastEvent = error
-                    rememberEvent(lastEvent)
-                }
-                updatePlaybackState()
-                updateNotification()
+                schedulePlaybackRecovery(
+                    requestId,
+                    synchronized(lock) { index },
+                    startPositionMs,
+                    "Native cache failed: ${err.message ?: err.javaClass.simpleName}"
+                )
             }
         }.start()
         updatePlaybackState()
@@ -740,17 +735,31 @@ class NativeAudioService : Service() {
                     }
                     durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                     positionMs = startPositionMs.coerceIn(0L, max(0L, durationMs - 250L))
-                    playing = true
                     active = true
                     ended = false
+                }
+                try {
+                    if (positionMs > 0L) {
+                        prepared.seekTo(positionMs.toInt())
+                    }
+                    prepared.start()
+                } catch (err: Exception) {
+                    schedulePlaybackRecovery(
+                        requestId,
+                        synchronized(lock) { index },
+                        positionMs,
+                        "Native start failed: ${err.message ?: err.javaClass.simpleName}"
+                    )
+                    return@setOnPreparedListener
+                }
+                synchronized(lock) {
+                    playing = true
                     error = ""
+                    playbackRetryIndex = -1
+                    playbackRetryCount = 0
                     lastEvent = "Native playback started"
                     rememberEvent(lastEvent)
                 }
-                if (positionMs > 0L) {
-                    prepared.seekTo(positionMs.toInt())
-                }
-                prepared.start()
                 updatePlaybackState()
                 updateNotification()
             }
@@ -763,15 +772,12 @@ class NativeAudioService : Service() {
                 advanceAfterCompletion()
             }
             nextPlayer.setOnErrorListener { _mp, what, extra ->
-                synchronized(lock) {
-                    if (requestId != playRequestId) {
-                        return@setOnErrorListener true
-                    }
-                    error = "MediaPlayer error $what/$extra"
-                    lastEvent = error
-                    rememberEvent(lastEvent)
-                }
-                advanceAfterCompletion()
+                schedulePlaybackRecovery(
+                    requestId,
+                    synchronized(lock) { index },
+                    currentPositionMs(),
+                    "MediaPlayer error $what/$extra"
+                )
                 true
             }
             synchronized(lock) {
@@ -786,18 +792,73 @@ class NativeAudioService : Service() {
             updatePlaybackState()
             updateNotification()
         } catch (err: Exception) {
-            releasePlayer()
-            synchronized(lock) {
-                if (requestId != playRequestId) {
-                    return
-                }
-                error = err.message ?: err.javaClass.simpleName
-                playing = false
-                lastEvent = "Native playback failed"
-                rememberEvent(lastEvent)
+            schedulePlaybackRecovery(
+                requestId,
+                synchronized(lock) { index },
+                startPositionMs,
+                "Native playback failed: ${err.message ?: err.javaClass.simpleName}"
+            )
+        }
+    }
+
+    private fun schedulePlaybackRecovery(requestId: Long, failedIndex: Int, failedPositionMs: Long, reason: String) {
+        val attempt: Int
+        val shouldRetry: Boolean
+        synchronized(lock) {
+            if (requestId != playRequestId || failedIndex != index) {
+                return
             }
-            updatePlaybackState()
-            updateNotification()
+            if (playbackRetryIndex != failedIndex) {
+                playbackRetryIndex = failedIndex
+                playbackRetryCount = 0
+            }
+            playbackRetryCount += 1
+            attempt = playbackRetryCount
+            shouldRetry = attempt <= MAX_PLAYBACK_RETRIES
+            playing = false
+            error = reason
+            lastEvent = if (shouldRetry) {
+                "Native recovering part ${failedIndex + 1}, attempt $attempt/$MAX_PLAYBACK_RETRIES: $reason"
+            } else {
+                "Native part ${failedIndex + 1} failed after $MAX_PLAYBACK_RETRIES retries: $reason"
+            }
+            rememberEvent(lastEvent)
+        }
+        updatePlaybackState()
+        updateNotification()
+        if (!shouldRetry) {
+            synchronized(lock) {
+                playbackRetryIndex = -1
+                playbackRetryCount = 0
+            }
+            advanceAfterCompletion()
+            return
+        }
+        synchronized(lock) { queue.getOrNull(failedIndex) }?.let { evictCachedSource(it) }
+        val delayMs = (500L * attempt).coerceAtMost(2000L)
+        Thread {
+            try {
+                Thread.sleep(delayMs)
+            } catch (_err: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@Thread
+            }
+            val stillCurrent = synchronized(lock) {
+                requestId == playRequestId && index == failedIndex && active && !ended
+            }
+            if (stillCurrent) {
+                playCurrent(failedPositionMs.coerceAtLeast(0L))
+            }
+        }.start()
+    }
+
+    private fun evictCachedSource(url: String) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return
+        }
+        val file = cacheFileForUrl(url)
+        if (file.exists()) {
+            file.delete()
         }
     }
 
@@ -921,20 +982,20 @@ class NativeAudioService : Service() {
     }
 
     private fun downloadAudio(url: String, destination: File): File {
-        synchronized(cacheDownloads) {
-            if (!cacheDownloads.add(destination.absolutePath)) {
-                repeat(80) {
-                    if (destination.isFile && destination.length() > 0L) {
-                        return destination
-                    }
-                    try {
-                        Thread.sleep(250L)
-                    } catch (_err: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        return destination
-                    }
+        val ownsDownload = synchronized(cacheDownloads) { cacheDownloads.add(destination.absolutePath) }
+        if (!ownsDownload) {
+            repeat(120) {
+                if (destination.isFile && destination.length() > 0L) {
+                    return destination
+                }
+                try {
+                    Thread.sleep(250L)
+                } catch (_err: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IllegalStateException("audio cache wait interrupted")
                 }
             }
+            throw IllegalStateException("audio cache wait timed out")
         }
         try {
             if (destination.isFile && destination.length() > 0L) {
@@ -978,13 +1039,14 @@ class NativeAudioService : Service() {
         }
     }
 
+    @Synchronized
     private fun pruneAudioCache() {
         val files = audioCacheDir().listFiles()?.filter { it.isFile } ?: return
         var total = files.sumOf { it.length() }
         if (total <= AUDIO_CACHE_MAX_BYTES) {
             return
         }
-        for (file in files.sortedBy { it.lastModified() }) {
+        for ((file, _modifiedAt) in files.map { it to it.lastModified() }.sortedBy { it.second }) {
             if (total <= AUDIO_CACHE_MAX_BYTES) {
                 break
             }
@@ -1571,12 +1633,15 @@ class NativeAudioService : Service() {
         private var authToken = ""
         private var manifestPollActive = false
         private var playRequestId = 0L
+        private var playbackRetryIndex = -1
+        private var playbackRetryCount = 0
         private var lastEvent = "Native audio idle"
         private var error = ""
         private var recentEvents: List<String> = listOf("Native audio idle")
         private const val AUDIO_CACHE_DIR = "native-audio-cache"
         private const val AUDIO_CACHE_MAX_BYTES = 768L * 1024L * 1024L
         private const val AUDIO_PREFETCH_LIMIT = 32
+        private const val MAX_PLAYBACK_RETRIES = 3
         private val cacheDownloads = mutableSetOf<String>()
         @Volatile private var currentService: NativeAudioService? = null
 
