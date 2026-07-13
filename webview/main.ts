@@ -1982,6 +1982,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <span>Home</span>
           <div class="app-nav-grid">
             <button data-app-route="play" type="button">Reaction Lobby</button>
+            <a class="app-nav-link" href="/projects/">Public Projects</a>
           </div>
         </div>
         <div class="app-nav-group">

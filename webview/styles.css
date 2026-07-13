@@ -2487,7 +2487,10 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
   gap: 5px;
 }
 
-.app-nav button {
+.app-nav button,
+.app-nav-link {
+  display: grid;
+  place-items: center;
   min-width: 0;
   min-height: 34px;
   padding: 0 8px;
@@ -2497,11 +2500,15 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
   color: #aac99c;
   font-size: 0.72rem;
   font-weight: 950;
+  text-align: center;
+  text-decoration: none;
   text-transform: uppercase;
 }
 
 .app-nav button:hover:not(:disabled),
-.app-nav button.is-selected {
+.app-nav button.is-selected,
+.app-nav-link:hover,
+.app-nav-link:focus-visible {
   transform: none;
   background: linear-gradient(135deg, rgba(98, 218, 168, 0.24), rgba(245, 215, 125, 0.16));
   color: #fff4c6;
