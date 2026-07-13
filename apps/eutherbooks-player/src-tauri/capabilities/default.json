@@ -12,9 +12,6 @@
       "identifier": "http:default",
       "allow": [
         {
-          "url": "http://192.168.32.186:8088/**"
-        },
-        {
           "url": "http://192.168.32.186:8080/eutherbooks/**"
         },
         {

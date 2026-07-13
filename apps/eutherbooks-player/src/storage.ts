@@ -4,12 +4,11 @@ const settingsKey = "eutherbooks-player-settings";
 const bookmarksKey = "eutherbooks-player-bookmarks";
 const serverRouteConfigKey = "eutherbooks-player-server-route-config";
 const bootstrapUsername = import.meta.env.VITE_EUTHERBOOKS_PLAYER_USERNAME?.trim() ?? "";
-const bootstrapAuthToken = import.meta.env.VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN?.trim() ?? "";
 
 export const defaultSettings: AppSettings = {
   serverUrl: defaultServerUrl(),
   username: bootstrapUsername,
-  authToken: bootstrapAuthToken,
+  authToken: "",
   voiceId: "dots-mf-own-sv",
   modelBackend: "dots.tts-mf",
   autoPlay: true,
@@ -29,9 +28,7 @@ export function loadSettings(): AppSettings {
       username: typeof parsed?.username === "string" && parsed.username.trim()
         ? parsed.username.trim()
         : defaultSettings.username,
-      authToken: typeof parsed?.authToken === "string" && parsed.authToken.trim()
-        ? parsed.authToken.trim()
-        : defaultSettings.authToken,
+      authToken: "",
     };
   } catch (_err) {
     return defaultSettings;
@@ -39,7 +36,7 @@ export function loadSettings(): AppSettings {
 }
 
 export function saveSettings(settings: AppSettings): void {
-  localStorage.setItem(settingsKey, JSON.stringify(settings));
+  localStorage.setItem(settingsKey, JSON.stringify({ ...settings, authToken: "" }));
 }
 
 export function bookmarkKey(bookId: string, chapterIndex: number, modelBackend: ModelBackend, voiceId: string): string {
@@ -114,7 +111,6 @@ export function serverCandidates(preferredUrl: string, routeConfig: Partial<Serv
     "http://192.168.32.186:8080/eutherbooks",
     "https://apothictech.se/eutherbooks",
     ...lanRouteUrls.map(toEutherBooksUrl),
-    "http://192.168.32.186:8088",
   ];
   if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
     candidates.push(`${window.location.origin.replace(/\/+$/, "")}/eutherbooks`);
@@ -164,14 +160,14 @@ export function toEutherBooksUrl(value: string): string {
   }
   try {
     const url = new URL(clean);
+    if (url.hostname === "192.168.32.186" && url.port === "8088") {
+      return "";
+    }
     if (url.hostname.toLowerCase() === "apothictech.se" && (!url.port || url.port === "443")) {
       url.protocol = "https:";
       url.port = "8443";
     }
     if (url.pathname === "/eutherbooks" || url.pathname.startsWith("/eutherbooks/")) {
-      return url.toString().replace(/\/+$/, "");
-    }
-    if (url.hostname === "192.168.32.186" && url.port === "8088") {
       return url.toString().replace(/\/+$/, "");
     }
     if (url.hostname === "192.168.32.186" && url.port === "32162") {

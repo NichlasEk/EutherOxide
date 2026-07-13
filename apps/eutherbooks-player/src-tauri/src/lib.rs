@@ -11,6 +11,9 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            secure_auth_load,
+            secure_auth_save,
+            secure_auth_clear,
             set_wake_lock,
             native_audio_play_queue,
             native_audio_pause,
@@ -30,6 +33,47 @@ pub fn run() {
     if let Err(err) = result {
         startup_error(&format!("tauri runtime returned error: {err}"));
     }
+}
+
+fn auth_token_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
+    Ok(data_dir.join("auth-token"))
+}
+
+#[tauri::command]
+fn secure_auth_load(app: tauri::AppHandle) -> Result<String, String> {
+    let path = auth_token_path(&app)?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    Ok(fs::read_to_string(path).map_err(|err| err.to_string())?.trim().to_string())
+}
+
+#[tauri::command]
+fn secure_auth_save(app: tauri::AppHandle, token: String) -> Result<(), String> {
+    let token = token.trim();
+    if token.len() < 16 || token.len() > 512 {
+        return Err("invalid authentication token".to_string());
+    }
+    let path = auth_token_path(&app)?;
+    let temp = path.with_extension("tmp");
+    fs::write(&temp, token.as_bytes()).map_err(|err| err.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600)).map_err(|err| err.to_string())?;
+    }
+    fs::rename(temp, path).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn secure_auth_clear(app: tauri::AppHandle) -> Result<(), String> {
+    let path = auth_token_path(&app)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 fn native_audio_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {

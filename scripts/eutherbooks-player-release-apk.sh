@@ -18,10 +18,9 @@ export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 
 KEYSTORE="${EUTHERBOOKS_PLAYER_KEYSTORE:-${EUTHERLIST_KEYSTORE:-/home/nichlas/.eutherlist/eutherlist-sideload.jks}}"
 KEY_ALIAS="${EUTHERBOOKS_PLAYER_KEY_ALIAS:-${EUTHERLIST_KEY_ALIAS:-eutherlist}}"
-KEYSTORE_PASS="${EUTHERBOOKS_PLAYER_KEYSTORE_PASS:-${EUTHERLIST_KEYSTORE_PASS:-EutherList2026}}"
+KEYSTORE_PASS="${EUTHERBOOKS_PLAYER_KEYSTORE_PASS:-${EUTHERLIST_KEYSTORE_PASS:-}}"
 KEY_PASS="${EUTHERBOOKS_PLAYER_KEY_PASS:-${EUTHERLIST_KEY_PASS:-$KEYSTORE_PASS}}"
 BOOTSTRAP_USER="${EUTHERBOOKS_PLAYER_BOOTSTRAP_USER:-nichlas}"
-HOST_USERS_FILE="$ROOT/.euther-host/users.toml"
 
 if [[ ! -d "$ANDROID_HOME" ]]; then
   echo "[eutherbooks-player-release-apk] Android SDK not found: $ANDROID_HOME" >&2
@@ -33,6 +32,11 @@ if [[ ! -f "$KEYSTORE" ]]; then
   exit 1
 fi
 
+if [[ -z "$KEYSTORE_PASS" || -z "$KEY_PASS" ]]; then
+  echo "[eutherbooks-player-release-apk] signing passwords must be supplied through EUTHERBOOKS_PLAYER_KEYSTORE_PASS and EUTHERBOOKS_PLAYER_KEY_PASS" >&2
+  exit 1
+fi
+
 if ! command -v apksigner >/dev/null 2>&1; then
   echo "[eutherbooks-player-release-apk] apksigner not found on PATH" >&2
   exit 1
@@ -40,34 +44,6 @@ fi
 
 if [[ -z "${VITE_EUTHERBOOKS_PLAYER_USERNAME:-}" ]]; then
   export VITE_EUTHERBOOKS_PLAYER_USERNAME="$BOOTSTRAP_USER"
-fi
-
-if [[ -z "${VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN:-}" && -f "$HOST_USERS_FILE" ]]; then
-  VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN="$(
-    awk -v wanted="$BOOTSTRAP_USER" '
-      /^\[\[user\]\]/ { in_user = 0; next }
-      /^name = "/ {
-        name = $0
-        sub(/^name = "/, "", name)
-        sub(/"$/, "", name)
-        in_user = (name == wanted)
-        next
-      }
-      in_user && /^app_token = "/ {
-        token = $0
-        sub(/^app_token = "/, "", token)
-        sub(/"$/, "", token)
-        print token
-        exit
-      }
-    ' "$HOST_USERS_FILE"
-  )"
-  export VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN
-fi
-
-if [[ -z "${VITE_EUTHERBOOKS_PLAYER_AUTH_TOKEN:-}" ]]; then
-  echo "[eutherbooks-player-release-apk] bootstrap app token not found for $BOOTSTRAP_USER" >&2
-  exit 1
 fi
 
 cd "$APP_DIR"
@@ -117,7 +93,7 @@ import androidx.core.content.ContextCompat
 
 object NativeAudioBridge {
     @JvmStatic
-    fun playQueue(context: Context, urlsJson: String, index: Int, positionSeconds: Double, title: String, subtitle: String, manifestUrlsJson: String, audioBaseUrl: String, manifestStartIndex: Int): String {
+    fun playQueue(context: Context, urlsJson: String, index: Int, positionSeconds: Double, title: String, subtitle: String, manifestUrlsJson: String, audioBaseUrl: String, manifestStartIndex: Int, authToken: String): String {
         NativeAudioService.prepareQueueState(
             urlsJson,
             index,
@@ -126,7 +102,8 @@ object NativeAudioBridge {
             subtitle,
             manifestUrlsJson,
             audioBaseUrl,
-            manifestStartIndex
+            manifestStartIndex,
+            authToken
         )
         val intent = Intent(context.applicationContext, NativeAudioService::class.java)
             .setAction(NativeAudioService.ACTION_PLAY_QUEUE)
@@ -138,12 +115,13 @@ object NativeAudioBridge {
             .putExtra(NativeAudioService.EXTRA_MANIFEST_URLS_JSON, manifestUrlsJson)
             .putExtra(NativeAudioService.EXTRA_AUDIO_BASE_URL, audioBaseUrl)
             .putExtra(NativeAudioService.EXTRA_MANIFEST_START_INDEX, manifestStartIndex)
+            .putExtra(NativeAudioService.EXTRA_AUTH_TOKEN, authToken)
         ContextCompat.startForegroundService(context.applicationContext, intent)
         return NativeAudioService.stateJson("Native playback requested")
     }
 
     @JvmStatic
-    fun updateQueue(context: Context, urlsJson: String, manifestUrlsJson: String, audioBaseUrl: String, manifestStartIndex: Int): String {
+    fun updateQueue(context: Context, urlsJson: String, manifestUrlsJson: String, audioBaseUrl: String, manifestStartIndex: Int, authToken: String): String {
         context.applicationContext.startService(
             Intent(context.applicationContext, NativeAudioService::class.java)
                 .setAction(NativeAudioService.ACTION_UPDATE_QUEUE)
@@ -151,6 +129,7 @@ object NativeAudioBridge {
                 .putExtra(NativeAudioService.EXTRA_MANIFEST_URLS_JSON, manifestUrlsJson)
                 .putExtra(NativeAudioService.EXTRA_AUDIO_BASE_URL, audioBaseUrl)
                 .putExtra(NativeAudioService.EXTRA_MANIFEST_START_INDEX, manifestStartIndex)
+                .putExtra(NativeAudioService.EXTRA_AUTH_TOKEN, authToken)
         )
         return NativeAudioService.stateJson("Native queue update requested")
     }
@@ -209,6 +188,7 @@ class NativeAudioPlayQueueArgs {
     var manifestUrlsJson: String = ""
     var audioBaseUrl: String = ""
     var manifestStartIndex: Int = 0
+    var authToken: String = ""
 }
 
 @InvokeArg
@@ -223,6 +203,7 @@ class NativeAudioUpdateQueueArgs {
     var manifestUrlsJson: String = ""
     var audioBaseUrl: String = ""
     var manifestStartIndex: Int = 0
+    var authToken: String = ""
 }
 
 @InvokeArg
@@ -251,7 +232,8 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
                     args.subtitle,
                     args.manifestUrlsJson,
                     args.audioBaseUrl,
-                    args.manifestStartIndex
+                    args.manifestStartIndex,
+                    args.authToken
                 )
             )
         } catch (err: Exception) {
@@ -268,7 +250,7 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     fun update_queue(invoke: Invoke) {
         try {
             val args = invoke.parseArgs(NativeAudioUpdateQueueArgs::class.java)
-            resolveState(invoke, NativeAudioBridge.updateQueue(activity, args.urlsJson, args.manifestUrlsJson, args.audioBaseUrl, args.manifestStartIndex))
+            resolveState(invoke, NativeAudioBridge.updateQueue(activity, args.urlsJson, args.manifestUrlsJson, args.audioBaseUrl, args.manifestStartIndex, args.authToken))
         } catch (err: Exception) {
             invoke.reject(err.message ?: err.toString())
         }
@@ -965,6 +947,9 @@ class NativeAudioService : Service() {
                 readTimeout = 30000
                 requestMethod = "GET"
                 setRequestProperty("User-Agent", "EutherBooksPlayerNativeAudio/1")
+                if (authToken.isNotBlank()) {
+                    setRequestProperty("X-Euther-App-Token", authToken)
+                }
             }
             val code = connection.responseCode
             if (code !in 200..299) {
@@ -1021,6 +1006,7 @@ class NativeAudioService : Service() {
             manifestUrls = parseUrlsFromJson(intent.getStringExtra(EXTRA_MANIFEST_URLS_JSON).orEmpty())
             audioBaseUrl = intent.getStringExtra(EXTRA_AUDIO_BASE_URL).orEmpty()
             manifestStartIndex = intent.getIntExtra(EXTRA_MANIFEST_START_INDEX, defaultStartIndex).coerceAtLeast(0)
+            authToken = intent.getStringExtra(EXTRA_AUTH_TOKEN).orEmpty()
         }
     }
 
@@ -1124,6 +1110,9 @@ class NativeAudioService : Service() {
             connectTimeout = 5000
             readTimeout = 5000
             requestMethod = "GET"
+            if (authToken.isNotBlank()) {
+                setRequestProperty("X-Euther-App-Token", authToken)
+            }
         }
         return connection.inputStream.bufferedReader().use { reader ->
             val json = JSONObject(reader.readText())
@@ -1562,6 +1551,7 @@ class NativeAudioService : Service() {
         const val EXTRA_MANIFEST_URLS_JSON = "manifestUrlsJson"
         const val EXTRA_AUDIO_BASE_URL = "audioBaseUrl"
         const val EXTRA_MANIFEST_START_INDEX = "manifestStartIndex"
+        const val EXTRA_AUTH_TOKEN = "authToken"
 
         private const val CHANNEL_ID = "eutherbooks_playback"
         private const val NOTIFICATION_ID = 9042
@@ -1578,6 +1568,7 @@ class NativeAudioService : Service() {
         private var manifestUrls: List<String> = emptyList()
         private var audioBaseUrl = ""
         private var manifestStartIndex = 0
+        private var authToken = ""
         private var manifestPollActive = false
         private var playRequestId = 0L
         private var lastEvent = "Native audio idle"
@@ -1590,7 +1581,7 @@ class NativeAudioService : Service() {
         @Volatile private var currentService: NativeAudioService? = null
 
         @JvmStatic
-        fun prepareQueueState(urlsJson: String, startIndex: Int, startPositionMs: Long, nextTitle: String, nextSubtitle: String, nextManifestUrlsJson: String, nextAudioBaseUrl: String, nextManifestStartIndex: Int) {
+        fun prepareQueueState(urlsJson: String, startIndex: Int, startPositionMs: Long, nextTitle: String, nextSubtitle: String, nextManifestUrlsJson: String, nextAudioBaseUrl: String, nextManifestStartIndex: Int, nextAuthToken: String) {
             val urls = parseUrlsFromJson(urlsJson)
             synchronized(lock) {
                 queue = urls
@@ -1605,6 +1596,7 @@ class NativeAudioService : Service() {
                 manifestUrls = parseUrlsFromJson(nextManifestUrlsJson)
                 audioBaseUrl = nextAudioBaseUrl
                 manifestStartIndex = nextManifestStartIndex.coerceAtLeast(0)
+                authToken = nextAuthToken
                 manifestPollActive = false
                 error = ""
                 lastEvent = "Native queue requested"

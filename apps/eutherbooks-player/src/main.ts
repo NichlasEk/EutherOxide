@@ -8,6 +8,7 @@ import {
   refreshAudioCacheState,
   setAudioCacheEnabled,
 } from "./audio-cache";
+import { clearAuthToken, loadAuthToken, saveAuthToken } from "./auth-storage";
 import { EutherBooksApi, voicesForModel } from "./eutherbooks-api";
 import { installMediaSessionControls, updateMediaSession } from "./media-session";
 import {
@@ -163,6 +164,11 @@ installBackgroundTelemetry();
 void boot();
 
 async function boot(): Promise<void> {
+  const storedToken = await loadAuthToken();
+  if (storedToken) {
+    settings = { ...settings, authToken: storedToken };
+    api = new EutherBooksApi(settings.serverUrl, storedToken);
+  }
   await refreshAudioCacheState();
   await refreshNativeAudioState();
   void refreshServerRouteConfig();
@@ -244,6 +250,7 @@ async function refreshSavedLogin(serverUrl: string): Promise<void> {
   } catch (err) {
     if (serverUrl === settings.serverUrl && isAuthRejectedError(err)) {
       updateSettings({ ...settings, authToken: "" });
+      await clearAuthToken();
       errorText = err instanceof Error ? `Saved login expired: ${err.message}` : "Saved login expired";
     }
     throw err;
@@ -293,7 +300,7 @@ function isAuthRejectedError(err: unknown): boolean {
   if (!(err instanceof Error)) {
     return false;
   }
-  return /\b(401|403)\b/.test(err.message);
+  return /\b(400|401|403)\b/.test(err.message) && /login required|unauthorized|forbidden|bad request/i.test(err.message);
 }
 
 async function saveRemotePlayerPreferences(): Promise<void> {
@@ -911,6 +918,7 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
     nativeTitle,
     nativeSubtitle,
     nativeQueueManifest(),
+    settings.authToken,
   );
   nativePlayRequestUntil = Date.now() + 20_000;
   scheduleNativePlayConfirmation(mode, queue, startIndex, startPositionSeconds, nativeTitle, nativeSubtitle);
@@ -981,7 +989,15 @@ async function confirmNativePlayStarted(
     return;
   }
   const retryPosition = state.positionSeconds > 0 ? state.positionSeconds : positionSeconds;
-  const retryState = await playNativeAudioQueue(queue, startIndex, retryPosition, title, subtitle, nativeQueueManifest());
+  const retryState = await playNativeAudioQueue(
+    queue,
+    startIndex,
+    retryPosition,
+    title,
+    subtitle,
+    nativeQueueManifest(),
+    settings.authToken,
+  );
   nativePlayRequestUntil = Date.now() + 10_000;
   applyNativeAudioState(retryState);
   setPlaybackEvent(mode === "auto" ? "Native auto-play confirmed" : "Native manual play confirmed");
@@ -1791,7 +1807,7 @@ async function updateNativeQueue(reason: string): Promise<void> {
     return;
   }
   nativeQueuedUrlsKey = key;
-  const state = await updateNativeAudioQueue(urls, nativeQueueManifest());
+  const state = await updateNativeAudioQueue(urls, nativeQueueManifest(), settings.authToken);
   const changedChapter = applyNativeAudioState(state);
   setPlaybackEvent(`Native queue updated: ${reason}`);
   if (changedChapter) {
@@ -2357,22 +2373,12 @@ async function loginToServer(): Promise<void> {
       username: login.user || username,
       authToken: login.token,
     });
-    saveLocalLoginPassword(password);
+    await saveAuthToken(login.token);
     await saveRemotePlayerPreferences();
     await refreshAll();
   } catch (err) {
     errorText = err instanceof Error ? err.message : "Login failed";
     render();
-  }
-}
-
-function localLoginPassword(): string {
-  return localStorage.getItem("eutherbooks-player-login-password") ?? "";
-}
-
-function saveLocalLoginPassword(password: string): void {
-  if (password) {
-    localStorage.setItem("eutherbooks-player-login-password", password);
   }
 }
 
@@ -2525,14 +2531,14 @@ function updatePlayerShell(): void {
 }
 
 function warmAudioCacheForSession(): void {
-  if (!session || !settings.cacheAudio) {
+  if (!session || !settings.cacheAudio || nativeAudioState().available) {
     return;
   }
   prefetchAudio(session.audioFiles.map((path) => api.audioUrl(path)));
 }
 
 function warmAudioCacheForJob(job: Job | null): void {
-  if (!job || !settings.cacheAudio || job.audio_files.length === 0) {
+  if (!job || !settings.cacheAudio || job.audio_files.length === 0 || nativeAudioState().available) {
     return;
   }
   prefetchAudio(job.audio_files.map((path) => api.audioUrl(path)));
@@ -2711,7 +2717,7 @@ function appMarkup(modelVoices: Voice[], currentVoice: Voice | null): string {
         </label>
         <label>
           <span>Password</span>
-          <input id="login-password" type="password" autocomplete="current-password" value="${escapeHtml(localLoginPassword())}" />
+          <input id="login-password" type="password" autocomplete="current-password" value="" />
         </label>
         <button id="login" type="button">Login</button>
         <button id="reload" type="button">Retry</button>
@@ -2886,9 +2892,6 @@ function bindUi(): void {
       void saveRemotePlayerPreferences().catch(() => undefined);
       void refreshAll();
     }
-  });
-  document.querySelector<HTMLInputElement>("#login-password")?.addEventListener("change", (event) => {
-    saveLocalLoginPassword((event.currentTarget as HTMLInputElement).value);
   });
   bindStableControls();
   bindSeekbar();

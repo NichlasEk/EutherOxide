@@ -1753,7 +1753,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/app/login") => host_app_login(stream, state, &request),
         ("GET", "/api/app/config") => send_json(stream, &host_app_config(state)),
         ("GET", "/api/app/status") => {
-            let user = require_host_user_or_app(state, &request)?;
+            let user = match require_host_user_or_app(state, &request) {
+                Ok(user) => user,
+                Err(_) => return send_error(stream, 401, "login required"),
+            };
             let lan_server_url = host_app_lan_server_url(state, &user)?;
             send_json(
                 stream,
@@ -2650,9 +2653,6 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }),
             )
         }
-        ("GET", path) if is_eutherbooks_audio_stream_path(path) => {
-            proxy_eutherbooks_request(stream, &request)
-        }
         ("GET", SERVER_MAP_PATH) => {
             let Some(user) = authenticated_user(state, &request)? else {
                 return send_login_page(stream, None);
@@ -2721,7 +2721,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return proxy_camera_frigate_request(stream, &request);
             }
             if is_eutherbooks_proxy_path(path) {
-                let user = require_host_user_or_app(state, &request)?;
+                let user = match require_host_user_or_app(state, &request) {
+                    Ok(user) => user,
+                    Err(_) => return send_error(stream, 401, "login required"),
+                };
                 if eutherbooks_route_requires_manage_library(path, &request.method) {
                     if let Err(err) =
                         require_host_permission(state, &user, HostPermission::ManageLibrary)
@@ -3739,16 +3742,6 @@ fn is_camera_ai_proxy_path(path: &str) -> bool {
         || path
             .strip_prefix(CAMERA_AI_PROXY_PREFIX)
             .is_some_and(|rest| rest.starts_with('/'))
-}
-
-fn is_eutherbooks_audio_stream_path(path: &str) -> bool {
-    if path.starts_with("/eutherbooks/audio/") {
-        return true;
-    }
-    let Some(stripped) = path.strip_prefix("/eutherbooks/jobs/") else {
-        return false;
-    };
-    stripped.ends_with("/audio") && !stripped.trim_matches('/').is_empty()
 }
 
 fn host_route_requires_origin_check(path: &str) -> bool {
@@ -10206,7 +10199,7 @@ fn send_android_apk(
 }
 
 fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
-    if request.method != "GET" && request.method != "POST" {
+    if request.method != "GET" && request.method != "POST" && request.method != "DELETE" {
         return send_error(stream, 405, "method not allowed");
     }
     let upstream_base =

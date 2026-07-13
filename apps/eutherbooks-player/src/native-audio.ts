@@ -78,6 +78,7 @@ export async function playNativeAudioQueue(
   title: string,
   subtitle: string,
   manifest?: NativeQueueManifest | null,
+  authToken = "",
 ): Promise<NativeAudioState> {
   try {
     const raw = await invokeNativeAudio("play_queue", {
@@ -89,6 +90,7 @@ export async function playNativeAudioQueue(
       manifestUrlsJson: JSON.stringify(manifest?.manifestUrls ?? []),
       audioBaseUrl: manifest?.audioBaseUrl ?? "",
       manifestStartIndex: manifest?.startIndex ?? urls.length,
+      authToken,
     }, "native_audio_play_queue", {
       urls,
       index,
@@ -104,13 +106,18 @@ export async function playNativeAudioQueue(
   return lastState;
 }
 
-export async function updateNativeAudioQueue(urls: string[], manifest?: NativeQueueManifest | null): Promise<NativeAudioState> {
+export async function updateNativeAudioQueue(
+  urls: string[],
+  manifest?: NativeQueueManifest | null,
+  authToken = "",
+): Promise<NativeAudioState> {
   try {
     const raw = await invokeNativeAudio("update_queue", {
       urlsJson: JSON.stringify(urls),
       manifestUrlsJson: JSON.stringify(manifest?.manifestUrls ?? []),
       audioBaseUrl: manifest?.audioBaseUrl ?? "",
       manifestStartIndex: manifest?.startIndex ?? urls.length,
+      authToken,
     }, "native_audio_status");
     lastState = parseState(raw);
   } catch (err) {

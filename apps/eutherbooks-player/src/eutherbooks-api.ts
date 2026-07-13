@@ -91,7 +91,7 @@ export class EutherBooksApi {
   }
 
   async jobs(): Promise<Job[]> {
-    return this.json<Job[]>("/jobs");
+    return this.json<Job[]>("/jobs?owner=eutherbooks-player&limit=1000");
   }
 
   async job(jobId: string): Promise<Job> {
