@@ -137,6 +137,16 @@ export async function pauseNativeAudio(): Promise<NativeAudioState> {
   return lastState;
 }
 
+export async function resumeNativeAudio(): Promise<NativeAudioState> {
+  try {
+    lastState = parseState(await invokeNativeAudio("resume", {}, "native_audio_resume"));
+  } catch (err) {
+    lastState = failedState("resume", err);
+  }
+  checked = true;
+  return lastState;
+}
+
 export async function seekNativeAudio(index: number, positionSeconds: number): Promise<NativeAudioState> {
   try {
     lastState = parseState(await invokeNativeAudio(

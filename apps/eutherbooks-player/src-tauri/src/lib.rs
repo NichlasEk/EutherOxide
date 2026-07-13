@@ -17,6 +17,7 @@ pub fn run() {
             set_wake_lock,
             native_audio_play_queue,
             native_audio_pause,
+            native_audio_resume,
             native_audio_seek,
             native_audio_stop,
             native_audio_status
@@ -111,6 +112,11 @@ fn native_audio_pause(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn native_audio_resume(app: tauri::AppHandle) -> Result<String, String> {
+    recover_command("native audio resume", || platform_native_audio_resume(&app))
+}
+
+#[tauri::command]
 fn native_audio_seek(
     app: tauri::AppHandle,
     index: usize,
@@ -179,6 +185,11 @@ fn platform_native_audio_pause(_app: &tauri::AppHandle) -> Result<String, String
 }
 
 #[cfg(target_os = "android")]
+fn platform_native_audio_resume(_app: &tauri::AppHandle) -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(target_os = "android")]
 fn platform_native_audio_seek(
     _app: &tauri::AppHandle,
     _index: usize,
@@ -221,6 +232,11 @@ fn platform_native_audio_play_queue(
 
 #[cfg(not(target_os = "android"))]
 fn platform_native_audio_pause(_app: &tauri::AppHandle) -> Result<String, String> {
+    Ok(native_audio_unavailable())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_native_audio_resume(_app: &tauri::AppHandle) -> Result<String, String> {
     Ok(native_audio_unavailable())
 }
 

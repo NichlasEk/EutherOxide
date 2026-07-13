@@ -141,6 +141,12 @@ object NativeAudioBridge {
     }
 
     @JvmStatic
+    fun resume(context: Context): String {
+        context.applicationContext.startService(Intent(context.applicationContext, NativeAudioService::class.java).setAction(NativeAudioService.ACTION_RESUME))
+        return NativeAudioService.stateJson("Native resume requested")
+    }
+
+    @JvmStatic
     fun stop(context: Context): String {
         context.applicationContext.startService(Intent(context.applicationContext, NativeAudioService::class.java).setAction(NativeAudioService.ACTION_STOP))
         return NativeAudioService.stateJson("Native stop requested")
@@ -265,6 +271,15 @@ class NativeAudioPlugin(private val activity: Activity): Plugin(activity) {
     fun pause(invoke: Invoke) {
         try {
             resolveState(invoke, NativeAudioBridge.pause(activity))
+        } catch (err: Exception) {
+            invoke.reject(err.message ?: err.toString())
+        }
+    }
+
+    @Command
+    fun resume(invoke: Invoke) {
+        try {
+            resolveState(invoke, NativeAudioBridge.resume(activity))
         } catch (err: Exception) {
             invoke.reject(err.message ?: err.toString())
         }
@@ -729,7 +744,7 @@ class NativeAudioService : Service() {
             )
             nextPlayer.setDataSource(source)
             nextPlayer.setOnPreparedListener { prepared ->
-                synchronized(lock) {
+                val targetPositionMs = synchronized(lock) {
                     if (requestId != playRequestId) {
                         prepared.release()
                         return@setOnPreparedListener
@@ -738,31 +753,35 @@ class NativeAudioService : Service() {
                     positionMs = startPositionMs.coerceIn(0L, max(0L, durationMs - 250L))
                     active = true
                     ended = false
+                    positionMs
                 }
                 try {
-                    if (positionMs > 0L) {
-                        prepared.seekTo(positionMs.toInt())
+                    if (targetPositionMs > 0L) {
+                        synchronized(lock) {
+                            lastEvent = "Native seeking to resume position"
+                            rememberEvent(lastEvent)
+                        }
+                        prepared.setOnSeekCompleteListener { seeked ->
+                            seeked.setOnSeekCompleteListener(null)
+                            startPreparedPlayback(seeked, requestId, targetPositionMs)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            prepared.seekTo(targetPositionMs, MediaPlayer.SEEK_CLOSEST)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            prepared.seekTo(targetPositionMs.toInt())
+                        }
+                    } else {
+                        startPreparedPlayback(prepared, requestId, targetPositionMs)
                     }
-                    prepared.start()
                 } catch (err: Exception) {
                     schedulePlaybackRecovery(
                         requestId,
                         synchronized(lock) { index },
-                        positionMs,
+                        targetPositionMs,
                         "Native start failed: ${err.message ?: err.javaClass.simpleName}"
                     )
-                    return@setOnPreparedListener
                 }
-                synchronized(lock) {
-                    playing = true
-                    error = ""
-                    playbackRetryIndex = -1
-                    playbackRetryCount = 0
-                    lastEvent = "Native playback started"
-                    rememberEvent(lastEvent)
-                }
-                updatePlaybackState()
-                updateNotification()
             }
             nextPlayer.setOnCompletionListener {
                 synchronized(lock) {
@@ -800,6 +819,37 @@ class NativeAudioService : Service() {
                 "Native playback failed: ${err.message ?: err.javaClass.simpleName}"
             )
         }
+    }
+
+    private fun startPreparedPlayback(prepared: MediaPlayer, requestId: Long, targetPositionMs: Long) {
+        synchronized(lock) {
+            if (requestId != playRequestId) {
+                prepared.release()
+                return
+            }
+        }
+        try {
+            prepared.start()
+        } catch (err: Exception) {
+            schedulePlaybackRecovery(
+                requestId,
+                synchronized(lock) { index },
+                targetPositionMs,
+                "Native start failed: ${err.message ?: err.javaClass.simpleName}"
+            )
+            return
+        }
+        synchronized(lock) {
+            playing = true
+            positionMs = targetPositionMs
+            error = ""
+            playbackRetryIndex = -1
+            playbackRetryCount = 0
+            lastEvent = "Native playback started"
+            rememberEvent(lastEvent)
+        }
+        updatePlaybackState()
+        updateNotification()
     }
 
     private fun schedulePlaybackRecovery(requestId: Long, failedIndex: Int, failedPositionMs: Long, reason: String) {

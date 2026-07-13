@@ -17,6 +17,7 @@ import {
   pauseNativeAudio,
   playNativeAudioQueue,
   refreshNativeAudioState,
+  resumeNativeAudio,
   seekNativeAudio,
   stopNativeAudio,
   updateNativeAudioQueue,
@@ -893,19 +894,27 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   const book = selectedBook();
   const chapter = selectedChapter();
   const previousState = nativeAudioState();
+  const resumeExistingNativeQueue = mode === "manual"
+    && userPausedPlayback
+    && previousState.active
+    && !previousState.ended
+    && nativeQueuedUrlsKey.length > 0
+    && previousState.index === nativeAbsoluteIndexForSession(session.currentIndex);
   const keepNativeQueuePosition = mode === "auto"
     && nativePlaybackActive
     && previousState.active
     && !previousState.ended
     && nativeServiceQueuePrefix.length > 0
     && nativeQueuedUrlsKey.length > 0;
-  if (!keepNativeQueuePosition) {
+  if (!keepNativeQueuePosition && !resumeExistingNativeQueue) {
     nativeServiceQueuePrefix = [];
     nativeQueueSessionStartIndex = 0;
   }
   const queue = nativeQueueUrlsForService();
-  nativeQueuedUrlsKey = queue.join("\n");
-  const startIndex = keepNativeQueuePosition
+  if (!resumeExistingNativeQueue) {
+    nativeQueuedUrlsKey = queue.join("\n");
+  }
+  const startIndex = keepNativeQueuePosition || resumeExistingNativeQueue
     ? nativeAbsoluteIndexForSession(session.currentIndex)
     : session.currentIndex;
   if (mode === "manual") {
@@ -915,15 +924,17 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   const startPositionSeconds = session.currentSeconds;
   const nativeTitle = book?.title ?? "EutherBooks";
   const nativeSubtitle = chapter ? chapterLabel(chapter) : "Audiobook";
-  const state = await playNativeAudioQueue(
-    queue,
-    startIndex,
-    startPositionSeconds,
-    nativeTitle,
-    nativeSubtitle,
-    nativeQueueManifest(),
-    settings.authToken,
-  );
+  const state = resumeExistingNativeQueue
+    ? await resumeNativeAudio()
+    : await playNativeAudioQueue(
+        queue,
+        startIndex,
+        startPositionSeconds,
+        nativeTitle,
+        nativeSubtitle,
+        nativeQueueManifest(),
+        settings.authToken,
+      );
   nativePlayRequestUntil = Date.now() + 20_000;
   scheduleNativePlayConfirmation(mode, queue, startIndex, startPositionSeconds, nativeTitle, nativeSubtitle);
   nativePlaybackActive = state.available && (state.active || state.playing || state.lastEvent.toLowerCase().includes("requested"));
@@ -939,10 +950,21 @@ async function playFromNativeSession(mode: "manual" | "auto" = "manual"): Promis
   await setPlaybackWakeLock(true);
   statusText = "Playing";
   if (!lastPlaybackEvent.includes("fallback")) {
-    setPlaybackEvent(mode === "auto" ? "Native auto-play resumed" : "Native manual play");
+    setPlaybackEvent(mode === "auto"
+      ? "Native auto-play resumed"
+      : resumeExistingNativeQueue
+        ? "Native manual resume"
+        : "Native manual play");
   }
-  void reportPlaybackTelemetry(mode === "auto" ? "native-auto-play" : "native-manual-play");
+  void reportPlaybackTelemetry(mode === "auto"
+    ? "native-auto-play"
+    : resumeExistingNativeQueue
+      ? "native-manual-resume"
+      : "native-manual-play");
   void maybeEnsureNextAhead("native-play");
+  if (resumeExistingNativeQueue) {
+    void updateNativeQueue("manual-resume");
+  }
   scheduleSleepTimer();
   startPlaybackWatchdog();
   updateAppMediaSession();
@@ -2198,7 +2220,7 @@ function isNativePlayRequestPending(state = nativeAudioState()): boolean {
   if (!nativePlaybackActive || Date.now() > nativePlayRequestUntil) {
     return false;
   }
-  const event = state.lastEvent.toLowerCase();
+  const event = `${state.lastEvent} ${state.statusEvent}`.toLowerCase();
   return state.active
     && !state.playing
     && !state.ended
