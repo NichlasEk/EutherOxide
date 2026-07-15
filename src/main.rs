@@ -71,6 +71,8 @@ const CAMERA_ADMIN_PATH: &str = "/camera-admin";
 const SECONDSIGHT_PATH: &str = "/secondsight";
 const EUTHERBIRD_PATH: &str = "/eutherbird";
 const SERVER_MAP_PATH: &str = "/server-map";
+const EUTHERGATE_PATH: &str = "/euthergate";
+const EUTHERGATE_PROXY_PREFIX: &str = "/euthergate";
 const EUTHERSTUDIO_PATH: &str = "/studio";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
@@ -1736,6 +1738,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && !is_eutherbooks_proxy_path(path)
         && !is_eutherpal_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
+        && !is_euthergate_proxy_path(path)
         && !app_token_request
         && !valid_csrf_token(state, &request)?
     {
@@ -2662,6 +2665,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
             send_server_map_page(stream)
         }
+        ("GET", EUTHERGATE_PATH) => {
+            if let Err(err) = require_host_admin(state, &request) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_redirect(stream, 308, "/euthergate/")
+        }
         ("GET", CAMERA_ADMIN_PATH) => {
             let Some(user) = authenticated_user(state, &request)? else {
                 return send_login_page(stream, None);
@@ -2690,6 +2699,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             proxy_camera_ai_request_to_path(stream, &request, "/eutherbird")
         }
         _ => {
+            if is_euthergate_proxy_path(path) {
+                if let Err(err) = require_host_admin(state, &request) {
+                    return send_error(stream, 403, &err.to_string());
+                }
+                return proxy_euthergate_request(stream, &request);
+            }
             if is_euthernet_admin_proxy_path(path) {
                 let user = require_host_user(state, &request)?;
                 if let Err(err) = require_host_permission(state, &user, HostPermission::ServerMap) {
@@ -10305,6 +10320,122 @@ fn is_euthernet_admin_proxy_path(path: &str) -> bool {
         || path
             .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn is_euthergate_proxy_path(path: &str) -> bool {
+    path == EUTHERGATE_PROXY_PREFIX
+        || path
+            .strip_prefix(EUTHERGATE_PROXY_PREFIX)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn euthergate_upstream_path(path: &str) -> String {
+    path.strip_prefix(EUTHERGATE_PROXY_PREFIX)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/")
+        .to_string()
+}
+
+fn proxy_euthergate_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    if !matches!(request.method.as_str(), "GET" | "POST") {
+        return send_error(stream, 405, "method not allowed");
+    }
+    if request.method != "GET" && header_value(request, "sec-fetch-site") != Some("same-origin") {
+        return send_error(stream, 403, "same-origin admin request required");
+    }
+    if is_websocket_upgrade(request) {
+        return proxy_euthergate_websocket_request(stream, request);
+    }
+
+    let upstream_base =
+        env::var("EUTHERGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:18787".to_string());
+    let proxy_token = env::var("EUTHERGATE_PROXY_TOKEN")
+        .map_err(|_| io::Error::other("EUTHERGATE_PROXY_TOKEN is not configured"))?;
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherGate upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let upstream_path = euthergate_upstream_path(&request.path);
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nX-EutherGate-Proxy-Token: {}\r\n",
+        request.method, upstream_path, upstream_base, proxy_token
+    )?;
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("accept-encoding")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("x-euthergate-proxy-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    io::copy(&mut upstream, stream)?;
+    Ok(())
+}
+
+fn proxy_euthergate_websocket_request(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let upstream_base =
+        env::var("EUTHERGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:18787".to_string());
+    let proxy_token = env::var("EUTHERGATE_PROXY_TOKEN")
+        .map_err(|_| io::Error::other("EUTHERGATE_PROXY_TOKEN is not configured"))?;
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherGate upstream unavailable"),
+    };
+    let upstream_path = euthergate_upstream_path(&request.path);
+    write!(
+        upstream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nX-EutherGate-Proxy-Token: {}\r\n",
+        upstream_path, upstream_base, proxy_token
+    )?;
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("x-euthergate-proxy-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+
+    upstream.set_read_timeout(None)?;
+    upstream.set_write_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(Some(Duration::from_secs(15)))?;
+
+    let mut upstream_to_client = upstream.try_clone()?;
+    let mut client_writer = stream.try_clone()?;
+    let client_shutdown = stream.try_clone()?;
+    let upstream_shutdown = upstream.try_clone()?;
+    let to_client = thread::spawn(move || {
+        let result = io::copy(&mut upstream_to_client, &mut client_writer);
+        let _ = client_shutdown.shutdown(Shutdown::Both);
+        result
+    });
+    let to_upstream = io::copy(stream, &mut upstream);
+    let _ = upstream_shutdown.shutdown(Shutdown::Both);
+    let _ = to_client.join();
+    to_upstream.map(|_| ())
 }
 
 fn proxy_euthernet_admin_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
@@ -19022,5 +19153,16 @@ mod tests {
         assert!(safe_relative_path("../secret.md").is_err());
         assert!(safe_relative_path("Games/../../secret.md").is_err());
         assert!(safe_relative_path("/tmp/secret.md").is_err());
+    }
+
+    #[test]
+    fn euthergate_proxy_only_matches_its_own_path_prefix() {
+        assert!(is_euthergate_proxy_path("/euthergate"));
+        assert!(is_euthergate_proxy_path("/euthergate/api/status"));
+        assert!(!is_euthergate_proxy_path("/euthergateway"));
+        assert_eq!(
+            euthergate_upstream_path("/euthergate/api/status?full=1"),
+            "/api/status?full=1"
+        );
     }
 }

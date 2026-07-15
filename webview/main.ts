@@ -2009,6 +2009,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-eutherstudio-link type="button" hidden>Studio</button>
             <button data-camera-admin-link type="button" hidden>EutherSight</button>
             <button data-server-map-link type="button" hidden>Serverkarta</button>
+            <button data-euthergate-link type="button" hidden>EutherGate</button>
           </div>
         </div>
       </nav>
@@ -2634,6 +2635,7 @@ const userMenuDropdown = document.querySelector<HTMLDivElement>("#user-menu-drop
 const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu-action="admin"]')!;
 const cameraAdminLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-camera-admin-link]"));
 const serverMapLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-server-map-link]"));
+const eutherGateLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-euthergate-link]"));
 const eutherStudioLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-eutherstudio-link]"));
 const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
 const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
@@ -3834,6 +3836,12 @@ cameraAdminLinks.forEach((button) => {
 serverMapLinks.forEach((button) => {
   button.addEventListener("click", () => {
     window.location.href = "/server-map";
+  });
+});
+
+eutherGateLinks.forEach((button) => {
+  button.addEventListener("click", () => {
+    window.location.href = "/euthergate/";
   });
 });
 
@@ -15481,6 +15489,9 @@ function renderAdminAccess(): void {
   });
   serverMapLinks.forEach((button) => {
     button.hidden = !hostPermissions.canServerMap;
+  });
+  eutherGateLinks.forEach((button) => {
+    button.hidden = !hostIsAdmin;
   });
   eutherStudioLinks.forEach((button) => {
     button.hidden = !hostPermissions.canGenerateMusic && !hostUsername;

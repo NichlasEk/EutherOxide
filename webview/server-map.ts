@@ -730,6 +730,10 @@ async function enterFocusedNode(): Promise<void> {
     await enterEutherBooksRoom(target);
     return;
   }
+  if (isEutherGateNode(target)) {
+    window.location.href = "/euthergate/";
+    return;
+  }
   enterGenericNodeRoom(target);
 }
 
@@ -1532,6 +1536,9 @@ function updateControlsGuide(node: SceneNode | null): void {
 }
 
 function cityObjectiveFor(node: SceneNode): string {
+  if (isEutherGateNode(node)) {
+    return "EutherGate is the admin-only remote forge. Press F or click Enter Node to open the live terminal and Wayland desktop.";
+  }
   if (isEutherBooksNode(node)) {
     return "EutherBooks has an explorable room. Press F or click Enter Node to go into the library. Press E first if you want service details and restart controls.";
   }
@@ -1593,6 +1600,11 @@ function isCustodianNode(node: SceneNode): boolean {
 function isEutherBooksNode(node: SceneNode): boolean {
   const value = `${node.id} ${node.label} ${node.detail || ""}`.toLowerCase();
   return value.includes("eutherbooks");
+}
+
+function isEutherGateNode(node: SceneNode): boolean {
+  const value = `${node.id} ${node.label}`.toLowerCase();
+  return value.includes("euthergate");
 }
 
 function nodeCanEnter(node: SceneNode): boolean {
