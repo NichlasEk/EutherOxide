@@ -1379,6 +1379,18 @@ async function restartSelectedService(): Promise<void> {
   if (!ok) return;
   restartButton.disabled = true;
   statusLine.textContent = `Restarting ${label}...`;
+  if (command.startsWith("restart-euthergate-")) {
+    const service = command.slice("restart-euthergate-".length);
+    const result = await jsonFetch<{ service: string; unit: string; scheduled_seconds: number; error?: string }>(
+      `/euthergate/api/services/${encodeURIComponent(service)}/restart`,
+      { method: "POST", body: "{}" },
+    );
+    if (result.error) throw new Error(result.error);
+    statusLine.textContent = `Restart scheduled for ${result.unit} in ${result.scheduled_seconds}s.`;
+    await new Promise((resolve) => window.setTimeout(resolve, 2800));
+    await loadMap(false);
+    return;
+  }
   const result = await jsonFetch<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>("/api/admin/euthernet/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1413,6 +1425,9 @@ function restartCommandForService(service: ServiceReport): string | null {
   if (units.includes("caddy.service")) return "restart-caddy";
   if (units.includes("eutherbooks.service")) return "restart-eutherbooks";
   if (units.includes("eutherpunkd.service")) return "restart-eutherpunkd";
+  if (units.includes("euthergate.service")) return "restart-euthergate-gateway";
+  if (units.includes("euthergate-tunnel.service")) return "restart-euthergate-tunnel";
+  if (units.includes("euthergate-forge.service")) return "restart-euthergate-forge";
   if (service.name.toLowerCase() === "euthersight") return "restart-euthersight-frigate";
   return null;
 }

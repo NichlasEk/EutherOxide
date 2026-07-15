@@ -2010,6 +2010,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-camera-admin-link type="button" hidden>EutherSight</button>
             <button data-server-map-link type="button" hidden>Serverkarta</button>
             <button data-euthergate-link type="button" hidden>EutherGate</button>
+            <button data-euthergate-wake type="button" hidden>Väck skärmarna</button>
           </div>
         </div>
       </nav>
@@ -2636,6 +2637,7 @@ const userMenuAdmin = document.querySelector<HTMLButtonElement>('[data-user-menu
 const cameraAdminLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-camera-admin-link]"));
 const serverMapLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-server-map-link]"));
 const eutherGateLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-euthergate-link]"));
+const eutherGateWakeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-euthergate-wake]"));
 const eutherStudioLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-eutherstudio-link]"));
 const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
 const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
@@ -3842,6 +3844,34 @@ serverMapLinks.forEach((button) => {
 eutherGateLinks.forEach((button) => {
   button.addEventListener("click", () => {
     window.location.href = "/euthergate/";
+  });
+});
+
+eutherGateWakeButtons.forEach((button) => {
+  button.addEventListener("click", async () => {
+    const idleLabel = "Väck skärmarna";
+    button.disabled = true;
+    button.textContent = "Väcker…";
+    try {
+      const response = await fetch("/euthergate/api/displays/wake", { method: "POST" });
+      const result = (await response.json()) as {
+        woken?: string[];
+        locked?: boolean;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error || "Skärmarna kunde inte väckas");
+      button.textContent = result.locked ? "Väckta · låst" : "Väckta";
+      button.title = result.woken?.length ? `Väckte ${result.woken.join(", ")}` : "Skärmarna är väckta";
+    } catch (error) {
+      button.textContent = "Väckning misslyckades";
+      button.title = error instanceof Error ? error.message : "Skärmarna kunde inte väckas";
+    } finally {
+      window.setTimeout(() => {
+        if (!button.isConnected) return;
+        button.disabled = false;
+        button.textContent = idleLabel;
+      }, 3500);
+    }
   });
 });
 
@@ -15491,6 +15521,9 @@ function renderAdminAccess(): void {
     button.hidden = !hostPermissions.canServerMap;
   });
   eutherGateLinks.forEach((button) => {
+    button.hidden = !hostIsAdmin;
+  });
+  eutherGateWakeButtons.forEach((button) => {
     button.hidden = !hostIsAdmin;
   });
   eutherStudioLinks.forEach((button) => {
