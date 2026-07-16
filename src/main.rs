@@ -2706,9 +2706,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return proxy_euthergate_request(stream, &request);
             }
             if is_euthernet_admin_proxy_path(path) {
-                let user = require_host_user(state, &request)?;
-                if let Err(err) = require_host_permission(state, &user, HostPermission::ServerMap) {
-                    return send_error(stream, 403, &err.to_string());
+                if euthernet_request_requires_host_admin(&request.method, path) {
+                    if let Err(err) = require_host_admin(state, &request) {
+                        return send_error(stream, 403, &err.to_string());
+                    }
+                } else {
+                    let user = require_host_user(state, &request)?;
+                    if let Err(err) =
+                        require_host_permission(state, &user, HostPermission::ServerMap)
+                    {
+                        return send_error(stream, 403, &err.to_string());
+                    }
                 }
                 return proxy_euthernet_admin_request(stream, &request);
             }
@@ -10320,6 +10328,16 @@ fn is_euthernet_admin_proxy_path(path: &str) -> bool {
         || path
             .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn euthernet_request_requires_host_admin(method: &str, path: &str) -> bool {
+    if method != "POST" {
+        return false;
+    }
+    let relative = path
+        .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
+        .unwrap_or_default();
+    relative.split('?').next().unwrap_or(relative) == "/run"
 }
 
 fn is_euthergate_proxy_path(path: &str) -> bool {
@@ -19164,5 +19182,29 @@ mod tests {
             euthergate_upstream_path("/euthergate/api/status?full=1"),
             "/api/status?full=1"
         );
+    }
+
+    #[test]
+    fn euthernet_run_requires_host_admin_but_read_routes_do_not() {
+        assert!(euthernet_request_requires_host_admin(
+            "POST",
+            "/api/admin/euthernet/run"
+        ));
+        assert!(euthernet_request_requires_host_admin(
+            "POST",
+            "/api/admin/euthernet/run?source=map"
+        ));
+        assert!(!euthernet_request_requires_host_admin(
+            "GET",
+            "/api/admin/euthernet/run"
+        ));
+        assert!(!euthernet_request_requires_host_admin(
+            "GET",
+            "/api/admin/euthernet/map"
+        ));
+        assert!(!euthernet_request_requires_host_admin(
+            "POST",
+            "/api/admin/euthernet/refresh"
+        ));
     }
 }
