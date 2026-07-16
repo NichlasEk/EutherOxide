@@ -77,6 +77,8 @@ const EUTHERSTUDIO_PATH: &str = "/studio";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
 const EUTHERNET_ADMIN_PROXY_PREFIX: &str = "/api/admin/euthernet";
+const EUTHERID_ADMIN_PROXY_PREFIX: &str = "/api/admin/eutherid";
+const EUTHERID_PUBLIC_PROXY_PREFIX: &str = "/api/eutherid";
 const EUTHERLINK_ADMIN_PROXY_PREFIX: &str = "/api/admin/eutherlink";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
@@ -1739,6 +1741,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && !is_eutherpal_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
         && !is_euthergate_proxy_path(path)
+        && !eutherid_public_request_path(&request.method, path)
         && !app_token_request
         && !valid_csrf_token(state, &request)?
     {
@@ -2699,6 +2702,19 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             proxy_camera_ai_request_to_path(stream, &request, "/eutherbird")
         }
         _ => {
+            if is_eutherid_proxy_path(path) {
+                let Some((upstream_path, internal_auth)) =
+                    eutherid_upstream_route(&request.method, path)
+                else {
+                    return send_error(stream, 404, "unsupported EutherID endpoint");
+                };
+                if internal_auth {
+                    if let Err(err) = require_host_admin(state, &request) {
+                        return send_error(stream, 403, &err.to_string());
+                    }
+                }
+                return proxy_eutherid_request(stream, &request, &upstream_path, internal_auth);
+            }
             if is_euthergate_proxy_path(path) {
                 if let Err(err) = require_host_admin(state, &request) {
                     return send_error(stream, 403, &err.to_string());
@@ -10328,6 +10344,130 @@ fn is_euthernet_admin_proxy_path(path: &str) -> bool {
         || path
             .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn is_eutherid_proxy_path(path: &str) -> bool {
+    [EUTHERID_ADMIN_PROXY_PREFIX, EUTHERID_PUBLIC_PROXY_PREFIX]
+        .iter()
+        .any(|prefix| {
+            path == *prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+fn eutherid_public_request_path(method: &str, path: &str) -> bool {
+    eutherid_upstream_route(method, path).is_some_and(|(_, internal_auth)| !internal_auth)
+}
+
+fn eutherid_upstream_route(method: &str, path: &str) -> Option<(String, bool)> {
+    if method == "POST" && path == "/api/admin/eutherid/device-enrollments" {
+        return Some(("/v1/device-enrollments".to_string(), true));
+    }
+    if method == "POST" && path == "/api/admin/eutherid/challenges" {
+        return Some(("/v1/challenges".to_string(), true));
+    }
+    if method == "POST" && path == "/api/eutherid/device-enrollments/complete" {
+        return Some(("/v1/device-enrollments/complete".to_string(), false));
+    }
+
+    let (prefix, internal_auth) =
+        if let Some(rest) = path.strip_prefix("/api/admin/eutherid/challenges/") {
+            (rest, true)
+        } else if let Some(rest) = path.strip_prefix("/api/eutherid/challenges/") {
+            (rest, false)
+        } else {
+            return None;
+        };
+    let mut parts = prefix.split('/');
+    let challenge_id = parts.next()?;
+    let operation = parts.next();
+    if parts.next().is_some()
+        || challenge_id.len() < 20
+        || challenge_id.len() > 128
+        || !challenge_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return None;
+    }
+    match (internal_auth, method, operation) {
+        (true, "GET", None) => Some((format!("/v1/challenges/{challenge_id}"), true)),
+        (true, "POST", Some("action-proof")) => {
+            Some((format!("/v1/challenges/{challenge_id}/action-proof"), true))
+        }
+        (false, "POST", Some("approval")) => {
+            Some((format!("/v1/challenges/{challenge_id}/approval"), false))
+        }
+        _ => None,
+    }
+}
+
+fn proxy_eutherid_request(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    upstream_path: &str,
+    internal_auth: bool,
+) -> io::Result<()> {
+    if !matches!(request.method.as_str(), "GET" | "POST") {
+        return send_error(stream, 405, "method not allowed");
+    }
+    if request.body.len() > 32 * 1024 {
+        return send_error(stream, 413, "EutherID request too large");
+    }
+    let upstream_base =
+        env::var("EUTHERID_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8792".to_string());
+    let internal_token = if internal_auth {
+        let path = env::var("EUTHERID_INTERNAL_TOKEN_FILE")
+            .map_err(|_| io::Error::other("EUTHERID_INTERNAL_TOKEN_FILE is not configured"))?;
+        let token = fs::read_to_string(path)
+            .map_err(|_| io::Error::other("EutherID internal token is unavailable"))?
+            .trim()
+            .to_string();
+        if token.len() < 32 || token.chars().any(char::is_control) {
+            return Err(io::Error::other("EutherID internal token is invalid"));
+        }
+        Some(token)
+    } else {
+        None
+    };
+    let mut upstream = match TcpStream::connect(&upstream_base) {
+        Ok(upstream) => upstream,
+        Err(_) => return send_error(stream, 502, "EutherID upstream unavailable"),
+    };
+    upstream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method, upstream_path, upstream_base
+    )?;
+    if let Some(token) = internal_token {
+        write!(upstream, "X-EutherID-Internal-Token: {token}\r\n")?;
+    }
+    if !request.body.is_empty() {
+        write!(upstream, "Content-Length: {}\r\n", request.body.len())?;
+    }
+    for (name, value) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("accept-encoding")
+            || name.eq_ignore_ascii_case("x-csrf-token")
+            || name.eq_ignore_ascii_case("x-eutherid-internal-token")
+            || name.eq_ignore_ascii_case("cookie")
+        {
+            continue;
+        }
+        write!(upstream, "{name}: {value}\r\n")?;
+    }
+    write!(upstream, "\r\n")?;
+    if !request.body.is_empty() {
+        upstream.write_all(&request.body)?;
+    }
+    io::copy(&mut upstream, stream)?;
+    Ok(())
 }
 
 fn euthernet_request_requires_host_admin(method: &str, path: &str) -> bool {
@@ -19206,5 +19346,46 @@ mod tests {
             "POST",
             "/api/admin/euthernet/refresh"
         ));
+    }
+
+    #[test]
+    fn eutherid_proxy_exposes_only_explicit_enrollment_and_approval_routes() {
+        assert_eq!(
+            eutherid_upstream_route("POST", "/api/admin/eutherid/device-enrollments"),
+            Some(("/v1/device-enrollments".to_string(), true))
+        );
+        assert_eq!(
+            eutherid_upstream_route("POST", "/api/eutherid/device-enrollments/complete"),
+            Some(("/v1/device-enrollments/complete".to_string(), false))
+        );
+        let id = "A2345678901234567890_-challenge";
+        assert_eq!(
+            eutherid_upstream_route("POST", &format!("/api/eutherid/challenges/{id}/approval")),
+            Some((format!("/v1/challenges/{id}/approval"), false))
+        );
+        assert_eq!(
+            eutherid_upstream_route(
+                "POST",
+                &format!("/api/admin/eutherid/challenges/{id}/action-proof")
+            ),
+            Some((format!("/v1/challenges/{id}/action-proof"), true))
+        );
+        assert!(eutherid_public_request_path(
+            "POST",
+            &format!("/api/eutherid/challenges/{id}/approval")
+        ));
+        assert!(!eutherid_public_request_path(
+            "POST",
+            "/api/admin/eutherid/device-enrollments"
+        ));
+        assert!(eutherid_upstream_route("POST", "/api/eutherid/action-proofs/consume").is_none());
+        assert!(eutherid_upstream_route("GET", "/api/eutherid/challenges/short").is_none());
+        assert!(
+            eutherid_upstream_route(
+                "POST",
+                &format!("/api/eutherid/challenges/{id}/action-proof")
+            )
+            .is_none()
+        );
     }
 }
