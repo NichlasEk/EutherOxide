@@ -443,7 +443,7 @@ function initScene(): void {
   scene.add(ambient, key, cyan);
 
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(180, 180, 48, 48),
+    new THREE.PlaneGeometry(360, 360, 96, 96),
     new THREE.MeshStandardMaterial({ color: 0x070d12, roughness: 0.9, metalness: 0.15 }),
   );
   floor.rotation.x = -Math.PI / 2;
@@ -453,7 +453,7 @@ function initScene(): void {
 }
 
 function addGrid(): void {
-  const grid = new THREE.GridHelper(180, 72, 0x276b72, 0x122832);
+  const grid = new THREE.GridHelper(360, 144, 0x276b72, 0x122832);
   grid.position.y = 0.02;
   scene.add(grid);
 }
