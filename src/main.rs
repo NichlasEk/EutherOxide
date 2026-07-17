@@ -14633,6 +14633,25 @@ fn login_page_html(error: Option<&str>) -> String {
       if (eutherIdPoll !== null) window.clearTimeout(eutherIdPoll);
       eutherIdPoll = null;
     }}
+    function enterEutherOxide() {{
+      window.location.replace("/#/play");
+    }}
+    async function completeEutherIdLogin() {{
+      const response = await fetch("/api/eutherid/login/complete", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify({{
+          challengeId: eutherIdLogin.challengeId,
+          browserSecret: eutherIdLogin.browserSecret,
+        }}),
+      }});
+      if (!response.ok) {{
+        const message = await response.text().catch(() => "");
+        throw new Error(message || "Kunde inte slutföra EutherID-inloggningen");
+      }}
+      eutherIdStatus.textContent = "Inloggad. Öppnar EutherOxide…";
+      enterEutherOxide();
+    }}
     async function pollEutherIdLogin() {{
       if (!eutherIdLogin || eutherIdCompleting) return;
       try {{
@@ -14643,11 +14662,7 @@ fn login_page_html(error: Option<&str>) -> String {
         if (result.status === "approved") {{
           eutherIdCompleting = true;
           eutherIdStatus.textContent = "Godkänd. Skapar säker session…";
-          const completed = await postReset("/api/eutherid/login/complete", {{
-            challengeId: eutherIdLogin.challengeId,
-            browserSecret: eutherIdLogin.browserSecret,
-          }});
-          window.location.href = completed.redirect || "/#/play";
+          await completeEutherIdLogin();
           return;
         }}
         if (result.status === "denied" || result.status === "expired") {{
@@ -14663,6 +14678,18 @@ fn login_page_html(error: Option<&str>) -> String {
       }}
       eutherIdPoll = window.setTimeout(pollEutherIdLogin, 1500);
     }}
+    async function resumeCompletedEutherIdLogin() {{
+      if (!eutherIdCompleting) return;
+      try {{
+        const response = await fetch("/api/auth/status", {{ cache: "no-store" }});
+        const auth = await response.json();
+        if (auth.authenticated) enterEutherOxide();
+      }} catch (_) {{}}
+    }}
+    window.addEventListener("pageshow", resumeCompletedEutherIdLogin);
+    document.addEventListener("visibilitychange", () => {{
+      if (document.visibilityState === "visible") resumeCompletedEutherIdLogin();
+    }});
     document.getElementById("eutherid-login-start").addEventListener("click", async () => {{
       const username = document.getElementById("eutherid-login-user").value.trim();
       if (!username) {{ eutherIdStatus.textContent = "Skriv användarnamnet först."; return; }}
