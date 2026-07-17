@@ -9,6 +9,10 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::fs as unix_fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Child, ChildStdin, Command, Stdio};
 use std::sync::{
@@ -1055,6 +1059,27 @@ struct HostEutherIdRecoveryToken {
     created_unix_ms: u64,
     expires_unix_ms: u64,
     consumed_unix_ms: Option<u64>,
+    #[serde(default = "default_email_recovery_kind")]
+    kind: String,
+}
+
+fn default_email_recovery_kind() -> String {
+    "email".to_string()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostOfflineRecoveryCodeRequest {
+    current_password: String,
+}
+
+#[cfg(unix)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostAutomationSocketRequest {
+    op: String,
+    name: Option<String>,
+    challenge_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1821,6 +1846,8 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         next_alert_touch_id: Arc::new(Mutex::new(1)),
         active_requests: Arc::new(AtomicUsize::new(0)),
     };
+    #[cfg(unix)]
+    start_host_automation_socket(&state)?;
     println!(
         "EutherHost reaction chamber listening on http://{}",
         state.config.bind
@@ -3010,6 +3037,24 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     send_error(stream, 429, &err.to_string())
                 }
                 Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/admin/eutherid/recovery/offline-codes") => {
+            let admin = require_host_admin(state, &request)?;
+            let input: HostOfflineRecoveryCodeRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid offline recovery request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match create_offline_recovery_codes(
+                state,
+                &admin,
+                &input.current_password,
+                &remote_addr,
+            ) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) => send_error(stream, 500, &err.to_string()),
             }
         }
         ("POST", "/api/admin/eutherid/recovery/complete") => {
@@ -11330,6 +11375,126 @@ fn service_restart_spec(command_id: &str) -> Option<(&'static str, &'static str)
         _ => None,
     }
 }
+
+fn configured_eutherid_request_actor(state: &HostState) -> io::Result<String> {
+    let actor = env::var("EUTHERID_REQUEST_ACTOR").unwrap_or_else(|_| "nichlas".to_string());
+    validate_host_username(&actor)?;
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if !users
+        .iter()
+        .any(|user| user.name == actor && user.admin && !user.banned)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "configured request actor is not an active admin",
+        ));
+    }
+    Ok(actor)
+}
+
+#[cfg(unix)]
+fn start_host_automation_socket(state: &HostState) -> io::Result<()> {
+    let socket_path = env::var("EUTHERHOST_AUTOMATION_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| host_dir().join("automation.sock"));
+    if let Ok(metadata) = fs::symlink_metadata(&socket_path) {
+        if !metadata.file_type().is_socket() {
+            return Err(io::Error::other(format!(
+                "refusing to replace non-socket automation path {}",
+                socket_path.display()
+            )));
+        }
+        fs::remove_file(&socket_path)?;
+    }
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let listener = UnixListener::bind(&socket_path)?;
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
+    let state = state.clone();
+    thread::spawn(move || {
+        for incoming in listener.incoming() {
+            match incoming {
+                Ok(mut stream) => {
+                    let state = state.clone();
+                    thread::spawn(move || {
+                        if let Err(err) = handle_host_automation_socket(&mut stream, &state) {
+                            let _ = write_automation_socket_response(
+                                &mut stream,
+                                &serde_json::json!({ "ok": false, "error": err.to_string() }),
+                            );
+                        }
+                    });
+                }
+                Err(err) => eprintln!("automation socket accept error: {err}"),
+            }
+        }
+    });
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_automation_socket_response(
+    stream: &mut UnixStream,
+    value: &serde_json::Value,
+) -> io::Result<()> {
+    let mut body = serde_json::to_vec(value).map_err(|err| io::Error::other(err.to_string()))?;
+    body.push(b'\n');
+    stream.write_all(&body)
+}
+
+#[cfg(unix)]
+fn handle_host_automation_socket(stream: &mut UnixStream, state: &HostState) -> io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut body = Vec::new();
+    (&mut *stream).take(16 * 1024 + 1).read_to_end(&mut body)?;
+    if body.len() > 16 * 1024 {
+        return Err(invalid_request("automation request is too large"));
+    }
+    let request: HostAutomationSocketRequest = serde_json::from_slice(&body)
+        .map_err(|_| invalid_request("invalid automation request"))?;
+    let actor = configured_eutherid_request_actor(state)?;
+    let response = match request.op.as_str() {
+        "create" => {
+            let command = request
+                .name
+                .as_deref()
+                .ok_or_else(|| invalid_request("automation command is required"))?;
+            if service_restart_spec(command).is_none() {
+                return Err(invalid_request("automation command is not allowlisted"));
+            }
+            create_service_restart_request(
+                state,
+                actor,
+                sha256_hex(format!("unix:{}:{}", unix_ms_now(), random_token()?).as_bytes()),
+                command,
+            )?
+        }
+        "status" => {
+            let challenge_id = request
+                .challenge_id
+                .as_deref()
+                .ok_or_else(|| invalid_request("challengeId is required"))?;
+            poll_service_restart_request(state, challenge_id, Some(&actor), "unix:automation")?
+        }
+        "handles" => serde_json::json!({
+            "ok": true,
+            "handles": [
+                "restart-eutherhost", "restart-caddy", "restart-eutherbooks",
+                "restart-eutherpunkd", "restart-eutherpal", "restart-euthersync",
+                "restart-euther-watchdog", "restart-euthergate-turn",
+                "restart-euthersight-frigate", "restart-euthergate-gateway",
+                "restart-euthergate-tunnel", "restart-euthergate-forge"
+            ]
+        }),
+        _ => return Err(invalid_request("unsupported automation operation")),
+    };
+    write_automation_socket_response(stream, &response)
+}
 fn direct_euthergate_restart_service(command_id: &str) -> Option<&'static str> {
     match command_id {
         "restart-euthergate-gateway" => Some("gateway"),
@@ -11341,23 +11506,7 @@ fn direct_euthergate_restart_service(command_id: &str) -> Option<&'static str> {
 
 
 fn create_eutherbooks_restart_request(state: &HostState) -> io::Result<serde_json::Value> {
-    let actor = env::var("EUTHERID_REQUEST_ACTOR").unwrap_or_else(|_| "nichlas".to_string());
-    validate_host_username(&actor)?;
-    {
-        let users = state
-            .users
-            .lock()
-            .map_err(|err| io::Error::other(err.to_string()))?;
-        if !users
-            .iter()
-            .any(|user| user.name == actor && user.admin && !user.banned)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "configured request actor is not an active admin",
-            ));
-        }
-    }
+    let actor = configured_eutherid_request_actor(state)?;
     create_service_restart_request(
         state,
         actor,
@@ -12055,6 +12204,88 @@ fn valid_eutherid_recovery_code(token: &str) -> bool {
     token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn build_offline_recovery_codes(
+    actor: &str,
+    now: u64,
+) -> io::Result<(Vec<String>, Vec<HostEutherIdRecoveryToken>)> {
+    let expires = now.saturating_add(365 * 24 * 60 * 60 * 1000);
+    let mut plain = Vec::with_capacity(10);
+    let mut stored = Vec::with_capacity(10);
+    for _ in 0..10 {
+        let token = random_token()?;
+        stored.push(HostEutherIdRecoveryToken {
+            token_hash: eutherid_recovery_token_hash(&token),
+            actor: actor.to_string(),
+            created_unix_ms: now,
+            expires_unix_ms: expires,
+            consumed_unix_ms: None,
+            kind: "offline".to_string(),
+        });
+        plain.push(token);
+    }
+    Ok((plain, stored))
+}
+
+fn create_offline_recovery_codes(
+    state: &HostState,
+    actor: &str,
+    current_password: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let user = users
+            .iter()
+            .find(|user| user.name == actor && user.admin && !user.banned)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "request rejected"))?;
+        if !verify_password(current_password, &user.password_hash) {
+            audit_host_event(
+                state,
+                "eutherid_offline_codes_created",
+                Some(actor),
+                remote_addr,
+                false,
+                "bad_password",
+            )?;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "current password is incorrect",
+            ));
+        }
+    }
+    let now = unix_ms_now();
+    let (plain, generated) = build_offline_recovery_codes(actor, now)?;
+    let expires = generated
+        .first()
+        .map(|token| token.expires_unix_ms)
+        .unwrap_or(now);
+    let mut tokens = state
+        .eutherid_recovery_tokens
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    tokens.retain(|token| token.actor != actor || token.kind != "offline");
+    tokens.extend(generated);
+    save_host_eutherid_recovery_tokens(&tokens)?;
+    audit_host_event(
+        state,
+        "eutherid_offline_codes_created",
+        Some(actor),
+        remote_addr,
+        true,
+        "ten_hashes_stored_plaintext_shown_once",
+    )?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "codes": plain,
+        "createdAt": now,
+        "expiresAt": expires,
+        "warning": "These codes are shown once. Store them offline. Creating a new pack invalidates the previous pack."
+    }))
+}
+
 fn normalize_account_email(value: &str) -> io::Result<String> {
     let email = value.trim().to_lowercase();
     if email.is_empty()
@@ -12495,6 +12726,7 @@ fn request_host_eutherid_recovery(
         created_unix_ms: now,
         expires_unix_ms: now + EUTHERID_RECOVERY_TTL_MS,
         consumed_unix_ms: None,
+        kind: "email".to_string(),
     };
     {
         let mut tokens = state
@@ -22301,9 +22533,19 @@ mod tests {
             created_unix_ms: 1,
             expires_unix_ms: 2,
             consumed_unix_ms: None,
+            kind: "email".to_string(),
         };
         let json = serde_json::to_string(&stored).unwrap();
         assert!(!json.contains(token));
+
+        let (plain, offline) = build_offline_recovery_codes("admin", 100).unwrap();
+        assert_eq!(plain.len(), 10);
+        assert_eq!(offline.len(), 10);
+        assert_eq!(plain.iter().collect::<HashSet<_>>().len(), 10);
+        assert!(plain.iter().all(|code| valid_eutherid_recovery_code(code)));
+        assert!(offline.iter().all(|code| code.kind == "offline"));
+        let serialized = serde_json::to_string(&offline).unwrap();
+        assert!(plain.iter().all(|code| !serialized.contains(code)));
     }
 
     #[test]

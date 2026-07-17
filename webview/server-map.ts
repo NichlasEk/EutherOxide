@@ -325,6 +325,13 @@ function installShell(): void {
           <button id="ev-eutherid-audit-refresh" type="button">Refresh Audit</button>
           <div id="ev-eutherid-audit" class="ev-audit"><small>No restart requests yet.</small></div>
         </section>
+        <section>
+          <p class="eyebrow">Offline Break-glass</p>
+          <input id="ev-offline-password" class="ev-security-input" type="password" autocomplete="current-password" placeholder="Current admin password" />
+          <button id="ev-offline-codes-create" type="button">Create New Offline Codes</button>
+          <small>Creates ten one-time device-recovery codes. The previous offline pack is invalidated. Codes are shown once and never stored in plaintext.</small>
+          <pre id="ev-offline-codes" class="ev-offline-codes" hidden></pre>
+        </section>
       </aside>
       <div id="ev-custodian-overlay" hidden>
         <div class="ev-dialog">
@@ -376,6 +383,8 @@ function installShell(): void {
     #ev-panel dd { margin: 0; }
     #ev-panel button, #ev-panel a { width: 100%; margin: 6px 0; text-align: left; display: block; box-sizing: border-box; }
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
+    .ev-security-input { width: 100%; box-sizing: border-box; border: 1px solid rgba(103,225,218,.34); border-radius: 6px; background: rgba(3,8,12,.82); color: #effcff; padding: 10px 11px; font: inherit; }
+    .ev-offline-codes { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; border: 1px solid rgba(240,184,90,.42); border-radius: 6px; padding: 10px; color: #ffe5a8; background: rgba(18,12,3,.8); }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
     .ev-audit { display: grid; gap: 8px; margin-top: 8px; }
     .ev-audit-entry { border: 1px solid rgba(103,225,218,.2); border-radius: 6px; background: rgba(2,8,13,.58); padding: 8px; font-size: 12px; color: #b7c8d4; overflow-wrap: anywhere; }
@@ -504,6 +513,7 @@ function bindInput(): void {
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-eutherid-audit-refresh")?.addEventListener("click", () => refreshEutherIdAudit().catch(showError));
+  document.querySelector("#ev-offline-codes-create")?.addEventListener("click", () => createOfflineRecoveryCodes().catch(showError));
   enterNodeButton.addEventListener("click", () => enterFocusedNode().catch(showError));
   leaveRoomButton.addEventListener("click", leaveRoom);
   restartButton.addEventListener("click", () => restartSelectedService().catch(showError));
@@ -562,6 +572,35 @@ function bindInput(): void {
       hintLine.textContent = "Click Enter to take controls.";
     }
   });
+}
+
+async function createOfflineRecoveryCodes(): Promise<void> {
+  const password = document.querySelector<HTMLInputElement>("#ev-offline-password");
+  const output = document.querySelector<HTMLElement>("#ev-offline-codes");
+  const button = document.querySelector<HTMLButtonElement>("#ev-offline-codes-create");
+  if (!password || !output || !button || !password.value) {
+    throw new Error("Current admin password is required.");
+  }
+  if (!window.confirm("Create a new offline recovery pack? This invalidates every previous offline code.")) return;
+  button.disabled = true;
+  output.hidden = true;
+  try {
+    const result = await jsonFetch<{ codes: string[]; expiresAt: number; warning: string }>(
+      "/api/admin/eutherid/recovery/offline-codes",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: password.value }),
+      },
+    );
+    password.value = "";
+    output.textContent = `${result.warning}\nExpires: ${new Date(result.expiresAt).toLocaleString("sv-SE")}\n\n${result.codes.join("\n")}`;
+    output.hidden = false;
+    statusLine.textContent = "Offline recovery codes created. Store them offline before leaving this page.";
+  } finally {
+    password.value = "";
+    button.disabled = false;
+  }
 }
 
 function enterWalkMode(): void {
