@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 
-BASE_URL = "https://apothictech.se"
+BASE_URL = "http://127.0.0.1:32162"
 TOKEN_FILE = pathlib.Path("/etc/eutherhost/eutherid-request-token")
 CREATE_PATH = "/api/eutherid/request-actions/restart-eutherbooks"
 
@@ -22,6 +22,8 @@ def request_json(method: str, path: str, token: str) -> dict:
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
+            "Host": "apothictech.se",
+            "X-Forwarded-Proto": "https",
             "X-EutherID-Request-Token": token,
         },
     )
