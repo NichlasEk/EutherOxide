@@ -8343,7 +8343,7 @@ const appDownloads: AppDownload[] = [
     title: "EutherID",
     detail: "Biometric approval for protected server administration",
     platform: "Android phone",
-    href: "/downloads/EutherID-0.2.0-release-signed.apk",
+    href: "/downloads/EutherID-0.3.0-release-signed.apk",
     status: "Signed APK · Fingerprint",
   },
   {
