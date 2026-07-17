@@ -23,6 +23,7 @@ The Android client can reach only these secret/signature-protected endpoints wit
 
 - `POST /api/eutherid/device-enrollments/complete`
 - `POST /api/eutherid/challenges/{id}/approval`
+- `GET /api/eutherid/inbox/{device-id}` using the device's read-only inbox capability
 
 The Host login page also exposes three purpose-built public endpoints that are handled inside EutherHost rather than forwarded as a general proxy:
 
@@ -43,3 +44,5 @@ The EutherNet pilot is a second fixed action boundary, not a generic command pro
 The browser can hand an enrollment or challenge to Android either as an on-screen QR code for another device or through the `eutherid://open?payload=...` deep link on the current Android device. Both transports carry the same short-lived server payload; neither carries the internal token or an action proof.
 
 `EUTHERID_INTERNAL_TOKEN_FILE` must point to a root-owned credential readable by the EutherHost service account. EutherID itself remains bound to `127.0.0.1:8792`.
+
+Automation uses a separate `EUTHERID_REQUEST_TOKEN_FILE`. It can only create `restart-eutherbooks` and poll the returned challenge id; action, target, actor and command id are server-derived. Approval still requires the enrolled Android key and biometric prompt. The bundled `scripts/eutherid_request.py restart-eutherbooks` is the request-only handle and never receives the EutherID internal token or an EutherNet consumer token.
