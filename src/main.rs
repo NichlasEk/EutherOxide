@@ -2661,6 +2661,20 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }),
             )
         }
+        ("POST", "/api/eutherid/device-enrollments") => {
+            let user = require_host_user(state, &request)?;
+            match create_host_eutherid_device_enrollment(state, &request, &user, false) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 403, &err.to_string()),
+            }
+        }
+        ("POST", "/api/admin/eutherid/device-enrollments") => {
+            let admin = require_host_admin(state, &request)?;
+            match create_host_eutherid_device_enrollment(state, &request, &admin, true) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 403, &err.to_string()),
+            }
+        }
         ("POST", "/api/admin/eutherid/shadow-tests") => {
             let admin = require_host_admin(state, &request)?;
             match create_eutherid_shadow_test(&admin, &request) {
@@ -10699,6 +10713,43 @@ fn eutherid_internal_json_request(
         status,
         body: raw[header_end + 4..].to_vec(),
     })
+}
+
+fn create_host_eutherid_device_enrollment(
+    state: &HostState,
+    request: &HttpRequest,
+    session_user: &str,
+    allow_admin_target: bool,
+) -> io::Result<serde_json::Value> {
+    let requested_actor = if request.body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&request.body)
+            .map_err(|_| invalid_request("invalid EutherID enrollment request"))?
+            .get("actor")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let actor = requested_actor.unwrap_or_else(|| session_user.to_string());
+    if actor != session_user && !allow_admin_target {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "a device can only be registered to the logged-in user",
+        ));
+    }
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if !users.iter().any(|user| user.name == actor && !user.banned) {
+        return Err(invalid_request("EutherID target user does not exist or is banned"));
+    }
+    drop(users);
+    let body = serde_json::json!({ "actor": actor });
+    let response = eutherid_internal_json_request("POST", "/v1/device-enrollments", Some(&body))?;
+    eutherid_json_response(response, &[201])
 }
 
 fn eutherid_json_response(

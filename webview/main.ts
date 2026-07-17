@@ -263,6 +263,7 @@ type HostUserList = {
 type EutherIdEnrollment = {
   protocol: string;
   origin: string;
+  actor: string;
   enrollment_id: string;
   enrollment_secret: string;
   expires_at: number;
@@ -300,6 +301,7 @@ type EutherIdShadowResult = {
 
 type EutherIdDevice = {
   device_id: string;
+  actor?: string | null;
   label: string;
   enrolled_at: number;
   last_used_at?: number | null;
@@ -2654,6 +2656,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             förbrukar beviset en gång och kontrollerar att återanvändning stoppas.
           </p>
           <div class="eutherid-admin-actions">
+            <select id="eutherid-enroll-user" aria-label="Registrera EutherID till användare"></select>
             <button id="eutherid-enroll" type="button">1 · Registrera telefon</button>
             <button id="eutherid-shadow-test" type="button">2 · Testa fingeravtryck</button>
             <button id="eutherid-wake" type="button">3 · Väck skärmar med EutherID</button>
@@ -2844,6 +2847,7 @@ const adminAwardReason = document.querySelector<HTMLInputElement>("#admin-award-
 const adminAwardSend = document.querySelector<HTMLButtonElement>("#admin-award-send")!;
 const adminAwardStatus = document.querySelector<HTMLElement>("#admin-award-status")!;
 const eutherIdEnroll = document.querySelector<HTMLButtonElement>("#eutherid-enroll")!;
+const eutherIdEnrollUser = document.querySelector<HTMLSelectElement>("#eutherid-enroll-user")!;
 const eutherIdShadowTest = document.querySelector<HTMLButtonElement>("#eutherid-shadow-test")!;
 const eutherIdWake = document.querySelector<HTMLButtonElement>("#eutherid-wake")!;
 const eutherIdQrClear = document.querySelector<HTMLButtonElement>("#eutherid-qr-clear")!;
@@ -14349,7 +14353,7 @@ function renderEutherIdDevices(): void {
       <article class="eutherid-device${revoked ? " is-revoked" : ""}">
         <div>
           <strong>${escapeHtml(device.label)}</strong>
-          <span title="${escapeHtml(device.device_id)}">${escapeHtml(shortId)}</span>
+          <span>${escapeHtml(device.actor ?? "Äldre, ej kontobunden")} · <span title="${escapeHtml(device.device_id)}">${escapeHtml(shortId)}</span></span>
         </div>
         <span>${revoked ? `Återkallad ${formatEutherIdTime(device.revoked_at)}` : `Senast använd ${formatEutherIdTime(device.last_used_at)}`}</span>
         ${revoked
@@ -14449,13 +14453,13 @@ async function startEutherIdEnrollment(): Promise<void> {
   try {
     const enrollment = await bridgeJson<EutherIdEnrollment>(
       "/api/admin/eutherid/device-enrollments",
-      { method: "POST", body: "{}" },
+      { method: "POST", body: JSON.stringify({ actor: eutherIdEnrollUser.value }) },
       3000,
     );
     showEutherIdRequest(
       enrollment,
       "Registrera telefonen",
-      "Skanna med EutherID och bekräfta fingeravtrycket i appen. QR-koden är kortlivad.",
+      `Kopplas till ${enrollment.actor}. Skanna med EutherID och bekräfta fingeravtrycket i appen. QR-koden är kortlivad.`,
     );
     setEutherIdState("Väntar på telefonen", "pending");
     eutherIdTestResult.textContent = "När appen visar Registrerad kan du rensa QR-koden och köra shadow-testet.";
@@ -15953,6 +15957,18 @@ function renderAdminAccess(): void {
 
 function renderHostUsers(): void {
   const awardUsers = hostUsers.filter((user) => !user.banned);
+  eutherIdEnrollUser.innerHTML = awardUsers.length
+    ? awardUsers
+        .map((user) => `<option value="${escapeHtml(user.name)}">${escapeHtml(displayUserName(user.name))}</option>`)
+        .join("")
+    : `<option value="">Ingen aktiv användare</option>`;
+  eutherIdEnrollUser.disabled = awardUsers.length === 0;
+  eutherIdEnroll.disabled = awardUsers.length === 0;
+  if (selectedAdminUser && awardUsers.some((user) => user.name === selectedAdminUser)) {
+    eutherIdEnrollUser.value = selectedAdminUser;
+  } else if (hostUsername && awardUsers.some((user) => user.name === hostUsername)) {
+    eutherIdEnrollUser.value = hostUsername;
+  }
   adminAwardUser.innerHTML = awardUsers.length
     ? awardUsers
         .map((user) => `<option value="${escapeHtml(user.name)}">${escapeHtml(displayUserName(user.name))}</option>`)
