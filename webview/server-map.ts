@@ -1418,8 +1418,9 @@ async function restartSelectedService(): Promise<void> {
 }
 
 function restartCommandForNode(node: SceneNode): string | null {
-  if (roomMode !== "city") return null;
-  const service = serviceForNode(node);
+  const serviceNode = roomMode === "city" ? node : currentRoomNode;
+  if (!serviceNode) return null;
+  const service = serviceForNode(serviceNode);
   return service ? restartCommandForService(service) : null;
 }
 
