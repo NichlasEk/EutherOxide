@@ -1928,10 +1928,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/eutherid/login/start") => {
             let input: HostEutherIdLoginStartRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| invalid_request("invalid EutherID login request"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match start_host_eutherid_login(state, &input.username, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
@@ -1949,10 +1946,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/eutherid/login/status") => {
             let input: HostEutherIdLoginContinueRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| invalid_request("invalid EutherID login status request"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match host_eutherid_login_status(state, &input, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
@@ -1989,10 +1983,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 serde_json::from_slice(&request.body)
                     .map_err(|_| invalid_request("invalid EutherID login completion request"))?
             };
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match complete_host_eutherid_login(state, &request, &input, &remote_addr) {
                 Ok((_result, cookie)) if navigates => send_response_with_headers(
                     stream,
@@ -2016,10 +2007,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/password-reset/request") => {
             let input: HostPasswordResetRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| invalid_request("invalid password reset request"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             send_json(
                 stream,
                 &request_password_reset(state, &input.account, &remote_addr)?,
@@ -2028,10 +2016,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/password-reset/complete") => {
             let input: HostPasswordResetCompleteRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| invalid_request("invalid password reset request"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match complete_password_reset(
                 state,
                 &input.token,
@@ -3018,10 +3003,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/admin/eutherid/recovery/request") => {
             let admin = require_host_admin(state, &request)?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match request_host_eutherid_recovery(state, &admin, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
@@ -3035,10 +3017,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let input: HostEutherIdRecoveryCompleteRequest =
                 serde_json::from_slice(&request.body)
                     .map_err(|_| invalid_request("invalid EutherID recovery request"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match complete_host_eutherid_recovery(state, &admin, &input.token, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
@@ -3094,10 +3073,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let admin = require_host_admin(state, &request)?;
             let challenge_id = eutherid_admin_service_restart_status_id(path)
                 .ok_or_else(|| invalid_request("invalid service restart status path"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match poll_service_restart_request(state, challenge_id, Some(&admin), &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
@@ -3121,10 +3097,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
             let challenge_id = eutherid_request_action_status_id(path)
                 .ok_or_else(|| invalid_request("invalid request action path"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match poll_service_restart_request(state, challenge_id, None, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
@@ -3146,10 +3119,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let admin = require_host_admin(state, &request)?;
             let challenge_id = eutherid_euthernet_step_up_test_complete_id(path)
                 .ok_or_else(|| invalid_request("invalid EutherID EutherNet test path"))?;
-            let remote_addr = stream
-                .peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let remote_addr = host_remote_addr(stream, &request);
             match complete_eutherid_euthernet_step_up_test(
                 state,
                 &admin,
@@ -3403,13 +3373,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
 
 fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) -> io::Result<()> {
     let form = parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
-    let remote_addr = stream
-        .peer_addr()
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let remote_addr = host_remote_addr(stream, request);
     let username = form
         .iter()
-        .find_map(|(name, value)| (name == "username").then_some(value.as_str()))
+        .find_map(|(name, value)| (name == "username").then_some(value.trim()))
         .unwrap_or_default();
     let password = form
         .iter()
@@ -3505,10 +3472,7 @@ fn host_app_login(
 ) -> io::Result<()> {
     let login: HostAppLoginRequest =
         serde_json::from_slice(&request.body).map_err(|err| invalid_request(err.to_string()))?;
-    let remote_addr = stream
-        .peer_addr()
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let remote_addr = host_remote_addr(stream, request);
     let username = login.username.trim();
     if login_rate_limited(state, &remote_addr, username)? {
         audit_host_event(
@@ -12747,6 +12711,10 @@ fn proxy_eutherid_request(
         if name.eq_ignore_ascii_case("host")
             || name.eq_ignore_ascii_case("connection")
             || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("transfer-encoding")
+            || name.eq_ignore_ascii_case("te")
+            || name.eq_ignore_ascii_case("trailer")
+            || name.eq_ignore_ascii_case("upgrade")
             || name.eq_ignore_ascii_case("accept-encoding")
             || name.eq_ignore_ascii_case("x-csrf-token")
             || name.eq_ignore_ascii_case("x-eutherid-internal-token")
@@ -12830,6 +12798,10 @@ fn proxy_euthergate_request(stream: &mut TcpStream, request: &HttpRequest) -> io
         if name.eq_ignore_ascii_case("host")
             || name.eq_ignore_ascii_case("connection")
             || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("transfer-encoding")
+            || name.eq_ignore_ascii_case("te")
+            || name.eq_ignore_ascii_case("trailer")
+            || name.eq_ignore_ascii_case("upgrade")
             || name.eq_ignore_ascii_case("accept-encoding")
             || name.eq_ignore_ascii_case("x-csrf-token")
             || name.eq_ignore_ascii_case("x-euthergate-proxy-token")
@@ -16564,6 +16536,7 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
         .to_string();
     let mut request_headers = Vec::new();
     let mut content_length = 0;
+    let mut chunked_body = false;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim().to_string();
@@ -16571,29 +16544,100 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.parse::<usize>().unwrap_or(0);
             }
+            if name.eq_ignore_ascii_case("transfer-encoding")
+                && value
+                    .split(',')
+                    .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+            {
+                chunked_body = true;
+            }
             request_headers.push((name, value));
         }
     }
 
     let raw_social_attachment_upload =
         method == "POST" && path.split('?').next() == Some("/api/social/attachments/raw");
-    if !raw_social_attachment_upload {
-        while data.len() < header_end + content_length {
-            let read = stream.read(&mut buffer)?;
-            if read == 0 {
-                break;
+    let body = if chunked_body && !raw_social_attachment_upload {
+        read_chunked_http_body(stream, &mut data, header_end)?
+    } else {
+        if !raw_social_attachment_upload {
+            while data.len() < header_end + content_length {
+                let read = stream.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                data.extend_from_slice(&buffer[..read]);
             }
-            data.extend_from_slice(&buffer[..read]);
         }
-    }
+        data[header_end..header_end + content_length.min(data.len() - header_end)].to_vec()
+    };
 
     Ok(HttpRequest {
         method,
         path,
         headers: request_headers,
-        body: data[header_end..header_end + content_length.min(data.len() - header_end)].to_vec(),
-        content_length,
+        content_length: body.len(),
+        body,
     })
+}
+
+fn read_chunked_http_body(
+    stream: &mut TcpStream,
+    data: &mut Vec<u8>,
+    header_end: usize,
+) -> io::Result<Vec<u8>> {
+    let mut buffer = [0; 4096];
+    loop {
+        if let Some(body) = decode_chunked_http_body(&data[header_end..])? {
+            return Ok(body);
+        }
+        if data.len().saturating_sub(header_end) > 1024 * 1024 {
+            return Err(invalid_request("chunked request body too large"));
+        }
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Err(invalid_request("incomplete chunked request body"));
+        }
+        data.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn decode_chunked_http_body(raw: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    let mut cursor = 0usize;
+    let mut body = Vec::new();
+    loop {
+        let Some(line_end) = find_subslice(&raw[cursor..], b"\r\n").map(|index| cursor + index)
+        else {
+            return Ok(None);
+        };
+        let size_line = std::str::from_utf8(&raw[cursor..line_end])
+            .map_err(|_| invalid_request("invalid chunk size"))?;
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| invalid_request("invalid chunk size"))?;
+        cursor = line_end + 2;
+        if size == 0 {
+            let trailer_start = cursor;
+            if find_subslice(&raw[trailer_start..], b"\r\n\r\n").is_some()
+                || raw.get(trailer_start..trailer_start + 2) == Some(b"\r\n")
+            {
+                return Ok(Some(body));
+            }
+            return Ok(None);
+        }
+        let chunk_end = cursor.saturating_add(size);
+        if raw.len() < chunk_end + 2 {
+            return Ok(None);
+        }
+        if raw.get(chunk_end..chunk_end + 2) != Some(b"\r\n") {
+            return Err(invalid_request("invalid chunk terminator"));
+        }
+        body.extend_from_slice(&raw[cursor..chunk_end]);
+        cursor = chunk_end + 2;
+        if body.len() > 1024 * 1024 {
+            return Err(invalid_request("chunked request body too large"));
+        }
+    }
 }
 
 fn send_json(stream: &mut TcpStream, value: &impl Serialize) -> io::Result<()> {
@@ -18049,6 +18093,24 @@ fn header_value<'a>(request: &'a HttpRequest, name: &str) -> Option<&'a str> {
             .eq_ignore_ascii_case(name)
             .then_some(value.as_str())
     })
+}
+
+fn host_remote_addr(stream: &TcpStream, request: &HttpRequest) -> String {
+    let peer_ip = stream.peer_addr().ok().map(|addr| addr.ip());
+    if peer_ip.is_some_and(|ip| ip.is_loopback()) {
+        if let Some(forwarded) = header_value(request, "cf-connecting-ip")
+            .or_else(|| header_value(request, "x-forwarded-for"))
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .filter(|value| value.parse::<std::net::IpAddr>().is_ok())
+        {
+            return forwarded.to_string();
+        }
+    }
+    peer_ip
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn bridge_frame(emulator: &Emulator, run: &FrameRun) -> BridgeFrame {
