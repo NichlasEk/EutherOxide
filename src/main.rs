@@ -11568,7 +11568,15 @@ fn poll_service_restart_request(
         .find(|item| item.challenge_id == challenge_id)
     {
         stored.status = "completed".to_string();
-        stored.detail = "restart_succeeded_and_verified".to_string();
+        let operation_status = completed
+            .pointer("/result/operation/status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("healthy");
+        let duration_ms = completed
+            .pointer("/result/operation/duration_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        stored.detail = format!("restart_{operation_status}_in_{duration_ms}ms");
         stored.approved_device = approved_device;
         stored.completed_result = Some(completed.clone());
     }
@@ -11595,6 +11603,9 @@ fn service_restart_audit(state: &HostState) -> io::Result<serde_json::Value> {
                 "status": request.status,
                 "deviceId": request.approved_device,
                 "detail": request.detail,
+                "operation": request.completed_result.as_ref()
+                    .and_then(|result| result.pointer("/result/operation"))
+                    .cloned(),
                 "createdAt": request.created_unix_ms,
                 "expiresAt": request.expires_unix_ms,
             })
@@ -12756,11 +12767,20 @@ fn euthernet_request_requires_host_admin(method: &str, path: &str) -> bool {
     let relative = path
         .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
         .unwrap_or_default();
-    relative.split('?').next().unwrap_or(relative) == "/run"
+    matches!(
+        relative.split('?').next().unwrap_or(relative),
+        "/run" | "/preflight"
+    )
 }
 
 fn euthernet_request_requires_eutherid(method: &str, path: &str) -> bool {
-    euthernet_request_requires_host_admin(method, path)
+    if method != "POST" {
+        return false;
+    }
+    let relative = path
+        .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
+        .unwrap_or_default();
+    relative.split('?').next().unwrap_or(relative) == "/run"
 }
 
 fn is_euthergate_proxy_path(path: &str) -> bool {
@@ -22000,6 +22020,14 @@ mod tests {
         assert!(euthernet_request_requires_eutherid(
             "POST",
             "/api/admin/euthernet/run"
+        ));
+        assert!(euthernet_request_requires_host_admin(
+            "POST",
+            "/api/admin/euthernet/preflight"
+        ));
+        assert!(!euthernet_request_requires_eutherid(
+            "POST",
+            "/api/admin/euthernet/preflight"
         ));
         assert!(!euthernet_request_requires_host_admin(
             "GET",

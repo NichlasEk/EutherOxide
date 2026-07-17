@@ -63,6 +63,25 @@ type EutherIdAuditEntry = {
   detail: string;
   createdAt: number;
   expiresAt: number;
+  operation?: RestartOperation | null;
+};
+
+type OperationStage = {
+  ok: boolean;
+  returncode?: number | null;
+  summary: string;
+  duration_ms?: number;
+};
+
+type RestartOperation = {
+  status: string;
+  started_at: number;
+  completed_at: number;
+  duration_ms: number;
+  preflight?: OperationStage | null;
+  action?: OperationStage | null;
+  verification?: OperationStage | null;
+  rollback?: { attempted: boolean; reason: string };
 };
 
 type AuthStatus = {
@@ -167,6 +186,11 @@ const statusColors: Record<string, number> = {
   configured: 0xb878ff,
   planned: 0xf0b85a,
   observed: 0x36a3ff,
+  checking: 0x36a3ff,
+  awaiting: 0xf0b85a,
+  restarting: 0xb878ff,
+  healthy: 0x39d77b,
+  degraded: 0xff8c42,
 };
 
 const typeHeights: Record<string, number> = {
@@ -195,6 +219,7 @@ let roomMode: RoomMode = "city";
 let navigationEnabled = false;
 let lastCityPosition = new THREE.Vector3(7, 3.2, 58);
 let currentRoomNode: SceneNode | null = null;
+const nodeOperationStates = new Map<string, { status: string; detail: string; expiresAt: number }>();
 
 const sceneNodes = new Map<string, SceneNode>();
 const clock = new THREE.Clock();
@@ -738,9 +763,19 @@ function renderEutherIdAudit(entries: EutherIdAuditEntry[]): void {
       <div>${escapeHtml(entry.commandId)} · ${escapeHtml(entry.actor)}</div>
       <div class="ev-audit-meta">${escapeHtml(when)} · ${escapeHtml(device)}</div>
       <div class="ev-audit-detail">${escapeHtml(entry.action)} · ${escapeHtml(entry.detail)}</div>
+      ${entry.operation ? `<div class="ev-audit-detail">${escapeHtml(operationSummary(entry.operation))}</div>` : ""}
       <div class="ev-audit-meta">challenge ${escapeHtml(abbreviateAuditValue(entry.challengeId))}</div>
     </article>`;
   }).join("");
+}
+
+function operationSummary(operation: RestartOperation): string {
+  const stages = [
+    operation.preflight ? `preflight ${operation.preflight.ok ? "ok" : "failed"}` : "preflight skipped",
+    operation.action ? `restart ${operation.action.ok ? "ok" : "failed"}` : "restart unavailable",
+    operation.verification ? `verify ${operation.verification.ok ? "ok" : "failed"}` : "verify skipped",
+  ];
+  return `${operation.status} · ${stages.join(" · ")} · ${operation.duration_ms}ms`;
 }
 
 function abbreviateAuditValue(value: string): string {
@@ -779,10 +814,16 @@ function buildCity(map: ServerMap): void {
   for (const node of map.nodes) {
     const position = positions.get(node.id);
     if (!position) continue;
-    const object = createNodeObject(node);
+    const operation = nodeOperationStates.get(node.id);
+    if (operation && operation.expiresAt <= Date.now()) nodeOperationStates.delete(node.id);
+    const activeOperation = nodeOperationStates.get(node.id);
+    const renderedNode = activeOperation
+      ? { ...node, status: activeOperation.status, detail: `${node.detail || ""} · ${activeOperation.detail}` }
+      : node;
+    const object = createNodeObject(renderedNode);
     object.position.copy(position);
     cityRoot.add(object);
-    sceneNodes.set(node.id, { ...node, object, position });
+    sceneNodes.set(node.id, { ...renderedNode, object, position });
   }
   for (const edge of map.edges) {
     const from = sceneNodes.get(edge.from);
@@ -1525,35 +1566,76 @@ async function restartSelectedService(): Promise<void> {
   const label = targetNode.label || targetNode.id;
   const ok = window.confirm(`Restart ${label}?`);
   if (!ok) return;
-  restartButton.disabled = true;
-  statusLine.textContent = `Sending EutherID approval request for ${label}...`;
-  const created = await jsonFetch<{ challengeId: string; expiresAt: number }>("/api/admin/eutherid/actions/service-restarts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: command }),
-  });
-  renderEutherIdAudit(await loadEutherIdAudit());
-  statusLine.textContent = `Approval sent to EutherID for ${label}. Waiting for fingerprint...`;
-  const deadline = Math.min(created.expiresAt || Date.now() + 120_000, Date.now() + 125_000);
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1800));
-    const result = await jsonFetch<{
-      ok: boolean;
-      status: string;
-      result?: { stdout?: string };
-    }>(`/api/admin/eutherid/actions/service-restarts/${encodeURIComponent(created.challengeId)}`);
+  try {
+    restartButton.disabled = true;
+    setNodeOperationStatus(targetNode, "checking", "Running restart preflight");
+    statusLine.textContent = `Checking ${label} before requesting approval...`;
+    const preflight = await jsonFetch<{ ok: boolean; status: string; preflight: OperationStage }>(
+      "/api/admin/euthernet/preflight",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: command }),
+      },
+    );
+    setNodeOperationStatus(targetNode, "awaiting", `Preflight: ${preflight.preflight.summary}`);
+    statusLine.textContent = `Preflight passed for ${label}. Sending EutherID approval request...`;
+    const created = await jsonFetch<{ challengeId: string; expiresAt: number }>("/api/admin/eutherid/actions/service-restarts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: command }),
+    });
     renderEutherIdAudit(await loadEutherIdAudit());
-    if (result.status === "completed") {
-      statusLine.textContent = `Restarted ${label}: ${(result.result?.stdout || "approved and verified").trim()}`;
-      await new Promise((resolve) => window.setTimeout(resolve, 900));
-      await loadMap(false);
-      return;
+    statusLine.textContent = `Approval sent to EutherID for ${label}. Waiting for fingerprint...`;
+    const deadline = Math.min(created.expiresAt || Date.now() + 120_000, Date.now() + 125_000);
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1800));
+      setNodeOperationStatus(targetNode, "restarting", "Awaiting approval or restart completion");
+      const result = await jsonFetch<{
+        ok: boolean;
+        status: string;
+        result?: { stdout?: string; operation?: RestartOperation };
+      }>(`/api/admin/eutherid/actions/service-restarts/${encodeURIComponent(created.challengeId)}`);
+      renderEutherIdAudit(await loadEutherIdAudit());
+      if (result.status === "completed") {
+        const operation = result.result?.operation;
+        const operationStatus = operation?.status === "healthy" ? "healthy" : "degraded";
+        const detail = operation ? operationSummary(operation) : "approved and verified";
+        setNodeOperationStatus(targetNode, operationStatus, detail, 90_000);
+        statusLine.textContent = `${label}: ${detail}`;
+        await loadMap(false);
+        return;
+      }
+      if (["denied", "expired", "consumed", "failed"].includes(result.status)) {
+        throw new Error(`EutherID request ended with status: ${result.status}`);
+      }
     }
-    if (["denied", "expired", "consumed"].includes(result.status)) {
-      throw new Error(`EutherID request ended with status: ${result.status}`);
-    }
+    throw new Error("EutherID request timed out without approval");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "restart failed";
+    setNodeOperationStatus(targetNode, "degraded", message, 90_000);
+    throw error;
+  } finally {
+    restartButton.disabled = !restartCommandForNode(targetNode);
   }
-  throw new Error("EutherID request timed out without approval");
+}
+
+function setNodeOperationStatus(node: SceneNode, status: string, detail: string, ttlMs = 130_000): void {
+  nodeOperationStates.set(node.id, { status, detail, expiresAt: Date.now() + ttlMs });
+  node.status = status;
+  const color = statusColors[status] || statusColors.unknown;
+  node.object.traverse((object) => {
+    const material = (object as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!material || Array.isArray(material)) return;
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.color.setHex(color);
+      material.emissive.setHex(color);
+      material.emissiveIntensity = 0.7;
+    } else if (material instanceof THREE.MeshBasicMaterial) {
+      material.color.setHex(color);
+    }
+  });
+  showNode(node);
 }
 
 function restartCommandForNode(node: SceneNode): string | null {
