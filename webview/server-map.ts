@@ -775,6 +775,7 @@ function buildCity(map: ServerMap): void {
   setCustodianVisible(false);
 
   const positions = layoutNodes(map.nodes);
+  addDistrictPads(map.nodes, positions);
   for (const node of map.nodes) {
     const position = positions.get(node.id);
     if (!position) continue;
@@ -790,6 +791,46 @@ function buildCity(map: ServerMap): void {
     beamRoot.add(createBeam(from.position, to.position, edge, nodeIsAlerting(from) || nodeIsAlerting(to)));
   }
   showOverview(map);
+}
+
+function addDistrictPads(nodes: MapNode[], positions: Map<string, THREE.Vector3>): void {
+  const districts: Array<[string, string, number]> = [
+    ["service", "Service District", 0x39d7d2],
+    ["port", "Port Arcade", 0x4d6dff],
+    ["repo", "Repository Row", 0xb878ff],
+    ["ssh", "SSH Transit", 0xf0b85a],
+    ["ai", "AI Quarter", 0xf06cff],
+    ["storage", "Storage Vaults", 0x74d28c],
+  ];
+  for (const [type, title, color] of districts) {
+    const districtNodes = nodes.filter((node) => node.type === type);
+    const districtPositions = districtNodes
+      .map((node) => positions.get(node.id))
+      .filter((position): position is THREE.Vector3 => Boolean(position));
+    if (districtPositions.length === 0) continue;
+    const x = districtPositions.reduce((sum, position) => sum + position.x, 0) / districtPositions.length;
+    const minZ = Math.min(...districtPositions.map((position) => position.z));
+    const maxZ = Math.max(...districtPositions.map((position) => position.z));
+    const depth = Math.max(12, maxZ - minZ + 9);
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(type === "port" ? 12 : 11, 0.22, depth),
+      new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: 0.12,
+        roughness: 0.74,
+        metalness: 0.34,
+        transparent: true,
+        opacity: 0.22,
+      }),
+    );
+    pad.position.set(x, 0.08, (minZ + maxZ) / 2);
+    cityRoot.add(pad);
+    const label = createLabel(title, `${districtNodes.length} nodes`, color);
+    label.scale.set(7.2, 2.25, 1);
+    label.position.set(x, 1.25, minZ - 5.5);
+    cityRoot.add(label);
+  }
 }
 
 async function enterFocusedNode(): Promise<void> {
@@ -1108,7 +1149,17 @@ function createNodeObject(node: MapNode): THREE.Object3D {
     ? new THREE.OctahedronGeometry(2.4, 1)
     : node.type === "external"
       ? new THREE.CylinderGeometry(2.4, 2.4, height, 8)
-      : new THREE.BoxGeometry(width, height, depth);
+      : node.type === "service"
+        ? new THREE.CylinderGeometry(width * 0.56, width * 0.74, height, 8)
+        : node.type === "proxy"
+          ? new THREE.CylinderGeometry(2.6, 1.8, height, 6)
+          : node.type === "port"
+            ? new THREE.CylinderGeometry(1.25, 1.25, height, 12)
+            : node.type === "storage"
+              ? new THREE.CylinderGeometry(width * 0.58, width * 0.68, height, 16)
+              : node.type === "ssh"
+                ? new THREE.ConeGeometry(2.0, height, 6)
+                : new THREE.BoxGeometry(width, height, depth);
   const material = new THREE.MeshStandardMaterial({
     color: alerting ? alertRed : color,
     emissive: alerting ? alertRed : color,
@@ -1122,6 +1173,16 @@ function createNodeObject(node: MapNode): THREE.Object3D {
   mesh.userData.alert = alerting;
   mesh.userData.baseColor = color;
   group.add(mesh);
+
+  const beacon = new THREE.Mesh(
+    new THREE.SphereGeometry(node.type === "service" ? 0.42 : 0.3, 12, 8),
+    new THREE.MeshBasicMaterial({ color: alerting ? alertRed : color }),
+  );
+  beacon.position.y = height + 0.38;
+  beacon.userData.nodeId = node.id;
+  beacon.userData.alert = alerting;
+  beacon.userData.baseColor = color;
+  group.add(beacon);
 
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(width * 0.72, width * 0.86, 32),
