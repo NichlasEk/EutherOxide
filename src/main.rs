@@ -61,7 +61,7 @@ const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
-const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.1.0-release-signed.apk";
+const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.2.0-release-signed.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
 const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
@@ -2668,6 +2668,22 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 Err(err) => send_error(stream, 502, &err.to_string()),
             }
         }
+        ("POST", "/api/admin/eutherid/actions/euthergate-wake") => {
+            let admin = require_host_admin(state, &request)?;
+            match create_eutherid_euthergate_wake(&admin, &request) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", path) if eutherid_euthergate_wake_complete_id(path).is_some() => {
+            let admin = require_host_admin(state, &request)?;
+            let challenge_id = eutherid_euthergate_wake_complete_id(path)
+                .ok_or_else(|| invalid_request("invalid EutherID wake path"))?;
+            match complete_eutherid_euthergate_wake(&admin, &request, challenge_id) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
         ("POST", path) if eutherid_shadow_complete_id(path).is_some() => {
             let admin = require_host_admin(state, &request)?;
             let challenge_id = eutherid_shadow_complete_id(path)
@@ -2736,6 +2752,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             if is_euthergate_proxy_path(path) {
                 if let Err(err) = require_host_admin(state, &request) {
                     return send_error(stream, 403, &err.to_string());
+                }
+                if euthergate_request_requires_eutherid(&request.method, path) {
+                    return send_error(stream, 403, "EutherID approval required");
                 }
                 return proxy_euthergate_request(stream, &request);
             }
@@ -10186,8 +10205,8 @@ fn send_eutherid_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let apk_path = env::var("EUTHERID_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERID_APK_PATH));
-    let download_filename = if path == "/downloads/EutherID-0.1.0-release-signed.apk" {
-        "EutherID-0.1.0-release-signed.apk"
+    let download_filename = if path == "/downloads/EutherID-0.2.0-release-signed.apk" {
+        "EutherID-0.2.0-release-signed.apk"
     } else {
         "EutherID-release-signed.apk"
     };
@@ -10205,7 +10224,7 @@ fn is_eutherid_apk_download_path(path: &str) -> bool {
         "/downloads/eutherid.apk"
             | "/downloads/EutherID.apk"
             | "/downloads/EutherID-release-signed.apk"
-            | "/downloads/EutherID-0.1.0-release-signed.apk"
+            | "/downloads/EutherID-0.2.0-release-signed.apk"
             | "/downloads/eutherid-release-signed.apk"
     )
 }
@@ -10419,7 +10438,33 @@ fn eutherid_shadow_complete_id(path: &str) -> Option<&str> {
     .then_some(id)
 }
 
-fn eutherid_shadow_binding(admin: &str, request: &HttpRequest) -> io::Result<serde_json::Value> {
+fn eutherid_euthergate_wake_complete_id(path: &str) -> Option<&str> {
+    let id = path
+        .strip_prefix("/api/admin/eutherid/actions/euthergate-wake/")?
+        .strip_suffix("/complete")?;
+    ((20..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')))
+    .then_some(id)
+}
+
+fn eutherid_route_id<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    let id = path.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    ((20..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')))
+    .then_some(id)
+}
+
+fn eutherid_action_binding(
+    admin: &str,
+    request: &HttpRequest,
+    action: &str,
+    target: &str,
+    command_id: &str,
+) -> io::Result<serde_json::Value> {
     let session = session_token(request).ok_or_else(|| invalid_request("login required"))?;
     let origin = env::var("EUTHERID_PUBLIC_ORIGIN")
         .unwrap_or_else(|_| "https://apothictech.se".to_string());
@@ -10435,10 +10480,27 @@ fn eutherid_shadow_binding(admin: &str, request: &HttpRequest) -> io::Result<ser
         "actor": admin,
         "session_hash": sha256_hex(session.as_bytes()),
         "origin": origin,
-        "action": "eutherid.test",
-        "target": "shadow",
-        "command_id": "shadow-test",
+        "action": action,
+        "target": target,
+        "command_id": command_id,
     }))
+}
+
+fn eutherid_shadow_binding(admin: &str, request: &HttpRequest) -> io::Result<serde_json::Value> {
+    eutherid_action_binding(admin, request, "eutherid.test", "shadow", "shadow-test")
+}
+
+fn eutherid_euthergate_wake_binding(
+    admin: &str,
+    request: &HttpRequest,
+) -> io::Result<serde_json::Value> {
+    eutherid_action_binding(
+        admin,
+        request,
+        "euthergate.displays.wake",
+        "euthergate",
+        "wake-displays",
+    )
 }
 
 fn create_eutherid_shadow_test(
@@ -10457,11 +10519,59 @@ fn complete_eutherid_shadow_test(
     challenge_id: &str,
 ) -> io::Result<serde_json::Value> {
     let expected = eutherid_shadow_binding(admin, request)?;
+    let consumed = consume_eutherid_action_proof(challenge_id, &expected)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "challengeId": challenge_id,
+        "deviceId": consumed.get("device_id").and_then(|value| value.as_str()),
+        "actor": admin,
+        "action": "eutherid.test",
+        "target": "shadow",
+        "commandRun": false,
+        "replayRejected": true,
+    }))
+}
+
+fn create_eutherid_euthergate_wake(
+    admin: &str,
+    request: &HttpRequest,
+) -> io::Result<serde_json::Value> {
+    let mut challenge = eutherid_euthergate_wake_binding(admin, request)?;
+    challenge["ttl_seconds"] = serde_json::json!(120);
+    let response = eutherid_internal_json_request("POST", "/v1/challenges", Some(&challenge))?;
+    eutherid_json_response(response, &[201])
+}
+
+fn complete_eutherid_euthergate_wake(
+    admin: &str,
+    request: &HttpRequest,
+    challenge_id: &str,
+) -> io::Result<serde_json::Value> {
+    let expected = eutherid_euthergate_wake_binding(admin, request)?;
+    let consumed = consume_eutherid_action_proof(challenge_id, &expected)?;
+    let action_result = euthergate_fixed_json_action("POST", "/api/displays/wake")?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "challengeId": challenge_id,
+        "deviceId": consumed.get("device_id").and_then(|value| value.as_str()),
+        "actor": admin,
+        "action": "euthergate.displays.wake",
+        "target": "euthergate",
+        "commandRun": true,
+        "replayRejected": true,
+        "result": action_result,
+    }))
+}
+
+fn consume_eutherid_action_proof(
+    challenge_id: &str,
+    expected: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
     let issue_path = format!("/v1/challenges/{challenge_id}/action-proof");
     let issue = eutherid_internal_json_request(
         "POST",
         &issue_path,
-        Some(&serde_json::json!({ "expected": expected.clone() })),
+        Some(&serde_json::json!({ "expected": expected })),
     )?;
     let issued = eutherid_json_response(issue, &[200])?;
     let action_proof = issued
@@ -10483,16 +10593,46 @@ fn complete_eutherid_shadow_test(
             replay.status
         )));
     }
-    Ok(serde_json::json!({
-        "ok": true,
-        "challengeId": challenge_id,
-        "deviceId": consumed.get("device_id").and_then(|value| value.as_str()),
-        "actor": admin,
-        "action": "eutherid.test",
-        "target": "shadow",
-        "commandRun": false,
-        "replayRejected": true,
-    }))
+    Ok(consumed)
+}
+
+fn euthergate_fixed_json_action(method: &str, path: &str) -> io::Result<serde_json::Value> {
+    if (method, path) != ("POST", "/api/displays/wake") {
+        return Err(invalid_request("unsupported EutherGate action"));
+    }
+    let upstream_base =
+        env::var("EUTHERGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:18787".to_string());
+    let proxy_token = env::var("EUTHERGATE_PROXY_TOKEN")
+        .map_err(|_| io::Error::other("EUTHERGATE_PROXY_TOKEN is not configured"))?;
+    let mut upstream = TcpStream::connect(&upstream_base)
+        .map_err(|_| io::Error::other("EutherGate upstream unavailable"))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "POST {path} HTTP/1.1\r\nHost: {upstream_base}\r\nConnection: close\r\nX-EutherGate-Proxy-Token: {proxy_token}\r\nAccept: application/json\r\nContent-Length: 0\r\n\r\n"
+    )?;
+    let mut raw = Vec::new();
+    upstream.read_to_end(&mut raw)?;
+    if raw.len() > 64 * 1024 {
+        return Err(io::Error::other("EutherGate response is too large"));
+    }
+    let header_end = find_subslice(&raw, b"\r\n\r\n")
+        .ok_or_else(|| io::Error::other("EutherGate response is malformed"))?;
+    let header = String::from_utf8_lossy(&raw[..header_end]);
+    let status = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| io::Error::other("EutherGate response status is malformed"))?;
+    if status != 200 {
+        return Err(io::Error::other(format!(
+            "EutherGate wake returned HTTP {status}"
+        )));
+    }
+    serde_json::from_slice(&raw[header_end + 4..])
+        .map_err(|_| io::Error::other("EutherGate returned invalid JSON"))
 }
 
 struct EutherIdUpstreamResponse {
@@ -10580,6 +10720,14 @@ fn eutherid_json_response(
 fn eutherid_upstream_route(method: &str, path: &str) -> Option<(String, bool)> {
     if method == "POST" && path == "/api/admin/eutherid/device-enrollments" {
         return Some(("/v1/device-enrollments".to_string(), true));
+    }
+    if method == "GET" && path == "/api/admin/eutherid/devices" {
+        return Some(("/v1/devices".to_string(), true));
+    }
+    if method == "POST" {
+        if let Some(id) = eutherid_route_id(path, "/api/admin/eutherid/devices/", "/revoke") {
+            return Some((format!("/v1/devices/{id}/revoke"), true));
+        }
     }
     if method == "POST" && path == "/api/admin/eutherid/challenges" {
         return Some(("/v1/challenges".to_string(), true));
@@ -10699,6 +10847,10 @@ fn euthergate_upstream_path(path: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("/")
         .to_string()
+}
+
+fn euthergate_request_requires_eutherid(method: &str, path: &str) -> bool {
+    method == "POST" && path == "/euthergate/api/displays/wake"
 }
 
 fn proxy_euthergate_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
@@ -19529,6 +19681,18 @@ mod tests {
             euthergate_upstream_path("/euthergate/api/status?full=1"),
             "/api/status?full=1"
         );
+        assert!(euthergate_request_requires_eutherid(
+            "POST",
+            "/euthergate/api/displays/wake"
+        ));
+        assert!(!euthergate_request_requires_eutherid(
+            "GET",
+            "/euthergate/api/displays/wake"
+        ));
+        assert!(!euthergate_request_requires_eutherid(
+            "POST",
+            "/euthergate/api/status"
+        ));
     }
 
     #[test]
@@ -19562,10 +19726,21 @@ mod tests {
             Some(("/v1/device-enrollments".to_string(), true))
         );
         assert_eq!(
+            eutherid_upstream_route("GET", "/api/admin/eutherid/devices"),
+            Some(("/v1/devices".to_string(), true))
+        );
+        assert_eq!(
             eutherid_upstream_route("POST", "/api/eutherid/device-enrollments/complete"),
             Some(("/v1/device-enrollments/complete".to_string(), false))
         );
         let id = "A2345678901234567890_-challenge";
+        assert_eq!(
+            eutherid_upstream_route(
+                "POST",
+                &format!("/api/admin/eutherid/devices/{id}/revoke")
+            ),
+            Some((format!("/v1/devices/{id}/revoke"), true))
+        );
         assert_eq!(
             eutherid_upstream_route("POST", &format!("/api/eutherid/challenges/{id}/approval")),
             Some((format!("/v1/challenges/{id}/approval"), false))
@@ -19620,18 +19795,37 @@ mod tests {
     }
 
     #[test]
+    fn eutherid_wake_completion_only_accepts_an_exact_challenge_path() {
+        let id = "A2345678901234567890_-challenge";
+        assert_eq!(
+            eutherid_euthergate_wake_complete_id(&format!(
+                "/api/admin/eutherid/actions/euthergate-wake/{id}/complete"
+            )),
+            Some(id)
+        );
+        assert!(eutherid_euthergate_wake_complete_id(
+            "/api/admin/eutherid/actions/euthergate-wake/short/complete"
+        )
+        .is_none());
+        assert!(eutherid_euthergate_wake_complete_id(&format!(
+            "/api/admin/eutherid/actions/euthergate-wake/{id}/complete?again=1"
+        ))
+        .is_none());
+    }
+
+    #[test]
     fn eutherid_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_eutherid_apk_download_path(
-            "/downloads/EutherID-0.1.0-release-signed.apk"
+            "/downloads/EutherID-0.2.0-release-signed.apk"
         ));
         assert!(is_eutherid_apk_download_path(
             "/downloads/EutherID-release-signed.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherID-0.1.0-release-signed.apk"
+            "/downloads/EutherID-0.2.0-release-signed.apk"
         ));
         assert!(!is_eutherid_apk_download_path(
-            "/downloads/EutherID-0.1.1-release-signed.apk"
+            "/downloads/EutherID-0.1.0-release-signed.apk"
         ));
     }
 }

@@ -5,11 +5,15 @@ EutherHost exposes only a small allowlist of EutherID routes. It is not a genera
 Admin session plus the normal CSRF token is required for:
 
 - `POST /api/admin/eutherid/device-enrollments`
+- `GET /api/admin/eutherid/devices`
+- `POST /api/admin/eutherid/devices/{id}/revoke`
 - `POST /api/admin/eutherid/challenges`
 - `GET /api/admin/eutherid/challenges/{id}`
 - `POST /api/admin/eutherid/challenges/{id}/action-proof`
 - `POST /api/admin/eutherid/shadow-tests`
 - `POST /api/admin/eutherid/shadow-tests/{id}/complete`
+- `POST /api/admin/eutherid/actions/euthergate-wake`
+- `POST /api/admin/eutherid/actions/euthergate-wake/{id}/complete`
 
 Those requests receive the localhost-only EutherID internal token inside EutherHost. Client-supplied cookies, CSRF headers, and EutherID internal-token headers are never forwarded.
 
@@ -21,5 +25,9 @@ The Android client can reach only these secret/signature-protected endpoints wit
 No public route can create a challenge, issue an action proof, consume an action proof, list devices, or revoke devices. Request bodies are capped at 32 KiB, upstream redirects are not involved, and the mobile client independently requires a clean HTTPS origin.
 
 The two `shadow-tests` routes are the safe physical-authentication smoke test used by the admin panel. EutherHost derives the actor, current session hash, HTTPS origin, action `eutherid.test`, target `shadow`, and command id `shadow-test`; none of those bindings can be supplied by the browser. Completion issues and consumes the action proof internally, deliberately attempts one replay, and succeeds only when EutherID rejects that replay. The response always reports `commandRun: false`; this test has no command execution path and does not enable EutherNet writes.
+
+The first real step-up action is display wake only. EutherHost derives `euthergate.displays.wake`, target `euthergate`, and command id `wake-displays`, consumes the proof once, verifies replay rejection, and only then calls the fixed EutherGate `/api/displays/wake` upstream path. Direct `POST /euthergate/api/displays/wake` through EutherHost is rejected, while all EutherGate navigation and recovery/login paths remain unchanged. Wake never unlocks a display.
+
+The browser can hand an enrollment or challenge to Android either as an on-screen QR code for another device or through the `eutherid://open?payload=...` deep link on the current Android device. Both transports carry the same short-lived server payload; neither carries the internal token or an action proof.
 
 `EUTHERID_INTERNAL_TOKEN_FILE` must point to a root-owned credential readable by the EutherHost service account. EutherID itself remains bound to `127.0.0.1:8792`.
