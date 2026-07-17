@@ -15265,14 +15265,13 @@ fn login_page_html(error: Option<&str>) -> String {
     <p>EutherHost Reaction Gate</p>
     <h1>Private Alkene Chamber</h1>
     {error_html}
-    <form method="post" action="/api/login">
-      <input name="username" autocomplete="username" placeholder="User" required />
-      <input name="password" type="password" autocomplete="current-password" placeholder="Password" required />
+    <form id="password-login-form" method="post" action="/api/login">
+      <input id="login-user" name="username" autocomplete="section-password username" placeholder="User" required />
+      <input name="password" type="password" autocomplete="section-password current-password" placeholder="Password" required />
       <button type="submit">Bond Session</button>
     </form>
     <div class="eutherid-login">
       <strong>Logga in med EutherID</strong>
-      <input id="eutherid-login-user" autocomplete="username" placeholder="Användarnamn" />
       <button id="eutherid-login-start" type="button">Skapa EutherID-inloggning</button>
       <div id="eutherid-login-delivery" hidden>
         <div class="eutherid-login-actions">
@@ -15298,12 +15297,21 @@ fn login_page_html(error: Option<&str>) -> String {
   </main>
   <script>
     const status = document.getElementById("reset-status");
+    const loginUser = document.getElementById("login-user");
     const eutherIdStatus = document.getElementById("eutherid-login-status");
     const eutherIdDelivery = document.getElementById("eutherid-login-delivery");
     const eutherIdQr = document.getElementById("eutherid-login-qr");
     let eutherIdLogin = null;
     let eutherIdPoll = null;
     let eutherIdCompleting = false;
+    const rememberedLoginUser = window.localStorage.getItem("eutherhost.login.username");
+    if (!loginUser.value && rememberedLoginUser) loginUser.value = rememberedLoginUser;
+    function rememberLoginUser() {{
+      const username = loginUser.value.trim();
+      if (username) window.localStorage.setItem("eutherhost.login.username", username);
+      return username;
+    }}
+    document.getElementById("password-login-form").addEventListener("submit", rememberLoginUser);
     async function postReset(path, body) {{
       const response = await fetch(path, {{
         method: "POST",
@@ -15362,8 +15370,8 @@ fn login_page_html(error: Option<&str>) -> String {
       eutherIdPoll = window.setTimeout(pollEutherIdLogin, 1500);
     }}
     document.getElementById("eutherid-login-start").addEventListener("click", async () => {{
-      const username = document.getElementById("eutherid-login-user").value.trim();
-      if (!username) {{ eutherIdStatus.textContent = "Skriv användarnamnet först."; return; }}
+      const username = rememberLoginUser();
+      if (!username) {{ eutherIdStatus.textContent = "Skriv användarnamnet i fältet ovan först."; loginUser.focus(); return; }}
       stopEutherIdPoll();
       eutherIdCompleting = false;
       eutherIdStatus.textContent = "Skapar kortlivad inloggning…";
