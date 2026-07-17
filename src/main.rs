@@ -80,7 +80,7 @@ const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
-const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.0-release-signed.apk";
+const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
 const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
@@ -10687,8 +10687,8 @@ fn send_eutherid_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let apk_path = env::var("EUTHERID_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERID_APK_PATH));
-    let download_filename = if path == "/downloads/EutherID-0.6.0-release-signed.apk" {
-        "EutherID-0.6.0-release-signed.apk"
+    let download_filename = if path == "/downloads/EutherID-0.6.1-release-signed.apk" {
+        "EutherID-0.6.1-release-signed.apk"
     } else {
         "EutherID-release-signed.apk"
     };
@@ -10706,7 +10706,7 @@ fn is_eutherid_apk_download_path(path: &str) -> bool {
         "/downloads/eutherid.apk"
             | "/downloads/EutherID.apk"
             | "/downloads/EutherID-release-signed.apk"
-            | "/downloads/EutherID-0.6.0-release-signed.apk"
+            | "/downloads/EutherID-0.6.1-release-signed.apk"
             | "/downloads/eutherid-release-signed.apk"
     )
 }
@@ -22144,13 +22144,13 @@ mod tests {
     #[test]
     fn eutherid_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_eutherid_apk_download_path(
-            "/downloads/EutherID-0.6.0-release-signed.apk"
+            "/downloads/EutherID-0.6.1-release-signed.apk"
         ));
         assert!(is_eutherid_apk_download_path(
             "/downloads/EutherID-release-signed.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherID-0.6.0-release-signed.apk"
+            "/downloads/EutherID-0.6.1-release-signed.apk"
         ));
         assert!(!is_eutherid_apk_download_path(
             "/downloads/EutherID-0.2.0-release-signed.apk"
