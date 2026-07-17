@@ -85,7 +85,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
-const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.1.0-debug.apk";
+const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.0-debug.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
 const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
@@ -10728,8 +10728,8 @@ fn send_eutherboard_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let apk_path = env::var("EUTHERBOARD_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERBOARD_APK_PATH));
-    let download_filename = if path == "/downloads/EutherBoard-0.1.0-debug.apk" {
-        "EutherBoard-0.1.0-debug.apk"
+    let download_filename = if path == "/downloads/EutherBoard-0.2.0-debug.apk" {
+        "EutherBoard-0.2.0-debug.apk"
     } else {
         "EutherBoard-debug.apk"
     };
@@ -10748,6 +10748,7 @@ fn is_eutherboard_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherBoard.apk"
             | "/downloads/EutherBoard-debug.apk"
             | "/downloads/EutherBoard-0.1.0-debug.apk"
+            | "/downloads/EutherBoard-0.2.0-debug.apk"
             | "/downloads/eutherboard-debug.apk"
     )
 }
@@ -22556,9 +22557,9 @@ mod tests {
             "/downloads/EutherBoard-debug.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherBoard-0.1.0-debug.apk"
+            "/downloads/EutherBoard-0.2.0-debug.apk"
         ));
-        assert!(!is_eutherboard_apk_download_path(
+        assert!(is_eutherboard_apk_download_path(
             "/downloads/EutherBoard-0.2.0-debug.apk"
         ));
     }

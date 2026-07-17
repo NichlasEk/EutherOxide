@@ -8509,7 +8509,7 @@ const appDownloads: AppDownload[] = [
     title: "EutherBoard",
     detail: "Network-free Swedish Linux keyboard for EutherForge and EutherGate",
     platform: "Android keyboard · Test",
-    href: "/downloads/EutherBoard-0.1.0-debug.apk",
+    href: "/downloads/EutherBoard-0.2.0-debug.apk",
     status: "Test APK · No network permission",
   },
   {
