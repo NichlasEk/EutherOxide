@@ -22,6 +22,14 @@ The Android client can reach only these secret/signature-protected endpoints wit
 - `POST /api/eutherid/device-enrollments/complete`
 - `POST /api/eutherid/challenges/{id}/approval`
 
+The Host login page also exposes three purpose-built public endpoints that are handled inside EutherHost rather than forwarded as a general proxy:
+
+- `POST /api/eutherid/login/start`
+- `POST /api/eutherid/login/status`
+- `POST /api/eutherid/login/complete`
+
+They create a two-minute `eutherhost.login` challenge, poll it using a browser-only secret, and consume the resulting action proof once before setting a Host session cookie. The browser secret is never included in the app payload or QR code, password login remains available, and a Host restart invalidates all pending EutherID logins.
+
 No public route can create a challenge, issue an action proof, consume an action proof, list devices, or revoke devices. Request bodies are capped at 32 KiB, upstream redirects are not involved, and the mobile client independently requires a clean HTTPS origin.
 
 The two `shadow-tests` routes are the safe physical-authentication smoke test used by the admin panel. EutherHost derives the actor, current session hash, HTTPS origin, action `eutherid.test`, target `shadow`, and command id `shadow-test`; none of those bindings can be supplied by the browser. Completion issues and consumes the action proof internally, deliberately attempts one replay, and succeeds only when EutherID rejects that replay. The response always reports `commandRun: false`; this test has no command execution path and does not enable EutherNet writes.
