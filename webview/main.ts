@@ -8506,6 +8506,13 @@ const appDownloads: AppDownload[] = [
     status: "Signed APK · Fingerprint",
   },
   {
+    title: "EutherBoard",
+    detail: "Network-free Swedish Linux keyboard for EutherForge and EutherGate",
+    platform: "Android keyboard · Test",
+    href: "/downloads/EutherBoard-0.1.0-debug.apk",
+    status: "Test APK · No network permission",
+  },
+  {
     title: "EutherList",
     detail: "Shopping list wrapper for the shared household list",
     platform: "Android phone",

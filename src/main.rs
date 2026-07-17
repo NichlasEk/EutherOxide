@@ -85,6 +85,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
+const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.1.0-debug.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
 const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
@@ -2088,6 +2089,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_eutherbooks_player_apk(stream, path)
         }
         ("GET", path) if is_eutherid_apk_download_path(path) => send_eutherid_apk(stream, path),
+        ("GET", path) if is_eutherboard_apk_download_path(path) => {
+            send_eutherboard_apk(stream, path)
+        }
         ("GET", path) if is_eutherpal_mobile_apk_download_path(path) => {
             send_eutherpal_mobile_apk(stream)
         }
@@ -10720,6 +10724,34 @@ fn is_eutherid_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_eutherboard_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let apk_path = env::var("EUTHERBOARD_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERBOARD_APK_PATH));
+    let download_filename = if path == "/downloads/EutherBoard-0.1.0-debug.apk" {
+        "EutherBoard-0.1.0-debug.apk"
+    } else {
+        "EutherBoard-debug.apk"
+    };
+    send_android_apk(
+        stream,
+        &apk_path,
+        download_filename,
+        "EutherBoard APK is not available",
+    )
+}
+
+fn is_eutherboard_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherboard.apk"
+            | "/downloads/EutherBoard.apk"
+            | "/downloads/EutherBoard-debug.apk"
+            | "/downloads/EutherBoard-0.1.0-debug.apk"
+            | "/downloads/eutherboard-debug.apk"
+    )
+}
+
 fn send_eutherpal_mobile_apk(stream: &mut TcpStream) -> io::Result<()> {
     let apk_path = env::var("EUTHERPAL_MOBILE_APK_PATH")
         .map(PathBuf::from)
@@ -10769,6 +10801,7 @@ fn is_android_apk_download_path(path: &str) -> bool {
         || is_euthersync_apk_download_path(path)
         || is_eutherbooks_player_apk_download_path(path)
         || is_eutherid_apk_download_path(path)
+        || is_eutherboard_apk_download_path(path)
         || is_eutherpal_mobile_apk_download_path(path)
         || is_eutherpal_tv_apk_download_path(path)
 }
@@ -22511,6 +22544,22 @@ mod tests {
         ));
         assert!(!is_eutherid_apk_download_path(
             "/downloads/EutherID-0.2.0-release-signed.apk"
+        ));
+    }
+
+    #[test]
+    fn eutherboard_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_eutherboard_apk_download_path(
+            "/downloads/EutherBoard-0.1.0-debug.apk"
+        ));
+        assert!(is_eutherboard_apk_download_path(
+            "/downloads/EutherBoard-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/EutherBoard-0.1.0-debug.apk"
+        ));
+        assert!(!is_eutherboard_apk_download_path(
+            "/downloads/EutherBoard-0.2.0-debug.apk"
         ));
     }
 
