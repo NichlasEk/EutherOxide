@@ -2661,6 +2661,22 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }),
             )
         }
+        ("POST", "/api/admin/eutherid/shadow-tests") => {
+            let admin = require_host_admin(state, &request)?;
+            match create_eutherid_shadow_test(&admin, &request) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", path) if eutherid_shadow_complete_id(path).is_some() => {
+            let admin = require_host_admin(state, &request)?;
+            let challenge_id = eutherid_shadow_complete_id(path)
+                .ok_or_else(|| invalid_request("invalid EutherID shadow test path"))?;
+            match complete_eutherid_shadow_test(&admin, &request, challenge_id) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
         ("GET", SERVER_MAP_PATH) => {
             let Some(user) = authenticated_user(state, &request)? else {
                 return send_login_page(stream, None);
@@ -10392,6 +10408,175 @@ fn eutherid_public_request_path(method: &str, path: &str) -> bool {
     eutherid_upstream_route(method, path).is_some_and(|(_, internal_auth)| !internal_auth)
 }
 
+fn eutherid_shadow_complete_id(path: &str) -> Option<&str> {
+    let id = path
+        .strip_prefix("/api/admin/eutherid/shadow-tests/")?
+        .strip_suffix("/complete")?;
+    ((20..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')))
+    .then_some(id)
+}
+
+fn eutherid_shadow_binding(admin: &str, request: &HttpRequest) -> io::Result<serde_json::Value> {
+    let session = session_token(request).ok_or_else(|| invalid_request("login required"))?;
+    let origin = env::var("EUTHERID_PUBLIC_ORIGIN")
+        .unwrap_or_else(|_| "https://apothictech.se".to_string());
+    if !origin.starts_with("https://")
+        || origin.ends_with('/')
+        || origin
+            .chars()
+            .any(|ch| matches!(ch, '?' | '#' | '@'))
+    {
+        return Err(io::Error::other("EUTHERID_PUBLIC_ORIGIN is invalid"));
+    }
+    Ok(serde_json::json!({
+        "actor": admin,
+        "session_hash": sha256_hex(session.as_bytes()),
+        "origin": origin,
+        "action": "eutherid.test",
+        "target": "shadow",
+        "command_id": "shadow-test",
+    }))
+}
+
+fn create_eutherid_shadow_test(
+    admin: &str,
+    request: &HttpRequest,
+) -> io::Result<serde_json::Value> {
+    let mut challenge = eutherid_shadow_binding(admin, request)?;
+    challenge["ttl_seconds"] = serde_json::json!(120);
+    let response = eutherid_internal_json_request("POST", "/v1/challenges", Some(&challenge))?;
+    eutherid_json_response(response, &[201])
+}
+
+fn complete_eutherid_shadow_test(
+    admin: &str,
+    request: &HttpRequest,
+    challenge_id: &str,
+) -> io::Result<serde_json::Value> {
+    let expected = eutherid_shadow_binding(admin, request)?;
+    let issue_path = format!("/v1/challenges/{challenge_id}/action-proof");
+    let issue = eutherid_internal_json_request(
+        "POST",
+        &issue_path,
+        Some(&serde_json::json!({ "expected": expected.clone() })),
+    )?;
+    let issued = eutherid_json_response(issue, &[200])?;
+    let action_proof = issued
+        .get("action_proof")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| io::Error::other("EutherID omitted the action proof"))?;
+    let consume_body = serde_json::json!({
+        "action_proof": action_proof,
+        "expected": expected,
+    });
+    let consumed_response =
+        eutherid_internal_json_request("POST", "/v1/action-proofs/consume", Some(&consume_body))?;
+    let consumed = eutherid_json_response(consumed_response, &[200])?;
+    let replay =
+        eutherid_internal_json_request("POST", "/v1/action-proofs/consume", Some(&consume_body))?;
+    if replay.status != 409 {
+        return Err(io::Error::other(format!(
+            "EutherID replay check returned HTTP {} instead of 409",
+            replay.status
+        )));
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "challengeId": challenge_id,
+        "deviceId": consumed.get("device_id").and_then(|value| value.as_str()),
+        "actor": admin,
+        "action": "eutherid.test",
+        "target": "shadow",
+        "commandRun": false,
+        "replayRejected": true,
+    }))
+}
+
+struct EutherIdUpstreamResponse {
+    status: u16,
+    body: Vec<u8>,
+}
+
+fn eutherid_internal_token() -> io::Result<String> {
+    let path = env::var("EUTHERID_INTERNAL_TOKEN_FILE")
+        .map_err(|_| io::Error::other("EUTHERID_INTERNAL_TOKEN_FILE is not configured"))?;
+    let token = fs::read_to_string(path)
+        .map_err(|_| io::Error::other("EutherID internal token is unavailable"))?
+        .trim()
+        .to_string();
+    if token.len() < 32 || token.chars().any(char::is_control) {
+        return Err(io::Error::other("EutherID internal token is invalid"));
+    }
+    Ok(token)
+}
+
+fn eutherid_internal_json_request(
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> io::Result<EutherIdUpstreamResponse> {
+    if !matches!(method, "GET" | "POST") || !path.starts_with("/v1/") {
+        return Err(invalid_request("invalid EutherID internal request"));
+    }
+    let upstream_base =
+        env::var("EUTHERID_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8792".to_string());
+    let token = eutherid_internal_token()?;
+    let encoded = body
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|err| invalid_request(err.to_string()))?
+        .unwrap_or_default();
+    let mut upstream = TcpStream::connect(&upstream_base)
+        .map_err(|_| io::Error::other("EutherID upstream unavailable"))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "{method} {path} HTTP/1.1\r\nHost: {upstream_base}\r\nConnection: close\r\nX-EutherID-Internal-Token: {token}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        encoded.len()
+    )?;
+    if !encoded.is_empty() {
+        upstream.write_all(&encoded)?;
+    }
+    let mut raw = Vec::new();
+    upstream.read_to_end(&mut raw)?;
+    if raw.len() > 128 * 1024 {
+        return Err(io::Error::other("EutherID response is too large"));
+    }
+    let header_end = find_subslice(&raw, b"\r\n\r\n")
+        .ok_or_else(|| io::Error::other("EutherID response is malformed"))?;
+    let header = String::from_utf8_lossy(&raw[..header_end]);
+    let status = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| io::Error::other("EutherID response status is malformed"))?;
+    Ok(EutherIdUpstreamResponse {
+        status,
+        body: raw[header_end + 4..].to_vec(),
+    })
+}
+
+fn eutherid_json_response(
+    response: EutherIdUpstreamResponse,
+    expected_statuses: &[u16],
+) -> io::Result<serde_json::Value> {
+    if !expected_statuses.contains(&response.status) {
+        let message = String::from_utf8_lossy(&response.body);
+        return Err(io::Error::other(format!(
+            "EutherID returned HTTP {}: {}",
+            response.status,
+            message.trim().chars().take(240).collect::<String>()
+        )));
+    }
+    serde_json::from_slice(&response.body)
+        .map_err(|_| io::Error::other("EutherID returned invalid JSON"))
+}
+
 fn eutherid_upstream_route(method: &str, path: &str) -> Option<(String, bool)> {
     if method == "POST" && path == "/api/admin/eutherid/device-enrollments" {
         return Some(("/v1/device-enrollments".to_string(), true));
@@ -10450,16 +10635,7 @@ fn proxy_eutherid_request(
     let upstream_base =
         env::var("EUTHERID_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8792".to_string());
     let internal_token = if internal_auth {
-        let path = env::var("EUTHERID_INTERNAL_TOKEN_FILE")
-            .map_err(|_| io::Error::other("EUTHERID_INTERNAL_TOKEN_FILE is not configured"))?;
-        let token = fs::read_to_string(path)
-            .map_err(|_| io::Error::other("EutherID internal token is unavailable"))?
-            .trim()
-            .to_string();
-        if token.len() < 32 || token.chars().any(char::is_control) {
-            return Err(io::Error::other("EutherID internal token is invalid"));
-        }
-        Some(token)
+        Some(eutherid_internal_token()?)
     } else {
         None
     };
@@ -19418,6 +19594,29 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn eutherid_shadow_completion_only_accepts_an_exact_challenge_path() {
+        let id = "A2345678901234567890_-challenge";
+        assert_eq!(
+            eutherid_shadow_complete_id(&format!(
+                "/api/admin/eutherid/shadow-tests/{id}/complete"
+            )),
+            Some(id)
+        );
+        assert!(eutherid_shadow_complete_id(
+            "/api/admin/eutherid/shadow-tests/short/complete"
+        )
+        .is_none());
+        assert!(eutherid_shadow_complete_id(&format!(
+            "/api/admin/eutherid/shadow-tests/{id}/complete?again=1"
+        ))
+        .is_none());
+        assert!(eutherid_shadow_complete_id(&format!(
+            "/api/admin/eutherid/shadow-tests/{id}/action-proof"
+        ))
+        .is_none());
     }
 
     #[test]

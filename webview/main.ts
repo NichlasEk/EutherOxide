@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import QRCode from "qrcode";
 import { WEB_BUILD_ID } from "./build-info";
 import eutherDogsManifestToml from "../assets/eutherdogs/manifest.toml?raw";
 import shaderToml from "./shaders.toml?raw";
@@ -257,6 +258,40 @@ type HostUserSummary = {
 
 type HostUserList = {
   users: HostUserSummary[];
+};
+
+type EutherIdEnrollment = {
+  protocol: string;
+  origin: string;
+  enrollment_id: string;
+  enrollment_secret: string;
+  expires_at: number;
+};
+
+type EutherIdChallenge = {
+  protocol: string;
+  id: string;
+  actor: string;
+  session_hash: string;
+  origin: string;
+  action: string;
+  target: string;
+  command_id: string;
+  created_at: number;
+  expires_at: number;
+  status: "pending" | "approved" | "expired" | "consumed" | string;
+  approved_device?: string | null;
+};
+
+type EutherIdShadowResult = {
+  ok: boolean;
+  challengeId: string;
+  deviceId?: string | null;
+  actor: string;
+  action: "eutherid.test";
+  target: "shadow";
+  commandRun: false;
+  replayRejected: boolean;
 };
 
 type HostPermissions = {
@@ -1472,6 +1507,9 @@ let doomMouseSensitivity = readStoredDoomMouseSensitivity();
 let civetMode = false;
 let hostUsers: HostUserSummary[] = [];
 let selectedAdminUser: string | null = null;
+let eutherIdActiveChallengeId: string | null = null;
+let eutherIdChallengeExpiresAt = 0;
+let eutherIdPollTimer: number | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
 let socialChatPollTimer: number | null = null;
@@ -2581,6 +2619,34 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <span id="admin-award-status">Ledger only, traceable awards</span>
           </div>
         </section>
+        <section class="eutherid-admin-panel">
+          <div class="eutherid-admin-head">
+            <div>
+              <p class="section-label">EutherID · Security step-up</p>
+              <strong>Fingeravtryckstest utan riktig serveråtgärd</strong>
+            </div>
+            <span id="eutherid-test-state" class="eutherid-test-state">Redo</span>
+          </div>
+          <p class="eutherid-admin-copy">
+            Registrera först telefonen. Shadow-testet binder godkännandet till din aktuella adminsession,
+            förbrukar beviset en gång och kontrollerar att återanvändning stoppas.
+          </p>
+          <div class="eutherid-admin-actions">
+            <button id="eutherid-enroll" type="button">1 · Registrera telefon</button>
+            <button id="eutherid-shadow-test" type="button">2 · Testa fingeravtryck</button>
+            <button id="eutherid-qr-clear" class="mini-action" type="button" hidden>Rensa QR</button>
+          </div>
+          <div id="eutherid-qr-panel" class="eutherid-qr-panel" hidden>
+            <canvas id="eutherid-qr" width="280" height="280" aria-label="EutherID QR-kod"></canvas>
+            <div class="eutherid-qr-copy">
+              <strong id="eutherid-qr-title">Skanna med EutherID</strong>
+              <span id="eutherid-qr-detail">Öppna appen och skanna koden.</span>
+            </div>
+          </div>
+          <div id="eutherid-test-result" class="eutherid-test-result" aria-live="polite">
+            <span>Ingen riktig åtgärd körs i detta test.</span>
+          </div>
+        </section>
       </div>
     </div>
   </div>
@@ -2743,6 +2809,15 @@ const adminAwardAmount = document.querySelector<HTMLInputElement>("#admin-award-
 const adminAwardReason = document.querySelector<HTMLInputElement>("#admin-award-reason")!;
 const adminAwardSend = document.querySelector<HTMLButtonElement>("#admin-award-send")!;
 const adminAwardStatus = document.querySelector<HTMLElement>("#admin-award-status")!;
+const eutherIdEnroll = document.querySelector<HTMLButtonElement>("#eutherid-enroll")!;
+const eutherIdShadowTest = document.querySelector<HTMLButtonElement>("#eutherid-shadow-test")!;
+const eutherIdQrClear = document.querySelector<HTMLButtonElement>("#eutherid-qr-clear")!;
+const eutherIdQrPanel = document.querySelector<HTMLDivElement>("#eutherid-qr-panel")!;
+const eutherIdQr = document.querySelector<HTMLCanvasElement>("#eutherid-qr")!;
+const eutherIdQrTitle = document.querySelector<HTMLElement>("#eutherid-qr-title")!;
+const eutherIdQrDetail = document.querySelector<HTMLElement>("#eutherid-qr-detail")!;
+const eutherIdTestState = document.querySelector<HTMLElement>("#eutherid-test-state")!;
+const eutherIdTestResult = document.querySelector<HTMLDivElement>("#eutherid-test-result")!;
 const playToggle = document.querySelector<HTMLButtonElement>("#play-toggle")!;
 const stepFrame = document.querySelector<HTMLButtonElement>("#step-frame")!;
 const resetCore = document.querySelector<HTMLButtonElement>("#reset-core")!;
@@ -3882,8 +3957,21 @@ eutherStudioLinks.forEach((button) => {
 });
 
 adminClose.addEventListener("click", () => {
+  clearEutherIdPanel();
   adminModal.classList.remove("is-open");
   adminModal.setAttribute("aria-hidden", "true");
+});
+
+eutherIdEnroll.addEventListener("click", async () => {
+  await startEutherIdEnrollment();
+});
+
+eutherIdShadowTest.addEventListener("click", async () => {
+  await startEutherIdShadowTest();
+});
+
+eutherIdQrClear.addEventListener("click", () => {
+  clearEutherIdPanel();
 });
 
 adminRefresh.addEventListener("click", () => {
@@ -14176,6 +14264,163 @@ async function openAdminModal(): Promise<void> {
   await refreshHostUsers();
 }
 
+function stopEutherIdPolling(): void {
+  if (eutherIdPollTimer !== null) {
+    window.clearTimeout(eutherIdPollTimer);
+    eutherIdPollTimer = null;
+  }
+}
+
+function setEutherIdState(
+  label: string,
+  kind: "idle" | "pending" | "success" | "error" = "idle",
+): void {
+  eutherIdTestState.textContent = label;
+  eutherIdTestState.dataset.state = kind;
+}
+
+function clearEutherIdPanel(): void {
+  stopEutherIdPolling();
+  eutherIdActiveChallengeId = null;
+  eutherIdChallengeExpiresAt = 0;
+  eutherIdQr.getContext("2d")?.clearRect(0, 0, eutherIdQr.width, eutherIdQr.height);
+  eutherIdQrPanel.hidden = true;
+  eutherIdQrClear.hidden = true;
+  eutherIdEnroll.disabled = false;
+  eutherIdShadowTest.disabled = false;
+  setEutherIdState("Redo");
+  eutherIdTestResult.className = "eutherid-test-result";
+  eutherIdTestResult.innerHTML = "<span>Ingen riktig åtgärd körs i detta test.</span>";
+}
+
+async function showEutherIdQr(
+  payload: EutherIdEnrollment | EutherIdChallenge,
+  title: string,
+  detail: string,
+): Promise<void> {
+  await QRCode.toCanvas(eutherIdQr, JSON.stringify(payload), {
+    width: 280,
+    margin: 2,
+    errorCorrectionLevel: "M",
+    color: { dark: "#07140b", light: "#f7ffe8" },
+  });
+  eutherIdQrTitle.textContent = title;
+  eutherIdQrDetail.textContent = detail;
+  eutherIdQrPanel.hidden = false;
+  eutherIdQrClear.hidden = false;
+}
+
+function renderEutherIdError(error: unknown): void {
+  stopEutherIdPolling();
+  eutherIdEnroll.disabled = false;
+  eutherIdShadowTest.disabled = false;
+  setEutherIdState("Misslyckades", "error");
+  eutherIdTestResult.className = "eutherid-test-result is-error";
+  eutherIdTestResult.textContent = error instanceof Error ? error.message : "EutherID-testet misslyckades";
+}
+
+async function startEutherIdEnrollment(): Promise<void> {
+  clearEutherIdPanel();
+  eutherIdEnroll.disabled = true;
+  setEutherIdState("Skapar registrering…", "pending");
+  try {
+    const enrollment = await bridgeJson<EutherIdEnrollment>(
+      "/api/admin/eutherid/device-enrollments",
+      { method: "POST", body: "{}" },
+      3000,
+    );
+    await showEutherIdQr(
+      enrollment,
+      "Registrera telefonen",
+      "Skanna med EutherID och bekräfta fingeravtrycket i appen. QR-koden är kortlivad.",
+    );
+    setEutherIdState("Väntar på telefonen", "pending");
+    eutherIdTestResult.textContent = "När appen visar Registrerad kan du rensa QR-koden och köra shadow-testet.";
+  } catch (error) {
+    renderEutherIdError(error);
+  } finally {
+    eutherIdEnroll.disabled = false;
+  }
+}
+
+async function startEutherIdShadowTest(): Promise<void> {
+  clearEutherIdPanel();
+  eutherIdShadowTest.disabled = true;
+  setEutherIdState("Skapar shadow-test…", "pending");
+  try {
+    const challenge = await bridgeJson<EutherIdChallenge>(
+      "/api/admin/eutherid/shadow-tests",
+      { method: "POST", body: "{}" },
+      3000,
+    );
+    eutherIdActiveChallengeId = challenge.id;
+    eutherIdChallengeExpiresAt = challenge.expires_at;
+    await showEutherIdQr(
+      challenge,
+      "Godkänn shadow-testet",
+      "Skanna med EutherID, kontrollera att åtgärden är eutherid.test och godkänn med fingeravtryck.",
+    );
+    setEutherIdState("Väntar på godkännande", "pending");
+    eutherIdTestResult.textContent = "Testet väntar. Ingen serveråtgärd kan köras av den här utmaningen.";
+    scheduleEutherIdPoll(250);
+  } catch (error) {
+    renderEutherIdError(error);
+  }
+}
+
+function scheduleEutherIdPoll(delayMs = 1500): void {
+  stopEutherIdPolling();
+  eutherIdPollTimer = window.setTimeout(() => {
+    eutherIdPollTimer = null;
+    void pollEutherIdChallenge();
+  }, delayMs);
+}
+
+async function pollEutherIdChallenge(): Promise<void> {
+  const challengeId = eutherIdActiveChallengeId;
+  if (!challengeId || !adminModal.classList.contains("is-open")) {
+    return;
+  }
+  try {
+    const challenge = await bridgeJson<EutherIdChallenge>(
+      `/api/admin/eutherid/challenges/${encodeURIComponent(challengeId)}`,
+      {},
+      2500,
+    );
+    if (challenge.status === "pending") {
+      if (Date.now() >= eutherIdChallengeExpiresAt * 1000) {
+        throw new Error("Utmaningen hann löpa ut. Skapa ett nytt shadow-test.");
+      }
+      scheduleEutherIdPoll();
+      return;
+    }
+    if (challenge.status !== "approved") {
+      throw new Error(`Utmaningen avslutades med status ${challenge.status}.`);
+    }
+    setEutherIdState("Verifierar engångsbevis…", "pending");
+    const result = await bridgeJson<EutherIdShadowResult>(
+      `/api/admin/eutherid/shadow-tests/${encodeURIComponent(challengeId)}/complete`,
+      { method: "POST", body: "{}" },
+      5000,
+    );
+    if (!result.ok || result.commandRun !== false || !result.replayRejected) {
+      throw new Error("Shadow-testets säkerhetsvillkor kunde inte bevisas.");
+    }
+    stopEutherIdPolling();
+    eutherIdActiveChallengeId = null;
+    eutherIdShadowTest.disabled = false;
+    setEutherIdState("Godkänt", "success");
+    eutherIdTestResult.className = "eutherid-test-result is-success";
+    eutherIdTestResult.innerHTML = [
+      "<strong>Fingeravtrycksflödet fungerar.</strong>",
+      `<span>Enhet: ${escapeHtml(result.deviceId || "verifierad")}</span>`,
+      "<span>Riktig åtgärd: nej · Bevis förbrukat: ja · Replay stoppad: ja</span>",
+    ].join("");
+  } catch (error) {
+    renderEutherIdError(error);
+  }
+}
+
 async function logoutHostUser(): Promise<void> {
   try {
     await leaveVideoChat(false);
@@ -15537,6 +15782,7 @@ function renderAdminAccess(): void {
     button.hidden = !hostPermissions.canGenerateMusic && !hostUsername;
   });
   if (!hostIsAdmin) {
+    clearEutherIdPanel();
     adminModal.classList.remove("is-open");
     adminModal.setAttribute("aria-hidden", "true");
   }

@@ -8022,6 +8022,7 @@ h2 {
 .admin-dialog-body {
   display: grid;
   grid-template-columns: minmax(340px, 1fr) minmax(280px, 0.72fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 14px;
   min-width: 0;
   min-height: 0;
@@ -8173,6 +8174,136 @@ h2 {
   color: #aac99c;
   font-size: 0.72rem;
   font-weight: 800;
+}
+
+.eutherid-admin-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(46, 199, 255, 0.28);
+  border-radius: 8px;
+  background:
+    linear-gradient(120deg, rgba(4, 18, 20, 0.94), rgba(8, 20, 9, 0.9)),
+    repeating-linear-gradient(90deg, rgba(46, 199, 255, 0.04) 0 1px, transparent 1px 22px);
+}
+
+.eutherid-admin-head,
+.eutherid-admin-actions,
+.eutherid-qr-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.eutherid-qr-panel[hidden] {
+  display: none;
+}
+
+.eutherid-admin-head {
+  justify-content: space-between;
+}
+
+.eutherid-admin-head > div,
+.eutherid-qr-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.eutherid-admin-head strong {
+  color: #ecffe0;
+  font-size: 0.86rem;
+}
+
+.eutherid-admin-copy,
+.eutherid-qr-copy span,
+.eutherid-test-result span {
+  margin: 0;
+  color: #a8c9bd;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.eutherid-test-state {
+  flex: none;
+  padding: 5px 9px;
+  border: 1px solid rgba(168, 201, 189, 0.22);
+  border-radius: 999px;
+  color: #a8c9bd;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.eutherid-test-state[data-state="pending"] {
+  border-color: rgba(46, 199, 255, 0.45);
+  color: #8ee8ff;
+}
+
+.eutherid-test-state[data-state="success"] {
+  border-color: rgba(165, 222, 114, 0.5);
+  color: #d9ffab;
+}
+
+.eutherid-test-state[data-state="error"] {
+  border-color: rgba(255, 92, 92, 0.5);
+  color: #ffadad;
+}
+
+.eutherid-admin-actions {
+  flex-wrap: wrap;
+}
+
+.eutherid-admin-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.eutherid-qr-panel {
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid rgba(46, 199, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(2, 9, 10, 0.7);
+}
+
+.eutherid-qr-panel canvas {
+  display: block;
+  width: min(280px, 42vw);
+  height: auto;
+  border: 7px solid #f7ffe8;
+  border-radius: 6px;
+}
+
+.eutherid-qr-copy strong {
+  color: #e6fff6;
+  font-size: 0.82rem;
+}
+
+.eutherid-test-result {
+  display: grid;
+  gap: 3px;
+  min-height: 34px;
+  padding: 8px 10px;
+  border-left: 3px solid rgba(168, 201, 189, 0.28);
+  background: rgba(1, 8, 8, 0.56);
+  overflow-wrap: anywhere;
+}
+
+.eutherid-test-result.is-success {
+  border-left-color: #a5de72;
+}
+
+.eutherid-test-result.is-success strong {
+  color: #d9ffab;
+}
+
+.eutherid-test-result.is-error {
+  border-left-color: #ff5c5c;
+  color: #ffadad;
+  font-size: 0.72rem;
 }
 
 .binding-list,
@@ -8624,6 +8755,7 @@ h2 {
 
   .admin-dialog-body {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
     grid-auto-rows: max-content;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
@@ -8671,6 +8803,7 @@ h2 {
 
   .admin-dialog-body {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
     grid-auto-rows: max-content;
     gap: 10px;
     overflow: auto;
@@ -8685,6 +8818,25 @@ h2 {
 
   .admin-list-panel {
     max-height: min(58dvh, 520px);
+  }
+
+  .eutherid-admin-panel {
+    grid-column: auto;
+  }
+
+  .eutherid-admin-head,
+  .eutherid-qr-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .eutherid-test-state {
+    align-self: flex-start;
+  }
+
+  .eutherid-qr-panel canvas {
+    width: min(280px, 100%);
+    align-self: center;
   }
 
   .admin-users {
