@@ -1530,6 +1530,7 @@ let eutherIdChallengeExpiresAt = 0;
 let eutherIdPollTimer: number | null = null;
 let eutherIdDevices: EutherIdDevice[] = [];
 let eutherIdPendingPayload: EutherIdEnrollment | EutherIdChallenge | null = null;
+let profileEutherIdEnrollment: EutherIdEnrollment | null = null;
 let eutherIdActiveAction: "shadow" | "wake" | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
@@ -3047,6 +3048,29 @@ workspaceWindowClose.addEventListener("click", () => {
 
 workspaceWindowDynamic.addEventListener("click", async (event) => {
   const target = event.target as HTMLElement;
+  const profileEutherIdStart = target.closest<HTMLButtonElement>("[data-profile-eutherid-start]");
+  if (profileEutherIdStart) {
+    profileEutherIdStart.disabled = true;
+    try {
+      profileEutherIdEnrollment = await bridgeJson<EutherIdEnrollment>(
+        "/api/eutherid/device-enrollments",
+        { method: "POST", body: "{}" },
+        3000,
+      );
+      renderWorkspaceWindow();
+      await renderProfileEutherIdQr();
+    } catch (error) {
+      profileEutherIdStart.disabled = false;
+      const status = workspaceWindowDynamic.querySelector<HTMLElement>("[data-profile-eutherid-status]");
+      if (status) status.textContent = error instanceof Error ? error.message : "Registreringen misslyckades";
+    }
+    return;
+  }
+  const profileEutherIdLocal = target.closest<HTMLButtonElement>("[data-profile-eutherid-local]");
+  if (profileEutherIdLocal && profileEutherIdEnrollment) {
+    window.location.href = `eutherid://open?payload=${encodeURIComponent(JSON.stringify(profileEutherIdEnrollment))}`;
+    return;
+  }
   const socialRefresh = target.closest<HTMLButtonElement>("[data-social-chat-refresh]");
   if (socialRefresh) {
     await refreshActiveSocialChat("button", 0);
@@ -8206,6 +8230,9 @@ function workspaceWindowTitleFor(windowName: WorkspaceWindow): string {
 
 function openWorkspaceWindow(windowName: WorkspaceWindow): void {
   activeWorkspaceWindow = windowName;
+  if (windowName === "profile") {
+    profileEutherIdEnrollment = null;
+  }
   workspaceWindowLayer.hidden = false;
   document.body.classList.add("workspace-window-open");
   renderWorkspaceWindow();
@@ -13358,8 +13385,34 @@ function profileWindowMarkup(): string {
         <strong>${escapeHtml(currentName)}</strong>
         <small>${hostUsername ? "Authenticated on this EutherHost" : "Login required for shared tools"}</small>
       </div>
+      <div class="eutherid-admin-panel">
+        <p class="section-label">EutherID · ${escapeHtml(hostUsername ?? "")}</p>
+        <strong>Bind en telefon till ditt konto</strong>
+        <p>Servern hämtar kontot från din aktiva session. Det går inte att välja någon annan användare här.</p>
+        ${profileEutherIdEnrollment
+          ? `<div class="eutherid-delivery">
+              <span data-profile-eutherid-status>Registreringen gäller ${escapeHtml(profileEutherIdEnrollment.actor)}.</span>
+              <button data-profile-eutherid-local type="button">EutherID på den här enheten</button>
+              <canvas id="profile-eutherid-qr" width="280" height="280" aria-label="EutherID registreringskod"></canvas>
+              <span>Skanna QR-koden om EutherID finns på en annan enhet.</span>
+            </div>`
+          : `<button data-profile-eutherid-start type="button" ${hostUsername ? "" : "disabled"}>Registrera EutherID-enhet</button>
+             <span data-profile-eutherid-status>${hostUsername ? "Redo" : "Logga in först"}</span>`}
+      </div>
     </div>
   `;
+}
+
+async function renderProfileEutherIdQr(): Promise<void> {
+  if (!profileEutherIdEnrollment || activeWorkspaceWindow !== "profile") return;
+  const canvas = workspaceWindowDynamic.querySelector<HTMLCanvasElement>("#profile-eutherid-qr");
+  if (!canvas) return;
+  await QRCode.toCanvas(canvas, JSON.stringify(profileEutherIdEnrollment), {
+    width: 280,
+    margin: 2,
+    errorCorrectionLevel: "M",
+    color: { dark: "#07140b", light: "#f7ffe8" },
+  });
 }
 
 function settingsWindowMarkup(): string {
