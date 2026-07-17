@@ -44,6 +44,14 @@ type ServerMap = {
   map_md?: string;
 };
 
+type EutherNetCommand = {
+  name: string;
+  enabled: boolean;
+  mode: string;
+  required_action?: string;
+  target?: string;
+};
+
 type AuthStatus = {
   authenticated: boolean;
   isAdmin?: boolean;
@@ -165,6 +173,7 @@ const alertDark = 0x4b0710;
 
 let csrfToken = "";
 let serverMap: ServerMap | null = null;
+let eutherNetCommands: EutherNetCommand[] = [];
 let gpuScheduler: GpuSchedulerOverview | null = null;
 let selectedNode: SceneNode | null = null;
 let focusedNode: SceneNode | null = null;
@@ -269,7 +278,7 @@ function installShell(): void {
           <button id="ev-action-leave-room" type="button" disabled hidden>Back to Map</button>
           <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
-          <small>Restart uses EutherNet's configured command allowlist. System services may need sudoers for non-interactive restart.</small>
+          <small>Restart creates a device-bound EutherID request. Only explicitly enabled, allowlisted service handles can run after fingerprint approval.</small>
         </section>
       </aside>
       <div id="ev-custodian-overlay" hidden>
@@ -660,12 +669,14 @@ async function loadMap(refresh: boolean): Promise<void> {
   if (refresh) {
     await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
   }
-  const [map, gpu] = await Promise.all([
+  const [map, gpu, commands] = await Promise.all([
     jsonFetch<ServerMap>("/api/admin/euthernet/map"),
     loadGpuSchedulerOverview(),
+    jsonFetch<{ commands: EutherNetCommand[] }>("/api/admin/euthernet/commands").catch(() => ({ commands: [] })),
   ]);
   serverMap = map;
   gpuScheduler = gpu;
+  eutherNetCommands = commands.commands;
   buildCity(serverMap);
   if (isTouchMapDevice()) enterMobileInspectionMode("city");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
@@ -1378,30 +1389,32 @@ async function restartSelectedService(): Promise<void> {
   const ok = window.confirm(`Restart ${label}?`);
   if (!ok) return;
   restartButton.disabled = true;
-  statusLine.textContent = `Restarting ${label}...`;
-  if (command.startsWith("restart-euthergate-")) {
-    const service = command.slice("restart-euthergate-".length);
-    const result = await jsonFetch<{ service: string; unit: string; scheduled_seconds: number; error?: string }>(
-      `/euthergate/api/services/${encodeURIComponent(service)}/restart`,
-      { method: "POST", body: "{}" },
-    );
-    if (result.error) throw new Error(result.error);
-    statusLine.textContent = `Restart scheduled for ${result.unit} in ${result.scheduled_seconds}s.`;
-    await new Promise((resolve) => window.setTimeout(resolve, 2800));
-    await loadMap(false);
-    return;
-  }
-  const result = await jsonFetch<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>("/api/admin/euthernet/run", {
+  statusLine.textContent = `Sending EutherID approval request for ${label}...`;
+  const created = await jsonFetch<{ challengeId: string; expiresAt: number }>("/api/admin/eutherid/actions/service-restarts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: command }),
   });
-  if (!result.ok) {
-    throw new Error(result.error || result.stderr || "restart failed");
+  statusLine.textContent = `Approval sent to EutherID for ${label}. Waiting for fingerprint...`;
+  const deadline = Math.min(created.expiresAt || Date.now() + 120_000, Date.now() + 125_000);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1800));
+    const result = await jsonFetch<{
+      ok: boolean;
+      status: string;
+      result?: { stdout?: string };
+    }>(`/api/admin/eutherid/actions/service-restarts/${encodeURIComponent(created.challengeId)}`);
+    if (result.status === "completed") {
+      statusLine.textContent = `Restarted ${label}: ${(result.result?.stdout || "approved and verified").trim()}`;
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
+      await loadMap(false);
+      return;
+    }
+    if (["denied", "expired", "consumed"].includes(result.status)) {
+      throw new Error(`EutherID request ended with status: ${result.status}`);
+    }
   }
-  statusLine.textContent = `Restarted ${label}: ${(result.stdout || "ok").trim()}`;
-  await new Promise((resolve) => window.setTimeout(resolve, 900));
-  await loadMap(false);
+  throw new Error("EutherID request timed out without approval");
 }
 
 function restartCommandForNode(node: SceneNode): string | null {
@@ -1421,15 +1434,17 @@ function serviceForNode(node: SceneNode): ServiceReport | null {
 
 function restartCommandForService(service: ServiceReport): string | null {
   const units = service.units.filter((unit) => unit.endsWith(".service"));
-  if (units.includes("eutherhost.service")) return "restart-eutherhost";
-  if (units.includes("caddy.service")) return "restart-caddy";
-  if (units.includes("eutherbooks.service")) return "restart-eutherbooks";
-  if (units.includes("eutherpunkd.service")) return "restart-eutherpunkd";
+  let command: string | null = null;
+  if (units.includes("eutherhost.service")) command = "restart-eutherhost";
+  if (units.includes("caddy.service")) command = "restart-caddy";
+  if (units.includes("eutherbooks.service")) command = "restart-eutherbooks";
+  if (units.includes("eutherpunkd.service")) command = "restart-eutherpunkd";
   if (units.includes("euthergate.service")) return "restart-euthergate-gateway";
   if (units.includes("euthergate-tunnel.service")) return "restart-euthergate-tunnel";
   if (units.includes("euthergate-forge.service")) return "restart-euthergate-forge";
-  if (service.name.toLowerCase() === "euthersight") return "restart-euthersight-frigate";
-  return null;
+  if (service.name.toLowerCase() === "euthersight") command = "restart-euthersight-frigate";
+  if (!command) return null;
+  return eutherNetCommands.some((item) => item.name === command && item.enabled) ? command : null;
 }
 
 function nodeIsAlerting(node: Pick<MapNode, "status" | "detail">): boolean {

@@ -1077,6 +1077,9 @@ struct HostEutherIdActionRequest {
     actor: String,
     session_hash: String,
     origin: String,
+    action: String,
+    target: String,
+    command_id: String,
     created_unix_ms: u64,
     expires_unix_ms: u64,
     completed_result: Option<serde_json::Value>,
@@ -1085,6 +1088,11 @@ struct HostEutherIdActionRequest {
 #[derive(Deserialize)]
 struct HostEutherIdLoginStartRequest {
     username: String,
+}
+
+#[derive(Deserialize)]
+struct HostEutherIdServiceRestartRequest {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -3050,6 +3058,34 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 Err(err) => send_error(stream, 502, &err.to_string()),
             }
         }
+        ("POST", "/api/admin/eutherid/actions/service-restarts") => {
+            let admin = require_host_admin(state, &request)?;
+            let input: HostEutherIdServiceRestartRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherID service restart request"))?;
+            match create_admin_service_restart_request(state, &admin, &request, &input.name) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("GET", path) if eutherid_admin_service_restart_status_id(path).is_some() => {
+            let admin = require_host_admin(state, &request)?;
+            let challenge_id = eutherid_admin_service_restart_status_id(path)
+                .ok_or_else(|| invalid_request("invalid service restart status path"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match poll_service_restart_request(state, challenge_id, Some(&admin), &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
         ("POST", "/api/eutherid/request-actions/restart-eutherbooks") => {
             if let Err(err) = require_eutherid_request_token(&request) {
                 return send_error(stream, 403, &err.to_string());
@@ -3069,7 +3105,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .peer_addr()
                 .map(|addr| addr.ip().to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
-            match poll_eutherbooks_restart_request(state, challenge_id, &remote_addr) {
+            match poll_service_restart_request(state, challenge_id, None, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                     send_error(stream, 403, &err.to_string())
@@ -10888,6 +10924,14 @@ fn eutherid_request_action_status_id(path: &str) -> Option<&str> {
         .filter(|id| *id != "restart-eutherbooks")
 }
 
+fn eutherid_admin_service_restart_status_id(path: &str) -> Option<&str> {
+    eutherid_route_id(
+        path,
+        "/api/admin/eutherid/actions/service-restarts/",
+        "",
+    )
+}
+
 fn is_eutherid_request_action_path(method: &str, path: &str) -> bool {
     (method == "POST" && path == "/api/eutherid/request-actions/restart-eutherbooks")
         || (method == "GET" && eutherid_request_action_status_id(path).is_some())
@@ -11270,17 +11314,33 @@ fn require_eutherid_request_token(request: &HttpRequest) -> io::Result<()> {
     Ok(())
 }
 
-fn eutherbooks_restart_request_binding(
-    request: &HostEutherIdActionRequest,
-) -> serde_json::Value {
+fn service_restart_request_binding(request: &HostEutherIdActionRequest) -> serde_json::Value {
     serde_json::json!({
         "actor": request.actor,
         "session_hash": request.session_hash,
         "origin": request.origin,
-        "action": "service.restart",
-        "target": "eutherbooks.service",
-        "command_id": "restart-eutherbooks",
+        "action": request.action,
+        "target": request.target,
+        "command_id": request.command_id,
     })
+}
+
+fn service_restart_spec(command_id: &str) -> Option<(&'static str, &'static str)> {
+    match command_id {
+        "restart-eutherhost" => Some(("service.restart", "eutherhost.service")),
+        "restart-caddy" => Some(("service.restart", "caddy.service")),
+        "restart-eutherbooks" => Some(("service.restart", "eutherbooks.service")),
+        "restart-eutherpunkd" => Some(("service.restart", "eutherpunkd.service")),
+        "restart-euthersight-frigate" => {
+            Some(("service.restart", "euthersight-frigate.service"))
+        }
+        "restart-euthergate-gateway" => Some(("service.restart", "euthergate.service")),
+        "restart-euthergate-tunnel" => {
+            Some(("service.restart", "euthergate-tunnel.service"))
+        }
+        "restart-euthergate-forge" => Some(("service.restart", "euthergate-forge.service")),
+        _ => None,
+    }
 }
 
 fn create_eutherbooks_restart_request(state: &HostState) -> io::Result<serde_json::Value> {
@@ -11301,17 +11361,51 @@ fn create_eutherbooks_restart_request(state: &HostState) -> io::Result<serde_jso
             ));
         }
     }
+    create_service_restart_request(
+        state,
+        actor,
+        sha256_hex(random_token()?.as_bytes()),
+        "restart-eutherbooks",
+    )
+}
+
+fn create_admin_service_restart_request(
+    state: &HostState,
+    admin: &str,
+    http_request: &HttpRequest,
+    command_id: &str,
+) -> io::Result<serde_json::Value> {
+    let session = session_token(http_request).ok_or_else(|| invalid_request("login required"))?;
+    create_service_restart_request(
+        state,
+        admin.to_string(),
+        sha256_hex(session.as_bytes()),
+        command_id,
+    )
+}
+
+fn create_service_restart_request(
+    state: &HostState,
+    actor: String,
+    session_hash: String,
+    command_id: &str,
+) -> io::Result<serde_json::Value> {
+    let (action, target) = service_restart_spec(command_id)
+        .ok_or_else(|| invalid_request("service restart is not allowlisted"))?;
     let now = unix_ms_now();
     let request = HostEutherIdActionRequest {
         challenge_id: String::new(),
         actor,
-        session_hash: sha256_hex(random_token()?.as_bytes()),
+        session_hash,
         origin: eutherid_public_origin()?,
+        action: action.to_string(),
+        target: target.to_string(),
+        command_id: command_id.to_string(),
         created_unix_ms: now,
         expires_unix_ms: now.saturating_add(120_000),
         completed_result: None,
     };
-    let mut challenge_body = eutherbooks_restart_request_binding(&request);
+    let mut challenge_body = service_restart_request_binding(&request);
     challenge_body["ttl_seconds"] = serde_json::json!(120);
     let response = eutherid_internal_json_request("POST", "/v1/challenges", Some(&challenge_body))?;
     let challenge = eutherid_json_response(response, &[201])?;
@@ -11335,18 +11429,19 @@ fn create_eutherbooks_restart_request(state: &HostState) -> io::Result<serde_jso
         "ok": true,
         "challengeId": challenge_id,
         "actor": actor,
-        "action": "service.restart",
-        "target": "eutherbooks.service",
-        "commandId": "restart-eutherbooks",
+        "action": action,
+        "target": target,
+        "commandId": command_id,
         "status": "pending",
         "createdAt": now,
         "expiresAt": expires,
     }))
 }
 
-fn poll_eutherbooks_restart_request(
+fn poll_service_restart_request(
     state: &HostState,
     challenge_id: &str,
+    expected_actor: Option<&str>,
     remote_addr: &str,
 ) -> io::Result<serde_json::Value> {
     if !valid_eutherid_challenge_id(challenge_id) {
@@ -11360,6 +11455,12 @@ fn poll_eutherbooks_restart_request(
         .find(|item| item.challenge_id == challenge_id)
         .cloned()
         .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "unknown request"))?;
+    if expected_actor.is_some_and(|actor| actor != request.actor) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "request belongs to another admin",
+        ));
+    }
     if let Some(result) = request.completed_result {
         return Ok(result);
     }
@@ -11383,24 +11484,28 @@ fn poll_eutherbooks_restart_request(
         }));
     }
     let result: io::Result<serde_json::Value> = (|| {
-        let expected = eutherbooks_restart_request_binding(&request);
-        let action_proof = issue_eutherid_action_proof(challenge_id, &expected)?;
-        let action_result =
-            euthernet_fixed_authorized_action("restart-eutherbooks", &action_proof, &expected)?;
+        let expected = service_restart_request_binding(&request);
+        let action_result = if let Some(service) = request.command_id.strip_prefix("restart-euthergate-") {
+            consume_eutherid_action_proof(challenge_id, &expected)?;
+            euthergate_fixed_service_restart(service)?
+        } else {
+            let action_proof = issue_eutherid_action_proof(challenge_id, &expected)?;
+            euthernet_fixed_authorized_action(&request.command_id, &action_proof, &expected)?
+        };
         Ok(serde_json::json!({
             "ok": true,
             "challengeId": challenge_id,
             "status": "completed",
             "actor": request.actor,
-            "action": "service.restart",
-            "target": "eutherbooks.service",
-            "commandId": "restart-eutherbooks",
+            "action": request.action,
+            "target": request.target,
+            "commandId": request.command_id,
             "result": action_result,
         }))
     })();
     audit_host_event(
         state,
-        "eutherbooks_restart_requested_action",
+        "service_restart_requested_action",
         Some(&request.actor),
         remote_addr,
         result.is_ok(),
@@ -11577,7 +11682,15 @@ fn consume_eutherid_action_proof(
 }
 
 fn euthergate_fixed_json_action(method: &str, path: &str) -> io::Result<serde_json::Value> {
-    if (method, path) != ("POST", "/api/displays/wake") {
+    let allowed = (method, path) == ("POST", "/api/displays/wake")
+        || (method == "POST"
+            && matches!(
+                path,
+                "/api/services/gateway/restart"
+                    | "/api/services/tunnel/restart"
+                    | "/api/services/forge/restart"
+            ));
+    if !allowed {
         return Err(invalid_request("unsupported EutherGate action"));
     }
     let upstream_base =
@@ -11615,12 +11728,27 @@ fn euthergate_fixed_json_action(method: &str, path: &str) -> io::Result<serde_js
         .map_err(|_| io::Error::other("EutherGate returned invalid JSON"))
 }
 
+fn euthergate_fixed_service_restart(service: &str) -> io::Result<serde_json::Value> {
+    if !matches!(service, "gateway" | "tunnel" | "forge") {
+        return Err(invalid_request("unsupported EutherGate service"));
+    }
+    euthergate_fixed_json_action("POST", &format!("/api/services/{service}/restart"))
+}
+
 fn euthernet_fixed_authorized_action(
     command_id: &str,
     action_proof: &str,
     expected: &serde_json::Value,
 ) -> io::Result<serde_json::Value> {
-    if !matches!(command_id, "eutherid-step-up-test" | "restart-eutherbooks") {
+    if !matches!(
+        command_id,
+        "eutherid-step-up-test"
+            | "restart-eutherhost"
+            | "restart-caddy"
+            | "restart-eutherbooks"
+            | "restart-eutherpunkd"
+            | "restart-euthersight-frigate"
+    ) {
         return Err(invalid_request("unsupported EutherNet action"));
     }
     let upstream_base =
@@ -12724,6 +12852,7 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
         "/backup-manifest",
         "/restore-drill",
         "/refresh",
+        "/commands",
         "/run",
         "/ask",
     ];
@@ -21742,12 +21871,15 @@ mod tests {
             actor: "nichlas".to_string(),
             session_hash: "a".repeat(64),
             origin: "https://apothictech.se".to_string(),
+            action: "service.restart".to_string(),
+            target: "eutherbooks.service".to_string(),
+            command_id: "restart-eutherbooks".to_string(),
             created_unix_ms: 1,
             expires_unix_ms: 2,
             completed_result: None,
         };
         assert_eq!(
-            eutherbooks_restart_request_binding(&request),
+            service_restart_request_binding(&request),
             serde_json::json!({
                 "actor": "nichlas",
                 "session_hash": "a".repeat(64),
@@ -21757,6 +21889,17 @@ mod tests {
                 "command_id": "restart-eutherbooks",
             })
         );
+        assert_eq!(
+            eutherid_admin_service_restart_status_id(&format!(
+                "/api/admin/eutherid/actions/service-restarts/{id}"
+            )),
+            Some(id)
+        );
+        assert_eq!(
+            service_restart_spec("restart-euthergate-forge"),
+            Some(("service.restart", "euthergate-forge.service"))
+        );
+        assert!(service_restart_spec("restart-arbitrary.service").is_none());
     }
 
     #[test]
