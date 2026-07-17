@@ -3029,11 +3029,37 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 Err(err) => send_error(stream, 502, &err.to_string()),
             }
         }
+        ("POST", "/api/admin/eutherid/actions/euthernet-step-up-test") => {
+            let admin = require_host_admin(state, &request)?;
+            match create_eutherid_euthernet_step_up_test(&admin, &request) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
         ("POST", path) if eutherid_euthergate_wake_complete_id(path).is_some() => {
             let admin = require_host_admin(state, &request)?;
             let challenge_id = eutherid_euthergate_wake_complete_id(path)
                 .ok_or_else(|| invalid_request("invalid EutherID wake path"))?;
             match complete_eutherid_euthergate_wake(&admin, &request, challenge_id) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", path) if eutherid_euthernet_step_up_test_complete_id(path).is_some() => {
+            let admin = require_host_admin(state, &request)?;
+            let challenge_id = eutherid_euthernet_step_up_test_complete_id(path)
+                .ok_or_else(|| invalid_request("invalid EutherID EutherNet test path"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match complete_eutherid_euthernet_step_up_test(
+                state,
+                &admin,
+                &request,
+                challenge_id,
+                &remote_addr,
+            ) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) => send_error(stream, 502, &err.to_string()),
             }
@@ -3116,6 +3142,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 if euthernet_request_requires_host_admin(&request.method, path) {
                     if let Err(err) = require_host_admin(state, &request) {
                         return send_error(stream, 403, &err.to_string());
+                    }
+                    if euthernet_request_requires_eutherid(&request.method, path) {
+                        return send_error(stream, 403, "EutherID step-up required");
                     }
                 } else {
                     let user = require_host_user(state, &request)?;
@@ -10805,6 +10834,14 @@ fn eutherid_euthergate_wake_complete_id(path: &str) -> Option<&str> {
     .then_some(id)
 }
 
+fn eutherid_euthernet_step_up_test_complete_id(path: &str) -> Option<&str> {
+    eutherid_route_id(
+        path,
+        "/api/admin/eutherid/actions/euthernet-step-up-test/",
+        "/complete",
+    )
+}
+
 fn eutherid_route_id<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     let id = path.strip_prefix(prefix)?.strip_suffix(suffix)?;
     ((20..=128).contains(&id.len())
@@ -11135,6 +11172,19 @@ fn eutherid_euthergate_wake_binding(
     )
 }
 
+fn eutherid_euthernet_step_up_test_binding(
+    admin: &str,
+    request: &HttpRequest,
+) -> io::Result<serde_json::Value> {
+    eutherid_action_binding(
+        admin,
+        request,
+        "euthernet.step-up.test",
+        "euthernet",
+        "eutherid-step-up-test",
+    )
+}
+
 fn create_eutherid_shadow_test(
     admin: &str,
     request: &HttpRequest,
@@ -11195,10 +11245,62 @@ fn complete_eutherid_euthergate_wake(
     }))
 }
 
-fn consume_eutherid_action_proof(
+fn create_eutherid_euthernet_step_up_test(
+    admin: &str,
+    request: &HttpRequest,
+) -> io::Result<serde_json::Value> {
+    let mut challenge = eutherid_euthernet_step_up_test_binding(admin, request)?;
+    challenge["ttl_seconds"] = serde_json::json!(120);
+    let response = eutherid_internal_json_request("POST", "/v1/challenges", Some(&challenge))?;
+    eutherid_json_response(response, &[201])
+}
+
+fn complete_eutherid_euthernet_step_up_test(
+    state: &HostState,
+    admin: &str,
+    request: &HttpRequest,
+    challenge_id: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let result = (|| {
+        let expected = eutherid_euthernet_step_up_test_binding(admin, request)?;
+        let action_proof = issue_eutherid_action_proof(challenge_id, &expected)?;
+        let action_result =
+            euthernet_fixed_authorized_action("eutherid-step-up-test", &action_proof, &expected)?;
+        let authorization = action_result.get("authorization");
+        Ok(serde_json::json!({
+            "ok": true,
+            "challengeId": challenge_id,
+            "deviceId": authorization
+                .and_then(|value| value.get("device_id"))
+                .and_then(serde_json::Value::as_str),
+            "actor": admin,
+            "action": "euthernet.step-up.test",
+            "target": "euthernet",
+            "commandRun": true,
+            "replayRejected": true,
+            "result": action_result,
+        }))
+    })();
+    audit_host_event(
+        state,
+        "euthernet_step_up_test",
+        Some(admin),
+        remote_addr,
+        result.is_ok(),
+        if result.is_ok() {
+            "proof_consumed_command_succeeded"
+        } else {
+            "proof_or_command_rejected"
+        },
+    )?;
+    result
+}
+
+fn issue_eutherid_action_proof(
     challenge_id: &str,
     expected: &serde_json::Value,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<String> {
     let issue_path = format!("/v1/challenges/{challenge_id}/action-proof");
     let issue = eutherid_internal_json_request(
         "POST",
@@ -11206,10 +11308,18 @@ fn consume_eutherid_action_proof(
         Some(&serde_json::json!({ "expected": expected })),
     )?;
     let issued = eutherid_json_response(issue, &[200])?;
-    let action_proof = issued
+    issued
         .get("action_proof")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| io::Error::other("EutherID omitted the action proof"))?;
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| io::Error::other("EutherID omitted the action proof"))
+}
+
+fn consume_eutherid_action_proof(
+    challenge_id: &str,
+    expected: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
+    let action_proof = issue_eutherid_action_proof(challenge_id, expected)?;
     let consume_body = serde_json::json!({
         "action_proof": action_proof,
         "expected": expected,
@@ -11265,6 +11375,66 @@ fn euthergate_fixed_json_action(method: &str, path: &str) -> io::Result<serde_js
     }
     serde_json::from_slice(&raw[header_end + 4..])
         .map_err(|_| io::Error::other("EutherGate returned invalid JSON"))
+}
+
+fn euthernet_fixed_authorized_action(
+    command_id: &str,
+    action_proof: &str,
+    expected: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
+    if command_id != "eutherid-step-up-test" {
+        return Err(invalid_request("unsupported EutherNet action"));
+    }
+    let upstream_base =
+        env::var("EUTHERNET_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8791".to_string());
+    let body = serde_json::to_vec(&serde_json::json!({
+        "name": command_id,
+        "authorization": {
+            "action_proof": action_proof,
+            "expected": expected,
+        },
+    }))
+    .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut upstream = TcpStream::connect(&upstream_base)
+        .map_err(|_| io::Error::other("EutherNet upstream unavailable"))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        upstream,
+        "POST /api/euthernet/run HTTP/1.1\r\nHost: {upstream_base}\r\nConnection: close\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )?;
+    upstream.write_all(&body)?;
+    let mut raw = Vec::new();
+    upstream.read_to_end(&mut raw)?;
+    if raw.len() > 64 * 1024 {
+        return Err(io::Error::other("EutherNet response is too large"));
+    }
+    let header_end = find_subslice(&raw, b"\r\n\r\n")
+        .ok_or_else(|| io::Error::other("EutherNet response is malformed"))?;
+    let header = String::from_utf8_lossy(&raw[..header_end]);
+    let status = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| io::Error::other("EutherNet response status is malformed"))?;
+    let result: serde_json::Value = serde_json::from_slice(&raw[header_end + 4..])
+        .map_err(|_| io::Error::other("EutherNet returned invalid JSON"))?;
+    if status != 200
+        || result.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+        || result.get("name").and_then(serde_json::Value::as_str) != Some(command_id)
+        || result.get("mode").and_then(serde_json::Value::as_str) != Some("write")
+    {
+        return Err(io::Error::other(
+            result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("EutherNet action was rejected")
+                .to_string(),
+        ));
+    }
+    Ok(result)
 }
 
 struct EutherIdUpstreamResponse {
@@ -12119,6 +12289,10 @@ fn euthernet_request_requires_host_admin(method: &str, path: &str) -> bool {
         .strip_prefix(EUTHERNET_ADMIN_PROXY_PREFIX)
         .unwrap_or_default();
     relative.split('?').next().unwrap_or(relative) == "/run"
+}
+
+fn euthernet_request_requires_eutherid(method: &str, path: &str) -> bool {
+    euthernet_request_requires_host_admin(method, path)
 }
 
 fn is_euthergate_proxy_path(path: &str) -> bool {
@@ -21221,6 +21395,10 @@ mod tests {
             "POST",
             "/api/admin/euthernet/run?source=map"
         ));
+        assert!(euthernet_request_requires_eutherid(
+            "POST",
+            "/api/admin/euthernet/run"
+        ));
         assert!(!euthernet_request_requires_host_admin(
             "GET",
             "/api/admin/euthernet/run"
@@ -21230,6 +21408,10 @@ mod tests {
             "/api/admin/euthernet/map"
         ));
         assert!(!euthernet_request_requires_host_admin(
+            "POST",
+            "/api/admin/euthernet/refresh"
+        ));
+        assert!(!euthernet_request_requires_eutherid(
             "POST",
             "/api/admin/euthernet/refresh"
         ));
@@ -21327,6 +21509,50 @@ mod tests {
             "/api/admin/eutherid/actions/euthergate-wake/{id}/complete?again=1"
         ))
         .is_none());
+    }
+
+    #[test]
+    fn eutherid_euthernet_test_completion_only_accepts_an_exact_challenge_path() {
+        let id = "A2345678901234567890_-challenge";
+        assert_eq!(
+            eutherid_euthernet_step_up_test_complete_id(&format!(
+                "/api/admin/eutherid/actions/euthernet-step-up-test/{id}/complete"
+            )),
+            Some(id)
+        );
+        assert!(
+            eutherid_euthernet_step_up_test_complete_id(
+                "/api/admin/eutherid/actions/euthernet-step-up-test/short/complete"
+            )
+            .is_none()
+        );
+        assert!(
+            eutherid_euthernet_step_up_test_complete_id(&format!(
+                "/api/admin/eutherid/actions/euthernet-step-up-test/{id}/complete?again=1"
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn eutherid_euthernet_test_binding_is_fixed_and_session_bound() {
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/api/admin/eutherid/actions/euthernet-step-up-test".to_string(),
+            headers: vec![(
+                "Cookie".to_string(),
+                "euther_session=session-secret".to_string(),
+            )],
+            body: Vec::new(),
+            content_length: 0,
+        };
+        let binding = eutherid_euthernet_step_up_test_binding("nichlas", &request).unwrap();
+        assert_eq!(binding["actor"], "nichlas");
+        assert_eq!(binding["action"], "euthernet.step-up.test");
+        assert_eq!(binding["target"], "euthernet");
+        assert_eq!(binding["command_id"], "eutherid-step-up-test");
+        assert_eq!(binding["session_hash"], sha256_hex(b"session-secret"));
+        assert!(euthernet_fixed_authorized_action("restart-caddy", "proof", &binding).is_err());
     }
 
     #[test]

@@ -14,6 +14,8 @@ Admin session plus the normal CSRF token is required for:
 - `POST /api/admin/eutherid/shadow-tests/{id}/complete`
 - `POST /api/admin/eutherid/actions/euthergate-wake`
 - `POST /api/admin/eutherid/actions/euthergate-wake/{id}/complete`
+- `POST /api/admin/eutherid/actions/euthernet-step-up-test`
+- `POST /api/admin/eutherid/actions/euthernet-step-up-test/{id}/complete`
 
 Those requests receive the localhost-only EutherID internal token inside EutherHost. Client-supplied cookies, CSRF headers, and EutherID internal-token headers are never forwarded.
 
@@ -35,6 +37,8 @@ No public route can create a challenge, issue an action proof, consume an action
 The two `shadow-tests` routes are the safe physical-authentication smoke test used by the admin panel. EutherHost derives the actor, current session hash, HTTPS origin, action `eutherid.test`, target `shadow`, and command id `shadow-test`; none of those bindings can be supplied by the browser. Completion issues and consumes the action proof internally, deliberately attempts one replay, and succeeds only when EutherID rejects that replay. The response always reports `commandRun: false`; this test has no command execution path and does not enable EutherNet writes.
 
 The first real step-up action is display wake only. EutherHost derives `euthergate.displays.wake`, target `euthergate`, and command id `wake-displays`, consumes the proof once, verifies replay rejection, and only then calls the fixed EutherGate `/api/displays/wake` upstream path. Direct `POST /euthergate/api/displays/wake` through EutherHost is rejected, while all EutherGate navigation and recovery/login paths remain unchanged. Wake never unlocks a display.
+
+The EutherNet pilot is a second fixed action boundary, not a generic command proxy. EutherHost derives action `euthernet.step-up.test`, target `euthernet`, and command id `eutherid-step-up-test`, then passes the short-lived proof server-to-server for one-time consumption by EutherNet. The only enabled pilot command prints `eutherid-step-up-ok` and changes no server state. Browser calls to the generic `POST /api/admin/euthernet/run` route are rejected even for an admin; real restart and maintenance commands remain disabled per command.
 
 The browser can hand an enrollment or challenge to Android either as an on-screen QR code for another device or through the `eutherid://open?payload=...` deep link on the current Android device. Both transports carry the same short-lived server payload; neither carries the internal token or an action proof.
 

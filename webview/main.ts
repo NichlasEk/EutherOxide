@@ -289,13 +289,15 @@ type EutherIdShadowResult = {
   challengeId: string;
   deviceId?: string | null;
   actor: string;
-  action: "eutherid.test" | "euthergate.displays.wake";
-  target: "shadow" | "euthergate";
+  action: "eutherid.test" | "euthergate.displays.wake" | "euthernet.step-up.test";
+  target: "shadow" | "euthergate" | "euthernet";
   commandRun: boolean;
   replayRejected: boolean;
   result?: {
     woken?: string[];
     locked?: boolean;
+    stdout?: string;
+    mode?: string;
   };
 };
 
@@ -1549,7 +1551,7 @@ let eutherIdDevices: EutherIdDevice[] = [];
 let eutherIdPendingPayload: EutherIdEnrollment | EutherIdChallenge | null = null;
 let profileEutherIdEnrollment: EutherIdEnrollment | null = null;
 let profileEmailStatus: AccountEmailStatus | null = null;
-let eutherIdActiveAction: "shadow" | "wake" | null = null;
+let eutherIdActiveAction: "shadow" | "wake" | "euthernet-test" | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
 let socialChatPollTimer: number | null = null;
@@ -2679,6 +2681,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="eutherid-enroll" type="button">1 · Registrera telefon</button>
             <button id="eutherid-shadow-test" type="button">2 · Testa fingeravtryck</button>
             <button id="eutherid-wake" type="button">3 · Väck skärmar med EutherID</button>
+            <button id="eutherid-euthernet-test" type="button">4 · Testa EutherNet-gränsen</button>
             <button id="eutherid-qr-clear" class="mini-action" type="button" hidden>Rensa QR</button>
           </div>
           <div id="eutherid-devices" class="eutherid-devices" aria-live="polite">
@@ -2879,6 +2882,7 @@ const eutherIdEnroll = document.querySelector<HTMLButtonElement>("#eutherid-enro
 const eutherIdEnrollUser = document.querySelector<HTMLSelectElement>("#eutherid-enroll-user")!;
 const eutherIdShadowTest = document.querySelector<HTMLButtonElement>("#eutherid-shadow-test")!;
 const eutherIdWake = document.querySelector<HTMLButtonElement>("#eutherid-wake")!;
+const eutherIdEutherNetTest = document.querySelector<HTMLButtonElement>("#eutherid-euthernet-test")!;
 const eutherIdQrClear = document.querySelector<HTMLButtonElement>("#eutherid-qr-clear")!;
 const eutherIdQrPanel = document.querySelector<HTMLDivElement>("#eutherid-qr-panel")!;
 const eutherIdQr = document.querySelector<HTMLCanvasElement>("#eutherid-qr")!;
@@ -4100,6 +4104,10 @@ eutherIdShadowTest.addEventListener("click", async () => {
 
 eutherIdWake.addEventListener("click", async () => {
   await startEutherIdWake();
+});
+
+eutherIdEutherNetTest.addEventListener("click", async () => {
+  await startEutherIdEutherNetTest();
 });
 
 eutherIdQrClear.addEventListener("click", () => {
@@ -14605,6 +14613,7 @@ function clearEutherIdPanel(): void {
   eutherIdEnroll.disabled = false;
   eutherIdShadowTest.disabled = false;
   eutherIdWake.disabled = false;
+  eutherIdEutherNetTest.disabled = false;
   setEutherIdState("Redo");
   eutherIdTestResult.className = "eutherid-test-result";
   eutherIdTestResult.innerHTML = "<span>Ingen riktig åtgärd körs i detta test.</span>";
@@ -14641,6 +14650,7 @@ function renderEutherIdError(error: unknown): void {
   eutherIdEnroll.disabled = false;
   eutherIdShadowTest.disabled = false;
   eutherIdWake.disabled = false;
+  eutherIdEutherNetTest.disabled = false;
   setEutherIdState("Misslyckades", "error");
   eutherIdTestResult.className = "eutherid-test-result is-error";
   eutherIdTestResult.textContent = error instanceof Error ? error.message : "EutherID-testet misslyckades";
@@ -14722,6 +14732,32 @@ async function startEutherIdWake(): Promise<void> {
   }
 }
 
+async function startEutherIdEutherNetTest(): Promise<void> {
+  clearEutherIdPanel();
+  eutherIdEutherNetTest.disabled = true;
+  setEutherIdState("Skapar EutherNet-test…", "pending");
+  try {
+    const challenge = await bridgeJson<EutherIdChallenge>(
+      "/api/admin/eutherid/actions/euthernet-step-up-test",
+      { method: "POST", body: "{}" },
+      3000,
+    );
+    eutherIdActiveChallengeId = challenge.id;
+    eutherIdActiveAction = "euthernet-test";
+    eutherIdChallengeExpiresAt = challenge.expires_at;
+    showEutherIdRequest(
+      challenge,
+      "Godkänn EutherNet-testet",
+      "Kontrollera euthernet.step-up.test, euthernet och eutherid-step-up-test innan du godkänner.",
+    );
+    setEutherIdState("Väntar på godkännande", "pending");
+    eutherIdTestResult.textContent = "Testet går genom den riktiga EutherNet-write-gränsen men ändrar ingen serverstate.";
+    scheduleEutherIdPoll(250);
+  } catch (error) {
+    renderEutherIdError(error);
+  }
+}
+
 function scheduleEutherIdPoll(delayMs = 1500): void {
   stopEutherIdPolling();
   eutherIdPollTimer = window.setTimeout(() => {
@@ -14753,14 +14789,17 @@ async function pollEutherIdChallenge(): Promise<void> {
       throw new Error(`Utmaningen avslutades med status ${challenge.status}.`);
     }
     setEutherIdState("Verifierar engångsbevis…", "pending");
+    const completionPath = activeAction === "wake"
+      ? `/api/admin/eutherid/actions/euthergate-wake/${encodeURIComponent(challengeId)}/complete`
+      : activeAction === "euthernet-test"
+        ? `/api/admin/eutherid/actions/euthernet-step-up-test/${encodeURIComponent(challengeId)}/complete`
+        : `/api/admin/eutherid/shadow-tests/${encodeURIComponent(challengeId)}/complete`;
     const result = await bridgeJson<EutherIdShadowResult>(
-      activeAction === "wake"
-        ? `/api/admin/eutherid/actions/euthergate-wake/${encodeURIComponent(challengeId)}/complete`
-        : `/api/admin/eutherid/shadow-tests/${encodeURIComponent(challengeId)}/complete`,
+      completionPath,
       { method: "POST", body: "{}" },
       5000,
     );
-    const expectedCommandRun = activeAction === "wake";
+    const expectedCommandRun = activeAction !== "shadow";
     if (!result.ok || result.commandRun !== expectedCommandRun || !result.replayRejected) {
       throw new Error("Shadow-testets säkerhetsvillkor kunde inte bevisas.");
     }
@@ -14769,6 +14808,7 @@ async function pollEutherIdChallenge(): Promise<void> {
     eutherIdActiveAction = null;
     eutherIdShadowTest.disabled = false;
     eutherIdWake.disabled = false;
+    eutherIdEutherNetTest.disabled = false;
     setEutherIdState("Godkänt", "success");
     eutherIdTestResult.className = "eutherid-test-result is-success";
     eutherIdTestResult.innerHTML = activeAction === "wake"
@@ -14777,7 +14817,13 @@ async function pollEutherIdChallenge(): Promise<void> {
           `<span>Enhet: ${escapeHtml(result.deviceId || "verifierad")}</span>`,
           `<span>Väckta: ${escapeHtml(result.result?.woken?.join(", ") || "begäran utförd")} · Upplåsning: nej · Replay stoppad: ja</span>`,
         ].join("")
-      : [
+      : activeAction === "euthernet-test"
+        ? [
+          "<strong>EutherNet-write-gränsen godkände testet.</strong>",
+          `<span>Enhet: ${escapeHtml(result.deviceId || "verifierad")}</span>`,
+          `<span>Resultat: ${escapeHtml(result.result?.stdout?.trim() || "eutherid-step-up-ok")} · Serverstate ändrad: nej · Bevis förbrukat: ja</span>`,
+        ].join("")
+        : [
           "<strong>Fingeravtrycksflödet fungerar.</strong>",
           `<span>Enhet: ${escapeHtml(result.deviceId || "verifierad")}</span>`,
           "<span>Riktig åtgärd: nej · Bevis förbrukat: ja · Replay stoppad: ja</span>",
