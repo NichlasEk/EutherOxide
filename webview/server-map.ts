@@ -52,6 +52,19 @@ type EutherNetCommand = {
   target?: string;
 };
 
+type EutherIdAuditEntry = {
+  challengeId: string;
+  actor: string;
+  action: string;
+  target: string;
+  commandId: string;
+  status: string;
+  deviceId?: string | null;
+  detail: string;
+  createdAt: number;
+  expiresAt: number;
+};
+
 type AuthStatus = {
   authenticated: boolean;
   isAdmin?: boolean;
@@ -280,6 +293,10 @@ function installShell(): void {
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
           <small>Restart creates a device-bound EutherID request. Only explicitly enabled, allowlisted service handles can run after fingerprint approval.</small>
         </section>
+        <section>
+          <p class="eyebrow">EutherID Audit</p>
+          <div id="ev-eutherid-audit" class="ev-audit"><small>No restart requests yet.</small></div>
+        </section>
       </aside>
       <div id="ev-custodian-overlay" hidden>
         <div class="ev-dialog">
@@ -332,6 +349,13 @@ function installShell(): void {
     #ev-panel button, #ev-panel a { width: 100%; margin: 6px 0; text-align: left; display: block; box-sizing: border-box; }
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
+    .ev-audit { display: grid; gap: 8px; margin-top: 8px; }
+    .ev-audit-entry { border: 1px solid rgba(103,225,218,.2); border-radius: 6px; background: rgba(2,8,13,.58); padding: 8px; font-size: 12px; color: #b7c8d4; overflow-wrap: anywhere; }
+    .ev-audit-head { display: flex; justify-content: space-between; gap: 8px; color: #f4fbff; font-weight: 800; }
+    .ev-audit-status { color: #f4cf78; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
+    .ev-audit-status.completed { color: #52de8b; }
+    .ev-audit-status.failed, .ev-audit-status.denied, .ev-audit-status.expired { color: #ff6c84; }
+    .ev-audit-meta { margin-top: 4px; color: #8fa3b2; }
     #ev-custodian-overlay { position: fixed; inset: 0; z-index: 5; display: grid; align-items: end; pointer-events: auto; background: linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.52)); padding: 24px; box-sizing: border-box; }
     .ev-dialog { width: min(980px, calc(100vw - 48px)); max-height: min(72vh, 720px); margin: 0 auto; border: 1px solid rgba(103,225,218,.36); border-radius: 8px; background: rgba(4,9,15,.78); backdrop-filter: blur(18px); box-shadow: 0 24px 120px rgba(0,0,0,.62); padding: 16px; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; box-sizing: border-box; }
     .ev-dialog-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(110,142,160,.24); padding-bottom: 12px; }
@@ -669,17 +693,49 @@ async function loadMap(refresh: boolean): Promise<void> {
   if (refresh) {
     await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
   }
-  const [map, gpu, commands] = await Promise.all([
+  const [map, gpu, commands, audit] = await Promise.all([
     jsonFetch<ServerMap>("/api/admin/euthernet/map"),
     loadGpuSchedulerOverview(),
     jsonFetch<{ commands: EutherNetCommand[] }>("/api/admin/euthernet/commands").catch(() => ({ commands: [] })),
+    loadEutherIdAudit(),
   ]);
   serverMap = map;
   gpuScheduler = gpu;
   eutherNetCommands = commands.commands;
+  renderEutherIdAudit(audit);
   buildCity(serverMap);
   if (isTouchMapDevice()) enterMobileInspectionMode("city");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
+}
+
+async function loadEutherIdAudit(): Promise<EutherIdAuditEntry[]> {
+  const result = await jsonFetch<{ entries: EutherIdAuditEntry[] }>(
+    "/api/admin/eutherid/actions/service-restarts/audit",
+  ).catch(() => ({ entries: [] }));
+  return result.entries;
+}
+
+function renderEutherIdAudit(entries: EutherIdAuditEntry[]): void {
+  const panel = document.querySelector<HTMLElement>("#ev-eutherid-audit");
+  if (!panel) return;
+  if (entries.length === 0) {
+    panel.innerHTML = "<small>No restart requests yet.</small>";
+    return;
+  }
+  panel.innerHTML = entries.slice(0, 8).map((entry) => {
+    const when = new Date(entry.createdAt).toLocaleString("sv-SE");
+    const device = entry.deviceId ? abbreviateAuditValue(entry.deviceId) : "awaiting device";
+    const statusClass = entry.status.toLowerCase().replace(/[^a-z]/g, "");
+    return `<article class="ev-audit-entry">
+      <div class="ev-audit-head"><span>${escapeHtml(entry.target)}</span><span class="ev-audit-status ${statusClass}">${escapeHtml(entry.status)}</span></div>
+      <div>${escapeHtml(entry.commandId)} · ${escapeHtml(entry.actor)}</div>
+      <div class="ev-audit-meta">${escapeHtml(when)} · ${escapeHtml(device)}</div>
+    </article>`;
+  }).join("");
+}
+
+function abbreviateAuditValue(value: string): string {
+  return value.length <= 18 ? value : `${value.slice(0, 9)}…${value.slice(-6)}`;
 }
 
 async function loadGpuSchedulerOverview(): Promise<GpuSchedulerOverview> {
@@ -1395,6 +1451,7 @@ async function restartSelectedService(): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: command }),
   });
+  renderEutherIdAudit(await loadEutherIdAudit());
   statusLine.textContent = `Approval sent to EutherID for ${label}. Waiting for fingerprint...`;
   const deadline = Math.min(created.expiresAt || Date.now() + 120_000, Date.now() + 125_000);
   while (Date.now() < deadline) {
@@ -1404,6 +1461,7 @@ async function restartSelectedService(): Promise<void> {
       status: string;
       result?: { stdout?: string };
     }>(`/api/admin/eutherid/actions/service-restarts/${encodeURIComponent(created.challengeId)}`);
+    renderEutherIdAudit(await loadEutherIdAudit());
     if (result.status === "completed") {
       statusLine.textContent = `Restarted ${label}: ${(result.result?.stdout || "approved and verified").trim()}`;
       await new Promise((resolve) => window.setTimeout(resolve, 900));

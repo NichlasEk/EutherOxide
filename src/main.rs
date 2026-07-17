@@ -80,7 +80,7 @@ const DEFAULT_EUTHERSYNC_REPO_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
     "/home/nichlas/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
-const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.4.0-release-signed.apk";
+const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.5.0-release-signed.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
 const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
@@ -1071,7 +1071,8 @@ struct HostEutherIdLoginAttempt {
     completed_unix_ms: Option<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HostEutherIdActionRequest {
     challenge_id: String,
     actor: String,
@@ -1082,7 +1083,18 @@ struct HostEutherIdActionRequest {
     command_id: String,
     created_unix_ms: u64,
     expires_unix_ms: u64,
+    #[serde(default = "default_pending_status")]
+    status: String,
+    #[serde(default)]
+    approved_device: Option<String>,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
     completed_result: Option<serde_json::Value>,
+}
+
+fn default_pending_status() -> String {
+    "pending".to_string()
 }
 
 #[derive(Deserialize)]
@@ -1766,6 +1778,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     write_host_codex_inbox_readme()?;
     let users = Arc::new(Mutex::new(load_host_users()?));
     let eutherid_recovery_tokens = load_host_eutherid_recovery_tokens()?;
+    let eutherid_action_requests = load_host_eutherid_action_requests()?;
     let account_email_tokens = load_host_account_email_tokens()?;
     let chat_messages = load_host_chat_messages()?;
     let next_chat_id = chat_messages
@@ -1796,7 +1809,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         login_attempts: Arc::new(Mutex::new(Vec::new())),
         eutherid_recovery_tokens: Arc::new(Mutex::new(eutherid_recovery_tokens)),
         eutherid_login_attempts: Arc::new(Mutex::new(Vec::new())),
-        eutherid_action_requests: Arc::new(Mutex::new(Vec::new())),
+        eutherid_action_requests: Arc::new(Mutex::new(eutherid_action_requests)),
         account_email_tokens: Arc::new(Mutex::new(account_email_tokens)),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
@@ -3068,6 +3081,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     send_error(stream, 400, &err.to_string())
                 }
                 Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("GET", "/api/admin/eutherid/actions/service-restarts/audit") => {
+            require_host_admin(state, &request)?;
+            match service_restart_audit(state) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) => send_error(stream, 500, &err.to_string()),
             }
         }
         ("GET", path) if eutherid_admin_service_restart_status_id(path).is_some() => {
@@ -10667,8 +10687,8 @@ fn send_eutherid_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let apk_path = env::var("EUTHERID_APK_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERID_APK_PATH));
-    let download_filename = if path == "/downloads/EutherID-0.4.0-release-signed.apk" {
-        "EutherID-0.4.0-release-signed.apk"
+    let download_filename = if path == "/downloads/EutherID-0.5.0-release-signed.apk" {
+        "EutherID-0.5.0-release-signed.apk"
     } else {
         "EutherID-release-signed.apk"
     };
@@ -10686,7 +10706,7 @@ fn is_eutherid_apk_download_path(path: &str) -> bool {
         "/downloads/eutherid.apk"
             | "/downloads/EutherID.apk"
             | "/downloads/EutherID-release-signed.apk"
-            | "/downloads/EutherID-0.4.0-release-signed.apk"
+            | "/downloads/EutherID-0.5.0-release-signed.apk"
             | "/downloads/eutherid-release-signed.apk"
     )
 }
@@ -11403,6 +11423,9 @@ fn create_service_restart_request(
         command_id: command_id.to_string(),
         created_unix_ms: now,
         expires_unix_ms: now.saturating_add(120_000),
+        status: "pending".to_string(),
+        approved_device: None,
+        detail: "waiting_for_biometric_approval".to_string(),
         completed_result: None,
     };
     let mut challenge_body = service_restart_request_binding(&request);
@@ -11423,8 +11446,10 @@ fn create_service_restart_request(
         .eutherid_action_requests
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
-    requests.retain(|item| item.expires_unix_ms.saturating_add(300_000) > now);
+    let history_cutoff = now.saturating_sub(30 * 24 * 60 * 60 * 1000);
+    requests.retain(|item| item.created_unix_ms >= history_cutoff);
     requests.push(stored);
+    save_host_eutherid_action_requests(&requests)?;
     Ok(serde_json::json!({
         "ok": true,
         "challengeId": challenge_id,
@@ -11474,6 +11499,29 @@ fn poll_service_restart_request(
         .get("status")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
+    let approved_device = challenge
+        .get("approved_device")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    {
+        let mut requests = state
+            .eutherid_action_requests
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if let Some(stored) = requests
+            .iter_mut()
+            .find(|item| item.challenge_id == challenge_id)
+        {
+            stored.status = status.to_string();
+            stored.approved_device = approved_device.clone();
+            stored.detail = if status == "approved" {
+                "biometric_approval_verified".to_string()
+            } else {
+                format!("challenge_{status}")
+            };
+        }
+        save_host_eutherid_action_requests(&requests)?;
+    }
     if status != "approved" {
         return Ok(serde_json::json!({
             "ok": true,
@@ -11515,17 +11563,75 @@ fn poll_service_restart_request(
             "proof_or_restart_rejected"
         },
     )?;
-    let completed = result?;
-    if let Some(stored) = state
+    let completed = match result {
+        Ok(completed) => completed,
+        Err(err) => {
+            let mut requests = state
+                .eutherid_action_requests
+                .lock()
+                .map_err(|lock_err| io::Error::other(lock_err.to_string()))?;
+            if let Some(stored) = requests
+                .iter_mut()
+                .find(|item| item.challenge_id == challenge_id)
+            {
+                stored.status = "failed".to_string();
+                stored.detail = err.to_string();
+                stored.approved_device = approved_device;
+            }
+            save_host_eutherid_action_requests(&requests)?;
+            return Err(err);
+        }
+    };
+    let mut requests = state
         .eutherid_action_requests
         .lock()
-        .map_err(|err| io::Error::other(err.to_string()))?
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if let Some(stored) = requests
         .iter_mut()
         .find(|item| item.challenge_id == challenge_id)
     {
+        stored.status = "completed".to_string();
+        stored.detail = "restart_succeeded_and_verified".to_string();
+        stored.approved_device = approved_device;
         stored.completed_result = Some(completed.clone());
     }
+    save_host_eutherid_action_requests(&requests)?;
     Ok(completed)
+}
+
+fn service_restart_audit(state: &HostState) -> io::Result<serde_json::Value> {
+    let requests = state
+        .eutherid_action_requests
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut entries = requests
+        .iter()
+        .rev()
+        .take(50)
+        .map(|request| {
+            serde_json::json!({
+                "challengeId": request.challenge_id,
+                "actor": request.actor,
+                "action": request.action,
+                "target": request.target,
+                "commandId": request.command_id,
+                "status": request.status,
+                "deviceId": request.approved_device,
+                "detail": request.detail,
+                "createdAt": request.created_unix_ms,
+                "expiresAt": request.expires_unix_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        std::cmp::Reverse(
+            entry
+                .get("createdAt")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default(),
+        )
+    });
+    Ok(serde_json::json!({ "ok": true, "entries": entries }))
 }
 
 fn create_eutherid_shadow_test(
@@ -18896,6 +19002,37 @@ fn host_eutherid_recovery_path() -> PathBuf {
     host_dir().join("eutherid-recovery.json")
 }
 
+fn host_eutherid_action_requests_path() -> PathBuf {
+    host_dir().join("eutherid-action-requests.json")
+}
+
+fn load_host_eutherid_action_requests() -> io::Result<Vec<HostEutherIdActionRequest>> {
+    let path = host_eutherid_action_requests_path();
+    let mut requests = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Vec<HostEutherIdActionRequest>>(&bytes)
+            .map_err(|err| io::Error::other(format!("invalid EutherID action state: {err}")))?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err),
+    };
+    let cutoff = unix_ms_now().saturating_sub(30 * 24 * 60 * 60 * 1000);
+    requests.retain(|request| request.created_unix_ms >= cutoff);
+    Ok(requests)
+}
+
+fn save_host_eutherid_action_requests(
+    requests: &[HostEutherIdActionRequest],
+) -> io::Result<()> {
+    ensure_host_dir()?;
+    let path = host_eutherid_action_requests_path();
+    let temporary = path.with_extension("json.tmp");
+    let bytes =
+        serde_json::to_vec_pretty(requests).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(&temporary, bytes)?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)
+}
+
 fn load_host_eutherid_recovery_tokens() -> io::Result<Vec<HostEutherIdRecoveryToken>> {
     let path = host_eutherid_recovery_path();
     let mut tokens = match fs::read(&path) {
@@ -21876,6 +22013,9 @@ mod tests {
             command_id: "restart-eutherbooks".to_string(),
             created_unix_ms: 1,
             expires_unix_ms: 2,
+            status: "pending".to_string(),
+            approved_device: None,
+            detail: "waiting_for_biometric_approval".to_string(),
             completed_result: None,
         };
         assert_eq!(
@@ -21889,6 +22029,11 @@ mod tests {
                 "command_id": "restart-eutherbooks",
             })
         );
+        let restored: HostEutherIdActionRequest =
+            serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(restored.challenge_id, request.challenge_id);
+        assert_eq!(restored.status, "pending");
+        assert_eq!(restored.detail, "waiting_for_biometric_approval");
         assert_eq!(
             eutherid_admin_service_restart_status_id(&format!(
                 "/api/admin/eutherid/actions/service-restarts/{id}"
@@ -21991,13 +22136,13 @@ mod tests {
     #[test]
     fn eutherid_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_eutherid_apk_download_path(
-            "/downloads/EutherID-0.4.0-release-signed.apk"
+            "/downloads/EutherID-0.5.0-release-signed.apk"
         ));
         assert!(is_eutherid_apk_download_path(
             "/downloads/EutherID-release-signed.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherID-0.4.0-release-signed.apk"
+            "/downloads/EutherID-0.5.0-release-signed.apk"
         ));
         assert!(!is_eutherid_apk_download_path(
             "/downloads/EutherID-0.2.0-release-signed.apk"
