@@ -1930,18 +1930,45 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
         }
         ("POST", "/api/eutherid/login/complete") => {
-            let input: HostEutherIdLoginContinueRequest = serde_json::from_slice(&request.body)
-                .map_err(|_| invalid_request("invalid EutherID login completion request"))?;
+            let navigates = header_value(&request, "content-type")
+                .is_some_and(|value| value.starts_with("application/x-www-form-urlencoded"));
+            let input: HostEutherIdLoginContinueRequest = if navigates {
+                let form = parse_urlencoded_form(
+                    std::str::from_utf8(&request.body).unwrap_or_default(),
+                )?;
+                HostEutherIdLoginContinueRequest {
+                    challenge_id: form
+                        .iter()
+                        .find_map(|(name, value)| {
+                            (name == "challengeId").then_some(value.clone())
+                        })
+                        .unwrap_or_default(),
+                    browser_secret: form
+                        .iter()
+                        .find_map(|(name, value)| {
+                            (name == "browserSecret").then_some(value.clone())
+                        })
+                        .unwrap_or_default(),
+                }
+            } else {
+                serde_json::from_slice(&request.body)
+                    .map_err(|_| invalid_request("invalid EutherID login completion request"))?
+            };
             let remote_addr = stream
                 .peer_addr()
                 .map(|addr| addr.ip().to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
             match complete_host_eutherid_login(state, &request, &input, &remote_addr) {
-                Ok((result, cookie)) => send_json_with_headers(
+                Ok((_result, cookie)) if navigates => send_response_with_headers(
                     stream,
-                    &result,
-                    &[("Set-Cookie", cookie.as_str())],
+                    303,
+                    "text/plain; charset=utf-8",
+                    b"",
+                    &[("Set-Cookie", cookie.as_str()), ("Location", "/#/play")],
                 ),
+                Ok((result, cookie)) => {
+                    send_json_with_headers(stream, &result, &[("Set-Cookie", cookie.as_str())])
+                }
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                     send_error(stream, 403, &err.to_string())
                 }
@@ -14633,24 +14660,22 @@ fn login_page_html(error: Option<&str>) -> String {
       if (eutherIdPoll !== null) window.clearTimeout(eutherIdPoll);
       eutherIdPoll = null;
     }}
-    function enterEutherOxide() {{
-      window.location.replace("/#/play");
-    }}
-    async function completeEutherIdLogin() {{
-      const response = await fetch("/api/eutherid/login/complete", {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/json" }},
-        body: JSON.stringify({{
-          challengeId: eutherIdLogin.challengeId,
-          browserSecret: eutherIdLogin.browserSecret,
-        }}),
-      }});
-      if (!response.ok) {{
-        const message = await response.text().catch(() => "");
-        throw new Error(message || "Kunde inte slutföra EutherID-inloggningen");
+    function completeEutherIdLogin() {{
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = "/api/eutherid/login/complete";
+      for (const [name, value] of Object.entries({{
+        challengeId: eutherIdLogin.challengeId,
+        browserSecret: eutherIdLogin.browserSecret,
+      }})) {{
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
       }}
-      eutherIdStatus.textContent = "Inloggad. Öppnar EutherOxide…";
-      enterEutherOxide();
+      document.body.appendChild(form);
+      form.submit();
     }}
     async function pollEutherIdLogin() {{
       if (!eutherIdLogin || eutherIdCompleting) return;
@@ -14661,8 +14686,8 @@ fn login_page_html(error: Option<&str>) -> String {
         }});
         if (result.status === "approved") {{
           eutherIdCompleting = true;
-          eutherIdStatus.textContent = "Godkänd. Skapar säker session…";
-          await completeEutherIdLogin();
+          eutherIdStatus.textContent = "Godkänd. Loggar in…";
+          completeEutherIdLogin();
           return;
         }}
         if (result.status === "denied" || result.status === "expired") {{
@@ -14678,18 +14703,6 @@ fn login_page_html(error: Option<&str>) -> String {
       }}
       eutherIdPoll = window.setTimeout(pollEutherIdLogin, 1500);
     }}
-    async function resumeCompletedEutherIdLogin() {{
-      if (!eutherIdCompleting) return;
-      try {{
-        const response = await fetch("/api/auth/status", {{ cache: "no-store" }});
-        const auth = await response.json();
-        if (auth.authenticated) enterEutherOxide();
-      }} catch (_) {{}}
-    }}
-    window.addEventListener("pageshow", resumeCompletedEutherIdLogin);
-    document.addEventListener("visibilitychange", () => {{
-      if (document.visibilityState === "visible") resumeCompletedEutherIdLogin();
-    }});
     document.getElementById("eutherid-login-start").addEventListener("click", async () => {{
       const username = document.getElementById("eutherid-login-user").value.trim();
       if (!username) {{ eutherIdStatus.textContent = "Skriv användarnamnet först."; return; }}
