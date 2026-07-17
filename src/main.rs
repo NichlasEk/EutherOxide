@@ -7,6 +7,8 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Child, ChildStdin, Command, Stdio};
 use std::sync::{
@@ -24,6 +26,9 @@ use argon2::{
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use gilrs::{Axis, Button, Gilrs};
+use lettre::message::header::ContentType;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Message, SmtpTransport, Transport};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -42,6 +47,13 @@ const HOST_SOCIAL_ATTACHMENT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const HOST_JOX_MAX_BYTES: usize = 16 * 1024 * 1024;
 const HOST_JOX_ASSET_MAX_BYTES: usize = 8 * 1024 * 1024;
 const HOST_JOX_PAYLOAD_SCHEMA_VERSION: u64 = 1;
+const EUTHERID_RECOVERY_EMAIL: &str = "info@apothictech.se";
+const EUTHERID_SMTP_USERNAME: &str = "eutherid@apothictech.se";
+const EUTHERID_SMTP_HOST: &str = "mailcluster.loopia.se";
+const EUTHERID_SMTP_PASSWORD_FILE: &str = "/etc/eutherhost/smtp-password";
+const EUTHERID_RECOVERY_TTL_MS: u64 = 15 * 60 * 1000;
+const EUTHERID_RECOVERY_RATE_WINDOW_MS: u64 = 60 * 60 * 1000;
+const EUTHERID_RECOVERY_RATE_MAX: usize = 3;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
@@ -106,6 +118,7 @@ fn run() -> io::Result<()> {
     let mut web_bridge_addr = "127.0.0.1:32161".to_string();
     let mut host_server = false;
     let mut host_repack_joxbox = false;
+    let mut host_test_eutherid_email = false;
     let mut host_hash_password: Option<String> = None;
     let mut host_verify_password: Option<String> = None;
     let mut eutherdogs_demo = false;
@@ -180,6 +193,9 @@ fn run() -> io::Result<()> {
             "--host-repack-joxbox" => {
                 host_repack_joxbox = true;
             }
+            "--host-test-eutherid-email" => {
+                host_test_eutherid_email = true;
+            }
             "--eutherdogs-demo" => {
                 eutherdogs_demo = true;
             }
@@ -246,6 +262,15 @@ fn run() -> io::Result<()> {
             password.pop();
         }
         println!("{}", verify_password(&password, &hash));
+        return Ok(());
+    }
+
+    if host_test_eutherid_email {
+        send_eutherid_email(
+            "EutherID SMTP-test",
+            "Detta är ett SMTP-test från EutherOxide. Inga EutherID-enheter eller konton har ändrats.",
+        )?;
+        println!("EutherID SMTP test sent to {EUTHERID_RECOVERY_EMAIL}");
         return Ok(());
     }
 
@@ -399,7 +424,7 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     println!(
-        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--web-bridge-addr HOST:PORT] [--host-server] [--host-hash-password PASSWORD] [--host-verify-password HASH] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
+        "usage: euther-oxide [rom.md|rom.bin|rom.smd] [--frames N] [--perf] [--dump frame.ppm] [--save-state 1|2|3] [--load-state 1|2|3] [--list-states] [--vdp-summary] [--web-bridge] [--web-bridge-addr HOST:PORT] [--host-server] [--host-hash-password PASSWORD] [--host-verify-password HASH] [--host-test-eutherid-email] [--eutherdogs-demo] [--eutherdogs-config config.toml]"
     );
 }
 
@@ -816,6 +841,7 @@ struct HostState {
     users: Arc<Mutex<Vec<HostUser>>>,
     sessions: Arc<Mutex<Vec<HostSession>>>,
     login_attempts: Arc<Mutex<Vec<LoginAttempt>>>,
+    eutherid_recovery_tokens: Arc<Mutex<Vec<HostEutherIdRecoveryToken>>>,
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
     next_chat_id: Arc<Mutex<u64>>,
     video_chat_rooms: Arc<Mutex<Vec<HostVideoChatRoom>>>,
@@ -1006,6 +1032,21 @@ struct LoginAttempt {
     remote_addr: String,
     username: String,
     unix_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutherIdRecoveryToken {
+    token_hash: String,
+    actor: String,
+    created_unix_ms: u64,
+    expires_unix_ms: u64,
+    consumed_unix_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct HostEutherIdRecoveryCompleteRequest {
+    token: String,
 }
 
 #[derive(Serialize)]
@@ -1623,6 +1664,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     }
     write_host_codex_inbox_readme()?;
     let users = Arc::new(Mutex::new(load_host_users()?));
+    let eutherid_recovery_tokens = load_host_eutherid_recovery_tokens()?;
     let chat_messages = load_host_chat_messages()?;
     let next_chat_id = chat_messages
         .iter()
@@ -1650,6 +1692,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         users,
         sessions: Arc::new(Mutex::new(Vec::new())),
         login_attempts: Arc::new(Mutex::new(Vec::new())),
+        eutherid_recovery_tokens: Arc::new(Mutex::new(eutherid_recovery_tokens)),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
         video_chat_rooms: Arc::new(Mutex::new(Vec::new())),
@@ -2673,6 +2716,40 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             match create_host_eutherid_device_enrollment(state, &request, &admin, true) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) => send_error(stream, 403, &err.to_string()),
+            }
+        }
+        ("POST", "/api/admin/eutherid/recovery/request") => {
+            let admin = require_host_admin(state, &request)?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match request_host_eutherid_recovery(state, &admin, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 429, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/admin/eutherid/recovery/complete") => {
+            let admin = require_host_admin(state, &request)?;
+            let input: HostEutherIdRecoveryCompleteRequest =
+                serde_json::from_slice(&request.body)
+                    .map_err(|_| invalid_request("invalid EutherID recovery request"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match complete_host_eutherid_recovery(state, &admin, &input.token, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
             }
         }
         ("POST", "/api/admin/eutherid/shadow-tests") => {
@@ -10752,6 +10829,228 @@ fn create_host_eutherid_device_enrollment(
     eutherid_json_response(response, &[201])
 }
 
+fn eutherid_recovery_token_hash(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn send_eutherid_email(subject: &str, body: &str) -> io::Result<()> {
+    let password_path = env::var("EUTHERID_SMTP_PASSWORD_FILE")
+        .unwrap_or_else(|_| EUTHERID_SMTP_PASSWORD_FILE.to_string());
+    let password = fs::read_to_string(password_path)
+        .map_err(|_| io::Error::other("EutherID SMTP password is unavailable"))?;
+    let password = password.trim_end_matches(['\r', '\n']);
+    if password.is_empty() {
+        return Err(io::Error::other("EutherID SMTP password is empty"));
+    }
+    let message = Message::builder()
+        .from(
+            format!("EutherID <{EUTHERID_SMTP_USERNAME}>")
+                .parse()
+                .map_err(|_| io::Error::other("invalid EutherID sender address"))?,
+        )
+        .to(
+            EUTHERID_RECOVERY_EMAIL
+                .parse()
+                .map_err(|_| io::Error::other("invalid EutherID recovery address"))?,
+        )
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body.to_string())
+        .map_err(|err| io::Error::other(format!("failed to build recovery email: {err}")))?;
+    let credentials = Credentials::new(EUTHERID_SMTP_USERNAME.to_string(), password.to_string());
+    let mailer = SmtpTransport::starttls_relay(EUTHERID_SMTP_HOST)
+        .map_err(|err| io::Error::other(format!("failed to configure SMTP TLS: {err}")))?
+        .credentials(credentials)
+        .timeout(Some(Duration::from_secs(15)))
+        .build();
+    mailer
+        .send(&message)
+        .map_err(|err| io::Error::other(format!("SMTP delivery failed: {err}")))?;
+    Ok(())
+}
+
+fn send_eutherid_recovery_email(actor: &str, token: &str) -> io::Result<()> {
+    let subject = format!("EutherID återställning för {actor}");
+    let body = format!(
+        "En återställning av EutherID-enheter har begärts för administratören {actor}.\n\nÅterställningskod:\n{token}\n\nKoden gäller i 15 minuter och fungerar bara i en inloggad adminsession på EutherOxide. Den återkallar EutherID-enheter men ändrar inte lösenordet.\n\nOm du inte begärde detta kan du ignorera brevet."
+    );
+    send_eutherid_email(&subject, &body)
+}
+
+fn valid_eutherid_recovery_code(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn request_host_eutherid_recovery(
+    state: &HostState,
+    actor: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let now = unix_ms_now();
+    {
+        let tokens = state
+            .eutherid_recovery_tokens
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let recent = tokens
+            .iter()
+            .filter(|token| {
+                token.actor == actor
+                    && token
+                        .created_unix_ms
+                        .saturating_add(EUTHERID_RECOVERY_RATE_WINDOW_MS)
+                        > now
+            })
+            .count();
+        if recent >= EUTHERID_RECOVERY_RATE_MAX {
+            audit_host_event(
+                state,
+                "eutherid_recovery_requested",
+                Some(actor),
+                remote_addr,
+                false,
+                "rate_limited",
+            )?;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "too many EutherID recovery requests; try again later",
+            ));
+        }
+    }
+    let token = random_token()?;
+    let stored = HostEutherIdRecoveryToken {
+        token_hash: eutherid_recovery_token_hash(&token),
+        actor: actor.to_string(),
+        created_unix_ms: now,
+        expires_unix_ms: now + EUTHERID_RECOVERY_TTL_MS,
+        consumed_unix_ms: None,
+    };
+    {
+        let mut tokens = state
+            .eutherid_recovery_tokens
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        tokens.retain(|entry| {
+            entry
+                .expires_unix_ms
+                .saturating_add(24 * 60 * 60 * 1000)
+                > now
+        });
+        tokens.push(stored.clone());
+        save_host_eutherid_recovery_tokens(&tokens)?;
+    }
+    if let Err(err) = send_eutherid_recovery_email(actor, &token) {
+        let mut tokens = state
+            .eutherid_recovery_tokens
+            .lock()
+            .map_err(|lock_err| io::Error::other(lock_err.to_string()))?;
+        tokens.retain(|entry| entry.token_hash != stored.token_hash);
+        save_host_eutherid_recovery_tokens(&tokens)?;
+        audit_host_event(
+            state,
+            "eutherid_recovery_requested",
+            Some(actor),
+            remote_addr,
+            false,
+            "delivery_failed",
+        )?;
+        return Err(err);
+    }
+    audit_host_event(
+        state,
+        "eutherid_recovery_requested",
+        Some(actor),
+        remote_addr,
+        true,
+        "email_sent",
+    )?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "destination": EUTHERID_RECOVERY_EMAIL,
+        "expiresAt": stored.expires_unix_ms,
+    }))
+}
+
+fn revoke_host_eutherid_devices_for_actor(actor: &str) -> io::Result<usize> {
+    let response = eutherid_internal_json_request("GET", "/v1/devices", None)?;
+    let body = eutherid_json_response(response, &[200])?;
+    let devices = body
+        .get("devices")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| io::Error::other("EutherID device list is malformed"))?;
+    let mut revoked = 0;
+    for device in devices {
+        let belongs_to_actor = device.get("actor").and_then(serde_json::Value::as_str) == Some(actor);
+        let active = device.get("revoked_at").is_none_or(serde_json::Value::is_null);
+        let Some(device_id) = device.get("device_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !belongs_to_actor || !active {
+            continue;
+        }
+        let path = format!("/v1/devices/{device_id}/revoke");
+        let response = eutherid_internal_json_request("POST", &path, None)?;
+        eutherid_json_response(response, &[200])?;
+        revoked += 1;
+    }
+    Ok(revoked)
+}
+
+fn complete_host_eutherid_recovery(
+    state: &HostState,
+    actor: &str,
+    token: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let token = token.trim();
+    if !valid_eutherid_recovery_code(token) {
+        return Err(invalid_request("invalid EutherID recovery code"));
+    }
+    let hash = eutherid_recovery_token_hash(token);
+    let now = unix_ms_now();
+    let mut tokens = state
+        .eutherid_recovery_tokens
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(index) = tokens.iter().position(|entry| {
+        entry.actor == actor
+            && entry.token_hash == hash
+            && entry.consumed_unix_ms.is_none()
+            && entry.expires_unix_ms > now
+    }) else {
+        audit_host_event(
+            state,
+            "eutherid_recovery_consumed",
+            Some(actor),
+            remote_addr,
+            false,
+            "invalid_or_expired",
+        )?;
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid or expired EutherID recovery code",
+        ));
+    };
+    let revoked = revoke_host_eutherid_devices_for_actor(actor)?;
+    tokens[index].consumed_unix_ms = Some(now);
+    for entry in tokens.iter_mut() {
+        if entry.actor == actor && entry.consumed_unix_ms.is_none() {
+            entry.consumed_unix_ms = Some(now);
+        }
+    }
+    save_host_eutherid_recovery_tokens(&tokens)?;
+    audit_host_event(
+        state,
+        "eutherid_recovery_consumed",
+        Some(actor),
+        remote_addr,
+        true,
+        "devices_revoked",
+    )?;
+    Ok(serde_json::json!({ "ok": true, "revokedDevices": revoked }))
+}
+
 fn eutherid_json_response(
     response: EutherIdUpstreamResponse,
     expected_statuses: &[u16],
@@ -16936,6 +17235,34 @@ fn host_users_path() -> PathBuf {
     host_dir().join("users.toml")
 }
 
+fn host_eutherid_recovery_path() -> PathBuf {
+    host_dir().join("eutherid-recovery.json")
+}
+
+fn load_host_eutherid_recovery_tokens() -> io::Result<Vec<HostEutherIdRecoveryToken>> {
+    let path = host_eutherid_recovery_path();
+    let mut tokens = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Vec<HostEutherIdRecoveryToken>>(&bytes)
+            .map_err(|err| io::Error::other(format!("invalid EutherID recovery state: {err}")))?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err),
+    };
+    let cutoff = unix_ms_now().saturating_sub(24 * 60 * 60 * 1000);
+    tokens.retain(|token| token.expires_unix_ms >= cutoff);
+    Ok(tokens)
+}
+
+fn save_host_eutherid_recovery_tokens(tokens: &[HostEutherIdRecoveryToken]) -> io::Result<()> {
+    ensure_host_dir()?;
+    let path = host_eutherid_recovery_path();
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(&temporary, bytes)?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)
+}
+
 fn host_chat_path() -> PathBuf {
     host_dir().join("chat.log")
 }
@@ -19878,5 +20205,29 @@ mod tests {
         assert!(!is_eutherid_apk_download_path(
             "/downloads/EutherID-0.2.0-release-signed.apk"
         ));
+    }
+
+    #[test]
+    fn eutherid_recovery_codes_are_validated_and_only_hashed_for_storage() {
+        let token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert!(valid_eutherid_recovery_code(token));
+        assert!(valid_eutherid_recovery_code(&token.to_uppercase()));
+        assert!(!valid_eutherid_recovery_code("too-short"));
+        assert!(!valid_eutherid_recovery_code(&format!("{}g", &token[1..])));
+
+        let hash = eutherid_recovery_token_hash(token);
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, token);
+        assert_eq!(hash, eutherid_recovery_token_hash(token));
+
+        let stored = HostEutherIdRecoveryToken {
+            token_hash: hash,
+            actor: "admin".to_string(),
+            created_unix_ms: 1,
+            expires_unix_ms: 2,
+            consumed_unix_ms: None,
+        };
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(!json.contains(token));
     }
 }

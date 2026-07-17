@@ -312,6 +312,17 @@ type EutherIdDeviceList = {
   devices: EutherIdDevice[];
 };
 
+type EutherIdRecoveryRequestResult = {
+  ok: boolean;
+  destination: string;
+  expiresAt: number;
+};
+
+type EutherIdRecoveryCompleteResult = {
+  ok: boolean;
+  revokedDevices: number;
+};
+
 type HostPermissions = {
   canPlay: boolean;
   canLaunchRoms: boolean;
@@ -2666,6 +2677,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div id="eutherid-devices" class="eutherid-devices" aria-live="polite">
             <span>Laddar registrerade enheter…</span>
           </div>
+          <div class="eutherid-test-result">
+            <strong>E-poståterställning</strong>
+            <span>Skickar en 15-minuterskod till den fasta adressen info@apothictech.se.</span>
+            <div class="eutherid-admin-actions">
+              <button id="eutherid-recovery-request" type="button">Skicka återställningskod</button>
+              <input id="eutherid-recovery-code" type="text" inputmode="text" autocomplete="one-time-code" placeholder="Klistra in kod från e-post" aria-label="EutherID återställningskod" />
+              <button id="eutherid-recovery-complete" type="button">Återkalla mina EutherID-enheter</button>
+            </div>
+            <span id="eutherid-recovery-status">Lösenordet påverkas aldrig av detta flöde.</span>
+          </div>
           <div id="eutherid-delivery" class="eutherid-delivery" hidden>
             <strong id="eutherid-request-title">Öppna EutherID</strong>
             <span id="eutherid-request-detail">Välj var EutherID-appen finns.</span>
@@ -2860,6 +2881,10 @@ const eutherIdTestState = document.querySelector<HTMLElement>("#eutherid-test-st
 const eutherIdTestResult = document.querySelector<HTMLDivElement>("#eutherid-test-result")!;
 const eutherIdDevicesRefresh = document.querySelector<HTMLButtonElement>("#eutherid-devices-refresh")!;
 const eutherIdDevicesList = document.querySelector<HTMLDivElement>("#eutherid-devices")!;
+const eutherIdRecoveryRequest = document.querySelector<HTMLButtonElement>("#eutherid-recovery-request")!;
+const eutherIdRecoveryCode = document.querySelector<HTMLInputElement>("#eutherid-recovery-code")!;
+const eutherIdRecoveryComplete = document.querySelector<HTMLButtonElement>("#eutherid-recovery-complete")!;
+const eutherIdRecoveryStatus = document.querySelector<HTMLElement>("#eutherid-recovery-status")!;
 const eutherIdDelivery = document.querySelector<HTMLDivElement>("#eutherid-delivery")!;
 const eutherIdRequestTitle = document.querySelector<HTMLElement>("#eutherid-request-title")!;
 const eutherIdRequestDetail = document.querySelector<HTMLElement>("#eutherid-request-detail")!;
@@ -4038,6 +4063,47 @@ eutherIdOpenQr.addEventListener("click", () => {
 
 eutherIdDevicesRefresh.addEventListener("click", () => {
   void refreshEutherIdDevices();
+});
+
+eutherIdRecoveryRequest.addEventListener("click", async () => {
+  eutherIdRecoveryRequest.disabled = true;
+  eutherIdRecoveryStatus.textContent = "Skickar krypterat via Loopia…";
+  try {
+    const result = await bridgeJson<EutherIdRecoveryRequestResult>(
+      "/api/admin/eutherid/recovery/request",
+      { method: "POST", body: "{}" },
+      20_000,
+    );
+    eutherIdRecoveryStatus.textContent = `Kod skickad till ${result.destination}. Går ut ${formatEutherIdTime(Math.floor(result.expiresAt / 1000))}.`;
+  } catch (error) {
+    eutherIdRecoveryStatus.textContent = error instanceof Error ? error.message : "Koden kunde inte skickas";
+  } finally {
+    eutherIdRecoveryRequest.disabled = false;
+  }
+});
+
+eutherIdRecoveryComplete.addEventListener("click", async () => {
+  const token = eutherIdRecoveryCode.value.trim();
+  if (!token) {
+    eutherIdRecoveryStatus.textContent = "Klistra först in koden från e-postmeddelandet.";
+    return;
+  }
+  if (!window.confirm("Detta återkallar alla aktiva EutherID-enheter för ditt adminkonto. Lösenordet ändras inte. Fortsätta?")) return;
+  eutherIdRecoveryComplete.disabled = true;
+  try {
+    const result = await bridgeJson<EutherIdRecoveryCompleteResult>(
+      "/api/admin/eutherid/recovery/complete",
+      { method: "POST", body: JSON.stringify({ token }) },
+      10_000,
+    );
+    eutherIdRecoveryCode.value = "";
+    eutherIdRecoveryStatus.textContent = `${result.revokedDevices} EutherID-enhet(er) återkallades. Registrera nu telefonen igen.`;
+    await refreshEutherIdDevices();
+  } catch (error) {
+    eutherIdRecoveryStatus.textContent = error instanceof Error ? error.message : "Återställningen misslyckades";
+  } finally {
+    eutherIdRecoveryComplete.disabled = false;
+  }
 });
 
 eutherIdDevicesList.addEventListener("click", async (event) => {
