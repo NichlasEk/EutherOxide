@@ -23,6 +23,7 @@ type ServiceReport = {
   ports: string[];
   repo_path: string;
   persistent_paths: string[];
+  depends_on?: string[];
 };
 
 type ListeningService = {
@@ -220,6 +221,7 @@ let navigationEnabled = false;
 let lastCityPosition = new THREE.Vector3(7, 3.2, 58);
 let currentRoomNode: SceneNode | null = null;
 const nodeOperationStates = new Map<string, { status: string; detail: string; expiresAt: number }>();
+const nodeIncidentStates = new Map<string, { failures: number; latestFailed: boolean; detail: string }>();
 
 const sceneNodes = new Map<string, SceneNode>();
 const clock = new THREE.Clock();
@@ -730,10 +732,54 @@ async function loadMap(refresh: boolean): Promise<void> {
   serverMap = map;
   gpuScheduler = gpu;
   eutherNetCommands = commands.commands;
+  indexRestartIncidents(audit);
   renderEutherIdAudit(audit);
   buildCity(serverMap);
   if (isTouchMapDevice()) enterMobileInspectionMode("city");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
+}
+
+function indexRestartIncidents(entries: EutherIdAuditEntry[]): void {
+  nodeIncidentStates.clear();
+  const commandNodes: Record<string, string> = {
+    "restart-eutherhost": "eutheroxide",
+    "restart-caddy": "caddy",
+    "restart-eutherbooks": "eutherbooks",
+    "restart-eutherpunkd": "eutherpunk",
+    "restart-eutherpal": "eutherpal",
+    "restart-euthersync": "euthersync",
+    "restart-euther-watchdog": "eutherwatchdog",
+    "restart-euthergate-turn": "euthergateturn",
+    "restart-euthersight-frigate": "euthersight",
+    "restart-euthergate-gateway": "euthergate-gateway",
+    "restart-euthergate-tunnel": "euthergate-tunnel",
+    "restart-euthergate-forge": "euthergate-forge",
+  };
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const grouped = new Map<string, EutherIdAuditEntry[]>();
+  for (const entry of entries) {
+    if (entry.createdAt < cutoff) continue;
+    const nodeId = commandNodes[entry.commandId];
+    if (!nodeId) continue;
+    const existing = grouped.get(nodeId) || [];
+    existing.push(entry);
+    grouped.set(nodeId, existing);
+  }
+  for (const [nodeId, incidents] of grouped) {
+    incidents.sort((left, right) => right.createdAt - left.createdAt);
+    const failed = incidents.filter((entry) =>
+      entry.status === "failed" || (entry.operation && entry.operation.status !== "healthy"),
+    );
+    const latest = incidents[0];
+    const latestFailed = latest.status === "failed" || Boolean(latest.operation && latest.operation.status !== "healthy");
+    if (failed.length || latest.operation) {
+      nodeIncidentStates.set(nodeId, {
+        failures: failed.length,
+        latestFailed,
+        detail: `${failed.length} failed verification(s) in 24h; latest ${latest.status}`,
+      });
+    }
+  }
 }
 
 async function loadEutherIdAudit(): Promise<EutherIdAuditEntry[]> {
@@ -817,8 +863,11 @@ function buildCity(map: ServerMap): void {
     const operation = nodeOperationStates.get(node.id);
     if (operation && operation.expiresAt <= Date.now()) nodeOperationStates.delete(node.id);
     const activeOperation = nodeOperationStates.get(node.id);
+    const incident = nodeIncidentStates.get(node.id);
     const renderedNode = activeOperation
       ? { ...node, status: activeOperation.status, detail: `${node.detail || ""} · ${activeOperation.detail}` }
+      : incident?.latestFailed
+        ? { ...node, status: incident.failures >= 3 ? "failed" : "degraded", detail: `${node.detail || ""} · ${incident.detail}` }
       : node;
     const object = createNodeObject(renderedNode);
     object.position.copy(position);
@@ -1534,7 +1583,10 @@ function showNode(node: SceneNode): void {
     lines.push(["Ports", service.ports.join(", ")]);
     lines.push(["Repo", service.repo_path]);
     lines.push(["Restart", restartCommandForService(service) ? "available" : "not allowlisted"]);
+    lines.push(["Depends on", service.depends_on?.join(", ") || "none declared"]);
   }
+  const incident = nodeIncidentStates.get(node.id);
+  if (incident) lines.push(["Restart incidents", incident.detail]);
   if (port) {
     lines.push(["Port", `${port.protocol}:${port.port}`]);
     lines.push(["Process", port.process || port.local || ""]);
@@ -1564,7 +1616,18 @@ async function restartSelectedService(): Promise<void> {
   }
   showNode(targetNode);
   const label = targetNode.label || targetNode.id;
-  const ok = window.confirm(`Restart ${label}?`);
+  const service = serviceForNode(targetNode);
+  const dependencies = service?.depends_on || [];
+  const failedDependencies = dependencies.filter((dependency) =>
+    serverMap?.services.some((candidate) => candidate.name === dependency && candidate.status === "failed"),
+  );
+  if (failedDependencies.length) {
+    throw new Error(`Restart blocked: failed dependencies: ${failedDependencies.join(", ")}`);
+  }
+  const dependencyNotice = dependencies.length
+    ? `\n\nDependencies checked: ${dependencies.join(", ")}.`
+    : "\n\nNo dependencies are declared for this handle.";
+  const ok = window.confirm(`Restart ${label}?${dependencyNotice}`);
   if (!ok) return;
   try {
     restartButton.disabled = true;
