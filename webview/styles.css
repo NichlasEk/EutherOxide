@@ -8022,11 +8022,16 @@ h2 {
 .admin-dialog-body {
   display: grid;
   grid-template-columns: minmax(340px, 1fr) minmax(280px, 0.72fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: none;
+  grid-auto-rows: max-content;
   gap: 14px;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .admin-list-panel,

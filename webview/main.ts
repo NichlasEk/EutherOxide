@@ -14643,6 +14643,9 @@ async function showEutherIdQr(): Promise<void> {
     color: { dark: "#07140b", light: "#f7ffe8" },
   });
   eutherIdQrPanel.hidden = false;
+  window.requestAnimationFrame(() => {
+    eutherIdQrPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
 }
 
 function renderEutherIdError(error: unknown): void {
