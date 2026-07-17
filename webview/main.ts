@@ -2679,7 +2679,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="eutherid-test-result">
             <strong>E-poståterställning</strong>
-            <span>Skickar en 15-minuterskod till den fasta adressen info@apothictech.se.</span>
+            <span>Skickar en 15-minuterskod till den fasta adressen info@apothictech.com.</span>
             <div class="eutherid-admin-actions">
               <button id="eutherid-recovery-request" type="button">Skicka återställningskod</button>
               <input id="eutherid-recovery-code" type="text" inputmode="text" autocomplete="one-time-code" placeholder="Klistra in kod från e-post" aria-label="EutherID återställningskod" />
