@@ -1435,13 +1435,24 @@ function showNode(node: SceneNode): void {
 }
 
 async function restartSelectedService(): Promise<void> {
-  if (!selectedNode) return;
-  const command = restartCommandForNode(selectedNode);
+  const targetNode = focusedNode && restartCommandForNode(focusedNode)
+    ? focusedNode
+    : selectedNode && restartCommandForNode(selectedNode)
+      ? selectedNode
+      : null;
+  if (!targetNode) {
+    restartButton.disabled = true;
+    statusLine.textContent = "Aim at or inspect an allowlisted service before restarting.";
+    return;
+  }
+  selectedNode = targetNode;
+  const command = restartCommandForNode(targetNode);
   if (!command) {
     statusLine.textContent = "Restart is not allowlisted for this node.";
     return;
   }
-  const label = selectedNode.label || selectedNode.id;
+  showNode(targetNode);
+  const label = targetNode.label || targetNode.id;
   const ok = window.confirm(`Restart ${label}?`);
   if (!ok) return;
   restartButton.disabled = true;
