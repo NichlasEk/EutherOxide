@@ -295,6 +295,7 @@ function installShell(): void {
         </section>
         <section>
           <p class="eyebrow">EutherID Audit</p>
+          <button id="ev-eutherid-audit-refresh" type="button">Refresh Audit</button>
           <div id="ev-eutherid-audit" class="ev-audit"><small>No restart requests yet.</small></div>
         </section>
       </aside>
@@ -356,6 +357,7 @@ function installShell(): void {
     .ev-audit-status.completed { color: #52de8b; }
     .ev-audit-status.failed, .ev-audit-status.denied, .ev-audit-status.expired { color: #ff6c84; }
     .ev-audit-meta { margin-top: 4px; color: #8fa3b2; }
+    .ev-audit-detail { margin-top: 5px; color: #d6e4ec; }
     #ev-custodian-overlay { position: fixed; inset: 0; z-index: 5; display: grid; align-items: end; pointer-events: auto; background: linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.52)); padding: 24px; box-sizing: border-box; }
     .ev-dialog { width: min(980px, calc(100vw - 48px)); max-height: min(72vh, 720px); margin: 0 auto; border: 1px solid rgba(103,225,218,.36); border-radius: 8px; background: rgba(4,9,15,.78); backdrop-filter: blur(18px); box-shadow: 0 24px 120px rgba(0,0,0,.62); padding: 16px; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; box-sizing: border-box; }
     .ev-dialog-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(110,142,160,.24); padding-bottom: 12px; }
@@ -474,6 +476,7 @@ function bindInput(): void {
   modeButton.addEventListener("click", toggleMapMode);
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
+  document.querySelector("#ev-eutherid-audit-refresh")?.addEventListener("click", () => refreshEutherIdAudit().catch(showError));
   enterNodeButton.addEventListener("click", () => enterFocusedNode().catch(showError));
   leaveRoomButton.addEventListener("click", leaveRoom);
   restartButton.addEventListener("click", () => restartSelectedService().catch(showError));
@@ -715,6 +718,10 @@ async function loadEutherIdAudit(): Promise<EutherIdAuditEntry[]> {
   return result.entries;
 }
 
+async function refreshEutherIdAudit(): Promise<void> {
+  renderEutherIdAudit(await loadEutherIdAudit());
+}
+
 function renderEutherIdAudit(entries: EutherIdAuditEntry[]): void {
   const panel = document.querySelector<HTMLElement>("#ev-eutherid-audit");
   if (!panel) return;
@@ -722,7 +729,7 @@ function renderEutherIdAudit(entries: EutherIdAuditEntry[]): void {
     panel.innerHTML = "<small>No restart requests yet.</small>";
     return;
   }
-  panel.innerHTML = entries.slice(0, 8).map((entry) => {
+  panel.innerHTML = entries.slice(0, 12).map((entry) => {
     const when = new Date(entry.createdAt).toLocaleString("sv-SE");
     const device = entry.deviceId ? abbreviateAuditValue(entry.deviceId) : "awaiting device";
     const statusClass = entry.status.toLowerCase().replace(/[^a-z]/g, "");
@@ -730,6 +737,8 @@ function renderEutherIdAudit(entries: EutherIdAuditEntry[]): void {
       <div class="ev-audit-head"><span>${escapeHtml(entry.target)}</span><span class="ev-audit-status ${statusClass}">${escapeHtml(entry.status)}</span></div>
       <div>${escapeHtml(entry.commandId)} · ${escapeHtml(entry.actor)}</div>
       <div class="ev-audit-meta">${escapeHtml(when)} · ${escapeHtml(device)}</div>
+      <div class="ev-audit-detail">${escapeHtml(entry.action)} · ${escapeHtml(entry.detail)}</div>
+      <div class="ev-audit-meta">challenge ${escapeHtml(abbreviateAuditValue(entry.challengeId))}</div>
     </article>`;
   }).join("");
 }
@@ -1509,6 +1518,7 @@ function restartCommandForService(service: ServiceReport): string | null {
   if (units.includes("caddy.service")) command = "restart-caddy";
   if (units.includes("eutherbooks.service")) command = "restart-eutherbooks";
   if (units.includes("eutherpunkd.service")) command = "restart-eutherpunkd";
+  if (units.includes("eutherpal.service")) command = "restart-eutherpal";
   if (units.includes("euthergate.service")) return "restart-euthergate-gateway";
   if (units.includes("euthergate-tunnel.service")) return "restart-euthergate-tunnel";
   if (units.includes("euthergate-forge.service")) return "restart-euthergate-forge";
