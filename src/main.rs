@@ -11315,6 +11315,10 @@ fn service_restart_spec(command_id: &str) -> Option<(&'static str, &'static str)
         "restart-caddy" => Some(("service.restart", "caddy.service")),
         "restart-eutherbooks" => Some(("service.restart", "eutherbooks.service")),
         "restart-eutherpunkd" => Some(("service.restart", "eutherpunkd.service")),
+        "restart-eutherpal" => Some(("service.restart", "eutherpal.service")),
+        "restart-euthersync" => Some(("service.restart", "euthersync.service")),
+        "restart-euther-watchdog" => Some(("service.restart", "euther-watchdog.service")),
+        "restart-euthergate-turn" => Some(("service.restart", "euthergate-turn.service-group")),
         "restart-euthersight-frigate" => {
             Some(("service.restart", "euthersight-frigate.service"))
         }
@@ -11326,6 +11330,15 @@ fn service_restart_spec(command_id: &str) -> Option<(&'static str, &'static str)
         _ => None,
     }
 }
+fn direct_euthergate_restart_service(command_id: &str) -> Option<&'static str> {
+    match command_id {
+        "restart-euthergate-gateway" => Some("gateway"),
+        "restart-euthergate-tunnel" => Some("tunnel"),
+        "restart-euthergate-forge" => Some("forge"),
+        _ => None,
+    }
+}
+
 
 fn create_eutherbooks_restart_request(state: &HostState) -> io::Result<serde_json::Value> {
     let actor = env::var("EUTHERID_REQUEST_ACTOR").unwrap_or_else(|_| "nichlas".to_string());
@@ -11497,7 +11510,7 @@ fn poll_service_restart_request(
     }
     let result: io::Result<serde_json::Value> = (|| {
         let expected = service_restart_request_binding(&request);
-        let action_result = if let Some(service) = request.command_id.strip_prefix("restart-euthergate-") {
+        let action_result = if let Some(service) = direct_euthergate_restart_service(&request.command_id) {
             consume_eutherid_action_proof(challenge_id, &expected)?;
             euthergate_fixed_service_restart(service)?
         } else {
@@ -11817,6 +11830,10 @@ fn euthernet_fixed_authorized_action(
             | "restart-caddy"
             | "restart-eutherbooks"
             | "restart-eutherpunkd"
+            | "restart-eutherpal"
+            | "restart-euthersync"
+            | "restart-euther-watchdog"
+            | "restart-euthergate-turn"
             | "restart-euthersight-frigate"
     ) {
         return Err(invalid_request("unsupported EutherNet action"));
@@ -22111,9 +22128,27 @@ mod tests {
             Some(id)
         );
         assert_eq!(
+            service_restart_spec("restart-eutherpal"),
+            Some(("service.restart", "eutherpal.service"))
+        );
+        assert_eq!(
+            service_restart_spec("restart-euthersync"),
+            Some(("service.restart", "euthersync.service"))
+        );
+        assert_eq!(
+            service_restart_spec("restart-euther-watchdog"),
+            Some(("service.restart", "euther-watchdog.service"))
+        );
+        assert_eq!(
+            service_restart_spec("restart-euthergate-turn"),
+            Some(("service.restart", "euthergate-turn.service-group"))
+        );
+        assert_eq!(
             service_restart_spec("restart-euthergate-forge"),
             Some(("service.restart", "euthergate-forge.service"))
         );
+        assert_eq!(direct_euthergate_restart_service("restart-euthergate-gateway"), Some("gateway"));
+        assert_eq!(direct_euthergate_restart_service("restart-euthergate-turn"), None);
         assert!(service_restart_spec("restart-arbitrary.service").is_none());
     }
 

@@ -1519,6 +1519,11 @@ function restartCommandForService(service: ServiceReport): string | null {
   if (units.includes("eutherbooks.service")) command = "restart-eutherbooks";
   if (units.includes("eutherpunkd.service")) command = "restart-eutherpunkd";
   if (units.includes("eutherpal.service")) command = "restart-eutherpal";
+  if (units.includes("euthersync.service")) command = "restart-euthersync";
+  if (units.includes("euther-watchdog.service")) command = "restart-euther-watchdog";
+  if (units.includes("euthergate-turn-3478.service") || units.includes("euthergate-turn-443-udp.service")) {
+    command = "restart-euthergate-turn";
+  }
   if (units.includes("euthergate.service")) return "restart-euthergate-gateway";
   if (units.includes("euthergate-tunnel.service")) return "restart-euthergate-tunnel";
   if (units.includes("euthergate-forge.service")) return "restart-euthergate-forge";
