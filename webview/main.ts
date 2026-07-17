@@ -344,6 +344,12 @@ type AuthStatus = {
   csrfToken?: string | null;
 };
 
+type AccountEmailStatus = {
+  email?: string | null;
+  verified: boolean;
+  verifiedAt?: number | null;
+};
+
 type UserPreferences = {
   audioVolume: number;
   micVolume: number;
@@ -1542,6 +1548,7 @@ let eutherIdPollTimer: number | null = null;
 let eutherIdDevices: EutherIdDevice[] = [];
 let eutherIdPendingPayload: EutherIdEnrollment | EutherIdChallenge | null = null;
 let profileEutherIdEnrollment: EutherIdEnrollment | null = null;
+let profileEmailStatus: AccountEmailStatus | null = null;
 let eutherIdActiveAction: "shadow" | "wake" | null = null;
 let chatMessages: ChatMessage[] = [];
 let chatPollTimer: number | null = null;
@@ -3073,6 +3080,53 @@ workspaceWindowClose.addEventListener("click", () => {
 
 workspaceWindowDynamic.addEventListener("click", async (event) => {
   const target = event.target as HTMLElement;
+  const profileEmailRequest = target.closest<HTMLButtonElement>("[data-profile-email-request]");
+  if (profileEmailRequest) {
+    const input = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-profile-email-input]");
+    const passwordInput = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-profile-email-password]");
+    const status = workspaceWindowDynamic.querySelector<HTMLElement>("[data-profile-email-status]");
+    const email = input?.value.trim() ?? "";
+    const currentPassword = passwordInput?.value ?? "";
+    if (!email || !currentPassword) {
+      if (status) status.textContent = "E-postadress och nuvarande lösenord krävs.";
+      return;
+    }
+    profileEmailRequest.disabled = true;
+    try {
+      await bridgeJson("/api/account/email/request", {
+        method: "POST",
+        body: JSON.stringify({ email, currentPassword }),
+      }, 20_000);
+      if (status) status.textContent = `Verifieringskod skickad till ${email}.`;
+    } catch (error) {
+      if (status) status.textContent = error instanceof Error ? error.message : "Koden kunde inte skickas";
+    } finally {
+      profileEmailRequest.disabled = false;
+    }
+    return;
+  }
+  const profileEmailVerify = target.closest<HTMLButtonElement>("[data-profile-email-verify]");
+  if (profileEmailVerify) {
+    const input = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-profile-email-code]");
+    const status = workspaceWindowDynamic.querySelector<HTMLElement>("[data-profile-email-status]");
+    const token = input?.value.trim() ?? "";
+    if (!token) {
+      if (status) status.textContent = "Klistra in verifieringskoden först.";
+      return;
+    }
+    profileEmailVerify.disabled = true;
+    try {
+      profileEmailStatus = await bridgeJson<AccountEmailStatus>("/api/account/email/verify", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }, 5000);
+      renderWorkspaceWindow();
+    } catch (error) {
+      if (status) status.textContent = error instanceof Error ? error.message : "Verifieringen misslyckades";
+      profileEmailVerify.disabled = false;
+    }
+    return;
+  }
   const profileEutherIdStart = target.closest<HTMLButtonElement>("[data-profile-eutherid-start]");
   if (profileEutherIdStart) {
     profileEutherIdStart.disabled = true;
@@ -8298,10 +8352,14 @@ function openWorkspaceWindow(windowName: WorkspaceWindow): void {
   activeWorkspaceWindow = windowName;
   if (windowName === "profile") {
     profileEutherIdEnrollment = null;
+    profileEmailStatus = null;
   }
   workspaceWindowLayer.hidden = false;
   document.body.classList.add("workspace-window-open");
   renderWorkspaceWindow();
+  if (windowName === "profile") {
+    void refreshProfileEmail();
+  }
   renderUserMenu();
   if (windowName === "shopping") {
     void loadShoppingList();
@@ -13452,6 +13510,19 @@ function profileWindowMarkup(): string {
         <small>${hostUsername ? "Authenticated on this EutherHost" : "Login required for shared tools"}</small>
       </div>
       <div class="eutherid-admin-panel">
+        <p class="section-label">E-poståterställning</p>
+        <strong>${profileEmailStatus?.verified ? "Verifierad e-post" : "Lägg till din e-post"}</strong>
+        <p>${profileEmailStatus?.verified
+          ? `${escapeHtml(profileEmailStatus.email ?? "")} kan användas för att återställa ditt lösenord.`
+          : "Adressen blir aktiv först när du har skrivit in koden som skickas dit."}</p>
+        <input data-profile-email-input type="email" autocomplete="email" value="${escapeHtml(profileEmailStatus?.email ?? "")}" placeholder="du@gmail.com" aria-label="E-postadress" />
+        <input data-profile-email-password type="password" autocomplete="current-password" placeholder="Nuvarande lösenord" aria-label="Nuvarande lösenord" />
+        <button data-profile-email-request type="button" ${hostUsername ? "" : "disabled"}>Skicka verifieringskod</button>
+        <input data-profile-email-code type="text" autocomplete="one-time-code" placeholder="Kod från e-post" aria-label="Verifieringskod" />
+        <button data-profile-email-verify type="button" ${hostUsername ? "" : "disabled"}>Verifiera e-post</button>
+        <span data-profile-email-status>${profileEmailStatus?.verified ? "Verifierad och klar." : "Koden gäller i 15 minuter."}</span>
+      </div>
+      <div class="eutherid-admin-panel">
         <p class="section-label">EutherID · ${escapeHtml(hostUsername ?? "")}</p>
         <strong>Bind en telefon till ditt konto</strong>
         <p>Servern hämtar kontot från din aktiva session. Det går inte att välja någon annan användare här.</p>
@@ -13467,6 +13538,16 @@ function profileWindowMarkup(): string {
       </div>
     </div>
   `;
+}
+
+async function refreshProfileEmail(): Promise<void> {
+  if (!hostUsername || activeWorkspaceWindow !== "profile") return;
+  try {
+    profileEmailStatus = await bridgeJson<AccountEmailStatus>("/api/account/email", {}, 3000);
+    if (activeWorkspaceWindow === "profile") renderWorkspaceWindow();
+  } catch {
+    profileEmailStatus = null;
+  }
 }
 
 async function renderProfileEutherIdQr(): Promise<void> {

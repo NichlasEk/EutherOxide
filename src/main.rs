@@ -26,7 +26,7 @@ use argon2::{
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use gilrs::{Axis, Button, Gilrs};
-use lettre::message::header::ContentType;
+use lettre::message::{Mailbox, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,9 @@ const EUTHERID_SMTP_PASSWORD_FILE: &str = "/etc/eutherhost/smtp-password";
 const EUTHERID_RECOVERY_TTL_MS: u64 = 15 * 60 * 1000;
 const EUTHERID_RECOVERY_RATE_WINDOW_MS: u64 = 60 * 60 * 1000;
 const EUTHERID_RECOVERY_RATE_MAX: usize = 3;
+const ACCOUNT_EMAIL_TOKEN_TTL_MS: u64 = 15 * 60 * 1000;
+const ACCOUNT_EMAIL_RATE_WINDOW_MS: u64 = 60 * 60 * 1000;
+const ACCOUNT_EMAIL_RATE_MAX: usize = 3;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
@@ -267,6 +270,7 @@ fn run() -> io::Result<()> {
 
     if host_test_eutherid_email {
         send_eutherid_email(
+            EUTHERID_RECOVERY_EMAIL,
             "EutherID SMTP-test",
             "Detta är ett SMTP-test från EutherOxide. Inga EutherID-enheter eller konton har ändrats.",
         )?;
@@ -842,6 +846,7 @@ struct HostState {
     sessions: Arc<Mutex<Vec<HostSession>>>,
     login_attempts: Arc<Mutex<Vec<LoginAttempt>>>,
     eutherid_recovery_tokens: Arc<Mutex<Vec<HostEutherIdRecoveryToken>>>,
+    account_email_tokens: Arc<Mutex<Vec<HostAccountEmailToken>>>,
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
     next_chat_id: Arc<Mutex<u64>>,
     video_chat_rooms: Arc<Mutex<Vec<HostVideoChatRoom>>>,
@@ -988,6 +993,8 @@ struct HostConfig {
 struct HostUser {
     name: String,
     password_hash: String,
+    email: Option<String>,
+    email_verified_unix_ms: Option<u64>,
     app_token: Option<String>,
     app_lan_server_url: Option<String>,
     banned: bool,
@@ -1042,6 +1049,49 @@ struct HostEutherIdRecoveryToken {
     created_unix_ms: u64,
     expires_unix_ms: u64,
     consumed_unix_ms: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum HostAccountEmailTokenPurpose {
+    VerifyEmail,
+    PasswordReset,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostAccountEmailToken {
+    token_hash: String,
+    actor: String,
+    email: String,
+    purpose: HostAccountEmailTokenPurpose,
+    created_unix_ms: u64,
+    expires_unix_ms: u64,
+    consumed_unix_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostAccountEmailRequest {
+    email: String,
+    current_password: String,
+}
+
+#[derive(Deserialize)]
+struct HostAccountEmailVerifyRequest {
+    token: String,
+}
+
+#[derive(Deserialize)]
+struct HostPasswordResetRequest {
+    account: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostPasswordResetCompleteRequest {
+    token: String,
+    new_password: String,
 }
 
 #[derive(Deserialize)]
@@ -1665,6 +1715,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     write_host_codex_inbox_readme()?;
     let users = Arc::new(Mutex::new(load_host_users()?));
     let eutherid_recovery_tokens = load_host_eutherid_recovery_tokens()?;
+    let account_email_tokens = load_host_account_email_tokens()?;
     let chat_messages = load_host_chat_messages()?;
     let next_chat_id = chat_messages
         .iter()
@@ -1693,6 +1744,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         sessions: Arc::new(Mutex::new(Vec::new())),
         login_attempts: Arc::new(Mutex::new(Vec::new())),
         eutherid_recovery_tokens: Arc::new(Mutex::new(eutherid_recovery_tokens)),
+        account_email_tokens: Arc::new(Mutex::new(account_email_tokens)),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
         next_chat_id: Arc::new(Mutex::new(next_chat_id)),
         video_chat_rooms: Arc::new(Mutex::new(Vec::new())),
@@ -1779,6 +1831,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
     if request.method != "GET"
         && path != "/api/login"
         && path != "/api/app/login"
+        && path != "/api/password-reset/request"
+        && path != "/api/password-reset/complete"
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
         && !is_eutherbooks_proxy_path(path)
@@ -1801,6 +1855,41 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", "/login") => send_login_page(stream, None),
         ("POST", "/api/login") => host_login(stream, state, &request),
         ("POST", "/api/app/login") => host_app_login(stream, state, &request),
+        ("POST", "/api/password-reset/request") => {
+            let input: HostPasswordResetRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid password reset request"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            send_json(
+                stream,
+                &request_password_reset(state, &input.account, &remote_addr)?,
+            )
+        }
+        ("POST", "/api/password-reset/complete") => {
+            let input: HostPasswordResetCompleteRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid password reset request"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match complete_password_reset(
+                state,
+                &input.token,
+                &input.new_password,
+                &remote_addr,
+            ) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 500, &err.to_string()),
+            }
+        }
         ("GET", "/api/app/config") => send_json(stream, &host_app_config(state)),
         ("GET", "/api/app/status") => {
             let user = match require_host_user_or_app(state, &request) {
@@ -1966,6 +2055,57 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 )
             } else {
                 send_json(stream, &serde_json::json!({ "authenticated": false }))
+            }
+        }
+        ("GET", "/api/account/email") => {
+            let user = require_host_user(state, &request)?;
+            send_json(stream, &account_email_status(state, &user)?)
+        }
+        ("POST", "/api/account/email/request") => {
+            let user = require_host_user(state, &request)?;
+            let input: HostAccountEmailRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid email verification request"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match request_account_email_verification(
+                state,
+                &user,
+                &input.email,
+                &input.current_password,
+                &remote_addr,
+            ) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    send_error(stream, 429, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/account/email/verify") => {
+            let user = require_host_user(state, &request)?;
+            let input: HostAccountEmailVerifyRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid email verification request"))?;
+            let remote_addr = stream
+                .peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            match verify_account_email(state, &user, &input.token, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 500, &err.to_string()),
             }
         }
         ("GET", "/api/user/preferences") => {
@@ -9752,6 +9892,8 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
     users.push(HostUser {
         name: username.to_string(),
         password_hash: hash_host_password(password)?,
+        email: None,
+        email_verified_unix_ms: None,
         app_token: None,
         app_lan_server_url: None,
         banned: false,
@@ -10834,7 +10976,7 @@ fn eutherid_recovery_token_hash(token: &str) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn send_eutherid_email(subject: &str, body: &str) -> io::Result<()> {
+fn send_eutherid_email(recipient: &str, subject: &str, body: &str) -> io::Result<()> {
     let password_path = env::var("EUTHERID_SMTP_PASSWORD_FILE")
         .unwrap_or_else(|_| EUTHERID_SMTP_PASSWORD_FILE.to_string());
     let password = fs::read_to_string(password_path)
@@ -10849,11 +10991,9 @@ fn send_eutherid_email(subject: &str, body: &str) -> io::Result<()> {
                 .parse()
                 .map_err(|_| io::Error::other("invalid EutherID sender address"))?,
         )
-        .to(
-            EUTHERID_RECOVERY_EMAIL
-                .parse()
-                .map_err(|_| io::Error::other("invalid EutherID recovery address"))?,
-        )
+        .to(recipient
+            .parse()
+            .map_err(|_| io::Error::other("invalid email recipient"))?)
         .subject(subject)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
@@ -10875,11 +11015,408 @@ fn send_eutherid_recovery_email(actor: &str, token: &str) -> io::Result<()> {
     let body = format!(
         "En återställning av EutherID-enheter har begärts för administratören {actor}.\n\nÅterställningskod:\n{token}\n\nKoden gäller i 15 minuter och fungerar bara i en inloggad adminsession på EutherOxide. Den återkallar EutherID-enheter men ändrar inte lösenordet.\n\nOm du inte begärde detta kan du ignorera brevet."
     );
-    send_eutherid_email(&subject, &body)
+    send_eutherid_email(EUTHERID_RECOVERY_EMAIL, &subject, &body)
 }
 
 fn valid_eutherid_recovery_code(token: &str) -> bool {
     token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalize_account_email(value: &str) -> io::Result<String> {
+    let email = value.trim().to_lowercase();
+    if email.is_empty()
+        || email.len() > 254
+        || email.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || email.contains(['<', '>', ','])
+        || email.parse::<Mailbox>().is_err()
+    {
+        return Err(invalid_request("invalid email address"));
+    }
+    Ok(email)
+}
+
+fn account_email_status(state: &HostState, actor: &str) -> io::Result<serde_json::Value> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let user = users
+        .iter()
+        .find(|user| user.name == actor)
+        .ok_or_else(|| invalid_request("user not found"))?;
+    Ok(serde_json::json!({
+        "email": user.email,
+        "verified": user.email.is_some() && user.email_verified_unix_ms.is_some(),
+        "verifiedAt": user.email_verified_unix_ms,
+    }))
+}
+
+fn account_email_rate_limited(
+    tokens: &[HostAccountEmailToken],
+    actor: &str,
+    purpose: &HostAccountEmailTokenPurpose,
+    now: u64,
+) -> bool {
+    tokens
+        .iter()
+        .filter(|token| {
+            token.actor == actor
+                && &token.purpose == purpose
+                && token
+                    .created_unix_ms
+                    .saturating_add(ACCOUNT_EMAIL_RATE_WINDOW_MS)
+                    > now
+        })
+        .count()
+        >= ACCOUNT_EMAIL_RATE_MAX
+}
+
+fn store_account_email_token(
+    state: &HostState,
+    actor: &str,
+    email: &str,
+    purpose: HostAccountEmailTokenPurpose,
+) -> io::Result<(String, HostAccountEmailToken)> {
+    let now = unix_ms_now();
+    let token = random_token()?;
+    let stored = HostAccountEmailToken {
+        token_hash: eutherid_recovery_token_hash(&token),
+        actor: actor.to_string(),
+        email: email.to_string(),
+        purpose,
+        created_unix_ms: now,
+        expires_unix_ms: now.saturating_add(ACCOUNT_EMAIL_TOKEN_TTL_MS),
+        consumed_unix_ms: None,
+    };
+    let mut tokens = state
+        .account_email_tokens
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if account_email_rate_limited(&tokens, actor, &stored.purpose, now) {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "too many email requests; try again later",
+        ));
+    }
+    tokens.retain(|entry| {
+        entry
+            .expires_unix_ms
+            .saturating_add(24 * 60 * 60 * 1000)
+            > now
+    });
+    tokens.push(stored.clone());
+    save_host_account_email_tokens(&tokens)?;
+    Ok((token, stored))
+}
+
+fn remove_account_email_token(state: &HostState, token_hash: &str) -> io::Result<()> {
+    let mut tokens = state
+        .account_email_tokens
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    tokens.retain(|entry| entry.token_hash != token_hash);
+    save_host_account_email_tokens(&tokens)
+}
+
+fn request_account_email_verification(
+    state: &HostState,
+    actor: &str,
+    requested_email: &str,
+    current_password: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let email = normalize_account_email(requested_email)?;
+    if login_rate_limited(state, remote_addr, actor)? {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "too many attempts; try again later",
+        ));
+    }
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let current_user = users
+            .iter()
+            .find(|user| user.name == actor && !user.banned)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "request rejected"))?;
+        if !verify_password(current_password, &current_user.password_hash) {
+            record_login_failure(state, remote_addr, actor)?;
+            audit_host_event(
+                state,
+                "account_email_verification_requested",
+                Some(actor),
+                remote_addr,
+                false,
+                "bad_password",
+            )?;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "current password is incorrect",
+            ));
+        }
+        if users.iter().any(|user| {
+            user.name != actor
+                && user.email_verified_unix_ms.is_some()
+                && user.email.as_deref() == Some(email.as_str())
+        }) {
+            return Err(invalid_request("email address is already verified by another account"));
+        }
+    }
+    let (token, stored) = store_account_email_token(
+        state,
+        actor,
+        &email,
+        HostAccountEmailTokenPurpose::VerifyEmail,
+    )?;
+    let subject = "Verifiera din e-post för EutherOxide";
+    let body = format!(
+        "Hej {actor}!\n\nDin verifieringskod är:\n{token}\n\nKoden gäller i 15 minuter och kan endast användas i din redan inloggade EutherOxide-session. Om du inte begärde detta kan du ignorera brevet."
+    );
+    if let Err(err) = send_eutherid_email(&email, subject, &body) {
+        remove_account_email_token(state, &stored.token_hash)?;
+        audit_host_event(
+            state,
+            "account_email_verification_requested",
+            Some(actor),
+            remote_addr,
+            false,
+            "delivery_failed",
+        )?;
+        return Err(err);
+    }
+    audit_host_event(
+        state,
+        "account_email_verification_requested",
+        Some(actor),
+        remote_addr,
+        true,
+        "email_sent",
+    )?;
+    Ok(serde_json::json!({ "ok": true, "email": email, "expiresAt": stored.expires_unix_ms }))
+}
+
+fn verify_account_email(
+    state: &HostState,
+    actor: &str,
+    token: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let token = token.trim();
+    if !valid_eutherid_recovery_code(token) {
+        return Err(invalid_request("invalid verification code"));
+    }
+    let hash = eutherid_recovery_token_hash(token);
+    let now = unix_ms_now();
+    let mut tokens = state
+        .account_email_tokens
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(index) = tokens.iter().position(|entry| {
+        entry.actor == actor
+            && entry.purpose == HostAccountEmailTokenPurpose::VerifyEmail
+            && entry.token_hash == hash
+            && entry.consumed_unix_ms.is_none()
+            && entry.expires_unix_ms > now
+    }) else {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid or expired verification code",
+        ));
+    };
+    let email = tokens[index].email.clone();
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    if users.iter().any(|user| {
+        user.name != actor
+            && user.email_verified_unix_ms.is_some()
+            && user.email.as_deref() == Some(email.as_str())
+    }) {
+        return Err(invalid_request("email address is already verified by another account"));
+    }
+    let user = users
+        .iter_mut()
+        .find(|user| user.name == actor)
+        .ok_or_else(|| invalid_request("user not found"))?;
+    user.email = Some(email.clone());
+    user.email_verified_unix_ms = Some(now);
+    save_host_users(&users)?;
+    tokens[index].consumed_unix_ms = Some(now);
+    for entry in tokens.iter_mut() {
+        if entry.actor == actor
+            && entry.purpose == HostAccountEmailTokenPurpose::VerifyEmail
+            && entry.consumed_unix_ms.is_none()
+        {
+            entry.consumed_unix_ms = Some(now);
+        }
+    }
+    save_host_account_email_tokens(&tokens)?;
+    audit_host_event(
+        state,
+        "account_email_verified",
+        Some(actor),
+        remote_addr,
+        true,
+        "verified",
+    )?;
+    Ok(serde_json::json!({ "ok": true, "email": email, "verified": true, "verifiedAt": now }))
+}
+
+fn request_password_reset(
+    state: &HostState,
+    account: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    const RATE_KEY: &str = "password-reset";
+    if login_rate_limited(state, remote_addr, RATE_KEY)? {
+        return Ok(serde_json::json!({
+            "ok": true,
+            "message": "If the account has a verified email, a reset code has been sent."
+        }));
+    }
+    record_login_failure(state, remote_addr, RATE_KEY)?;
+    let account = account.trim();
+    let normalized_email = account.to_lowercase();
+    let user = {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        users
+            .iter()
+            .find(|user| {
+                !user.banned
+                    && (user.name == account
+                        || (user.email_verified_unix_ms.is_some()
+                            && user.email.as_deref() == Some(normalized_email.as_str())))
+            })
+            .cloned()
+    };
+    if let Some(user) = user {
+        if let Some(email) = user.email.clone().filter(|_| user.email_verified_unix_ms.is_some()) {
+            match store_account_email_token(
+                state,
+                &user.name,
+                &email,
+                HostAccountEmailTokenPurpose::PasswordReset,
+            ) {
+                Ok((token, stored)) => {
+                    let subject = "Återställ ditt EutherOxide-lösenord";
+                    let body = format!(
+                        "Hej {}!\n\nDin återställningskod är:\n{}\n\nKoden gäller i 15 minuter. En lyckad återställning loggar ut befintliga sessioner men ändrar inte EutherID-enheter eller behörigheter. Om du inte begärde detta kan du ignorera brevet.",
+                        user.name, token
+                    );
+                    if send_eutherid_email(&email, subject, &body).is_err() {
+                        remove_account_email_token(state, &stored.token_hash)?;
+                        audit_host_event(
+                            state,
+                            "password_reset_requested",
+                            Some(&user.name),
+                            remote_addr,
+                            false,
+                            "delivery_failed",
+                        )?;
+                    } else {
+                        audit_host_event(
+                            state,
+                            "password_reset_requested",
+                            Some(&user.name),
+                            remote_addr,
+                            true,
+                            "email_sent",
+                        )?;
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    audit_host_event(
+                        state,
+                        "password_reset_requested",
+                        Some(&user.name),
+                        remote_addr,
+                        false,
+                        "rate_limited",
+                    )?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "message": "If the account has a verified email, a reset code has been sent."
+    }))
+}
+
+fn complete_password_reset(
+    state: &HostState,
+    token: &str,
+    new_password: &str,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    if new_password.len() < 10 || new_password.len() > 256 {
+        return Err(invalid_request("new password must be 10 to 256 characters"));
+    }
+    let token = token.trim();
+    if !valid_eutherid_recovery_code(token) {
+        return Err(invalid_request("invalid reset code"));
+    }
+    let hash = eutherid_recovery_token_hash(token);
+    let now = unix_ms_now();
+    let mut tokens = state
+        .account_email_tokens
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let Some(index) = tokens.iter().position(|entry| {
+        entry.purpose == HostAccountEmailTokenPurpose::PasswordReset
+            && entry.token_hash == hash
+            && entry.consumed_unix_ms.is_none()
+            && entry.expires_unix_ms > now
+    }) else {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid or expired reset code",
+        ));
+    };
+    let actor = tokens[index].actor.clone();
+    let mut users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let user = users
+        .iter_mut()
+        .find(|user| user.name == actor && !user.banned)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "reset rejected"))?;
+    user.password_hash = hash_host_password(new_password)?;
+    user.app_token = None;
+    save_host_users(&users)?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    sessions.retain(|session| session.user != actor);
+    drop(sessions);
+    tokens[index].consumed_unix_ms = Some(now);
+    for entry in tokens.iter_mut() {
+        if entry.actor == actor
+            && entry.purpose == HostAccountEmailTokenPurpose::PasswordReset
+            && entry.consumed_unix_ms.is_none()
+        {
+            entry.consumed_unix_ms = Some(now);
+        }
+    }
+    save_host_account_email_tokens(&tokens)?;
+    audit_host_event(
+        state,
+        "password_reset_completed",
+        Some(&actor),
+        remote_addr,
+        true,
+        "sessions_revoked",
+    )?;
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 fn request_host_eutherid_recovery(
@@ -13655,6 +14192,10 @@ fn login_page_html(error: Option<&str>) -> String {
     button, .chat-link {{ border: 1px solid rgba(247,101,82,.58); background: linear-gradient(135deg, rgba(128,43,33,.82), rgba(80,88,35,.72)); color: #fff4c6; font-weight: 900; cursor: pointer; }}
     .chat-link {{ display: grid; place-items: center; text-decoration: none; border-color: rgba(210,238,177,.28); background: rgba(19,28,19,.72); }}
     .error {{ color: #ff9a8f; text-transform: none; letter-spacing: 0; }}
+    details {{ border-top: 1px solid rgba(207,240,178,.14); padding-top: 14px; }}
+    summary {{ cursor: pointer; color: #d2eeb1; font-weight: 800; }}
+    .reset-panel {{ display: grid; gap: 10px; margin-top: 12px; }}
+    .reset-status {{ min-height: 1.2em; color: #9fbe91; text-transform: none; letter-spacing: 0; }}
   </style>
 </head>
 <body>
@@ -13667,8 +14208,51 @@ fn login_page_html(error: Option<&str>) -> String {
       <input name="password" type="password" autocomplete="current-password" placeholder="Password" required />
       <button type="submit">Bond Session</button>
     </form>
+    <details>
+      <summary>Glömt lösenordet?</summary>
+      <div class="reset-panel">
+        <input id="reset-account" autocomplete="username email" placeholder="Användarnamn eller verifierad e-post" />
+        <button id="reset-request" type="button">Skicka återställningskod</button>
+        <input id="reset-code" autocomplete="one-time-code" placeholder="Kod från e-post" />
+        <input id="reset-password" type="password" autocomplete="new-password" minlength="10" placeholder="Nytt lösenord, minst 10 tecken" />
+        <button id="reset-complete" type="button">Sätt nytt lösenord</button>
+        <p id="reset-status" class="reset-status">Koden gäller i 15 minuter.</p>
+      </div>
+    </details>
     <a class="chat-link" href="/eutherpunk">Open AI Chat</a>
   </main>
+  <script>
+    const status = document.getElementById("reset-status");
+    async function postReset(path, body) {{
+      const response = await fetch(path, {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(body),
+      }});
+      const payload = await response.json().catch(() => ({{}}));
+      if (!response.ok) throw new Error(payload.error || "Begäran misslyckades");
+      return payload;
+    }}
+    document.getElementById("reset-request").addEventListener("click", async () => {{
+      const account = document.getElementById("reset-account").value.trim();
+      if (!account) {{ status.textContent = "Skriv användarnamn eller e-post först."; return; }}
+      status.textContent = "Skickar…";
+      try {{
+        const result = await postReset("/api/password-reset/request", {{ account }});
+        status.textContent = result.message;
+      }} catch (error) {{ status.textContent = error.message; }}
+    }});
+    document.getElementById("reset-complete").addEventListener("click", async () => {{
+      const token = document.getElementById("reset-code").value.trim();
+      const newPassword = document.getElementById("reset-password").value;
+      if (!token || newPassword.length < 10) {{ status.textContent = "Kod och minst 10 tecken långt lösenord krävs."; return; }}
+      status.textContent = "Återställer…";
+      try {{
+        await postReset("/api/password-reset/complete", {{ token, newPassword }});
+        status.textContent = "Lösenordet är ändrat. Logga in ovan.";
+      }} catch (error) {{ status.textContent = error.message; }}
+    }});
+  </script>
 </body>
 </html>"#
     )
@@ -16738,6 +17322,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut users = Vec::new();
     let mut name = None;
     let mut password_hash = None;
+    let mut email = None;
+    let mut email_verified_unix_ms = None;
     let mut app_token = None;
     let mut app_lan_server_url = None;
     let mut banned = false;
@@ -16761,6 +17347,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                 users.push(HostUser {
                     name,
                     password_hash,
+                    email: email.take().filter(|value: &String| !value.trim().is_empty()),
+                    email_verified_unix_ms,
                     app_token: app_token
                         .take()
                         .filter(|token: &String| !token.trim().is_empty()),
@@ -16784,6 +17372,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                 });
             }
             app_token = None;
+            email = None;
+            email_verified_unix_ms = None;
             app_lan_server_url = None;
             banned = false;
             admin = false;
@@ -16808,6 +17398,10 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             name = Some(value);
         } else if let Some(value) = parse_toml_assignment(line, "password_hash") {
             password_hash = Some(value);
+        } else if let Some(value) = parse_toml_assignment(line, "email") {
+            email = Some(value);
+        } else if let Some(value) = parse_toml_u64_assignment(line, "email_verified_unix_ms") {
+            email_verified_unix_ms = Some(value);
         } else if let Some(value) = parse_toml_assignment(line, "app_token") {
             app_token = Some(value);
         } else if let Some(value) = parse_toml_assignment(line, "app_lan_server_url") {
@@ -16847,6 +17441,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
         users.push(HostUser {
             name,
             password_hash,
+            email: email.filter(|value| !value.trim().is_empty()),
+            email_verified_unix_ms,
             app_token: app_token.filter(|token| !token.trim().is_empty()),
             app_lan_server_url: app_lan_server_url.filter(|url| !url.trim().is_empty()),
             banned,
@@ -16889,6 +17485,12 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
             "password_hash = \"{}\"\n",
             toml_escape(&user.password_hash)
         ));
+        if let Some(email) = &user.email {
+            contents.push_str(&format!("email = \"{}\"\n", toml_escape(email)));
+        }
+        if let Some(verified_at) = user.email_verified_unix_ms {
+            contents.push_str(&format!("email_verified_unix_ms = {}\n", verified_at));
+        }
         if let Some(app_token) = &user.app_token {
             contents.push_str(&format!("app_token = \"{}\"\n", toml_escape(app_token)));
         }
@@ -17263,6 +17865,34 @@ fn save_host_eutherid_recovery_tokens(tokens: &[HostEutherIdRecoveryToken]) -> i
     fs::rename(temporary, path)
 }
 
+fn host_account_email_tokens_path() -> PathBuf {
+    host_dir().join("account-email-tokens.json")
+}
+
+fn load_host_account_email_tokens() -> io::Result<Vec<HostAccountEmailToken>> {
+    let path = host_account_email_tokens_path();
+    let mut tokens = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Vec<HostAccountEmailToken>>(&bytes)
+            .map_err(|err| io::Error::other(format!("invalid account email state: {err}")))?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err),
+    };
+    let cutoff = unix_ms_now().saturating_sub(24 * 60 * 60 * 1000);
+    tokens.retain(|token| token.expires_unix_ms >= cutoff);
+    Ok(tokens)
+}
+
+fn save_host_account_email_tokens(tokens: &[HostAccountEmailToken]) -> io::Result<()> {
+    ensure_host_dir()?;
+    let path = host_account_email_tokens_path();
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(&temporary, bytes)?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)
+}
+
 fn host_chat_path() -> PathBuf {
     host_dir().join("chat.log")
 }
@@ -17613,6 +18243,11 @@ fn parse_toml_bool_assignment(line: &str, key: &str) -> Option<bool> {
 fn parse_toml_u16_assignment(line: &str, key: &str) -> Option<u16> {
     let (name, value) = line.split_once('=')?;
     (name.trim() == key).then(|| value.trim().parse::<u16>().ok())?
+}
+
+fn parse_toml_u64_assignment(line: &str, key: &str) -> Option<u64> {
+    let prefix = format!("{key} =");
+    line.strip_prefix(&prefix)?.trim().parse().ok()
 }
 
 fn parse_toml_u64(contents: &str, key: &str) -> Option<u64> {
@@ -20229,5 +20864,44 @@ mod tests {
         };
         let json = serde_json::to_string(&stored).unwrap();
         assert!(!json.contains(token));
+    }
+
+    #[test]
+    fn account_email_normalization_rejects_mailbox_injection() {
+        assert_eq!(
+            normalize_account_email("  User.Name+euther@GMAIL.COM ").unwrap(),
+            "user.name+euther@gmail.com"
+        );
+        assert!(normalize_account_email("Evil <victim@example.com>").is_err());
+        assert!(normalize_account_email("one@example.com, two@example.com").is_err());
+        assert!(normalize_account_email("not-an-email").is_err());
+    }
+
+    #[test]
+    fn account_email_tokens_store_only_hashes_and_rate_limit_by_purpose() {
+        let raw = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        let token = HostAccountEmailToken {
+            token_hash: eutherid_recovery_token_hash(raw),
+            actor: "user".to_string(),
+            email: "user@example.com".to_string(),
+            purpose: HostAccountEmailTokenPurpose::PasswordReset,
+            created_unix_ms: 1_000,
+            expires_unix_ms: 2_000,
+            consumed_unix_ms: None,
+        };
+        let tokens = vec![token.clone(), token.clone(), token];
+        assert!(account_email_rate_limited(
+            &tokens,
+            "user",
+            &HostAccountEmailTokenPurpose::PasswordReset,
+            1_001,
+        ));
+        assert!(!account_email_rate_limited(
+            &tokens,
+            "user",
+            &HostAccountEmailTokenPurpose::VerifyEmail,
+            1_001,
+        ));
+        assert!(!serde_json::to_string(&tokens).unwrap().contains(raw));
     }
 }
