@@ -19,9 +19,13 @@ or `ssh-rsa` public-key line. Install the script and units from the repository:
 sudo install -d -m 0700 /srv/backups/eutheroxide
 sudo install -m 0644 deploy/eutherhost-users-backup.service /etc/systemd/system/eutherhost-users-backup.service
 sudo install -m 0644 deploy/eutherhost-users-backup.timer /etc/systemd/system/eutherhost-users-backup.timer
+sudo install -m 0644 deploy/eutherhost-users-backup-health.service /etc/systemd/system/eutherhost-users-backup-health.service
+sudo install -m 0644 deploy/eutherhost-users-backup-health.timer /etc/systemd/system/eutherhost-users-backup-health.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now eutherhost-users-backup.timer
+sudo systemctl enable --now eutherhost-users-backup-health.timer
 sudo systemctl start eutherhost-users-backup.service
+sudo systemctl start eutherhost-users-backup-health.service
 ```
 
 ## Mirroring to 192.168.32.88
@@ -43,16 +47,28 @@ Install the user units on `.88` and start the timer:
 ```bash
 install -d -m 0700 /home/nichlas/Backups/EutherOxide /home/nichlas/.config/systemd/user /home/nichlas/.local/libexec
 install -m 0755 scripts/eutherhost-users-mirror.sh /home/nichlas/.local/libexec/eutherhost-users-mirror
+install -m 0755 scripts/eutherhost-backup-status.py /home/nichlas/.local/libexec/eutherhost-backup-status
 install -m 0644 deploy/eutherhost-users-mirror.service /home/nichlas/.config/systemd/user/
 install -m 0644 deploy/eutherhost-users-mirror.timer /home/nichlas/.config/systemd/user/
+install -m 0644 deploy/eutherhost-users-mirror-health.service /home/nichlas/.config/systemd/user/
+install -m 0644 deploy/eutherhost-users-mirror-health.timer /home/nichlas/.config/systemd/user/
+install -m 0644 deploy/eutherhost-users-mirror-alert.service /home/nichlas/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eutherhost-users-mirror.timer
+systemctl --user enable --now eutherhost-users-mirror-health.timer
 systemctl --user start eutherhost-users-mirror.service
+systemctl --user start eutherhost-users-mirror-health.service
 ```
 
 The mirror uses `--ignore-existing` and never deletes local files, so `.88` may
 retain encrypted recovery points after the server's 30-day rotation removes its
 copy.
+
+Both machines validate freshness, age headers, file pairs, and every ciphertext
+checksum every six hours. A failed workstation mirror or health check raises a
+desktop notification and remains visible as a failed user service. EutherNet's
+server inventory collects the `.186` health JSON and exposes it in the server
+map and `/api/euthernet/backup-health`.
 
 Verify the newest encrypted file and its checksum on the server:
 

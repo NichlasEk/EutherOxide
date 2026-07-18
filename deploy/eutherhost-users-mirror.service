@@ -3,6 +3,7 @@ Description=Mirror encrypted EutherHost user backups from EutherServer
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/home/nichlas/.ssh/euther_backup_pull
+OnFailure=eutherhost-users-mirror-alert.service
 
 [Service]
 Type=oneshot

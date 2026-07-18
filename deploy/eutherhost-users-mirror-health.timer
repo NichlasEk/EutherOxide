@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the EutherHost backup mirror every six hours
+
+[Timer]
+OnBootSec=15m
+OnUnitActiveSec=6h
+Persistent=true
+Unit=eutherhost-users-mirror-health.service
+
+[Install]
+WantedBy=timers.target

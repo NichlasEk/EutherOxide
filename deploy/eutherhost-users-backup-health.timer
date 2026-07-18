@@ -1,0 +1,11 @@
+[Unit]
+Description=Check encrypted EutherHost user backups every six hours
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=6h
+Persistent=true
+Unit=eutherhost-users-backup-health.service
+
+[Install]
+WantedBy=timers.target

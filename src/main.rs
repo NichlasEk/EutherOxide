@@ -13234,6 +13234,7 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
         "/changes",
         "/report",
         "/inventory",
+        "/backup-health",
         "/backup-manifest",
         "/restore-drill",
         "/refresh",
