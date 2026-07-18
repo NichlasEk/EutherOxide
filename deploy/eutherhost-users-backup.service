@@ -1,0 +1,34 @@
+[Unit]
+Description=Create an encrypted EutherHost users backup
+After=local-fs.target
+ConditionPathExists=/home/nichlas/EutherOxide/.euther-host/users.toml
+ConditionPathExists=/etc/eutheroxide-backup/recipients
+
+[Service]
+Type=oneshot
+ExecStart=/home/nichlas/EutherOxide/scripts/eutherhost-users-backup.sh
+User=root
+Group=root
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadOnlyPaths=/home/nichlas/EutherOxide/.euther-host/users.toml /etc/eutheroxide-backup/recipients
+ReadWritePaths=/srv/backups/eutheroxide
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
