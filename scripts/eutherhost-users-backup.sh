@@ -54,16 +54,20 @@ if ! getent group "${backup_group}" >/dev/null; then
   exit 1
 fi
 
-install -d -m 0750 -o root -g "${backup_group}" "${backup_dir}"
+if [[ "$(id -gn)" != "${backup_group}" ]]; then
+  echo "backup must run with primary group ${backup_group}" >&2
+  exit 1
+fi
+
+install -d -m 0750 "${backup_dir}"
 staging="$(mktemp -d "${backup_dir}/.eutherhost-users-${timestamp}.XXXXXX")"
 snapshot="${staging}/users.toml"
 encrypted="${staging}/users.toml.age"
 
-install -m 0600 -o root -g root "${source_file}" "${snapshot}"
+install -m 0600 "${source_file}" "${snapshot}"
 python3 -c 'import pathlib, sys, tomllib; tomllib.loads(pathlib.Path(sys.argv[1]).read_text())' "${snapshot}"
 
 age --encrypt --recipients-file "${recipient_file}" --output "${encrypted}" "${snapshot}"
-chown root:"${backup_group}" "${encrypted}"
 chmod 0640 "${encrypted}"
 
 if [[ "$(head -n 1 "${encrypted}")" != "age-encryption.org/v1" ]]; then
@@ -81,7 +85,6 @@ mv -- "${encrypted}" "${archive}"
   cd "${backup_dir}"
   sha256sum "$(basename "${archive}")"
 ) >"${archive}.sha256"
-chown root:"${backup_group}" "${archive}.sha256"
 chmod 0640 "${archive}.sha256"
 
 find "${backup_dir}" -maxdepth 1 -type f \
