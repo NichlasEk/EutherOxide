@@ -7,7 +7,7 @@ ConditionPathExists=/home/nichlas/.ssh/euther_backup_pull
 [Service]
 Type=oneshot
 WorkingDirectory=/home/nichlas/EutherOxide
-ExecStart=/home/nichlas/EutherOxide/scripts/eutherhost-users-mirror.sh
+ExecStart=/home/nichlas/.local/libexec/eutherhost-users-mirror
 UMask=0077
 Nice=10
 IOSchedulingClass=best-effort

@@ -41,7 +41,8 @@ or reading anything outside the encrypted backup directory.
 Install the user units on `.88` and start the timer:
 
 ```bash
-install -d -m 0700 /home/nichlas/Backups/EutherOxide /home/nichlas/.config/systemd/user
+install -d -m 0700 /home/nichlas/Backups/EutherOxide /home/nichlas/.config/systemd/user /home/nichlas/.local/libexec
+install -m 0755 scripts/eutherhost-users-mirror.sh /home/nichlas/.local/libexec/eutherhost-users-mirror
 install -m 0644 deploy/eutherhost-users-mirror.service /home/nichlas/.config/systemd/user/
 install -m 0644 deploy/eutherhost-users-mirror.timer /home/nichlas/.config/systemd/user/
 systemctl --user daemon-reload
