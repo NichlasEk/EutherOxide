@@ -6,6 +6,7 @@ umask 077
 source_file="${EUTHERHOST_USERS_FILE:-/home/nichlas/EutherOxide/.euther-host/users.toml}"
 recipient_file="${EUTHERHOST_BACKUP_RECIPIENTS:-/etc/eutheroxide-backup/recipients}"
 backup_dir="${EUTHERHOST_BACKUP_DIR:-/srv/backups/eutheroxide}"
+backup_group="${EUTHERHOST_BACKUP_GROUP:-eutherbackup}"
 retention_days="${EUTHERHOST_BACKUP_RETENTION_DAYS:-30}"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 archive="${backup_dir}/eutherhost-users-${timestamp}.toml.age"
@@ -48,7 +49,12 @@ if ! command -v age >/dev/null 2>&1; then
   exit 1
 fi
 
-install -d -m 0700 -o root -g root "${backup_dir}"
+if ! getent group "${backup_group}" >/dev/null; then
+  echo "backup reader group not found: ${backup_group}" >&2
+  exit 1
+fi
+
+install -d -m 0750 -o root -g "${backup_group}" "${backup_dir}"
 staging="$(mktemp -d "${backup_dir}/.eutherhost-users-${timestamp}.XXXXXX")"
 snapshot="${staging}/users.toml"
 encrypted="${staging}/users.toml.age"
@@ -57,7 +63,8 @@ install -m 0600 -o root -g root "${source_file}" "${snapshot}"
 python3 -c 'import pathlib, sys, tomllib; tomllib.loads(pathlib.Path(sys.argv[1]).read_text())' "${snapshot}"
 
 age --encrypt --recipients-file "${recipient_file}" --output "${encrypted}" "${snapshot}"
-chmod 0600 "${encrypted}"
+chown root:"${backup_group}" "${encrypted}"
+chmod 0640 "${encrypted}"
 
 if [[ "$(head -n 1 "${encrypted}")" != "age-encryption.org/v1" ]]; then
   echo "encrypted backup has an invalid age header" >&2
@@ -70,8 +77,12 @@ if [[ -e "${archive}" ]]; then
 fi
 
 mv -- "${encrypted}" "${archive}"
-sha256sum "${archive}" >"${archive}.sha256"
-chmod 0600 "${archive}.sha256"
+(
+  cd "${backup_dir}"
+  sha256sum "$(basename "${archive}")"
+) >"${archive}.sha256"
+chown root:"${backup_group}" "${archive}.sha256"
+chmod 0640 "${archive}.sha256"
 
 find "${backup_dir}" -maxdepth 1 -type f \
   \( -name 'eutherhost-users-*.toml.age' -o -name 'eutherhost-users-*.toml.age.sha256' \) \

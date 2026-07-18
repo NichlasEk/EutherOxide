@@ -24,6 +24,35 @@ sudo systemctl enable --now eutherhost-users-backup.timer
 sudo systemctl start eutherhost-users-backup.service
 ```
 
+## Mirroring to 192.168.32.88
+
+The server backup directory is readable by the dedicated `eutherbackup` group.
+Add `nichlas` to that group on the server, then add a separate SSH public key to
+the server's `authorized_keys` with all access forced through read-only rrsync:
+
+```text
+from="192.168.32.88",restrict,command="/usr/bin/rrsync -ro /srv/backups/eutheroxide" ssh-ed25519 AAAA... euther-backup-pull@192.168.32.88
+```
+
+The matching private key on `.88` is used only by the mirror timer. The forced
+command prevents that key from opening a shell, writing files, deleting files,
+or reading anything outside the encrypted backup directory.
+
+Install the user units on `.88` and start the timer:
+
+```bash
+install -d -m 0700 /home/nichlas/Backups/EutherOxide /home/nichlas/.config/systemd/user
+install -m 0644 deploy/eutherhost-users-mirror.service /home/nichlas/.config/systemd/user/
+install -m 0644 deploy/eutherhost-users-mirror.timer /home/nichlas/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now eutherhost-users-mirror.timer
+systemctl --user start eutherhost-users-mirror.service
+```
+
+The mirror uses `--ignore-existing` and never deletes local files, so `.88` may
+retain encrypted recovery points after the server's 30-day rotation removes its
+copy.
+
 Verify the newest encrypted file and its checksum on the server:
 
 ```bash
@@ -47,6 +76,5 @@ restore, stop `eutherhost.service`, install the validated file as owner
 `nichlas:nichlas` with mode `0600`, and then start the service again.
 
 The `/srv` destination is a separate partition but remains on the same physical
-server disk. Copy the encrypted `.age` files to another machine or offline media
-to protect against total disk loss; no additional secret is needed at that
-destination.
+server disk. The `.88` mirror therefore supplies the second-machine copy needed
+to recover from total disk loss on `.186`.
