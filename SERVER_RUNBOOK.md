@@ -119,7 +119,7 @@ Default outputs:
 /home/nichlas/EutherOxide/apps/euthersync/releases/EutherSync-release-signed.apk
 /home/nichlas/EutherBooksPlayer-release-signed.apk
 /home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk
-/home/nichlas/EutherBoard-0.2.5-debug.apk
+/home/nichlas/EutherBoard-0.2.6-debug.apk
 /home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk
 /home/nichlas/EutherPal/android-tv/dist/eutherpal-tv.apk
 ```
@@ -142,9 +142,9 @@ The download route `/downloads/EutherBooksPlayer-release-signed.apk` uses
 release copy. The shorter aliases `/downloads/eutherbooksplayer.apk` and
 `/downloads/EutherBooksPlayer.apk` are also accepted.
 
-The download route `/downloads/EutherBoard-0.2.5-debug.apk` uses
+The download route `/downloads/EutherBoard-0.2.6-debug.apk` uses
 `EUTHERBOARD_APK_PATH` when set, otherwise
-`/home/nichlas/EutherBoard-0.2.5-debug.apk`. Older versioned routes remain
+`/home/nichlas/EutherBoard-0.2.6-debug.apk`. Older versioned routes remain
 accepted as compatibility aliases, along with `/downloads/eutherboard.apk` and
 `/downloads/EutherBoard.apk`.
 
