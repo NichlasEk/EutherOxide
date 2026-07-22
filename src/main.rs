@@ -2321,6 +2321,40 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 &set_host_camera_settings(state, &user, rotation_degrees, refresh_ms)?,
             )
         }
+        ("POST", "/api/camera/recovery") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            match create_admin_service_restart_request(
+                state,
+                &user,
+                &request,
+                "recover-euthersight-frigate",
+            ) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("GET", path) if camera_recovery_status_id(path).is_some() => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::CameraAdmin) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let challenge_id = camera_recovery_status_id(path)
+                .ok_or_else(|| invalid_request("invalid camera recovery status path"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match poll_service_restart_request(state, challenge_id, Some(&user), &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
         ("POST", "/api/user/eutherbooks/voice-sample") => {
             let user = require_host_user(state, &request)?;
             let upload: HostEutherBooksVoiceSampleUpload = serde_json::from_slice(&request.body)
@@ -11032,6 +11066,10 @@ fn eutherid_admin_service_restart_status_id(path: &str) -> Option<&str> {
     )
 }
 
+fn camera_recovery_status_id(path: &str) -> Option<&str> {
+    eutherid_route_id(path, "/api/camera/recovery/", "")
+}
+
 fn is_eutherid_request_action_path(method: &str, path: &str) -> bool {
     (method == "POST" && path == "/api/eutherid/request-actions/restart-eutherbooks")
         || (method == "GET" && eutherid_request_action_status_id(path).is_some())
@@ -11438,6 +11476,7 @@ fn service_restart_spec(command_id: &str) -> Option<(&'static str, &'static str)
         "restart-euthersight-frigate" => {
             Some(("service.restart", "euthersight-frigate.service"))
         }
+        "recover-euthersight-frigate" => Some(("service.recover", "euthersight-frigate.service")),
         "restart-euthergate-gateway" => Some(("service.restart", "euthergate.service")),
         "restart-euthergate-tunnel" => {
             Some(("service.restart", "euthergate-tunnel.service"))
@@ -12066,6 +12105,7 @@ fn euthernet_fixed_authorized_action(
             | "restart-euther-watchdog"
             | "restart-euthergate-turn"
             | "restart-euthersight-frigate"
+            | "recover-euthersight-frigate"
     ) {
         return Err(invalid_request("unsupported EutherNet action"));
     }
@@ -14162,6 +14202,10 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     .camera-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
     button, select, .launch-card a { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(150,215,255,.4); background: #101722; color: #bfe8ff; font: inherit; font-weight: 800; text-decoration: none; }
     button:active { transform: translateY(1px); }
+    button:disabled { opacity: .55; cursor: wait; transform: none; }
+    .recovery-status { color: #a9b8c2; font-size: .9rem; }
+    .recovery-status.is-healthy { color: #9fd28f; }
+    .recovery-status.is-error { color: #ff9da8; }
     .mode-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
     .mode-tabs button.is-active { background: #1d3346; color: #fff; }
     .snapshot-frame, .live-frame { --camera-zoom: 1; --camera-pan-x: 0px; --camera-pan-y: 0px; box-sizing: border-box; position: relative; width: 100%; height: min(70vh, 720px); min-height: 360px; margin: 0; overflow: hidden; background: #05070a; cursor: zoom-in; touch-action: none; user-select: none; }
@@ -14249,6 +14293,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
             </select>
           </label>
           <button id="rotate-camera" type="button">Rotera 90 grader</button>
+          <button id="recover-camera" type="button">Återställ detektering</button>
+          <span id="recovery-status" class="recovery-status" role="status"></span>
         </span>
       </div>
       <figure id="snapshot-frame" class="snapshot-frame" data-rotation="0">
@@ -14327,6 +14373,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     const liveVolume = document.getElementById("live-volume");
     const liveStatus = document.getElementById("live-status");
     const rotate = document.getElementById("rotate-camera");
+    const recoverCamera = document.getElementById("recover-camera");
+    const recoveryStatus = document.getElementById("recovery-status");
     const refreshRate = document.getElementById("refresh-rate");
     const rotationStatus = document.getElementById("rotation-status");
     const eventsGrid = document.getElementById("events-grid");
@@ -14795,6 +14843,101 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
       applyRotation(settings.rotationDegrees);
       applyRefresh(settings.refreshMs);
     }
+
+    async function cameraJson(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (options.method && options.method !== "GET" && csrfToken) {
+        headers["X-CSRF-Token"] = csrfToken;
+      }
+      const response = await fetch(path, {
+        ...options,
+        headers,
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || response.statusText);
+      }
+      return response.json();
+    }
+
+    async function recoverDetectionPipeline() {
+      if (!window.confirm("Återskapa Frigate och kontrollera hela detekteringskedjan? Inspelningen avbryts kort.")) {
+        return;
+      }
+      recoverCamera.disabled = true;
+      recoveryStatus.className = "recovery-status";
+      recoveryStatus.textContent = "Skickar godkännande till EutherID…";
+      try {
+        const created = await cameraJson("/api/camera/recovery", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        recoveryStatus.textContent = "Bekräfta med fingeravtryck i EutherID…";
+        const deadline = Math.min(created.expiresAt || Date.now() + 120000, Date.now() + 125000);
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1800));
+          const result = await cameraJson(`/api/camera/recovery/${encodeURIComponent(created.challengeId)}`);
+          if (result.status === "completed") {
+            recoveryStatus.textContent = "Frigate återskapad · väntar in kamera och detektor…";
+            const stats = await waitForHealthyCamera();
+            const camera = stats.cameras.yard;
+            const detector = stats.detectors.cpu;
+            recoveryStatus.className = "recovery-status is-healthy";
+            recoveryStatus.textContent = `Frisk · ${Number(camera.process_fps || 0).toFixed(1)} fps · ${Number(detector.inference_speed || 0).toFixed(0)} ms`;
+            refreshSnapshot();
+            loadEvents();
+            return;
+          }
+          if (["denied", "expired", "consumed", "failed"].includes(result.status)) {
+            throw new Error(`EutherID avslutade med status ${result.status}`);
+          }
+        }
+        throw new Error("Godkännandet hann löpa ut");
+      } catch (error) {
+        recoveryStatus.className = "recovery-status is-error";
+        recoveryStatus.textContent = `Fel: ${error.message}`;
+      } finally {
+        recoverCamera.disabled = false;
+      }
+    }
+
+    async function waitForHealthyCamera() {
+      const deadline = Date.now() + 90000;
+      let consecutive = 0;
+      let lastDetail = "startar";
+      while (Date.now() < deadline) {
+        try {
+          const stats = await cameraJson("/api/camera/frigate/api/stats");
+          const camera = stats.cameras?.yard || {};
+          const detector = stats.detectors?.cpu || {};
+          const shm = stats.service?.storage?.["/dev/shm"] || {};
+          const snapshot = await fetch(`/api/camera/frigate/api/yard/latest.jpg?recovery=${Date.now()}`, {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          const healthy = Number(camera.camera_fps || 0) > 0
+            && Number(camera.process_fps || 0) > 0
+            && camera.detection_enabled === true
+            && Number(detector.inference_speed || 0) > 0
+            && Number(detector.inference_speed || 0) < 5000
+            && Number(shm.total || 0) >= 200
+            && snapshot.ok
+            && (snapshot.headers.get("content-type") || "").startsWith("image/");
+          consecutive = healthy ? consecutive + 1 : 0;
+          lastDetail = `${Number(camera.process_fps || 0).toFixed(1)} fps · ${Number(detector.inference_speed || 0).toFixed(0)} ms`;
+          recoveryStatus.textContent = `Kontrollerar ${lastDetail} (${consecutive}/3)`;
+          if (consecutive >= 3) return stats;
+        } catch (error) {
+          consecutive = 0;
+          lastDetail = error.message;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      }
+      throw new Error(`kameran blev inte frisk i tid: ${lastDetail}`);
+    }
+
+    recoverCamera.addEventListener("click", recoverDetectionPipeline);
 
     rotate.addEventListener("click", async () => {
       const nextRotation = (rotationDegrees + 90) % 360;
@@ -22460,6 +22603,15 @@ mod tests {
             Some(id)
         );
         assert_eq!(
+            camera_recovery_status_id(&format!("/api/camera/recovery/{id}")),
+            Some(id)
+        );
+        assert!(camera_recovery_status_id("/api/camera/recovery/short").is_none());
+        assert!(camera_recovery_status_id(&format!(
+            "/api/camera/recovery/{id}?again=1"
+        ))
+        .is_none());
+        assert_eq!(
             service_restart_spec("restart-eutherpal"),
             Some(("service.restart", "eutherpal.service"))
         );
@@ -22478,6 +22630,10 @@ mod tests {
         assert_eq!(
             service_restart_spec("restart-euthergate-forge"),
             Some(("service.restart", "euthergate-forge.service"))
+        );
+        assert_eq!(
+            service_restart_spec("recover-euthersight-frigate"),
+            Some(("service.recover", "euthersight-frigate.service"))
         );
         assert_eq!(direct_euthergate_restart_service("restart-euthergate-gateway"), Some("gateway"));
         assert_eq!(direct_euthergate_restart_service("restart-euthergate-turn"), None);
