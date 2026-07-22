@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily local mirror of encrypted EutherHost user backups
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=eutherhost-users-mirror.service
+
+[Install]
+WantedBy=timers.target

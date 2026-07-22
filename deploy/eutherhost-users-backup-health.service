@@ -1,0 +1,27 @@
+[Unit]
+Description=Validate encrypted EutherHost user backups
+After=eutherhost-users-backup.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/nichlas/EutherOxide/scripts/eutherhost-backup-status.py --directory /srv/backups/eutheroxide --timer eutherhost-users-backup.timer --max-age-hours 36 --label server
+User=nichlas
+Group=eutherbackup
+UMask=0077
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadOnlyPaths=/srv/backups/eutheroxide
+NoNewPrivileges=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true

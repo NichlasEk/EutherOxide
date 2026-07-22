@@ -23,6 +23,7 @@ type ServiceReport = {
   ports: string[];
   repo_path: string;
   persistent_paths: string[];
+  depends_on?: string[];
 };
 
 type ListeningService = {
@@ -42,6 +43,46 @@ type ServerMap = {
   ssh_connections: Array<Record<string, string>>;
   ports: string[];
   map_md?: string;
+};
+
+type EutherNetCommand = {
+  name: string;
+  enabled: boolean;
+  mode: string;
+  required_action?: string;
+  target?: string;
+};
+
+type EutherIdAuditEntry = {
+  challengeId: string;
+  actor: string;
+  action: string;
+  target: string;
+  commandId: string;
+  status: string;
+  deviceId?: string | null;
+  detail: string;
+  createdAt: number;
+  expiresAt: number;
+  operation?: RestartOperation | null;
+};
+
+type OperationStage = {
+  ok: boolean;
+  returncode?: number | null;
+  summary: string;
+  duration_ms?: number;
+};
+
+type RestartOperation = {
+  status: string;
+  started_at: number;
+  completed_at: number;
+  duration_ms: number;
+  preflight?: OperationStage | null;
+  action?: OperationStage | null;
+  verification?: OperationStage | null;
+  rollback?: { attempted: boolean; reason: string };
 };
 
 type AuthStatus = {
@@ -146,6 +187,11 @@ const statusColors: Record<string, number> = {
   configured: 0xb878ff,
   planned: 0xf0b85a,
   observed: 0x36a3ff,
+  checking: 0x36a3ff,
+  awaiting: 0xf0b85a,
+  restarting: 0xb878ff,
+  healthy: 0x39d77b,
+  degraded: 0xff8c42,
 };
 
 const typeHeights: Record<string, number> = {
@@ -165,6 +211,7 @@ const alertDark = 0x4b0710;
 
 let csrfToken = "";
 let serverMap: ServerMap | null = null;
+let eutherNetCommands: EutherNetCommand[] = [];
 let gpuScheduler: GpuSchedulerOverview | null = null;
 let selectedNode: SceneNode | null = null;
 let focusedNode: SceneNode | null = null;
@@ -173,6 +220,8 @@ let roomMode: RoomMode = "city";
 let navigationEnabled = false;
 let lastCityPosition = new THREE.Vector3(7, 3.2, 58);
 let currentRoomNode: SceneNode | null = null;
+const nodeOperationStates = new Map<string, { status: string; detail: string; expiresAt: number }>();
+const nodeIncidentStates = new Map<string, { failures: number; latestFailed: boolean; detail: string }>();
 
 const sceneNodes = new Map<string, SceneNode>();
 const clock = new THREE.Clock();
@@ -269,7 +318,19 @@ function installShell(): void {
           <button id="ev-action-leave-room" type="button" disabled hidden>Back to Map</button>
           <a id="ev-action-open-eutherbooks" href="/eutherbooks" target="_blank" rel="noreferrer">Open EutherBooks</a>
           <button id="ev-action-restart" type="button" disabled>Restart Service</button>
-          <small>Restart uses EutherNet's configured command allowlist. System services may need sudoers for non-interactive restart.</small>
+          <small>Restart creates a device-bound EutherID request. Only explicitly enabled, allowlisted service handles can run after fingerprint approval.</small>
+        </section>
+        <section>
+          <p class="eyebrow">EutherID Audit</p>
+          <button id="ev-eutherid-audit-refresh" type="button">Refresh Audit</button>
+          <div id="ev-eutherid-audit" class="ev-audit"><small>No restart requests yet.</small></div>
+        </section>
+        <section>
+          <p class="eyebrow">Offline Break-glass</p>
+          <input id="ev-offline-password" class="ev-security-input" type="password" autocomplete="current-password" placeholder="Current admin password" />
+          <button id="ev-offline-codes-create" type="button">Create New Offline Codes</button>
+          <small>Creates ten one-time device-recovery codes. The previous offline pack is invalidated. Codes are shown once and never stored in plaintext.</small>
+          <pre id="ev-offline-codes" class="ev-offline-codes" hidden></pre>
         </section>
       </aside>
       <div id="ev-custodian-overlay" hidden>
@@ -322,7 +383,17 @@ function installShell(): void {
     #ev-panel dd { margin: 0; }
     #ev-panel button, #ev-panel a { width: 100%; margin: 6px 0; text-align: left; display: block; box-sizing: border-box; }
     #ev-panel button:disabled { opacity: .45; cursor: not-allowed; }
+    .ev-security-input { width: 100%; box-sizing: border-box; border: 1px solid rgba(103,225,218,.34); border-radius: 6px; background: rgba(3,8,12,.82); color: #effcff; padding: 10px 11px; font: inherit; }
+    .ev-offline-codes { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; border: 1px solid rgba(240,184,90,.42); border-radius: 6px; padding: 10px; color: #ffe5a8; background: rgba(18,12,3,.8); }
     #ev-panel small { color: #8fa3b2; line-height: 1.35; display: block; margin-top: 8px; }
+    .ev-audit { display: grid; gap: 8px; margin-top: 8px; }
+    .ev-audit-entry { border: 1px solid rgba(103,225,218,.2); border-radius: 6px; background: rgba(2,8,13,.58); padding: 8px; font-size: 12px; color: #b7c8d4; overflow-wrap: anywhere; }
+    .ev-audit-head { display: flex; justify-content: space-between; gap: 8px; color: #f4fbff; font-weight: 800; }
+    .ev-audit-status { color: #f4cf78; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
+    .ev-audit-status.completed { color: #52de8b; }
+    .ev-audit-status.failed, .ev-audit-status.denied, .ev-audit-status.expired { color: #ff6c84; }
+    .ev-audit-meta { margin-top: 4px; color: #8fa3b2; }
+    .ev-audit-detail { margin-top: 5px; color: #d6e4ec; }
     #ev-custodian-overlay { position: fixed; inset: 0; z-index: 5; display: grid; align-items: end; pointer-events: auto; background: linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.52)); padding: 24px; box-sizing: border-box; }
     .ev-dialog { width: min(980px, calc(100vw - 48px)); max-height: min(72vh, 720px); margin: 0 auto; border: 1px solid rgba(103,225,218,.36); border-radius: 8px; background: rgba(4,9,15,.78); backdrop-filter: blur(18px); box-shadow: 0 24px 120px rgba(0,0,0,.62); padding: 16px; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; box-sizing: border-box; }
     .ev-dialog-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(110,142,160,.24); padding-bottom: 12px; }
@@ -408,7 +479,7 @@ function initScene(): void {
   scene.add(ambient, key, cyan);
 
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(180, 180, 48, 48),
+    new THREE.PlaneGeometry(360, 360, 96, 96),
     new THREE.MeshStandardMaterial({ color: 0x070d12, roughness: 0.9, metalness: 0.15 }),
   );
   floor.rotation.x = -Math.PI / 2;
@@ -418,7 +489,7 @@ function initScene(): void {
 }
 
 function addGrid(): void {
-  const grid = new THREE.GridHelper(180, 72, 0x276b72, 0x122832);
+  const grid = new THREE.GridHelper(360, 144, 0x276b72, 0x122832);
   grid.position.y = 0.02;
   scene.add(grid);
 }
@@ -441,6 +512,8 @@ function bindInput(): void {
   modeButton.addEventListener("click", toggleMapMode);
   document.querySelector("#ev-refresh")?.addEventListener("click", () => loadMap(true).catch(showError));
   document.querySelector("#ev-action-health")?.addEventListener("click", () => loadMap(true).catch(showError));
+  document.querySelector("#ev-eutherid-audit-refresh")?.addEventListener("click", () => refreshEutherIdAudit().catch(showError));
+  document.querySelector("#ev-offline-codes-create")?.addEventListener("click", () => createOfflineRecoveryCodes().catch(showError));
   enterNodeButton.addEventListener("click", () => enterFocusedNode().catch(showError));
   leaveRoomButton.addEventListener("click", leaveRoom);
   restartButton.addEventListener("click", () => restartSelectedService().catch(showError));
@@ -499,6 +572,35 @@ function bindInput(): void {
       hintLine.textContent = "Click Enter to take controls.";
     }
   });
+}
+
+async function createOfflineRecoveryCodes(): Promise<void> {
+  const password = document.querySelector<HTMLInputElement>("#ev-offline-password");
+  const output = document.querySelector<HTMLElement>("#ev-offline-codes");
+  const button = document.querySelector<HTMLButtonElement>("#ev-offline-codes-create");
+  if (!password || !output || !button || !password.value) {
+    throw new Error("Current admin password is required.");
+  }
+  if (!window.confirm("Create a new offline recovery pack? This invalidates every previous offline code.")) return;
+  button.disabled = true;
+  output.hidden = true;
+  try {
+    const result = await jsonFetch<{ codes: string[]; expiresAt: number; warning: string }>(
+      "/api/admin/eutherid/recovery/offline-codes",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: password.value }),
+      },
+    );
+    password.value = "";
+    output.textContent = `${result.warning}\nExpires: ${new Date(result.expiresAt).toLocaleString("sv-SE")}\n\n${result.codes.join("\n")}`;
+    output.hidden = false;
+    statusLine.textContent = "Offline recovery codes created. Store them offline before leaving this page.";
+  } finally {
+    password.value = "";
+    button.disabled = false;
+  }
 }
 
 function enterWalkMode(): void {
@@ -660,15 +762,109 @@ async function loadMap(refresh: boolean): Promise<void> {
   if (refresh) {
     await jsonFetch("/api/admin/euthernet/refresh", { method: "POST", body: "{}" });
   }
-  const [map, gpu] = await Promise.all([
+  const [map, gpu, commands, audit] = await Promise.all([
     jsonFetch<ServerMap>("/api/admin/euthernet/map"),
     loadGpuSchedulerOverview(),
+    jsonFetch<{ commands: EutherNetCommand[] }>("/api/admin/euthernet/commands").catch(() => ({ commands: [] })),
+    loadEutherIdAudit(),
   ]);
   serverMap = map;
   gpuScheduler = gpu;
+  eutherNetCommands = commands.commands;
+  indexRestartIncidents(audit);
+  renderEutherIdAudit(audit);
   buildCity(serverMap);
   if (isTouchMapDevice()) enterMobileInspectionMode("city");
   statusLine.textContent = `Snapshot ${serverMap.collected_at} | ${serverMap.nodes.length} nodes | ${serverMap.edges.length} links`;
+}
+
+function indexRestartIncidents(entries: EutherIdAuditEntry[]): void {
+  nodeIncidentStates.clear();
+  const commandNodes: Record<string, string> = {
+    "restart-eutherhost": "eutheroxide",
+    "restart-caddy": "caddy",
+    "restart-eutherbooks": "eutherbooks",
+    "restart-eutherpunkd": "eutherpunk",
+    "restart-eutherpal": "eutherpal",
+    "restart-euthersync": "euthersync",
+    "restart-euther-watchdog": "eutherwatchdog",
+    "restart-euthergate-turn": "euthergateturn",
+    "restart-euthersight-frigate": "euthersight",
+    "restart-euthergate-gateway": "euthergate-gateway",
+    "restart-euthergate-tunnel": "euthergate-tunnel",
+    "restart-euthergate-forge": "euthergate-forge",
+  };
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const grouped = new Map<string, EutherIdAuditEntry[]>();
+  for (const entry of entries) {
+    if (entry.createdAt < cutoff) continue;
+    const nodeId = commandNodes[entry.commandId];
+    if (!nodeId) continue;
+    const existing = grouped.get(nodeId) || [];
+    existing.push(entry);
+    grouped.set(nodeId, existing);
+  }
+  for (const [nodeId, incidents] of grouped) {
+    incidents.sort((left, right) => right.createdAt - left.createdAt);
+    const failed = incidents.filter((entry) =>
+      entry.status === "failed" || (entry.operation && entry.operation.status !== "healthy"),
+    );
+    const latest = incidents[0];
+    const latestFailed = latest.status === "failed" || Boolean(latest.operation && latest.operation.status !== "healthy");
+    if (failed.length || latest.operation) {
+      nodeIncidentStates.set(nodeId, {
+        failures: failed.length,
+        latestFailed,
+        detail: `${failed.length} failed verification(s) in 24h; latest ${latest.status}`,
+      });
+    }
+  }
+}
+
+async function loadEutherIdAudit(): Promise<EutherIdAuditEntry[]> {
+  const result = await jsonFetch<{ entries: EutherIdAuditEntry[] }>(
+    "/api/admin/eutherid/actions/service-restarts/audit",
+  ).catch(() => ({ entries: [] }));
+  return result.entries;
+}
+
+async function refreshEutherIdAudit(): Promise<void> {
+  renderEutherIdAudit(await loadEutherIdAudit());
+}
+
+function renderEutherIdAudit(entries: EutherIdAuditEntry[]): void {
+  const panel = document.querySelector<HTMLElement>("#ev-eutherid-audit");
+  if (!panel) return;
+  if (entries.length === 0) {
+    panel.innerHTML = "<small>No restart requests yet.</small>";
+    return;
+  }
+  panel.innerHTML = entries.slice(0, 12).map((entry) => {
+    const when = new Date(entry.createdAt).toLocaleString("sv-SE");
+    const device = entry.deviceId ? abbreviateAuditValue(entry.deviceId) : "awaiting device";
+    const statusClass = entry.status.toLowerCase().replace(/[^a-z]/g, "");
+    return `<article class="ev-audit-entry">
+      <div class="ev-audit-head"><span>${escapeHtml(entry.target)}</span><span class="ev-audit-status ${statusClass}">${escapeHtml(entry.status)}</span></div>
+      <div>${escapeHtml(entry.commandId)} · ${escapeHtml(entry.actor)}</div>
+      <div class="ev-audit-meta">${escapeHtml(when)} · ${escapeHtml(device)}</div>
+      <div class="ev-audit-detail">${escapeHtml(entry.action)} · ${escapeHtml(entry.detail)}</div>
+      ${entry.operation ? `<div class="ev-audit-detail">${escapeHtml(operationSummary(entry.operation))}</div>` : ""}
+      <div class="ev-audit-meta">challenge ${escapeHtml(abbreviateAuditValue(entry.challengeId))}</div>
+    </article>`;
+  }).join("");
+}
+
+function operationSummary(operation: RestartOperation): string {
+  const stages = [
+    operation.preflight ? `preflight ${operation.preflight.ok ? "ok" : "failed"}` : "preflight skipped",
+    operation.action ? `restart ${operation.action.ok ? "ok" : "failed"}` : "restart unavailable",
+    operation.verification ? `verify ${operation.verification.ok ? "ok" : "failed"}` : "verify skipped",
+  ];
+  return `${operation.status} · ${stages.join(" · ")} · ${operation.duration_ms}ms`;
+}
+
+function abbreviateAuditValue(value: string): string {
+  return value.length <= 18 ? value : `${value.slice(0, 9)}…${value.slice(-6)}`;
 }
 
 async function loadGpuSchedulerOverview(): Promise<GpuSchedulerOverview> {
@@ -699,13 +895,23 @@ function buildCity(map: ServerMap): void {
   setCustodianVisible(false);
 
   const positions = layoutNodes(map.nodes);
+  addDistrictPads(map.nodes, positions);
   for (const node of map.nodes) {
     const position = positions.get(node.id);
     if (!position) continue;
-    const object = createNodeObject(node);
+    const operation = nodeOperationStates.get(node.id);
+    if (operation && operation.expiresAt <= Date.now()) nodeOperationStates.delete(node.id);
+    const activeOperation = nodeOperationStates.get(node.id);
+    const incident = nodeIncidentStates.get(node.id);
+    const renderedNode = activeOperation
+      ? { ...node, status: activeOperation.status, detail: `${node.detail || ""} · ${activeOperation.detail}` }
+      : incident?.latestFailed
+        ? { ...node, status: incident.failures >= 3 ? "failed" : "degraded", detail: `${node.detail || ""} · ${incident.detail}` }
+      : node;
+    const object = createNodeObject(renderedNode);
     object.position.copy(position);
     cityRoot.add(object);
-    sceneNodes.set(node.id, { ...node, object, position });
+    sceneNodes.set(node.id, { ...renderedNode, object, position });
   }
   for (const edge of map.edges) {
     const from = sceneNodes.get(edge.from);
@@ -714,6 +920,46 @@ function buildCity(map: ServerMap): void {
     beamRoot.add(createBeam(from.position, to.position, edge, nodeIsAlerting(from) || nodeIsAlerting(to)));
   }
   showOverview(map);
+}
+
+function addDistrictPads(nodes: MapNode[], positions: Map<string, THREE.Vector3>): void {
+  const districts: Array<[string, string, number]> = [
+    ["service", "Service District", 0x39d7d2],
+    ["port", "Port Arcade", 0x4d6dff],
+    ["repo", "Repository Row", 0xb878ff],
+    ["ssh", "SSH Transit", 0xf0b85a],
+    ["ai", "AI Quarter", 0xf06cff],
+    ["storage", "Storage Vaults", 0x74d28c],
+  ];
+  for (const [type, title, color] of districts) {
+    const districtNodes = nodes.filter((node) => node.type === type);
+    const districtPositions = districtNodes
+      .map((node) => positions.get(node.id))
+      .filter((position): position is THREE.Vector3 => Boolean(position));
+    if (districtPositions.length === 0) continue;
+    const x = districtPositions.reduce((sum, position) => sum + position.x, 0) / districtPositions.length;
+    const minZ = Math.min(...districtPositions.map((position) => position.z));
+    const maxZ = Math.max(...districtPositions.map((position) => position.z));
+    const depth = Math.max(12, maxZ - minZ + 9);
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(type === "port" ? 12 : 11, 0.22, depth),
+      new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: 0.12,
+        roughness: 0.74,
+        metalness: 0.34,
+        transparent: true,
+        opacity: 0.22,
+      }),
+    );
+    pad.position.set(x, 0.08, (minZ + maxZ) / 2);
+    cityRoot.add(pad);
+    const label = createLabel(title, `${districtNodes.length} nodes`, color);
+    label.scale.set(7.2, 2.25, 1);
+    label.position.set(x, 1.25, minZ - 5.5);
+    cityRoot.add(label);
+  }
 }
 
 async function enterFocusedNode(): Promise<void> {
@@ -1032,7 +1278,17 @@ function createNodeObject(node: MapNode): THREE.Object3D {
     ? new THREE.OctahedronGeometry(2.4, 1)
     : node.type === "external"
       ? new THREE.CylinderGeometry(2.4, 2.4, height, 8)
-      : new THREE.BoxGeometry(width, height, depth);
+      : node.type === "service"
+        ? new THREE.CylinderGeometry(width * 0.56, width * 0.74, height, 8)
+        : node.type === "proxy"
+          ? new THREE.CylinderGeometry(2.6, 1.8, height, 6)
+          : node.type === "port"
+            ? new THREE.CylinderGeometry(1.25, 1.25, height, 12)
+            : node.type === "storage"
+              ? new THREE.CylinderGeometry(width * 0.58, width * 0.68, height, 16)
+              : node.type === "ssh"
+                ? new THREE.ConeGeometry(2.0, height, 6)
+                : new THREE.BoxGeometry(width, height, depth);
   const material = new THREE.MeshStandardMaterial({
     color: alerting ? alertRed : color,
     emissive: alerting ? alertRed : color,
@@ -1046,6 +1302,16 @@ function createNodeObject(node: MapNode): THREE.Object3D {
   mesh.userData.alert = alerting;
   mesh.userData.baseColor = color;
   group.add(mesh);
+
+  const beacon = new THREE.Mesh(
+    new THREE.SphereGeometry(node.type === "service" ? 0.42 : 0.3, 12, 8),
+    new THREE.MeshBasicMaterial({ color: alerting ? alertRed : color }),
+  );
+  beacon.position.y = height + 0.38;
+  beacon.userData.nodeId = node.id;
+  beacon.userData.alert = alerting;
+  beacon.userData.baseColor = color;
+  group.add(beacon);
 
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(width * 0.72, width * 0.86, 32),
@@ -1356,7 +1622,10 @@ function showNode(node: SceneNode): void {
     lines.push(["Ports", service.ports.join(", ")]);
     lines.push(["Repo", service.repo_path]);
     lines.push(["Restart", restartCommandForService(service) ? "available" : "not allowlisted"]);
+    lines.push(["Depends on", service.depends_on?.join(", ") || "none declared"]);
   }
+  const incident = nodeIncidentStates.get(node.id);
+  if (incident) lines.push(["Restart incidents", incident.detail]);
   if (port) {
     lines.push(["Port", `${port.protocol}:${port.port}`]);
     lines.push(["Process", port.process || port.local || ""]);
@@ -1368,45 +1637,113 @@ function showNode(node: SceneNode): void {
 }
 
 async function restartSelectedService(): Promise<void> {
-  if (!selectedNode) return;
-  const command = restartCommandForNode(selectedNode);
+  const targetNode = focusedNode && restartCommandForNode(focusedNode)
+    ? focusedNode
+    : selectedNode && restartCommandForNode(selectedNode)
+      ? selectedNode
+      : null;
+  if (!targetNode) {
+    restartButton.disabled = true;
+    statusLine.textContent = "Aim at or inspect an allowlisted service before restarting.";
+    return;
+  }
+  selectedNode = targetNode;
+  const command = restartCommandForNode(targetNode);
   if (!command) {
     statusLine.textContent = "Restart is not allowlisted for this node.";
     return;
   }
-  const label = selectedNode.label || selectedNode.id;
-  const ok = window.confirm(`Restart ${label}?`);
+  showNode(targetNode);
+  const label = targetNode.label || targetNode.id;
+  const service = serviceForNode(targetNode);
+  const dependencies = service?.depends_on || [];
+  const failedDependencies = dependencies.filter((dependency) =>
+    serverMap?.services.some((candidate) => candidate.name === dependency && candidate.status === "failed"),
+  );
+  if (failedDependencies.length) {
+    throw new Error(`Restart blocked: failed dependencies: ${failedDependencies.join(", ")}`);
+  }
+  const dependencyNotice = dependencies.length
+    ? `\n\nDependencies checked: ${dependencies.join(", ")}.`
+    : "\n\nNo dependencies are declared for this handle.";
+  const ok = window.confirm(`Restart ${label}?${dependencyNotice}`);
   if (!ok) return;
-  restartButton.disabled = true;
-  statusLine.textContent = `Restarting ${label}...`;
-  if (command.startsWith("restart-euthergate-")) {
-    const service = command.slice("restart-euthergate-".length);
-    const result = await jsonFetch<{ service: string; unit: string; scheduled_seconds: number; error?: string }>(
-      `/euthergate/api/services/${encodeURIComponent(service)}/restart`,
-      { method: "POST", body: "{}" },
+  try {
+    restartButton.disabled = true;
+    setNodeOperationStatus(targetNode, "checking", "Running restart preflight");
+    statusLine.textContent = `Checking ${label} before requesting approval...`;
+    const preflight = await jsonFetch<{ ok: boolean; status: string; preflight: OperationStage }>(
+      "/api/admin/euthernet/preflight",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: command }),
+      },
     );
-    if (result.error) throw new Error(result.error);
-    statusLine.textContent = `Restart scheduled for ${result.unit} in ${result.scheduled_seconds}s.`;
-    await new Promise((resolve) => window.setTimeout(resolve, 2800));
-    await loadMap(false);
-    return;
+    setNodeOperationStatus(targetNode, "awaiting", `Preflight: ${preflight.preflight.summary}`);
+    statusLine.textContent = `Preflight passed for ${label}. Sending EutherID approval request...`;
+    const created = await jsonFetch<{ challengeId: string; expiresAt: number }>("/api/admin/eutherid/actions/service-restarts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: command }),
+    });
+    renderEutherIdAudit(await loadEutherIdAudit());
+    statusLine.textContent = `Approval sent to EutherID for ${label}. Waiting for fingerprint...`;
+    const deadline = Math.min(created.expiresAt || Date.now() + 120_000, Date.now() + 125_000);
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1800));
+      setNodeOperationStatus(targetNode, "restarting", "Awaiting approval or restart completion");
+      const result = await jsonFetch<{
+        ok: boolean;
+        status: string;
+        result?: { stdout?: string; operation?: RestartOperation };
+      }>(`/api/admin/eutherid/actions/service-restarts/${encodeURIComponent(created.challengeId)}`);
+      renderEutherIdAudit(await loadEutherIdAudit());
+      if (result.status === "completed") {
+        const operation = result.result?.operation;
+        const operationStatus = operation?.status === "healthy" ? "healthy" : "degraded";
+        const detail = operation ? operationSummary(operation) : "approved and verified";
+        setNodeOperationStatus(targetNode, operationStatus, detail, 90_000);
+        statusLine.textContent = `${label}: ${detail}`;
+        await loadMap(false);
+        return;
+      }
+      if (["denied", "expired", "consumed", "failed"].includes(result.status)) {
+        throw new Error(`EutherID request ended with status: ${result.status}`);
+      }
+    }
+    throw new Error("EutherID request timed out without approval");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "restart failed";
+    setNodeOperationStatus(targetNode, "degraded", message, 90_000);
+    throw error;
+  } finally {
+    restartButton.disabled = !restartCommandForNode(targetNode);
   }
-  const result = await jsonFetch<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>("/api/admin/euthernet/run", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: command }),
+}
+
+function setNodeOperationStatus(node: SceneNode, status: string, detail: string, ttlMs = 130_000): void {
+  nodeOperationStates.set(node.id, { status, detail, expiresAt: Date.now() + ttlMs });
+  node.status = status;
+  const color = statusColors[status] || statusColors.unknown;
+  node.object.traverse((object) => {
+    const material = (object as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!material || Array.isArray(material)) return;
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.color.setHex(color);
+      material.emissive.setHex(color);
+      material.emissiveIntensity = 0.7;
+    } else if (material instanceof THREE.MeshBasicMaterial) {
+      material.color.setHex(color);
+    }
   });
-  if (!result.ok) {
-    throw new Error(result.error || result.stderr || "restart failed");
-  }
-  statusLine.textContent = `Restarted ${label}: ${(result.stdout || "ok").trim()}`;
-  await new Promise((resolve) => window.setTimeout(resolve, 900));
-  await loadMap(false);
+  showNode(node);
 }
 
 function restartCommandForNode(node: SceneNode): string | null {
-  if (roomMode !== "city") return null;
-  const service = serviceForNode(node);
+  const serviceNode = roomMode === "city" ? node : currentRoomNode;
+  if (!serviceNode) return null;
+  const service = serviceForNode(serviceNode);
   return service ? restartCommandForService(service) : null;
 }
 
@@ -1421,15 +1758,23 @@ function serviceForNode(node: SceneNode): ServiceReport | null {
 
 function restartCommandForService(service: ServiceReport): string | null {
   const units = service.units.filter((unit) => unit.endsWith(".service"));
-  if (units.includes("eutherhost.service")) return "restart-eutherhost";
-  if (units.includes("caddy.service")) return "restart-caddy";
-  if (units.includes("eutherbooks.service")) return "restart-eutherbooks";
-  if (units.includes("eutherpunkd.service")) return "restart-eutherpunkd";
+  let command: string | null = null;
+  if (units.includes("eutherhost.service")) command = "restart-eutherhost";
+  if (units.includes("caddy.service")) command = "restart-caddy";
+  if (units.includes("eutherbooks.service")) command = "restart-eutherbooks";
+  if (units.includes("eutherpunkd.service")) command = "restart-eutherpunkd";
+  if (units.includes("eutherpal.service")) command = "restart-eutherpal";
+  if (units.includes("euthersync.service")) command = "restart-euthersync";
+  if (units.includes("euther-watchdog.service")) command = "restart-euther-watchdog";
+  if (units.includes("euthergate-turn-3478.service") || units.includes("euthergate-turn-443-udp.service")) {
+    command = "restart-euthergate-turn";
+  }
   if (units.includes("euthergate.service")) return "restart-euthergate-gateway";
   if (units.includes("euthergate-tunnel.service")) return "restart-euthergate-tunnel";
   if (units.includes("euthergate-forge.service")) return "restart-euthergate-forge";
-  if (service.name.toLowerCase() === "euthersight") return "restart-euthersight-frigate";
-  return null;
+  if (service.name.toLowerCase() === "euthersight") command = "restart-euthersight-frigate";
+  if (!command) return null;
+  return eutherNetCommands.some((item) => item.name === command && item.enabled) ? command : null;
 }
 
 function nodeIsAlerting(node: Pick<MapNode, "status" | "detail">): boolean {

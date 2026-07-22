@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted EutherHost users backup
+
+[Timer]
+OnCalendar=*-*-* 03:55:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=eutherhost-users-backup.service
+
+[Install]
+WantedBy=timers.target

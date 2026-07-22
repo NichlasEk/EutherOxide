@@ -1,0 +1,11 @@
+[Unit]
+Description=Alert that the EutherHost backup mirror needs attention
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/notify-send --urgency=critical --app-name=EutherNet "EutherNet backupfel" "Kontrollera eutherhost-users-mirror-health.service"
+ExecStart=/usr/bin/systemd-cat --identifier=euthernet-backup --priority=err /usr/bin/echo EutherHost backup mirror validation failed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

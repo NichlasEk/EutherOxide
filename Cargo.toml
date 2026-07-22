@@ -16,6 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 log = "0.4"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 bincode = "2.0.1"
 gilrs = "0.11.1"
 argon2 = "0.5"

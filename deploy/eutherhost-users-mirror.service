@@ -1,0 +1,33 @@
+[Unit]
+Description=Mirror encrypted EutherHost user backups from EutherServer
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/nichlas/.ssh/euther_backup_pull
+OnFailure=eutherhost-users-mirror-alert.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nichlas/EutherOxide
+ExecStart=/home/nichlas/.local/libexec/eutherhost-users-mirror
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/nichlas/.ssh/euther_backup_pull /home/nichlas/.ssh/known_hosts
+ReadWritePaths=/home/nichlas/Backups/EutherOxide
+NoNewPrivileges=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true

@@ -1,0 +1,25 @@
+[Unit]
+Description=Validate the local mirror of encrypted EutherHost user backups
+After=eutherhost-users-mirror.service
+OnFailure=eutherhost-users-mirror-alert.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/nichlas/.local/libexec/eutherhost-backup-status --directory /home/nichlas/Backups/EutherOxide --timer eutherhost-users-mirror.timer --user-systemd --max-age-hours 48 --label workstation-mirror
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/nichlas/Backups/EutherOxide
+NoNewPrivileges=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
