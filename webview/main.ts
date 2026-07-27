@@ -134,6 +134,28 @@ type PlayerPort = 1 | 2;
 type LobbyRole = "player" | "spectator";
 type DogsAssetMode = "classic" | "2x";
 type DogsCharacterKey = "night_shift_tech" | "neon_pharmacist";
+type EutherShouldPlace = {
+  name?: string;
+  latitude?: number;
+  longitude?: number;
+  home?: boolean;
+};
+type EutherShouldCard = {
+  id: "mow" | "grill" | "outside" | "plow" | string;
+  title: string;
+  score: number;
+  window: string;
+};
+type EutherShouldBriefing = {
+  location: string;
+  headline: string;
+  lead: string;
+  current: {
+    temperature: number;
+    condition: string;
+  };
+  cards: EutherShouldCard[];
+};
 type DogsBridgeInput = InputState & {
   player: PlayerPort;
   seq?: number;
@@ -2449,6 +2471,25 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main id="interaction-lobby-page" class="interaction-lobby-page" hidden>
     ${interactionLobbyPageMarkup()}
   </main>
+  <a
+    id="euthershould-strip"
+    class="euthershould-strip is-loading"
+    href="/euthershould/"
+    aria-label="Öppna EutherShould"
+  >
+    <span id="euthershould-icon" class="euthershould-icon" aria-hidden="true">◌</span>
+    <span class="euthershould-weather">
+      <strong id="euthershould-temperature">--°</strong>
+      <small id="euthershould-location">Hämtar väder</small>
+    </span>
+    <i aria-hidden="true"></i>
+    <span class="euthershould-decision">
+      <small>Idag borde du</small>
+      <strong id="euthershould-headline">fråga EutherShould…</strong>
+    </span>
+    <span id="euthershould-window" class="euthershould-window">Väger väder mot verkligheten</span>
+    <span class="euthershould-arrow" aria-hidden="true">→</span>
+  </a>
   <div id="workspace-window-layer" class="workspace-window-layer" hidden>
     <section class="workspace-window" role="dialog" aria-modal="false" aria-labelledby="workspace-window-title">
       <header class="workspace-window-head">
@@ -2627,6 +2668,12 @@ bridgeVideo.addEventListener("playing", syncBridgeVideoGeometry);
 
 const reactionCorePage = document.querySelector<HTMLElement>("#reaction-core-page")!;
 const interactionLobbyPage = document.querySelector<HTMLElement>("#interaction-lobby-page")!;
+const eutherShouldStrip = document.querySelector<HTMLAnchorElement>("#euthershould-strip")!;
+const eutherShouldIcon = document.querySelector<HTMLElement>("#euthershould-icon")!;
+const eutherShouldTemperature = document.querySelector<HTMLElement>("#euthershould-temperature")!;
+const eutherShouldLocation = document.querySelector<HTMLElement>("#euthershould-location")!;
+const eutherShouldHeadline = document.querySelector<HTMLElement>("#euthershould-headline")!;
+const eutherShouldWindow = document.querySelector<HTMLElement>("#euthershould-window")!;
 const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
 const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
 const userSettingsToggle = document.querySelector<HTMLButtonElement>("#user-settings-toggle")!;
@@ -3531,6 +3578,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     void refreshActiveSocialChat("visible", 2500);
     void recoverEutherBooksPlaybackAfterPageResume("visible");
+    void refreshEutherShouldStrip();
   }
 });
 
@@ -21778,6 +21826,93 @@ function hashText(value: string): number {
   return hashBytes(new TextEncoder().encode(value));
 }
 
+function eutherShouldBriefingPath(): string {
+  try {
+    const raw = window.localStorage.getItem("euthershould.place");
+    const place = raw ? JSON.parse(raw) as EutherShouldPlace : null;
+    if (
+      place
+      && !place.home
+      && Number.isFinite(place.latitude)
+      && Number.isFinite(place.longitude)
+    ) {
+      const params = new URLSearchParams({
+        lat: String(place.latitude),
+        lon: String(place.longitude),
+        name: place.name || "Vald plats",
+      });
+      return `/euthershould/api/briefing?${params}`;
+    }
+  } catch {
+    // A damaged browser preference must never disturb the host UI.
+  }
+  return "/euthershould/api/briefing?home=1";
+}
+
+function eutherShouldIconFor(condition: string): string {
+  const value = condition.toLocaleLowerCase("sv");
+  if (value.includes("åska")) return "ϟ";
+  if (value.includes("snö")) return "❉";
+  if (value.includes("regn") || value.includes("dugg")) return "☂";
+  if (value.includes("dimma")) return "≋";
+  if (value.includes("klart")) return "☀";
+  return "◒";
+}
+
+function eutherShouldPrimaryCard(briefing: EutherShouldBriefing): EutherShouldCard | undefined {
+  const headline = briefing.headline.toLocaleLowerCase("sv");
+  const expectedId = headline.includes("klipp")
+    ? "mow"
+    : headline.includes("grill")
+      ? "grill"
+      : headline.includes("plog")
+        ? "plow"
+        : headline.includes("gå ut")
+          ? "outside"
+          : null;
+  if (expectedId) {
+    return briefing.cards.find((card) => card.id === expectedId);
+  }
+  return briefing.cards
+    .filter((card) => card.id !== "plow")
+    .sort((left, right) => right.score - left.score)[0];
+}
+
+async function refreshEutherShouldStrip(): Promise<void> {
+  eutherShouldStrip.classList.add("is-loading");
+  try {
+    const response = await fetch(eutherShouldBriefingPath(), {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`EutherShould HTTP ${response.status}`);
+    }
+    const briefing = await response.json() as EutherShouldBriefing;
+    const primary = eutherShouldPrimaryCard(briefing);
+    eutherShouldIcon.textContent = eutherShouldIconFor(briefing.current.condition);
+    eutherShouldTemperature.textContent = `${Math.round(briefing.current.temperature)}°`;
+    eutherShouldLocation.textContent = briefing.location;
+    eutherShouldHeadline.textContent = briefing.headline.replace(/\.$/, "");
+    eutherShouldWindow.textContent = primary?.window || briefing.lead;
+    eutherShouldStrip.title = briefing.lead;
+    eutherShouldStrip.setAttribute(
+      "aria-label",
+      `${briefing.location}: ${briefing.headline} ${primary?.window || briefing.lead}`,
+    );
+    eutherShouldStrip.classList.remove("is-unavailable");
+  } catch {
+    eutherShouldIcon.textContent = "◌";
+    eutherShouldTemperature.textContent = "--°";
+    eutherShouldLocation.textContent = "Vädret vilar";
+    eutherShouldHeadline.textContent = "öppna EutherShould";
+    eutherShouldWindow.textContent = "Prova den fullständiga prognosen";
+    eutherShouldStrip.title = "EutherShould kunde inte nås just nu";
+    eutherShouldStrip.classList.add("is-unavailable");
+  } finally {
+    eutherShouldStrip.classList.remove("is-loading");
+  }
+}
+
 function startMoleculeField(): void {
   const canvas = document.querySelector<HTMLCanvasElement>("#molecule-field")!;
   const context = canvas.getContext("2d")!;
@@ -21883,6 +22018,12 @@ screenGlass.classList.toggle("has-shader", Boolean(shaderRenderer));
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
+void refreshEutherShouldStrip();
+window.setInterval(() => {
+  if (document.visibilityState === "visible") {
+    void refreshEutherShouldStrip();
+  }
+}, 10 * 60 * 1000);
 void (async () => {
   if (autoStartEutherDogs) {
     await refreshAuthStatus();

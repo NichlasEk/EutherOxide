@@ -2382,8 +2382,138 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
   gap: 18px;
   min-height: 100vh;
   height: 100vh;
-  padding: 18px;
+  padding: 72px 18px 18px;
   overflow: hidden;
+}
+
+.euthershould-strip {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  right: 210px;
+  z-index: 19;
+  display: grid;
+  grid-template-columns: auto auto 1px minmax(180px, 1fr) minmax(130px, auto) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 13px;
+  border: 1px solid rgba(165, 222, 114, 0.22);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgba(24, 45, 29, 0.96), rgba(9, 20, 16, 0.94)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 18px);
+  color: #eaf9da;
+  text-decoration: none;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+  overflow: hidden;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.euthershould-strip:hover,
+.euthershould-strip:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(245, 215, 125, 0.5);
+  background:
+    linear-gradient(90deg, rgba(31, 60, 38, 0.98), rgba(13, 30, 23, 0.96)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 18px);
+  outline: none;
+}
+
+.euthershould-strip.is-loading {
+  opacity: 0.72;
+}
+
+.euthershould-strip.is-unavailable {
+  border-color: rgba(159, 190, 145, 0.14);
+  color: #a9b7a0;
+}
+
+.euthershould-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  color: #f5d77d;
+  font-size: 1.3rem;
+  line-height: 1;
+  text-shadow: 0 0 14px rgba(245, 215, 125, 0.3);
+}
+
+.euthershould-weather,
+.euthershould-decision {
+  display: grid;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.euthershould-weather strong {
+  color: #fff4c6;
+  font-size: 0.93rem;
+}
+
+.euthershould-weather small,
+.euthershould-decision small {
+  color: #8fb18b;
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.euthershould-strip > i {
+  width: 1px;
+  height: 23px;
+  background: rgba(207, 240, 178, 0.16);
+}
+
+.euthershould-decision strong {
+  margin-top: 2px;
+  color: #e9f8d6;
+  font-size: 0.77rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.euthershould-window {
+  min-width: 0;
+  color: #b8c9a8;
+  font-size: 0.7rem;
+  font-weight: 750;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.euthershould-arrow {
+  color: #f5d77d;
+  font-size: 1rem;
+}
+
+body[data-user-theme="light"] .euthershould-strip {
+  border-color: rgba(51, 83, 69, 0.2);
+  background: rgba(250, 255, 247, 0.92);
+  color: #1d3028;
+}
+
+body[data-user-theme="light"] .euthershould-weather strong,
+body[data-user-theme="light"] .euthershould-decision strong {
+  color: #1d3028;
+}
+
+body[data-user-theme="royal-apothic"] .euthershould-strip {
+  border-color: rgba(236, 190, 86, 0.26);
+  background: linear-gradient(90deg, rgba(50, 27, 73, 0.96), rgba(15, 20, 18, 0.95));
 }
 
 .control-rail,
@@ -8392,6 +8522,10 @@ h2 {
   padding: 8px 8px 190px;
 }
 
+.mobile-play-mode .euthershould-strip {
+  display: none;
+}
+
 .mobile-play-mode .control-rail,
 .mobile-play-mode .telemetry-panel,
 .mobile-play-mode .reaction-strip {
@@ -8640,8 +8774,34 @@ h2 {
 
 @media (max-width: 640px) {
   .oxide-shell {
-    padding: 62px 10px 10px;
+    padding: 112px 10px 10px;
     gap: 10px;
+  }
+
+  .euthershould-strip {
+    top: 58px;
+    left: 10px;
+    right: 10px;
+    grid-template-columns: auto auto 1px minmax(0, 1fr) auto;
+    gap: 8px;
+    min-height: 42px;
+    padding: 0 10px;
+  }
+
+  .euthershould-window {
+    display: none;
+  }
+
+  .euthershould-weather small {
+    max-width: 74px;
+  }
+
+  .euthershould-decision strong {
+    font-size: 0.7rem;
+  }
+
+  .interaction-lobby-page {
+    padding-top: 112px;
   }
 
   .control-rail,
