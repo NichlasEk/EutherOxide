@@ -3584,6 +3584,7 @@ document.addEventListener("visibilitychange", () => {
 
 window.addEventListener("pageshow", () => {
   void recoverEutherBooksPlaybackAfterPageResume("pageshow");
+  void refreshEutherShouldStrip();
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {

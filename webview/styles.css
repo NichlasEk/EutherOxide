@@ -8800,10 +8800,6 @@ h2 {
     font-size: 0.7rem;
   }
 
-  .interaction-lobby-page {
-    padding-top: 112px;
-  }
-
   .control-rail,
   .reactor-stage,
   .telemetry-panel {
@@ -9252,7 +9248,7 @@ h2 {
 
   .interaction-lobby-page {
     padding: 10px;
-    padding-top: 72px;
+    padding-top: 112px;
   }
 
   .reaction-lobby-hero {
