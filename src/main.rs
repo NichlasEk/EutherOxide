@@ -1053,6 +1053,7 @@ struct HostSession {
     csrf_token: String,
     user: String,
     updated_unix_ms: u64,
+    eutherid_verified_unix_ms: Option<u64>,
 }
 
 struct LoginAttempt {
@@ -2071,11 +2072,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 Err(_) => return send_error(stream, 401, "login required"),
             };
             let lan_server_url = host_app_lan_server_url(state, &user)?;
+            let eutherid_verified_at =
+                eutherid_verified_session_at(state, &request, &user)?;
+            let admin = is_host_admin(state, &user)?;
             send_json(
                 stream,
                 &serde_json::json!({
                     "authenticated": true,
                     "user": user,
+                    "admin": admin,
+                    "eutherIdVerified": eutherid_verified_at.is_some(),
+                    "eutherIdVerifiedAt": eutherid_verified_at,
                     "lanServerUrl": lan_server_url,
                     "config": host_app_config(state),
                 }),
@@ -3538,6 +3545,7 @@ fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) 
         csrf_token: random_token()?,
         user: user.name.clone(),
         updated_unix_ms: unix_ms_now(),
+        eutherid_verified_unix_ms: None,
     });
     clear_login_failures(state, &remote_addr, username)?;
     audit_host_event(state, "login", Some(username), &remote_addr, true, "ok")?;
@@ -3829,6 +3837,32 @@ fn authenticated_user(state: &HostState, request: &HttpRequest) -> io::Result<Op
         return Ok(Some(user_name));
     }
     Ok(None)
+}
+
+fn eutherid_verified_session_at(
+    state: &HostState,
+    request: &HttpRequest,
+    user: &str,
+) -> io::Result<Option<u64>> {
+    let Some(token) = session_token(request) else {
+        return Ok(None);
+    };
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(eutherid_verified_at_for_token(&sessions, &token, user))
+}
+
+fn eutherid_verified_at_for_token(
+    sessions: &[HostSession],
+    token: &str,
+    user: &str,
+) -> Option<u64> {
+    sessions
+        .iter()
+        .find(|session| session.token == token && session.user == user)
+        .and_then(|session| session.eutherid_verified_unix_ms)
 }
 
 fn require_host_user(state: &HostState, request: &HttpRequest) -> io::Result<String> {
@@ -11358,6 +11392,7 @@ fn complete_host_eutherid_login(
             csrf_token: random_token()?,
             user: attempt.actor.clone(),
             updated_unix_ms: now,
+            eutherid_verified_unix_ms: Some(now),
         });
     clear_login_failures(state, remote_addr, &attempt.actor)?;
     audit_host_event(
@@ -23218,6 +23253,39 @@ mod tests {
         assert!(!serialized.contains(&attempt.browser_secret_hash));
         assert!(!serialized.contains(&attempt.challenge_id));
         assert!(!serialized.contains(&attempt.remote_addr));
+    }
+
+    #[test]
+    fn only_eutherid_login_sessions_carry_eutherid_assurance() {
+        let sessions = vec![
+            HostSession {
+                token: "password-session".to_string(),
+                csrf_token: "csrf-a".to_string(),
+                user: "nichlas".to_string(),
+                updated_unix_ms: 100,
+                eutherid_verified_unix_ms: None,
+            },
+            HostSession {
+                token: "eutherid-session".to_string(),
+                csrf_token: "csrf-b".to_string(),
+                user: "nichlas".to_string(),
+                updated_unix_ms: 200,
+                eutherid_verified_unix_ms: Some(200),
+            },
+        ];
+
+        assert_eq!(
+            eutherid_verified_at_for_token(&sessions, "password-session", "nichlas"),
+            None
+        );
+        assert_eq!(
+            eutherid_verified_at_for_token(&sessions, "eutherid-session", "nichlas"),
+            Some(200)
+        );
+        assert_eq!(
+            eutherid_verified_at_for_token(&sessions, "eutherid-session", "other"),
+            None
+        );
     }
 
     #[test]
