@@ -18,13 +18,14 @@ pub struct EutherDogsRuntime {
     frame: u64,
     explored_tiles: [Vec<bool>; 2],
     held_inputs: [EutherDogsInput; 2],
+    pending_inputs: [EutherDogsInput; 2],
     weapon_switch_cooldowns: [u8; 2],
     mission: i32,
     staff: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct EutherDogsInput {
     pub player: Option<u8>,
     pub seq: Option<u64>,
@@ -38,6 +39,35 @@ pub struct EutherDogsInput {
     pub start: bool,
     pub weapon_slot: Option<usize>,
     pub inspection_answer: Option<EutherDogsInspectionAnswer>,
+    pub fire_event_id: Option<u64>,
+    pub fire_session: Option<u64>,
+    pub fire_source: Option<EutherDogsInputSource>,
+    pub fire_queued_unix_ms: Option<u64>,
+    pub fire_keyboard: bool,
+    pub fire_pointer: bool,
+    pub fire_gamepad: bool,
+    pub input_event_id: Option<u64>,
+    pub input_event_source: Option<EutherDogsInputSource>,
+    pub input_event_kind: Option<EutherDogsInputEventKind>,
+    pub input_event_key: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EutherDogsInputSource {
+    Keyboard,
+    Pointer,
+    Gamepad,
+    System,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EutherDogsInputEventKind {
+    Down,
+    Up,
+    Poll,
+    Clear,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -177,6 +207,7 @@ impl EutherDogsRuntime {
             frame: 0,
             explored_tiles: [Vec::new(), Vec::new()],
             held_inputs: [EutherDogsInput::default(), EutherDogsInput::default()],
+            pending_inputs: [EutherDogsInput::default(), EutherDogsInput::default()],
             weapon_switch_cooldowns: [0, 0],
             mission,
             staff: 1,
@@ -233,6 +264,7 @@ impl EutherDogsRuntime {
         self.frame = 0;
         self.clear_visibility_history();
         self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
+        self.pending_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
         self.weapon_switch_cooldowns = [0, 0];
         Ok(self.snapshot())
     }
@@ -242,6 +274,7 @@ impl EutherDogsRuntime {
         self.frame = 0;
         self.clear_visibility_history();
         self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
+        self.pending_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
         self.weapon_switch_cooldowns = [0, 0];
         Ok(())
     }
@@ -263,6 +296,7 @@ impl EutherDogsRuntime {
         self.frame = 0;
         self.clear_visibility_history();
         self.held_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
+        self.pending_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
         self.weapon_switch_cooldowns = [0, 0];
         Ok(self.snapshot())
     }
@@ -274,6 +308,18 @@ impl EutherDogsRuntime {
 
     pub fn set_input(&mut self, input: EutherDogsInput) -> usize {
         let player_index = input.player.unwrap_or(1).clamp(1, 2).saturating_sub(1) as usize;
+        let pending = &mut self.pending_inputs[player_index];
+        if input.up || input.down || input.left || input.right {
+            pending.up = input.up;
+            pending.down = input.down;
+            pending.left = input.left;
+            pending.right = input.right;
+        }
+        pending.a |= input.a;
+        pending.b |= input.b;
+        pending.c |= input.c;
+        pending.weapon_slot = input.weapon_slot.or(pending.weapon_slot);
+        pending.inspection_answer = input.inspection_answer.or(pending.inspection_answer);
         self.held_inputs[player_index] = EutherDogsInput {
             player: Some((player_index + 1) as u8),
             ..input
@@ -300,7 +346,23 @@ impl EutherDogsRuntime {
 
     fn tick_held_with_audio(&mut self, ticks: u8) -> [EutherDogsFrame; 2] {
         let held_inputs = self.held_inputs;
-        let player_inputs: Vec<PlayerInput> = held_inputs
+        let effective_inputs: [EutherDogsInput; 2] = std::array::from_fn(|player_index| {
+            let mut input = held_inputs[player_index];
+            let pending = self.pending_inputs[player_index];
+            if !input.up && !input.down && !input.left && !input.right {
+                input.up = pending.up;
+                input.down = pending.down;
+                input.left = pending.left;
+                input.right = pending.right;
+            }
+            input.a |= pending.a;
+            input.b |= pending.b;
+            input.c |= pending.c;
+            input.weapon_slot = pending.weapon_slot.or(input.weapon_slot);
+            input.inspection_answer = pending.inspection_answer.or(input.inspection_answer);
+            input
+        });
+        let player_inputs: Vec<PlayerInput> = effective_inputs
             .into_iter()
             .enumerate()
             .map(|(player_index, input)| PlayerInput {
@@ -336,6 +398,7 @@ impl EutherDogsRuntime {
         }
         self.update_inspection_protocol_state();
         self.frame += ticks as u64;
+        self.pending_inputs = [EutherDogsInput::default(), EutherDogsInput::default()];
         for (input, cooldown) in self
             .held_inputs
             .iter_mut()
@@ -345,6 +408,17 @@ impl EutherDogsRuntime {
             input.b = false;
             input.weapon_slot = None;
             input.inspection_answer = None;
+            input.fire_event_id = None;
+            input.fire_session = None;
+            input.fire_source = None;
+            input.fire_queued_unix_ms = None;
+            input.fire_keyboard = false;
+            input.fire_pointer = false;
+            input.fire_gamepad = false;
+            input.input_event_id = None;
+            input.input_event_source = None;
+            input.input_event_kind = None;
+            input.input_event_key = None;
             *cooldown = cooldown.saturating_sub(ticks);
         }
         let audio_events = self.game.drain_audio_events();
@@ -1007,6 +1081,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn input_deserialization_defaults_omitted_telemetry_fields() {
+        let input: EutherDogsInput = serde_json::from_str(r#"{"player":1,"right":true}"#).unwrap();
+
+        assert!(input.right);
+        assert!(!input.a);
+        assert!(!input.fire_keyboard);
+        assert!(input.fire_event_id.is_none());
+        assert!(input.input_event_id.is_none());
+    }
+
+    #[test]
     fn runtime_backfills_missing_store_items_for_purchase() {
         let mut runtime = EutherDogsRuntime::demo();
         runtime
@@ -1156,6 +1241,41 @@ mod tests {
 
         assert!(first.summary.shots_fired > 0);
         assert_eq!(second.summary.shots_fired, first.summary.shots_fired);
+    }
+
+    #[test]
+    fn runtime_latches_fire_press_until_next_tick() {
+        let mut runtime = EutherDogsRuntime::demo();
+        runtime.set_input(EutherDogsInput {
+            a: true,
+            ..EutherDogsInput::default()
+        });
+        runtime.set_input(EutherDogsInput::default());
+
+        let first = runtime.tick_held_steps(1)[0].clone();
+        let second = runtime.tick_held_steps(1)[0].clone();
+
+        assert!(first.summary.shots_fired > 0);
+        assert_eq!(second.summary.shots_fired, first.summary.shots_fired);
+    }
+
+    #[test]
+    fn runtime_latches_short_direction_press_until_next_tick() {
+        let mut runtime = EutherDogsRuntime::demo();
+        runtime.set_input(EutherDogsInput {
+            right: true,
+            ..EutherDogsInput::default()
+        });
+        runtime.set_input(EutherDogsInput::default());
+
+        let frame = runtime.tick_held_steps(1)[0].clone();
+        let player = frame
+            .characters
+            .iter()
+            .find(|character| character.faction == "player" && character.id == 0)
+            .unwrap();
+
+        assert_eq!(player.direction, "right");
     }
 
     #[test]

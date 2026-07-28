@@ -8,9 +8,9 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
@@ -72,7 +72,7 @@ const HOST_CODEX_USER: &str = "codex";
 const HOST_CODEX_DISPLAY_NAME: &str = "Codex Developer";
 const EUTHERDOGS_SERVER_PUBLISH_HZ: f64 = 60.0;
 const EUTHERDOGS_TICKS_PER_PUBLISH: u8 = 1;
-const EUTHERDOGS_STATIC_REFRESH_FRAMES: u16 = 240;
+const EUTHERDOGS_AUDIO_HISTORY_BATCHES: usize = 180;
 const WEBRTC_VIDEO_MIN_FPS: u32 = 40;
 const WEBRTC_VIDEO_STABLE_TICKS_FOR_RAISE: u32 = 8;
 const DEFAULT_EUTHERLIST_APK_PATH: &str = "/home/nichlas/EutherList-release-signed.apk";
@@ -802,11 +802,19 @@ struct BridgeState {
     gamepads: Arc<Mutex<GamepadReader>>,
     eutherdogs: Arc<Mutex<euther_oxide::eutherdogs::EutherDogsRuntime>>,
     eutherdogs_latest: Arc<Mutex<[Option<euther_oxide::eutherdogs::EutherDogsFrame>; 2]>>,
+    eutherdogs_audio_history: Arc<Mutex<[VecDeque<EutherDogsAudioBatch>; 2]>>,
     eutherdogs_input_seq: Arc<Mutex<[u64; 2]>>,
+    eutherdogs_fire_events: Arc<Mutex<[HashMap<u64, u64>; 2]>>,
     eutherdogs_runner_active: Arc<Mutex<bool>>,
     eutherdogs_last_poll: Arc<Mutex<Instant>>,
     webrtc_runtime: Arc<tokio::runtime::Runtime>,
     webrtc_peers: Arc<Mutex<Vec<BridgeWebRtcPeer>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EutherDogsAudioBatch {
+    frame: u64,
+    events: Vec<&'static str>,
 }
 
 struct BridgePlayerLease {
@@ -1788,7 +1796,9 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
             euther_oxide::eutherdogs::EutherDogsRuntime::demo(),
         )),
         eutherdogs_latest: Arc::new(Mutex::new([None, None])),
+        eutherdogs_audio_history: Arc::new(Mutex::new(std::array::from_fn(|_| VecDeque::new()))),
         eutherdogs_input_seq: Arc::new(Mutex::new([0, 0])),
+        eutherdogs_fire_events: Arc::new(Mutex::new(std::array::from_fn(|_| HashMap::new()))),
         eutherdogs_runner_active: Arc::new(Mutex::new(false)),
         eutherdogs_last_poll: Arc::new(Mutex::new(Instant::now())),
         webrtc_runtime: Arc::new(webrtc_runtime),
@@ -1991,15 +2001,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let navigates = header_value(&request, "content-type")
                 .is_some_and(|value| value.starts_with("application/x-www-form-urlencoded"));
             let input: HostEutherIdLoginContinueRequest = if navigates {
-                let form = parse_urlencoded_form(
-                    std::str::from_utf8(&request.body).unwrap_or_default(),
-                )?;
+                let form =
+                    parse_urlencoded_form(std::str::from_utf8(&request.body).unwrap_or_default())?;
                 HostEutherIdLoginContinueRequest {
                     challenge_id: form
                         .iter()
-                        .find_map(|(name, value)| {
-                            (name == "challengeId").then_some(value.clone())
-                        })
+                        .find_map(|(name, value)| (name == "challengeId").then_some(value.clone()))
                         .unwrap_or_default(),
                     browser_secret: form
                         .iter()
@@ -2046,12 +2053,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             let input: HostPasswordResetCompleteRequest = serde_json::from_slice(&request.body)
                 .map_err(|_| invalid_request("invalid password reset request"))?;
             let remote_addr = host_remote_addr(stream, &request);
-            match complete_password_reset(
-                state,
-                &input.token,
-                &input.new_password,
-                &remote_addr,
-            ) {
+            match complete_password_reset(state, &input.token, &input.new_password, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                     send_error(stream, 403, &err.to_string())
@@ -3099,9 +3101,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/admin/eutherid/recovery/complete") => {
             let admin = require_host_admin(state, &request)?;
-            let input: HostEutherIdRecoveryCompleteRequest =
-                serde_json::from_slice(&request.body)
-                    .map_err(|_| invalid_request("invalid EutherID recovery request"))?;
+            let input: HostEutherIdRecoveryCompleteRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherID recovery request"))?;
             let remote_addr = host_remote_addr(stream, &request);
             match complete_host_eutherid_recovery(state, &admin, &input.token, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
@@ -10596,7 +10597,21 @@ fn send_host_static(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         Some("ttf") => "font/ttf",
         _ => "application/octet-stream",
     };
-    send_response(stream, 200, content_type, &bytes)
+    send_response_with_headers(
+        stream,
+        200,
+        content_type,
+        &bytes,
+        &[("Cache-Control", host_static_cache_control(path))],
+    )
+}
+
+fn host_static_cache_control(path: &str) -> &'static str {
+    if path.starts_with("/assets/") && path != "/assets/server-map.js" {
+        "private, max-age=31536000, immutable"
+    } else {
+        "no-store"
+    }
 }
 
 fn send_external_runtime_static(
@@ -11059,11 +11074,7 @@ fn eutherid_request_action_status_id(path: &str) -> Option<&str> {
 }
 
 fn eutherid_admin_service_restart_status_id(path: &str) -> Option<&str> {
-    eutherid_route_id(
-        path,
-        "/api/admin/eutherid/actions/service-restarts/",
-        "",
-    )
+    eutherid_route_id(path, "/api/admin/eutherid/actions/service-restarts/", "")
 }
 
 fn camera_recovery_status_id(path: &str) -> Option<&str> {
@@ -11085,8 +11096,8 @@ fn eutherid_route_id<'a>(path: &'a str, prefix: &str, suffix: &str) -> Option<&'
 }
 
 fn eutherid_public_origin() -> io::Result<String> {
-    let origin = env::var("EUTHERID_PUBLIC_ORIGIN")
-        .unwrap_or_else(|_| "https://apothictech.se".to_string());
+    let origin =
+        env::var("EUTHERID_PUBLIC_ORIGIN").unwrap_or_else(|_| "https://apothictech.se".to_string());
     if !origin.starts_with("https://")
         || origin.ends_with('/')
         || origin.chars().any(|ch| matches!(ch, '?' | '#' | '@'))
@@ -11166,10 +11177,7 @@ fn start_host_eutherid_login(
             .users
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
-        if !users
-            .iter()
-            .any(|user| user.name == actor && !user.banned)
-        {
+        if !users.iter().any(|user| user.name == actor && !user.banned) {
             record_login_failure(state, remote_addr, actor)?;
             audit_host_event(
                 state,
@@ -11333,7 +11341,10 @@ fn complete_host_eutherid_login(
                     && stored.completed_unix_ms.is_none()
             })
             .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::PermissionDenied, "EutherID login already used")
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "EutherID login already used",
+                )
             })?;
         stored.completed_unix_ms = Some(now);
     }
@@ -11473,14 +11484,10 @@ fn service_restart_spec(command_id: &str) -> Option<(&'static str, &'static str)
         "restart-euthersync" => Some(("service.restart", "euthersync.service")),
         "restart-euther-watchdog" => Some(("service.restart", "euther-watchdog.service")),
         "restart-euthergate-turn" => Some(("service.restart", "euthergate-turn.service-group")),
-        "restart-euthersight-frigate" => {
-            Some(("service.restart", "euthersight-frigate.service"))
-        }
+        "restart-euthersight-frigate" => Some(("service.restart", "euthersight-frigate.service")),
         "recover-euthersight-frigate" => Some(("service.recover", "euthersight-frigate.service")),
         "restart-euthergate-gateway" => Some(("service.restart", "euthergate.service")),
-        "restart-euthergate-tunnel" => {
-            Some(("service.restart", "euthergate-tunnel.service"))
-        }
+        "restart-euthergate-tunnel" => Some(("service.restart", "euthergate-tunnel.service")),
         "restart-euthergate-forge" => Some(("service.restart", "euthergate-forge.service")),
         _ => None,
     }
@@ -11565,8 +11572,8 @@ fn handle_host_automation_socket(stream: &mut UnixStream, state: &HostState) -> 
     if body.len() > 16 * 1024 {
         return Err(invalid_request("automation request is too large"));
     }
-    let request: HostAutomationSocketRequest = serde_json::from_slice(&body)
-        .map_err(|_| invalid_request("invalid automation request"))?;
+    let request: HostAutomationSocketRequest =
+        serde_json::from_slice(&body).map_err(|_| invalid_request("invalid automation request"))?;
     let actor = configured_eutherid_request_actor(state)?;
     let response = match request.op.as_str() {
         "create" => {
@@ -11613,7 +11620,6 @@ fn direct_euthergate_restart_service(command_id: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-
 
 fn create_eutherbooks_restart_request(state: &HostState) -> io::Result<serde_json::Value> {
     let actor = configured_eutherid_request_actor(state)?;
@@ -11725,11 +11731,8 @@ fn poll_service_restart_request(
     if let Some(result) = request.completed_result {
         return Ok(result);
     }
-    let response = eutherid_internal_json_request(
-        "GET",
-        &format!("/v1/challenges/{challenge_id}"),
-        None,
-    )?;
+    let response =
+        eutherid_internal_json_request("GET", &format!("/v1/challenges/{challenge_id}"), None)?;
     let challenge = eutherid_json_response(response, &[200])?;
     let status = challenge
         .get("status")
@@ -11769,13 +11772,14 @@ fn poll_service_restart_request(
     }
     let result: io::Result<serde_json::Value> = (|| {
         let expected = service_restart_request_binding(&request);
-        let action_result = if let Some(service) = direct_euthergate_restart_service(&request.command_id) {
-            consume_eutherid_action_proof(challenge_id, &expected)?;
-            euthergate_fixed_service_restart(service)?
-        } else {
-            let action_proof = issue_eutherid_action_proof(challenge_id, &expected)?;
-            euthernet_fixed_authorized_action(&request.command_id, &action_proof, &expected)?
-        };
+        let action_result =
+            if let Some(service) = direct_euthergate_restart_service(&request.command_id) {
+                consume_eutherid_action_proof(challenge_id, &expected)?;
+                euthergate_fixed_service_restart(service)?
+            } else {
+                let action_proof = issue_eutherid_action_proof(challenge_id, &expected)?;
+                euthernet_fixed_authorized_action(&request.command_id, &action_proof, &expected)?
+            };
         Ok(serde_json::json!({
             "ok": true,
             "challengeId": challenge_id,
@@ -12256,7 +12260,9 @@ fn create_host_eutherid_device_enrollment(
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
     if !users.iter().any(|user| user.name == actor && !user.banned) {
-        return Err(invalid_request("EutherID target user does not exist or is banned"));
+        return Err(invalid_request(
+            "EutherID target user does not exist or is banned",
+        ));
     }
     drop(users);
     let body = serde_json::json!({ "actor": actor });
@@ -12401,7 +12407,9 @@ fn normalize_account_email(value: &str) -> io::Result<String> {
     let email = value.trim().to_lowercase();
     if email.is_empty()
         || email.len() > 254
-        || email.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || email
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
         || email.contains(['<', '>', ','])
         || email.parse::<Mailbox>().is_err()
     {
@@ -12473,12 +12481,7 @@ fn store_account_email_token(
             "too many email requests; try again later",
         ));
     }
-    tokens.retain(|entry| {
-        entry
-            .expires_unix_ms
-            .saturating_add(24 * 60 * 60 * 1000)
-            > now
-    });
+    tokens.retain(|entry| entry.expires_unix_ms.saturating_add(24 * 60 * 60 * 1000) > now);
     tokens.push(stored.clone());
     save_host_account_email_tokens(&tokens)?;
     Ok((token, stored))
@@ -12536,7 +12539,9 @@ fn request_account_email_verification(
                 && user.email_verified_unix_ms.is_some()
                 && user.email.as_deref() == Some(email.as_str())
         }) {
-            return Err(invalid_request("email address is already verified by another account"));
+            return Err(invalid_request(
+                "email address is already verified by another account",
+            ));
         }
     }
     let (token, stored) = store_account_email_token(
@@ -12610,7 +12615,9 @@ fn verify_account_email(
             && user.email_verified_unix_ms.is_some()
             && user.email.as_deref() == Some(email.as_str())
     }) {
-        return Err(invalid_request("email address is already verified by another account"));
+        return Err(invalid_request(
+            "email address is already verified by another account",
+        ));
     }
     let user = users
         .iter_mut()
@@ -12671,7 +12678,11 @@ fn request_password_reset(
             .cloned()
     };
     if let Some(user) = user {
-        if let Some(email) = user.email.clone().filter(|_| user.email_verified_unix_ms.is_some()) {
+        if let Some(email) = user
+            .email
+            .clone()
+            .filter(|_| user.email_verified_unix_ms.is_some())
+        {
             match store_account_email_token(
                 state,
                 &user.name,
@@ -12844,12 +12855,7 @@ fn request_host_eutherid_recovery(
             .eutherid_recovery_tokens
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
-        tokens.retain(|entry| {
-            entry
-                .expires_unix_ms
-                .saturating_add(24 * 60 * 60 * 1000)
-                > now
-        });
+        tokens.retain(|entry| entry.expires_unix_ms.saturating_add(24 * 60 * 60 * 1000) > now);
         tokens.push(stored.clone());
         save_host_eutherid_recovery_tokens(&tokens)?;
     }
@@ -12894,8 +12900,11 @@ fn revoke_host_eutherid_devices_for_actor(actor: &str) -> io::Result<usize> {
         .ok_or_else(|| io::Error::other("EutherID device list is malformed"))?;
     let mut revoked = 0;
     for device in devices {
-        let belongs_to_actor = device.get("actor").and_then(serde_json::Value::as_str) == Some(actor);
-        let active = device.get("revoked_at").is_none_or(serde_json::Value::is_null);
+        let belongs_to_actor =
+            device.get("actor").and_then(serde_json::Value::as_str) == Some(actor);
+        let active = device
+            .get("revoked_at")
+            .is_none_or(serde_json::Value::is_null);
         let Some(device_id) = device.get("device_id").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -16138,6 +16147,7 @@ fn handle_bridge_route_with_user(
                 .start(start)
                 .map_err(|err| invalid_request(err.to_string()))?;
             drop(dogs);
+            reset_eutherdogs_transport_state(state)?;
             publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
         }
@@ -16150,6 +16160,7 @@ fn handle_bridge_route_with_user(
                 .advance_mission()
                 .map_err(|err| invalid_request(err.to_string()))?;
             drop(dogs);
+            reset_eutherdogs_transport_state(state)?;
             publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
         }
@@ -16162,6 +16173,7 @@ fn handle_bridge_route_with_user(
                 .map_err(|err| invalid_request(err.to_string()))?;
             let frame = dogs.snapshot();
             drop(dogs);
+            reset_eutherdogs_transport_state(state)?;
             publish_eutherdogs_initial_frame(state, frame.clone())?;
             send_json(stream, &frame)
         }
@@ -16200,13 +16212,52 @@ fn handle_bridge_route_with_user(
                 .eutherdogs
                 .lock()
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            let player_index = dogs.set_input(input);
-            if let Some(seq) = input.seq {
-                let mut seqs = state
-                    .eutherdogs_input_seq
+            let player_index = input.player.unwrap_or(1).clamp(1, 2).saturating_sub(1) as usize;
+            let mut seqs = state
+                .eutherdogs_input_seq
+                .lock()
+                .map_err(|err| io::Error::other(err.to_string()))?;
+            let sequence_accepted = accept_eutherdogs_input_seq(&mut seqs, player_index, input.seq);
+            let fire_requested = input.a || input.b;
+            let fire_accepted = if fire_requested {
+                let mut fire_events = state
+                    .eutherdogs_fire_events
                     .lock()
                     .map_err(|err| io::Error::other(err.to_string()))?;
-                seqs[player_index] = seq;
+                accept_eutherdogs_fire_event(
+                    &mut fire_events,
+                    player_index,
+                    input.fire_session,
+                    input.fire_event_id,
+                )
+                .unwrap_or(sequence_accepted)
+            } else {
+                false
+            };
+            if fire_requested {
+                log_eutherdogs_fire_input(
+                    route_user,
+                    player_index,
+                    input,
+                    sequence_accepted,
+                    fire_accepted,
+                    seqs[player_index],
+                );
+            }
+            if sequence_accepted {
+                let mut accepted_input = input;
+                if fire_requested && !fire_accepted {
+                    accepted_input.a = false;
+                    accepted_input.b = false;
+                }
+                dogs.set_input(accepted_input);
+            } else if fire_accepted {
+                dogs.set_input(euther_oxide::eutherdogs::EutherDogsInput {
+                    player: input.player,
+                    a: input.a,
+                    b: input.b,
+                    ..euther_oxide::eutherdogs::EutherDogsInput::default()
+                });
             }
             send_empty(stream, 204)
         }
@@ -16873,6 +16924,116 @@ fn publish_eutherdogs_initial_frame(
     Ok(())
 }
 
+fn reset_eutherdogs_transport_state(state: &BridgeState) -> io::Result<()> {
+    let mut seqs = state
+        .eutherdogs_input_seq
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    *seqs = [0, 0];
+    drop(seqs);
+    let mut fire_events = state
+        .eutherdogs_fire_events
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for events in fire_events.iter_mut() {
+        events.clear();
+    }
+    drop(fire_events);
+    let mut audio_history = state
+        .eutherdogs_audio_history
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for history in audio_history.iter_mut() {
+        history.clear();
+    }
+    Ok(())
+}
+
+fn accept_eutherdogs_input_seq(
+    seqs: &mut [u64; 2],
+    player_index: usize,
+    sequence: Option<u64>,
+) -> bool {
+    let Some(sequence) = sequence else {
+        return true;
+    };
+    let player_index = player_index.min(seqs.len() - 1);
+    if sequence < seqs[player_index] {
+        return false;
+    }
+    seqs[player_index] = sequence;
+    true
+}
+
+fn accept_eutherdogs_fire_event(
+    events: &mut [HashMap<u64, u64>; 2],
+    player_index: usize,
+    session: Option<u64>,
+    event_id: Option<u64>,
+) -> Option<bool> {
+    let (Some(session), Some(event_id)) = (session, event_id) else {
+        return None;
+    };
+    let player_events = &mut events[player_index.min(events.len() - 1)];
+    if player_events.len() >= 16 && !player_events.contains_key(&session) {
+        player_events.clear();
+    }
+    let last_event_id = player_events.entry(session).or_default();
+    if event_id <= *last_event_id {
+        return Some(false);
+    }
+    *last_event_id = event_id;
+    Some(true)
+}
+
+fn log_eutherdogs_fire_input(
+    user: &str,
+    player_index: usize,
+    input: euther_oxide::eutherdogs::EutherDogsInput,
+    sequence_accepted: bool,
+    fire_accepted: bool,
+    accepted_sequence: u64,
+) {
+    let button = match (input.a, input.b) {
+        (true, true) => "ab",
+        (true, false) => "a",
+        (false, true) => "b",
+        (false, false) => "none",
+    };
+    let queue_age_ms = input
+        .fire_queued_unix_ms
+        .map(|queued| unix_ms_now().saturating_sub(queued));
+    let key = input.input_event_key.map(eutherdogs_input_key_label);
+    eprintln!(
+        "[eutherdogs-fire] stage=input user={user:?} player={} seq={:?} sequence_accepted={sequence_accepted} fire_accepted={fire_accepted} accepted_seq={accepted_sequence} button={button} session={:?} event={:?} source={:?} key={key:?} queue_age_ms={queue_age_ms:?} raw_keyboard={} raw_pointer={} raw_gamepad={}",
+        player_index + 1,
+        input.seq,
+        input.fire_session,
+        input.fire_event_id,
+        input.fire_source,
+        input.fire_keyboard,
+        input.fire_pointer,
+        input.fire_gamepad,
+    );
+}
+
+fn eutherdogs_input_key_label(code: u32) -> String {
+    match code {
+        0x1_0001 => "ArrowUp".to_string(),
+        0x1_0002 => "ArrowDown".to_string(),
+        0x1_0003 => "ArrowLeft".to_string(),
+        0x1_0004 => "ArrowRight".to_string(),
+        0x1_0005 => "Enter".to_string(),
+        0x1_0006 => "Shift".to_string(),
+        0x1_0007 => "Escape".to_string(),
+        0x1_ffff => "Other".to_string(),
+        printable if char::from_u32(printable).is_some_and(|value| !value.is_control()) => {
+            char::from_u32(printable).unwrap_or('?').to_string()
+        }
+        _ => format!("U+{code:04X}"),
+    }
+}
+
 fn touch_eutherdogs_poll(state: &BridgeState) -> io::Result<()> {
     let mut last_poll = state
         .eutherdogs_last_poll
@@ -16954,13 +17115,90 @@ fn eutherdogs_runner_loop(state: &BridgeState) -> io::Result<()> {
                 .map_err(|err| io::Error::other(err.to_string()))?;
             dogs.tick_held_steps(EUTHERDOGS_TICKS_PER_PUBLISH)
         };
+        record_eutherdogs_audio_events(state, &frames)?;
         let mut latest = state
             .eutherdogs_latest
             .lock()
             .map_err(|err| io::Error::other(err.to_string()))?;
+        let previous_player_bullets: HashSet<u32> = latest[0]
+            .as_ref()
+            .into_iter()
+            .flat_map(|frame| frame.bullets.iter())
+            .filter(|bullet| bullet.owner_faction == "player")
+            .map(|bullet| bullet.id)
+            .collect();
+        let new_player_bullets: Vec<String> = frames[0]
+            .bullets
+            .iter()
+            .filter(|bullet| {
+                bullet.owner_faction == "player" && !previous_player_bullets.contains(&bullet.id)
+            })
+            .map(|bullet| format!("{}:{}", bullet.id, bullet.weapon))
+            .collect();
+        if !new_player_bullets.is_empty() {
+            eprintln!(
+                "[eutherdogs-fire] stage=frame frame={} player_bullets={} shots_total={} audio={:?}",
+                frames[0].frame,
+                new_player_bullets.join(","),
+                frames[0].summary.shots_fired,
+                frames[0].audio_events,
+            );
+        }
         latest[0] = Some(frames[0].clone());
         latest[1] = Some(frames[1].clone());
     }
+}
+
+fn record_eutherdogs_audio_events(
+    state: &BridgeState,
+    frames: &[euther_oxide::eutherdogs::EutherDogsFrame; 2],
+) -> io::Result<()> {
+    let mut histories = state
+        .eutherdogs_audio_history
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for (history, frame) in histories.iter_mut().zip(frames) {
+        if frame.audio_events.is_empty() {
+            continue;
+        }
+        history.push_back(EutherDogsAudioBatch {
+            frame: frame.frame,
+            events: frame.audio_events.clone(),
+        });
+        while history.len() > EUTHERDOGS_AUDIO_HISTORY_BATCHES {
+            history.pop_front();
+        }
+    }
+    Ok(())
+}
+
+fn eutherdogs_audio_events_between(
+    state: &BridgeState,
+    player_index: usize,
+    after_frame: u64,
+    through_frame: u64,
+) -> io::Result<Vec<&'static str>> {
+    let histories = state
+        .eutherdogs_audio_history
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(collect_eutherdogs_audio_events(
+        &histories[player_index.min(histories.len() - 1)],
+        after_frame,
+        through_frame,
+    ))
+}
+
+fn collect_eutherdogs_audio_events(
+    history: &VecDeque<EutherDogsAudioBatch>,
+    after_frame: u64,
+    through_frame: u64,
+) -> Vec<&'static str> {
+    history
+        .iter()
+        .filter(|batch| batch.frame > after_frame && batch.frame <= through_frame)
+        .flat_map(|batch| batch.events.iter().copied())
+        .collect()
 }
 
 fn pace_bridge_frame(state: &BridgeState) -> io::Result<()> {
@@ -17178,6 +17416,9 @@ fn send_response_with_headers(
     headers: &[(&str, &str)],
 ) -> io::Result<()> {
     let cors_origin = response_cors_origin();
+    let has_cache_control = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Cache-Control"));
     let reason = match status {
         200 => "OK",
         303 => "See Other",
@@ -17196,8 +17437,14 @@ fn send_response_with_headers(
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization, Range\r\n\
          Access-Control-Allow-Credentials: true\r\n\
-         Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges\r\n\
-         Cache-Control: no-store\r\n\
+         Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges\r\n",
+    )?;
+    if !has_cache_control {
+        write!(stream, "Cache-Control: no-store\r\n")?;
+    }
+    write!(
+        stream,
+        "\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n",
@@ -17236,9 +17483,10 @@ fn send_event_stream_header(stream: &mut TcpStream) -> io::Result<()> {
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type\r\n\
-         Cache-Control: no-store\r\n\
+         Cache-Control: no-cache, no-transform\r\n\
          Content-Type: text/event-stream; charset=utf-8\r\n\
-         Connection: close\r\n\r\n",
+         X-Accel-Buffering: no\r\n\
+         Connection: keep-alive\r\n\r\n",
     )
 }
 
@@ -17252,12 +17500,12 @@ fn bridge_eutherdogs_stream(
     touch_eutherdogs_poll(state)?;
     ensure_eutherdogs_runner(state)?;
     let mut last_frame = None;
-    let mut full_refresh_countdown = 0u16;
     let mut last_tiles_signature = None;
     let mut last_visibility_signature = None;
     let mut last_store_signature = None;
     let mut last_actor_signatures = HashMap::<String, u64>::new();
     let mut last_bullet_signatures = HashMap::<u32, u64>::new();
+    let mut last_audio_frame = None;
     loop {
         if state.shutdown.load(Ordering::SeqCst) {
             break Ok(());
@@ -17268,13 +17516,19 @@ fn bridge_eutherdogs_stream(
             let tiles_signature = eutherdogs_tiles_signature(&frame.tiles);
             let visibility_signature = eutherdogs_visibility_signature(&frame.visibility);
             let store_signature = eutherdogs_store_signature(&frame.store);
-            let include_all = last_frame.is_none() || full_refresh_countdown == 0;
+            let include_all = last_frame.is_none();
             let include_tiles = include_all || last_tiles_signature != Some(tiles_signature);
             let include_visibility =
                 include_all || last_visibility_signature != Some(visibility_signature);
             let include_store = include_all || last_store_signature != Some(store_signature);
             let actor_delta = eutherdogs_actor_delta(&frame.characters, &last_actor_signatures);
             let bullet_delta = eutherdogs_bullet_delta(&frame.bullets, &last_bullet_signatures);
+            let audio_events = eutherdogs_audio_events_between(
+                state,
+                player_index,
+                last_audio_frame.unwrap_or_else(|| frame.frame.saturating_sub(10)),
+                frame.frame,
+            )?;
             let payload = eutherdogs_stream_payload(
                 state,
                 &frame,
@@ -17285,6 +17539,7 @@ fn bridge_eutherdogs_stream(
                 include_store,
                 &actor_delta,
                 &bullet_delta,
+                &audio_events,
             )?;
             if write!(stream, "data: {payload}\n\n").is_err() {
                 break Ok(());
@@ -17304,11 +17559,7 @@ fn bridge_eutherdogs_stream(
             }
             last_actor_signatures = actor_delta.next_signatures;
             last_bullet_signatures = bullet_delta.next_signatures;
-            full_refresh_countdown = if include_all {
-                EUTHERDOGS_STATIC_REFRESH_FRAMES
-            } else {
-                full_refresh_countdown.saturating_sub(1)
-            };
+            last_audio_frame = Some(frame.frame);
         }
         thread::sleep(Duration::from_millis(8));
     }
@@ -17324,6 +17575,7 @@ fn eutherdogs_stream_payload(
     include_store: bool,
     actor_delta: &EutherDogsActorDelta,
     bullet_delta: &EutherDogsBulletDelta,
+    audio_events: &[&'static str],
 ) -> io::Result<String> {
     let acked_input_seq = state
         .eutherdogs_input_seq
@@ -17364,7 +17616,7 @@ fn eutherdogs_stream_payload(
             serde_json::json!(frame.summary.inspection_answers),
             serde_json::json!(frame.summary.inspection_protocol),
         ],
-        "a": frame.audio_events,
+        "a": audio_events,
         "h": frame.highscore_count,
         "q": acked_input_seq,
     });
@@ -19062,7 +19314,9 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                 users.push(HostUser {
                     name,
                     password_hash,
-                    email: email.take().filter(|value: &String| !value.trim().is_empty()),
+                    email: email
+                        .take()
+                        .filter(|value: &String| !value.trim().is_empty()),
                     email_verified_unix_ms,
                     app_token: app_token
                         .take()
@@ -19573,9 +19827,7 @@ fn load_host_eutherid_action_requests() -> io::Result<Vec<HostEutherIdActionRequ
     Ok(requests)
 }
 
-fn save_host_eutherid_action_requests(
-    requests: &[HostEutherIdActionRequest],
-) -> io::Result<()> {
+fn save_host_eutherid_action_requests(requests: &[HostEutherIdActionRequest]) -> io::Result<()> {
     ensure_host_dir()?;
     let path = host_eutherid_action_requests_path();
     let temporary = path.with_extension("json.tmp");
@@ -19604,7 +19856,8 @@ fn save_host_eutherid_recovery_tokens(tokens: &[HostEutherIdRecoveryToken]) -> i
     ensure_host_dir()?;
     let path = host_eutherid_recovery_path();
     let temporary = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
     fs::write(&temporary, bytes)?;
     #[cfg(unix)]
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
@@ -19632,7 +19885,8 @@ fn save_host_account_email_tokens(tokens: &[HostAccountEmailToken]) -> io::Resul
     ensure_host_dir()?;
     let path = host_account_email_tokens_path();
     let temporary = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
     fs::write(&temporary, bytes)?;
     #[cfg(unix)]
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
@@ -21050,7 +21304,11 @@ fn resubmit_or_fail_lost_eutherstudio_job(
         .clamp(15, 180) as u32;
     let format = parse_toml_string(contents, "format").unwrap_or_else(|| "mp3".to_string());
     let output_path = PathBuf::from(parse_toml_string(contents, "output_path").unwrap_or_default());
-    if job_id.is_empty() || user.is_empty() || prompt.is_empty() || output_path.as_os_str().is_empty() {
+    if job_id.is_empty()
+        || user.is_empty()
+        || prompt.is_empty()
+        || output_path.as_os_str().is_empty()
+    {
         return fail_eutherstudio_metadata(
             metadata_path,
             contents,
@@ -22432,6 +22690,77 @@ mod tests {
     }
 
     #[test]
+    fn host_static_cache_only_keeps_hashed_assets_immutable() {
+        assert_eq!(
+            host_static_cache_control("/assets/main-BJNWC9J4-build.js"),
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            host_static_cache_control("/assets/server-map.js"),
+            "no-store"
+        );
+        assert_eq!(host_static_cache_control("/index.html"), "no-store");
+    }
+
+    #[test]
+    fn eutherdogs_input_sequence_rejects_stale_requests() {
+        let mut sequences = [0, 0];
+        assert!(accept_eutherdogs_input_seq(&mut sequences, 0, Some(2)));
+        assert!(!accept_eutherdogs_input_seq(&mut sequences, 0, Some(1)));
+        assert!(accept_eutherdogs_input_seq(&mut sequences, 0, Some(2)));
+        assert!(accept_eutherdogs_input_seq(&mut sequences, 1, None));
+        assert_eq!(sequences, [2, 0]);
+    }
+
+    #[test]
+    fn eutherdogs_fire_events_are_independent_and_deduplicated() {
+        let mut events = std::array::from_fn(|_| HashMap::new());
+
+        assert_eq!(
+            accept_eutherdogs_fire_event(&mut events, 0, Some(17), Some(1)),
+            Some(true)
+        );
+        assert_eq!(
+            accept_eutherdogs_fire_event(&mut events, 0, Some(17), Some(1)),
+            Some(false)
+        );
+        assert_eq!(
+            accept_eutherdogs_fire_event(&mut events, 0, Some(17), Some(2)),
+            Some(true)
+        );
+        assert_eq!(
+            accept_eutherdogs_fire_event(&mut events, 0, None, None),
+            None
+        );
+        assert_eq!(
+            accept_eutherdogs_fire_event(&mut events, 1, Some(17), Some(1)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn eutherdogs_audio_history_recovers_events_from_skipped_frames() {
+        let history = VecDeque::from([
+            EutherDogsAudioBatch {
+                frame: 10,
+                events: vec!["scanner_blaster"],
+            },
+            EutherDogsAudioBatch {
+                frame: 12,
+                events: vec!["impact_light", "customer_defeated"],
+            },
+            EutherDogsAudioBatch {
+                frame: 14,
+                events: vec!["pickup_rx"],
+            },
+        ]);
+        assert_eq!(
+            collect_eutherdogs_audio_events(&history, 10, 13),
+            vec!["impact_light", "customer_defeated"]
+        );
+    }
+
+    #[test]
     fn euthergate_proxy_only_matches_its_own_path_prefix() {
         assert!(is_euthergate_proxy_path("/euthergate"));
         assert!(is_euthergate_proxy_path("/euthergate/api/status"));
@@ -22514,10 +22843,7 @@ mod tests {
             Some((format!("/v1/inbox/{id}"), false))
         );
         assert_eq!(
-            eutherid_upstream_route(
-                "POST",
-                &format!("/api/admin/eutherid/devices/{id}/revoke")
-            ),
+            eutherid_upstream_route("POST", &format!("/api/admin/eutherid/devices/{id}/revoke")),
             Some((format!("/v1/devices/{id}/revoke"), true))
         );
         assert_eq!(
@@ -22635,8 +22961,14 @@ mod tests {
             service_restart_spec("recover-euthersight-frigate"),
             Some(("service.recover", "euthersight-frigate.service"))
         );
-        assert_eq!(direct_euthergate_restart_service("restart-euthergate-gateway"), Some("gateway"));
-        assert_eq!(direct_euthergate_restart_service("restart-euthergate-turn"), None);
+        assert_eq!(
+            direct_euthergate_restart_service("restart-euthergate-gateway"),
+            Some("gateway")
+        );
+        assert_eq!(
+            direct_euthergate_restart_service("restart-euthergate-turn"),
+            None
+        );
         assert!(service_restart_spec("restart-arbitrary.service").is_none());
     }
 
@@ -22644,23 +22976,25 @@ mod tests {
     fn eutherid_shadow_completion_only_accepts_an_exact_challenge_path() {
         let id = "A2345678901234567890_-challenge";
         assert_eq!(
-            eutherid_shadow_complete_id(&format!(
-                "/api/admin/eutherid/shadow-tests/{id}/complete"
-            )),
+            eutherid_shadow_complete_id(&format!("/api/admin/eutherid/shadow-tests/{id}/complete")),
             Some(id)
         );
-        assert!(eutherid_shadow_complete_id(
-            "/api/admin/eutherid/shadow-tests/short/complete"
-        )
-        .is_none());
-        assert!(eutherid_shadow_complete_id(&format!(
-            "/api/admin/eutherid/shadow-tests/{id}/complete?again=1"
-        ))
-        .is_none());
-        assert!(eutherid_shadow_complete_id(&format!(
-            "/api/admin/eutherid/shadow-tests/{id}/action-proof"
-        ))
-        .is_none());
+        assert!(
+            eutherid_shadow_complete_id("/api/admin/eutherid/shadow-tests/short/complete")
+                .is_none()
+        );
+        assert!(
+            eutherid_shadow_complete_id(&format!(
+                "/api/admin/eutherid/shadow-tests/{id}/complete?again=1"
+            ))
+            .is_none()
+        );
+        assert!(
+            eutherid_shadow_complete_id(&format!(
+                "/api/admin/eutherid/shadow-tests/{id}/action-proof"
+            ))
+            .is_none()
+        );
     }
 
     #[test]
@@ -22672,14 +23006,18 @@ mod tests {
             )),
             Some(id)
         );
-        assert!(eutherid_euthergate_wake_complete_id(
-            "/api/admin/eutherid/actions/euthergate-wake/short/complete"
-        )
-        .is_none());
-        assert!(eutherid_euthergate_wake_complete_id(&format!(
-            "/api/admin/eutherid/actions/euthergate-wake/{id}/complete?again=1"
-        ))
-        .is_none());
+        assert!(
+            eutherid_euthergate_wake_complete_id(
+                "/api/admin/eutherid/actions/euthergate-wake/short/complete"
+            )
+            .is_none()
+        );
+        assert!(
+            eutherid_euthergate_wake_complete_id(&format!(
+                "/api/admin/eutherid/actions/euthergate-wake/{id}/complete?again=1"
+            ))
+            .is_none()
+        );
     }
 
     #[test]
@@ -22884,15 +23222,9 @@ mod tests {
 
     #[test]
     fn eutherid_login_accepts_only_canonical_challenge_ids() {
-        assert!(valid_eutherid_challenge_id(
-            "A2345678901234567890_-login"
-        ));
+        assert!(valid_eutherid_challenge_id("A2345678901234567890_-login"));
         assert!(!valid_eutherid_challenge_id("short"));
-        assert!(!valid_eutherid_challenge_id(
-            "A2345678901234567890/login"
-        ));
-        assert!(!valid_eutherid_challenge_id(
-            "A2345678901234567890?login"
-        ));
+        assert!(!valid_eutherid_challenge_id("A2345678901234567890/login"));
+        assert!(!valid_eutherid_challenge_id("A2345678901234567890?login"));
     }
 }

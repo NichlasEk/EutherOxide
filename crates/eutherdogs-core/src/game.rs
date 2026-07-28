@@ -7,12 +7,60 @@ use crate::{
     entity::{Bullet, Character, Faction, WeaponSlot},
     rng::Lcg,
     weapon::WeaponId,
-    world::{MissionSpec, Tile, World, WorldParams, TILE_HEIGHT, TILE_WIDTH},
+    world::{MissionSpec, TILE_HEIGHT, TILE_WIDTH, Tile, World, WorldParams},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FixedStep {
     pub ticks: u32,
+}
+
+fn horizontal_corner_assist(
+    world: &World,
+    x: i32,
+    y: i32,
+    next_x: i32,
+    max_offset: i32,
+) -> Option<i32> {
+    let center_in_tile = (y + crate::world::CHARACTER_HEIGHT / 2).rem_euclid(TILE_HEIGHT);
+    let preferred_sign = if center_in_tile < TILE_HEIGHT / 2 {
+        1
+    } else {
+        -1
+    };
+    for offset in 1..=max_offset.max(1) {
+        for sign in [preferred_sign, -preferred_sign] {
+            let aligned_y = y + sign * offset;
+            if position_ok(world, x, aligned_y) && position_ok(world, next_x, aligned_y) {
+                return Some(aligned_y);
+            }
+        }
+    }
+    None
+}
+
+fn vertical_corner_assist(
+    world: &World,
+    x: i32,
+    y: i32,
+    next_y: i32,
+    max_offset: i32,
+) -> Option<i32> {
+    let center_in_tile = (x + crate::world::CHARACTER_WIDTH / 2).rem_euclid(TILE_WIDTH);
+    let preferred_sign = if center_in_tile < TILE_WIDTH / 2 {
+        1
+    } else {
+        -1
+    };
+    for offset in 1..=max_offset.max(1) {
+        for sign in [preferred_sign, -preferred_sign] {
+            let aligned_x = x + sign * offset;
+            if position_ok(world, aligned_x, y) && position_ok(world, aligned_x, next_y) {
+                return Some(aligned_x);
+            }
+        }
+    }
+    None
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,7 +173,8 @@ const INSPECTION_ROUTINES: i32 = 17;
 const INSPECTOR_RESPAWN_TICKS: u32 = 90;
 const INSPECTOR_QUESTION_RANGE: i32 = TILE_WIDTH * 2;
 const INSPECTOR_QUESTION_COOLDOWN_TICKS: u32 = 120;
-const INSPECTION_COMPLETE_LINE: &str = "Inspection complete. Your survival has been provisionally accepted.";
+const INSPECTION_COMPLETE_LINE: &str =
+    "Inspection complete. Your survival has been provisionally accepted.";
 const MPA_MISSION: i32 = 10;
 const MPA_ALERT_TICKS: u32 = 15 * 60;
 const MPA_AGENT_COUNT: usize = 50;
@@ -436,7 +485,9 @@ impl Game {
         game
     }
 
-    pub fn new_mission_from_config(config: &crate::config::EutherDogsConfig) -> Result<Self, crate::config::ConfigError> {
+    pub fn new_mission_from_config(
+        config: &crate::config::EutherDogsConfig,
+    ) -> Result<Self, crate::config::ConfigError> {
         let mut game = Self::new_mission_with_rules(
             config.seed(),
             config.world_params(),
@@ -633,7 +684,10 @@ impl Game {
         let weapon = item
             .weapon
             .as_deref()
-            .map(|weapon| WeaponId::from_key(weapon).ok_or_else(|| PurchaseError::InvalidWeapon(weapon.to_string())))
+            .map(|weapon| {
+                WeaponId::from_key(weapon)
+                    .ok_or_else(|| PurchaseError::InvalidWeapon(weapon.to_string()))
+            })
             .transpose()?;
         self.progress.cash = self.progress.cash.saturating_sub(price).max(0);
         let character = &mut self.characters[character_index];
@@ -670,11 +724,13 @@ impl Game {
 
         if let Some(slot) = input.weapon_slot {
             if self.characters[character_index].select_weapon_slot(slot) {
-                self.audio_events.push(AudioEvent::Sfx(AssetId::WeaponSwitch));
+                self.audio_events
+                    .push(AudioEvent::Sfx(AssetId::WeaponSwitch));
             }
         } else if input.command.has(PlayerCommand::SWITCH) {
             self.characters[character_index].switch_weapon();
-            self.audio_events.push(AudioEvent::Sfx(AssetId::WeaponSwitch));
+            self.audio_events
+                .push(AudioEvent::Sfx(AssetId::WeaponSwitch));
         }
 
         if input.command.has(PlayerCommand::SHOOT) {
@@ -687,14 +743,43 @@ impl Game {
         character.direction = direction;
         let (dx, dy) = direction.delta();
         let distance = character.speed * dt.ticks as i32;
-        let next_x = character.x + dx * distance;
-        let next_y = character.y + dy * distance;
+        let corner_assist = character.faction == Faction::Player && (dx == 0 || dy == 0);
 
-        if position_ok(&self.world, next_x, character.y) {
-            character.x = next_x;
-        }
-        if position_ok(&self.world, character.x, next_y) {
-            character.y = next_y;
+        for _ in 0..distance {
+            if dx != 0 {
+                let next_x = character.x + dx;
+                if position_ok(&self.world, next_x, character.y) {
+                    character.x = next_x;
+                } else if corner_assist {
+                    if let Some(aligned_y) = horizontal_corner_assist(
+                        &self.world,
+                        character.x,
+                        character.y,
+                        next_x,
+                        character.speed,
+                    ) {
+                        character.x = next_x;
+                        character.y = aligned_y;
+                    }
+                }
+            }
+            if dy != 0 {
+                let next_y = character.y + dy;
+                if position_ok(&self.world, character.x, next_y) {
+                    character.y = next_y;
+                } else if corner_assist {
+                    if let Some(aligned_x) = vertical_corner_assist(
+                        &self.world,
+                        character.x,
+                        character.y,
+                        next_y,
+                        character.speed,
+                    ) {
+                        character.x = aligned_x;
+                        character.y = next_y;
+                    }
+                }
+            }
         }
     }
 
@@ -823,7 +908,8 @@ impl Game {
         ] {
             self.fire_directed_weapon(character_index, weapon_id, dx, dy, false);
         }
-        self.audio_events.push(AudioEvent::Sfx(weapon_id.data().sound));
+        self.audio_events
+            .push(AudioEvent::Sfx(weapon_id.data().sound));
     }
 
     fn fire_boss_fire_wave(&mut self, character_index: usize) {
@@ -846,8 +932,9 @@ impl Game {
                 false,
             );
         }
-        self.audio_events
-            .push(AudioEvent::Sfx(WeaponId::HandSanitizerFlamethrower.data().sound));
+        self.audio_events.push(AudioEvent::Sfx(
+            WeaponId::HandSanitizerFlamethrower.data().sound,
+        ));
     }
 
     fn move_bullets(&mut self, dt: FixedStep) {
@@ -875,9 +962,9 @@ impl Game {
                 );
             } else if bullet_hits_wall(&self.world, &bullet) {
                 let old_targets = self.world.stats().targets_left;
-                let hit_tile = self
-                    .world
-                    .damage_structure_at_pixel(bullet.x, bullet.y, weapon.power as i32);
+                let hit_tile =
+                    self.world
+                        .damage_structure_at_pixel(bullet.x, bullet.y, weapon.power as i32);
                 let new_targets = self.world.stats().targets_left;
                 self.progress.targets_destroyed += old_targets - new_targets;
                 if old_targets > new_targets {
@@ -916,7 +1003,9 @@ impl Game {
             .characters
             .iter()
             .enumerate()
-            .filter(|(_, character)| character.faction == Faction::HostileCustomer && character.alive)
+            .filter(|(_, character)| {
+                character.faction == Faction::HostileCustomer && character.alive
+            })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
 
@@ -951,7 +1040,10 @@ impl Game {
             };
             let has_line_of_sight = straight_direction
                 .is_some_and(|_| self.has_line_of_sight(x, y, player_x, player_y));
-            if has_line_of_sight && distance < profile.preferred_range && straight_direction.is_some() {
+            if has_line_of_sight
+                && distance < profile.preferred_range
+                && straight_direction.is_some()
+            {
                 if profile.will_retreat && distance < profile.preferred_range / 2 {
                     let retreat = direction_toward(player_x, player_y, x, y);
                     self.characters[index].direction = retreat;
@@ -1081,7 +1173,10 @@ impl Game {
         else {
             return;
         };
-        let (x, y) = (self.characters[chief_index].x, self.characters[chief_index].y);
+        let (x, y) = (
+            self.characters[chief_index].x,
+            self.characters[chief_index].y,
+        );
         if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
             && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
         {
@@ -1109,7 +1204,10 @@ impl Game {
         if (x - player_x).abs() <= crate::world::CHARACTER_WIDTH
             && (y - player_y).abs() <= crate::world::CHARACTER_HEIGHT
         {
-            self.hurt_player_index(player_index, if second_phase { 12 } else { 7 } * dt.ticks as i32);
+            self.hurt_player_index(
+                player_index,
+                if second_phase { 12 } else { 7 } * dt.ticks as i32,
+            );
             return;
         }
 
@@ -1195,8 +1293,14 @@ impl Game {
         let character = &self.characters[index];
         let origins = [
             (character.x - 10, character.y + 12),
-            (character.x + crate::world::CHARACTER_WIDTH / 2, character.y - 8),
-            (character.x + crate::world::CHARACTER_WIDTH + 10, character.y + 12),
+            (
+                character.x + crate::world::CHARACTER_WIDTH / 2,
+                character.y - 8,
+            ),
+            (
+                character.x + crate::world::CHARACTER_WIDTH + 10,
+                character.y + 12,
+            ),
         ];
         for (origin_x, origin_y) in origins {
             self.fire_directed_weapon_from(
@@ -1286,7 +1390,8 @@ impl Game {
             self.audio_events
                 .push(AudioEvent::Sfx(AssetId::CustomerDefeated));
         } else {
-            self.audio_events.push(AudioEvent::Sfx(AssetId::ImpactHeavy));
+            self.audio_events
+                .push(AudioEvent::Sfx(AssetId::ImpactHeavy));
         }
     }
 
@@ -1308,8 +1413,9 @@ impl Game {
             .iter()
             .enumerate()
             .filter(|(_, character)| {
-                let self_splash =
-                    owner_faction == Faction::Player && character.faction == Faction::Player && character.id == owner_id;
+                let self_splash = owner_faction == Faction::Player
+                    && character.faction == Faction::Player
+                    && character.id == owner_id;
                 character.alive
                     && (character.faction != owner_faction || self_splash)
                     && (character.x + crate::world::CHARACTER_WIDTH / 2 - x).abs() <= radius_px
@@ -1370,7 +1476,8 @@ impl Game {
                 continue;
             }
             let tile_x = ((character.x + crate::world::CHARACTER_WIDTH / 2) / TILE_WIDTH) as usize;
-            let tile_y = ((character.y + crate::world::CHARACTER_HEIGHT / 2) / TILE_HEIGHT) as usize;
+            let tile_y =
+                ((character.y + crate::world::CHARACTER_HEIGHT / 2) / TILE_HEIGHT) as usize;
             let Some(tile) = self.world.collect_tile(tile_x, tile_y) else {
                 continue;
             };
@@ -1453,7 +1560,8 @@ impl Game {
             if let Some(boss_id) = self.spawn_ngr3_boss(boss.max_armor) {
                 boss.active = true;
                 boss.boss_id = Some(boss_id);
-                self.audio_events.push(AudioEvent::Sfx(AssetId::PortalReady));
+                self.audio_events
+                    .push(AudioEvent::Sfx(AssetId::PortalReady));
             }
         }
         self.boss = Some(boss);
@@ -1530,7 +1638,8 @@ impl Game {
         self.inspectors.clear();
         self.senior_lma_max_armor = boss_ids.len() as i32 * SENIOR_LMA_ARMOR_PER_BODY;
         self.senior_lma_boss_ids = boss_ids;
-        self.audio_events.push(AudioEvent::Sfx(AssetId::PortalReady));
+        self.audio_events
+            .push(AudioEvent::Sfx(AssetId::PortalReady));
         self.audio_events
             .push(AudioEvent::Sfx(WeaponId::ComplianceLaser.data().sound));
     }
@@ -1657,15 +1766,18 @@ impl Game {
                 || x >= self.world.width() - 1
                 || y >= self.world.height() - 1
                 || self.world.blocks_walk(x, y)
-                || matches!(self.world.tile(x, y), Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2))
+                || matches!(
+                    self.world.tile(x, y),
+                    Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2)
+                )
             {
                 continue;
             }
             let px = x as i32 * TILE_WIDTH + 8;
             let py = y as i32 * TILE_HEIGHT + 2;
-            if player
-                .is_some_and(|(player_x, player_y)| (player_x - px).abs() < TILE_WIDTH * 5 && (player_y - py).abs() < TILE_HEIGHT * 5)
-            {
+            if player.is_some_and(|(player_x, player_y)| {
+                (player_x - px).abs() < TILE_WIDTH * 5 && (player_y - py).abs() < TILE_HEIGHT * 5
+            }) {
                 continue;
             }
             return Some((px, py));
@@ -1706,7 +1818,8 @@ impl Game {
     }
 
     fn update_inspector_dialogues(&mut self, dt: FixedStep) {
-        let inspection_complete = self.routine_total > 0 && self.progress.routines_read >= self.routine_total;
+        let inspection_complete =
+            self.routine_total > 0 && self.progress.routines_read >= self.routine_total;
         for inspector_index in 0..self.inspectors.len() {
             let Some(character_id) = self.inspectors[inspector_index].character_id else {
                 continue;
@@ -1735,12 +1848,16 @@ impl Game {
             let Some((_, player_x, player_y)) = self.living_player_by_offset(player_index) else {
                 continue;
             };
-            let distance = (inspector.x - player_x).abs().max((inspector.y - player_y).abs());
+            let distance = (inspector.x - player_x)
+                .abs()
+                .max((inspector.y - player_y).abs());
             if distance > INSPECTOR_QUESTION_RANGE {
                 continue;
             }
-            let question_index = self.inspectors[inspector_index].question_index % INSPECTION_QUESTIONS.len();
-            self.inspectors[inspector_index].active_question = Some(INSPECTION_QUESTIONS[question_index]);
+            let question_index =
+                self.inspectors[inspector_index].question_index % INSPECTION_QUESTIONS.len();
+            self.inspectors[inspector_index].active_question =
+                Some(INSPECTION_QUESTIONS[question_index]);
             self.inspectors[inspector_index].question_index = question_index + 1;
         }
     }
@@ -1763,11 +1880,14 @@ impl Game {
         if self.mpa_chief_active_question.is_some() {
             return;
         }
-        self.mpa_chief_question_cooldown = self.mpa_chief_question_cooldown.saturating_sub(dt.ticks);
+        self.mpa_chief_question_cooldown =
+            self.mpa_chief_question_cooldown.saturating_sub(dt.ticks);
         if self.mpa_chief_question_cooldown > 0 {
             return;
         }
-        let Some((_, player_x, player_y)) = self.living_player_by_offset(self.mpa_chief_player_index) else {
+        let Some((_, player_x, player_y)) =
+            self.living_player_by_offset(self.mpa_chief_player_index)
+        else {
             return;
         };
         let distance = (chief.x - player_x).abs().max((chief.y - player_y).abs());
@@ -1938,7 +2058,10 @@ impl Game {
         self.mission != MPA_MISSION || self.mpa_complete
     }
 
-    fn apply_player_config(&mut self, config: &crate::config::EutherDogsConfig) -> Result<(), crate::config::ConfigError> {
+    fn apply_player_config(
+        &mut self,
+        config: &crate::config::EutherDogsConfig,
+    ) -> Result<(), crate::config::ConfigError> {
         for (player_index, character) in self
             .characters
             .iter_mut()
@@ -2068,7 +2191,11 @@ impl Game {
     fn is_active_boss_index(&self, index: usize) -> bool {
         self.boss
             .and_then(|boss| boss.boss_id)
-            .is_some_and(|boss_id| self.characters.get(index).is_some_and(|character| character.id == boss_id))
+            .is_some_and(|boss_id| {
+                self.characters
+                    .get(index)
+                    .is_some_and(|character| character.id == boss_id)
+            })
     }
 
     fn is_senior_lma_boss_index(&self, index: usize) -> bool {
@@ -2082,7 +2209,11 @@ impl Game {
         for step in 1..steps {
             let px = x + (target_x - x) * step / steps;
             let py = y + (target_y - y) * step / steps;
-            if self.world.tile_at_pixel(px, py).is_some_and(Tile::blocks_walk) {
+            if self
+                .world
+                .tile_at_pixel(px, py)
+                .is_some_and(Tile::blocks_walk)
+            {
                 return false;
             }
         }
@@ -2121,7 +2252,9 @@ impl Game {
     }
 
     fn mpa_protocol_available(&self) -> bool {
-        self.inspection_protocols.iter().any(|protocol| *protocol > 0)
+        self.inspection_protocols
+            .iter()
+            .any(|protocol| *protocol > 0)
     }
 
     fn mpa_agent_target_tile(&mut self) -> Option<(usize, usize)> {
@@ -2364,7 +2497,10 @@ fn random_spawn_point(world: &World, rng: &mut Lcg) -> Option<(i32, i32)> {
             && y > 1
             && x < world.width() - 1
             && y < world.height() - 1
-            && !matches!(world.tile(x, y), Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2))
+            && !matches!(
+                world.tile(x, y),
+                Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2)
+            )
             && !world.blocks_walk(x, y)
         {
             return Some((x as i32 * TILE_WIDTH + 8, y as i32 * TILE_HEIGHT + 2));
@@ -2373,16 +2509,28 @@ fn random_spawn_point(world: &World, rng: &mut Lcg) -> Option<(i32, i32)> {
     None
 }
 
-fn nearest_open_spawn_tile(world: &World, origin_x: usize, origin_y: usize, radius: usize) -> Option<(i32, i32)> {
+fn nearest_open_spawn_tile(
+    world: &World,
+    origin_x: usize,
+    origin_y: usize,
+    radius: usize,
+) -> Option<(i32, i32)> {
     let mut best = None;
     for search_radius in 0..=radius {
-        for y in origin_y.saturating_sub(search_radius)..=(origin_y + search_radius).min(world.height().saturating_sub(1)) {
-            for x in origin_x.saturating_sub(search_radius)..=(origin_x + search_radius).min(world.width().saturating_sub(1)) {
+        for y in origin_y.saturating_sub(search_radius)
+            ..=(origin_y + search_radius).min(world.height().saturating_sub(1))
+        {
+            for x in origin_x.saturating_sub(search_radius)
+                ..=(origin_x + search_radius).min(world.width().saturating_sub(1))
+            {
                 if x <= 1
                     || y <= 1
                     || x >= world.width().saturating_sub(1)
                     || y >= world.height().saturating_sub(1)
-                    || matches!(world.tile(x, y), Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2))
+                    || matches!(
+                        world.tile(x, y),
+                        Some(Tile::PlayerSpawn1 | Tile::PlayerSpawn2)
+                    )
                     || world.blocks_walk(x, y)
                 {
                     continue;
@@ -2413,19 +2561,27 @@ fn nearest_open_spawn_tile(world: &World, origin_x: usize, origin_y: usize, radi
 mod tests {
     use super::{FixedStep, Game, PlayerInput};
     use crate::{
+        AudioEvent,
         assets::AssetId,
         command::PlayerCommand,
         entity::Faction,
         weapon::WeaponId,
-        world::{MissionSpec, Tile, WorldParams, TILE_HEIGHT, TILE_WIDTH},
-        AudioEvent,
+        world::{MissionSpec, TILE_HEIGHT, TILE_WIDTH, Tile, WorldParams},
     };
 
     #[test]
     fn new_mission_spawns_player() {
         let game = Game::new_mission(7, WorldParams::default(), MissionSpec::default());
-        assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::Player));
-        assert!(game.characters().iter().any(|character| character.faction == crate::entity::Faction::HostileCustomer));
+        assert!(
+            game.characters()
+                .iter()
+                .any(|character| character.faction == crate::entity::Faction::Player)
+        );
+        assert!(
+            game.characters()
+                .iter()
+                .any(|character| character.faction == crate::entity::Faction::HostileCustomer)
+        );
     }
 
     #[test]
@@ -2465,10 +2621,12 @@ mod tests {
             },
         );
 
-        assert!(!game
-            .characters()
-            .iter()
-            .any(|character| character.sprite == AssetId::DistrictManager));
+        assert!(
+            !game
+                .characters()
+                .iter()
+                .any(|character| character.sprite == AssetId::DistrictManager)
+        );
         let initial_queue = game.summary().targets_left;
         assert!(initial_queue > 1);
 
@@ -2480,14 +2638,16 @@ mod tests {
         game.tick(&[], FixedStep { ticks: 1 });
 
         assert_eq!(game.summary().targets_left, 1);
-        assert!(game
-            .characters()
-            .iter()
-            .any(|character| character.sprite == AssetId::DistrictManager));
-        assert!(game
-            .drain_audio_events()
-            .into_iter()
-            .any(|event| event == AudioEvent::Sfx(AssetId::PortalReady)));
+        assert!(
+            game.characters()
+                .iter()
+                .any(|character| character.sprite == AssetId::DistrictManager)
+        );
+        assert!(
+            game.drain_audio_events()
+                .into_iter()
+                .any(|event| event == AudioEvent::Sfx(AssetId::PortalReady))
+        );
     }
 
     #[test]
@@ -2502,10 +2662,12 @@ mod tests {
             },
         );
 
-        assert!(!game
-            .characters()
-            .iter()
-            .any(|character| character.sprite == crate::assets::AssetId::DistrictManager));
+        assert!(
+            !game
+                .characters()
+                .iter()
+                .any(|character| character.sprite == crate::assets::AssetId::DistrictManager)
+        );
     }
 
     #[test]
@@ -2550,10 +2712,11 @@ mod tests {
             .expect("inspection spawns routine directives");
         let routine_x = routine_position % game.world.width();
         let routine_y = routine_position / game.world.width();
-        assert!(game
-            .drain_audio_events()
-            .into_iter()
-            .any(|event| event == AudioEvent::InspectionAlarm));
+        assert!(
+            game.drain_audio_events()
+                .into_iter()
+                .any(|event| event == AudioEvent::InspectionAlarm)
+        );
 
         if let Some(player) = game
             .characters
@@ -2566,10 +2729,12 @@ mod tests {
         game.tick(&[], FixedStep { ticks: 1 });
         assert_eq!(game.summary().routine_read, 1);
         assert_eq!(game.world.tile(routine_x, routine_y), Some(Tile::Floor));
-        assert!(!game
-            .drain_audio_events()
-            .into_iter()
-            .any(|event| event == AudioEvent::InspectionAlarm));
+        assert!(
+            !game
+                .drain_audio_events()
+                .into_iter()
+                .any(|event| event == AudioEvent::InspectionAlarm)
+        );
     }
 
     #[test]
@@ -2636,10 +2801,12 @@ mod tests {
             .expect("inspector is present")
             .alive = false;
         game.tick(&[], FixedStep { ticks: 1 });
-        assert!(!game
-            .characters()
-            .iter()
-            .any(|character| character.id == inspector_id));
+        assert!(
+            !game
+                .characters()
+                .iter()
+                .any(|character| character.id == inspector_id)
+        );
 
         game.tick(
             &[],
@@ -2647,10 +2814,11 @@ mod tests {
                 ticks: super::INSPECTOR_RESPAWN_TICKS,
             },
         );
-        assert!(game
-            .characters()
-            .iter()
-            .any(|character| character.faction == Faction::Inspector && character.alive));
+        assert!(
+            game.characters()
+                .iter()
+                .any(|character| character.faction == Faction::Inspector && character.alive)
+        );
     }
 
     #[test]
@@ -2890,10 +3058,11 @@ mod tests {
 
         assert_eq!(game.mpa_agents.len(), super::MPA_AGENT_COUNT);
         assert!(game.mpa_chief_id.is_some());
-        assert!(game
-            .drain_audio_events()
-            .into_iter()
-            .any(|event| event == AudioEvent::ExternalInspectionAlarm));
+        assert!(
+            game.drain_audio_events()
+                .into_iter()
+                .any(|event| event == AudioEvent::ExternalInspectionAlarm)
+        );
     }
 
     #[test]
@@ -2935,10 +3104,11 @@ mod tests {
             game.characters[agent_index].direction,
             crate::direction::Direction::Right
         );
-        assert!(game
-            .drain_audio_events()
-            .into_iter()
-            .any(|event| event == AudioEvent::MpaHum));
+        assert!(
+            game.drain_audio_events()
+                .into_iter()
+                .any(|event| event == AudioEvent::MpaHum)
+        );
     }
 
     #[test]
@@ -2983,10 +3153,11 @@ mod tests {
             game.characters[agent_index].direction,
             crate::direction::Direction::Right
         );
-        assert!(game
-            .drain_audio_events()
-            .into_iter()
-            .any(|event| event == AudioEvent::MpaHum));
+        assert!(
+            game.drain_audio_events()
+                .into_iter()
+                .any(|event| event == AudioEvent::MpaHum)
+        );
     }
 
     #[test]
@@ -3063,7 +3234,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_does_not_move_player_through_wall() {
+    fn tick_stops_player_at_wall_boundary() {
         let mut game = Game::default();
         game.world.set_tile(2, 1, Tile::Wall);
         game.characters.push(crate::entity::Character::player(
@@ -3072,7 +3243,6 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        let before = game.characters()[0].x;
         game.tick(
             &[PlayerInput {
                 player_index: 0,
@@ -3082,7 +3252,35 @@ mod tests {
             }],
             FixedStep { ticks: 10 },
         );
-        assert_eq!(game.characters()[0].x, before);
+        assert_eq!(
+            game.characters()[0].x,
+            TILE_WIDTH * 2 - crate::world::CHARACTER_WIDTH - 1
+        );
+    }
+
+    #[test]
+    fn player_corner_assist_aligns_with_open_corridor() {
+        let mut game = Game::default();
+        game.world.set_tile(2, 1, Tile::Wall);
+        game.characters.push(crate::entity::Character::player(
+            0,
+            TILE_WIDTH + 16,
+            TILE_HEIGHT + 12,
+            crate::assets::AssetId::NightShiftTech,
+        ));
+
+        game.tick(
+            &[PlayerInput {
+                player_index: 0,
+                command: PlayerCommand::from_bits(PlayerCommand::RIGHT),
+                weapon_slot: None,
+                inspection_answer: None,
+            }],
+            FixedStep { ticks: 1 },
+        );
+
+        assert!(game.characters()[0].x > TILE_WIDTH + 16);
+        assert!(game.characters()[0].y > TILE_HEIGHT + 12);
     }
 
     #[test]
@@ -3187,12 +3385,13 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH + 10,
-            TILE_HEIGHT + 3,
-            crate::assets::AssetId::AngryCustomer,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH + 10,
+                TILE_HEIGHT + 3,
+                crate::assets::AssetId::AngryCustomer,
+            ));
         let armor = game.characters()[0].armor;
         game.tick(&[], FixedStep { ticks: 1 });
         assert!(game.characters()[0].armor < armor);
@@ -3267,12 +3466,13 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH * 4 + 8,
-            TILE_HEIGHT + 2,
-            crate::assets::AssetId::AngryCustomer,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH * 4 + 8,
+                TILE_HEIGHT + 2,
+                crate::assets::AssetId::AngryCustomer,
+            ));
         game.tick(&[], FixedStep { ticks: 1 });
         assert!(game.progress().shots_fired > 0);
     }
@@ -3286,12 +3486,13 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH * 4 + 8,
-            TILE_HEIGHT + 2,
-            crate::assets::AssetId::ClaimDenier,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH * 4 + 8,
+                TILE_HEIGHT + 2,
+                crate::assets::AssetId::ClaimDenier,
+            ));
 
         game.tick(&[], FixedStep { ticks: 1 });
 
@@ -3309,12 +3510,13 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH * 4 + 8,
-            TILE_HEIGHT * 3 + 2,
-            crate::assets::AssetId::ClaimDenier,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH * 4 + 8,
+                TILE_HEIGHT * 3 + 2,
+                crate::assets::AssetId::ClaimDenier,
+            ));
 
         game.tick(&[], FixedStep { ticks: 1 });
 
@@ -3331,12 +3533,13 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH * 4 + 8,
-            TILE_HEIGHT + 2,
-            crate::assets::AssetId::AngryCustomer,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH * 4 + 8,
+                TILE_HEIGHT + 2,
+                crate::assets::AssetId::AngryCustomer,
+            ));
         let armor = game.characters()[0].armor;
 
         for _ in 0..32 {
@@ -3420,18 +3623,20 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH * 3,
-            TILE_HEIGHT,
-            crate::assets::AssetId::AngryCustomer,
-        ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            2,
-            TILE_WIDTH * 3 + 16,
-            TILE_HEIGHT,
-            crate::assets::AssetId::ClaimDenier,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH * 3,
+                TILE_HEIGHT,
+                crate::assets::AssetId::AngryCustomer,
+            ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                2,
+                TILE_WIDTH * 3 + 16,
+                TILE_HEIGHT,
+                crate::assets::AssetId::ClaimDenier,
+            ));
         let nearby_armor = game.characters()[2].armor;
         game.bullets.push(crate::entity::Bullet {
             id: 1,
@@ -3457,18 +3662,20 @@ mod tests {
             TILE_HEIGHT + 2,
             crate::assets::AssetId::NightShiftTech,
         ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            1,
-            TILE_WIDTH * 3,
-            TILE_HEIGHT,
-            crate::assets::AssetId::AngryCustomer,
-        ));
-        game.characters.push(crate::entity::Character::hostile_customer(
-            2,
-            TILE_WIDTH * 3 + 16,
-            TILE_HEIGHT,
-            crate::assets::AssetId::ClaimDenier,
-        ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                1,
+                TILE_WIDTH * 3,
+                TILE_HEIGHT,
+                crate::assets::AssetId::AngryCustomer,
+            ));
+        game.characters
+            .push(crate::entity::Character::hostile_customer(
+                2,
+                TILE_WIDTH * 3 + 16,
+                TILE_HEIGHT,
+                crate::assets::AssetId::ClaimDenier,
+            ));
         let nearby_armor = game.characters()[2].armor;
         game.bullets.push(crate::entity::Bullet {
             id: 1,
@@ -3616,11 +3823,19 @@ mod tests {
             armor: 0,
         }];
 
-        game.purchase_store_item(&store, "label_printer", 0).unwrap();
+        game.purchase_store_item(&store, "label_printer", 0)
+            .unwrap();
 
         assert_eq!(game.progress.cash, 75);
-        let player = game.characters().iter().find(|character| character.id == 0).unwrap();
-        assert_eq!(player.active_weapon_id(), crate::weapon::WeaponId::LabelPrinter);
+        let player = game
+            .characters()
+            .iter()
+            .find(|character| character.id == 0)
+            .unwrap();
+        assert_eq!(
+            player.active_weapon_id(),
+            crate::weapon::WeaponId::LabelPrinter
+        );
         assert!(player
             .weapons
             .iter()

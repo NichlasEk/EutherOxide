@@ -474,12 +474,57 @@ impl World {
     }
 
     fn add_player_spawns(&mut self) {
+        for y in 2..self.height - 2 {
+            for x in 2..self.width - 3 {
+                if !self.player_spawn_candidate(x, y)
+                    || !self.player_spawn_candidate(x + 1, y)
+                    || !self.player_spawn_area_open(x, y)
+                    || !self.player_spawn_area_open(x + 1, y)
+                {
+                    continue;
+                }
+                self.set_tile(x, y, Tile::PlayerSpawn1);
+                self.set_tile(x + 1, y, Tile::PlayerSpawn2);
+                return;
+            }
+        }
+
         let mut placed = 0;
+        for y in 2..self.height - 2 {
+            for x in 2..self.width - 2 {
+                if !self.player_spawn_candidate(x, y) || !self.player_spawn_area_open(x, y) {
+                    continue;
+                }
+                self.set_tile(
+                    x,
+                    y,
+                    if placed == 0 {
+                        Tile::PlayerSpawn1
+                    } else {
+                        Tile::PlayerSpawn2
+                    },
+                );
+                placed += 1;
+                if placed >= 2 {
+                    return;
+                }
+            }
+        }
+
         for y in 1..self.height - 1 {
             for x in 1..self.width - 1 {
+                if placed >= 2 {
+                    return;
+                }
                 if !matches!(
                     self.tile(x, y),
-                    Some(Tile::Floor | Tile::SterileFloor | Tile::NeonFloor | Tile::WarningFloor | Tile::FanFloor)
+                    Some(
+                        Tile::Floor
+                            | Tile::SterileFloor
+                            | Tile::NeonFloor
+                            | Tile::WarningFloor
+                            | Tile::FanFloor
+                    )
                 ) {
                     continue;
                 }
@@ -490,11 +535,28 @@ impl World {
                 };
                 self.set_tile(x, y, spawn);
                 placed += 1;
-                if placed >= 2 {
-                    return;
-                }
             }
         }
+    }
+
+    fn player_spawn_candidate(&self, x: usize, y: usize) -> bool {
+        matches!(
+            self.tile(x, y),
+            Some(
+                Tile::Floor
+                    | Tile::SterileFloor
+                    | Tile::NeonFloor
+                    | Tile::WarningFloor
+                    | Tile::FanFloor
+            )
+        )
+    }
+
+    fn player_spawn_area_open(&self, center_x: usize, center_y: usize) -> bool {
+        (center_x - 1..=center_x + 1).all(|x| {
+            (center_y - 1..=center_y + 1)
+                .all(|y| self.tile(x, y).is_some_and(|tile| !tile.blocks_walk()))
+        })
     }
 
     fn add_one_object(&mut self, rng: &mut Lcg, tile: Tile, structure: Structure) -> bool {
@@ -543,7 +605,7 @@ pub const fn world_height() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{MissionSpec, Tile, World, WorldParams, TILE_HEIGHT, TILE_WIDTH};
+    use super::{MissionSpec, TILE_HEIGHT, TILE_WIDTH, Tile, World, WorldParams};
 
     #[test]
     fn generated_world_is_deterministic() {
@@ -595,6 +657,37 @@ mod tests {
         assert!(tiles.contains(&Tile::PlayerSpawn2));
         assert!(tiles.iter().any(|tile| tile.blocks_walk()));
         assert!(tiles.iter().any(|tile| tile.is_pickup()));
+
+        let spawn_points: Vec<(usize, usize)> = [Tile::PlayerSpawn1, Tile::PlayerSpawn2]
+            .into_iter()
+            .map(|spawn| {
+                (0..world.height())
+                    .find_map(|y| {
+                        (0..world.width())
+                            .find(|&x| world.tile(x, y) == Some(spawn))
+                            .map(|x| (x, y))
+                    })
+                    .expect("player spawn exists")
+            })
+            .collect();
+        assert_eq!(spawn_points[0].1, spawn_points[1].1);
+        assert_eq!(spawn_points[0].0.abs_diff(spawn_points[1].0), 1);
+
+        for (spawn_x, spawn_y) in spawn_points {
+            for (x, y) in [
+                (spawn_x - 1, spawn_y),
+                (spawn_x + 1, spawn_y),
+                (spawn_x, spawn_y - 1),
+                (spawn_x, spawn_y + 1),
+            ] {
+                assert!(
+                    !world
+                        .tile(x, y)
+                        .expect("spawn neighbor exists")
+                        .blocks_walk()
+                );
+            }
+        }
     }
 
     #[test]

@@ -135,11 +135,62 @@ type PlayerPort = 1 | 2;
 type LobbyRole = "player" | "spectator";
 type DogsAssetMode = "classic" | "2x";
 type DogsCharacterKey = "night_shift_tech" | "neon_pharmacist";
+type DogsFireSource = "keyboard" | "pointer" | "gamepad";
+type DogsInputTelemetrySource = DogsFireSource | "system";
+type DogsInputTelemetryKind = "down" | "up" | "poll" | "clear";
+type DogsPendingFirePulse = {
+  button: "a" | "b";
+  source: DogsFireSource;
+  eventId: number;
+  queuedUnixMs: number;
+  keyboard: boolean;
+  pointer: boolean;
+  gamepad: boolean;
+};
+type DogsPendingInputTelemetry = {
+  eventId: number;
+  source: DogsInputTelemetrySource;
+  kind: DogsInputTelemetryKind;
+  key?: number;
+};
+type EutherShouldPlace = {
+  name?: string;
+  latitude?: number;
+  longitude?: number;
+  home?: boolean;
+};
+type EutherShouldCard = {
+  id: "mow" | "grill" | "outside" | "plow" | string;
+  title: string;
+  score: number;
+  window: string;
+};
+type EutherShouldBriefing = {
+  location: string;
+  headline: string;
+  lead: string;
+  current: {
+    temperature: number;
+    condition: string;
+  };
+  cards: EutherShouldCard[];
+};
 type DogsBridgeInput = InputState & {
   player: PlayerPort;
   seq?: number;
   weaponSlot?: number;
   inspectionAnswer?: "yes" | "no" | "other";
+  fireEventId?: number;
+  fireSession?: number;
+  fireSource?: DogsFireSource;
+  fireQueuedUnixMs?: number;
+  fireKeyboard?: boolean;
+  firePointer?: boolean;
+  fireGamepad?: boolean;
+  inputEventId?: number;
+  inputEventSource?: DogsInputTelemetrySource;
+  inputEventKind?: DogsInputTelemetryKind;
+  inputEventKey?: number;
 };
 
 type LobbyPlayer = {
@@ -1028,6 +1079,21 @@ type DogsImpactEffect = {
   startFrame: number;
 };
 
+type DogsStaticWorldCache = {
+  canvas: HTMLCanvasElement;
+  tiles: string[];
+  width: number;
+  height: number;
+  tileWidth: number;
+  tileHeight: number;
+  assetMode: DogsAssetMode;
+};
+
+type DogsActorMotion = {
+  vx: number;
+  vy: number;
+};
+
 type DogsCoreSummary = {
   mission: number;
   maxMission: number;
@@ -1238,6 +1304,8 @@ const volumeStorageKey = "eutheroxide-audio-volume";
 const micVolumeStorageKey = "eutheroxide-mic-volume";
 const bindingsStorageKey = "eutheroxide-input-bindings";
 const dogsBindingsStorageKey = "eutheroxide-eutherdogs-input-bindings";
+const dogsBindingsSchemaStorageKey = "eutheroxide-eutherdogs-input-bindings-schema";
+const dogsBindingsSchemaVersion = 2;
 const shaderStorageKey = "eutheroxide-video-shader";
 const shaderConfigStorageKey = "eutheroxide-video-shader-toml";
 const mobileModeStorageKey = "eutheroxide-mobile-mode";
@@ -1366,6 +1434,7 @@ const defaultBindings: Record<InputName, ControlBinding> = {
 };
 const defaultDogsBindings: Record<DogsBindingName, ControlBinding> = {
   ...defaultBindings,
+  a: { key: " ", pad: { kind: "button", code: "South" } },
   inventory: { key: "q", pad: { kind: "button", code: "Select" } },
   map: { key: "Shift", pad: { kind: "button", code: "LeftTrigger" } },
   weapon1: { key: "1", pad: { kind: "button", code: "North" } },
@@ -1772,13 +1841,21 @@ const dogsWarmupContext = dogsWarmupCanvas.getContext("2d", { alpha: true });
 let dogsMusicKey: string | null = null;
 let dogsMusicSource: AudioBufferSourceNode | null = null;
 let dogsMusicGain: GainNode | null = null;
+let dogsMusicPendingKey: string | null = null;
+let dogsMusicRequestId = 0;
+let dogsLastMusicHealthCheckAt = 0;
 let dogsDeferredImageRedraw = false;
 let dogsLastHudMarkup = "";
+let dogsLastConsoleSignature = "";
 let dogsPreloadedAssetMode: DogsAssetMode | null = null;
 let dogsPreloadedAudioKey: string | null = null;
 let dogsPreloadProgress: { loaded: number; total: number; label: string } | null = null;
 let dogsPreviousActorPositions = new Map<string, { x: number; y: number }>();
 let dogsRenderActorPositions = new Map<string, { x: number; y: number }>();
+let dogsActorMovingUntil = new Map<string, number>();
+let dogsActorWalkStartedAt = new Map<string, number>();
+let dogsServerActorMotion = new Map<string, DogsActorMotion>();
+let dogsStaticWorldCache: DogsStaticWorldCache | null = null;
 let dogsLastRenderAt = performance.now();
 let dogsActorFacings = new Map<string, DogsActorFacing>();
 let dogsLastExitReady = false;
@@ -1801,13 +1878,22 @@ let dogsInspectionAnswerRects: Array<{
 }> = [];
 let lastDogsInputJson = "";
 let lastDogsInputSentAt = 0;
+let dogsLastPostedInputSeq = 0;
 let lastDogsSnapshotAt = 0;
 let dogsSnapshotMisses = 0;
 let dogsStream: EventSource | null = null;
+let dogsLastStreamRestartAt = 0;
 let lastDogsProcessedFrame = -1;
 let dogsInputSeq = 0;
 let dogsLastAckedInputSeq = 0;
-let dogsFireArmed = true;
+let dogsPendingFirePulse: DogsPendingFirePulse | null = null;
+let dogsPendingInputTelemetry: DogsPendingInputTelemetry | null = null;
+let dogsLastFirePulseQueuedAt = 0;
+const dogsFireTelemetrySession = Math.floor(Math.random() * 0xffff_ffff);
+let dogsNextFireEventId = 0;
+let dogsNextInputEventId = 0;
+const dogsGamepadFireSamples: Record<"a" | "b", number> = { a: 0, b: 0 };
+const dogsGamepadFireLatched: Record<"a" | "b", boolean> = { a: false, b: false };
 let dogsLastLocalShotAt = 0;
 let dogsLastLocalShotSound: string | null = null;
 let lastGamepadSnapshot: GamepadSnapshot = {
@@ -2529,6 +2615,25 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main id="interaction-lobby-page" class="interaction-lobby-page" hidden>
     ${interactionLobbyPageMarkup()}
   </main>
+  <a
+    id="euthershould-strip"
+    class="euthershould-strip is-loading"
+    href="/euthershould/"
+    aria-label="Öppna EutherShould"
+  >
+    <span id="euthershould-icon" class="euthershould-icon" aria-hidden="true">◌</span>
+    <span class="euthershould-weather">
+      <strong id="euthershould-temperature">--°</strong>
+      <small id="euthershould-location">Hämtar väder</small>
+    </span>
+    <i aria-hidden="true"></i>
+    <span class="euthershould-decision">
+      <small>Idag borde du</small>
+      <strong id="euthershould-headline">fråga EutherShould…</strong>
+    </span>
+    <span id="euthershould-window" class="euthershould-window">Väger väder mot verkligheten</span>
+    <span class="euthershould-arrow" aria-hidden="true">→</span>
+  </a>
   <div id="workspace-window-layer" class="workspace-window-layer" hidden>
     <section class="workspace-window" role="dialog" aria-modal="false" aria-labelledby="workspace-window-title">
       <header class="workspace-window-head">
@@ -2762,6 +2867,12 @@ bridgeVideo.addEventListener("playing", syncBridgeVideoGeometry);
 
 const reactionCorePage = document.querySelector<HTMLElement>("#reaction-core-page")!;
 const interactionLobbyPage = document.querySelector<HTMLElement>("#interaction-lobby-page")!;
+const eutherShouldStrip = document.querySelector<HTMLAnchorElement>("#euthershould-strip")!;
+const eutherShouldIcon = document.querySelector<HTMLElement>("#euthershould-icon")!;
+const eutherShouldTemperature = document.querySelector<HTMLElement>("#euthershould-temperature")!;
+const eutherShouldLocation = document.querySelector<HTMLElement>("#euthershould-location")!;
+const eutherShouldHeadline = document.querySelector<HTMLElement>("#euthershould-headline")!;
+const eutherShouldWindow = document.querySelector<HTMLElement>("#euthershould-window")!;
 const userMenu = document.querySelector<HTMLDivElement>("#user-menu")!;
 const userMenuToggle = document.querySelector<HTMLButtonElement>("#user-menu-toggle")!;
 const userSettingsToggle = document.querySelector<HTMLButtonElement>("#user-settings-toggle")!;
@@ -3759,11 +3870,17 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     void refreshActiveSocialChat("visible", 2500);
     void recoverEutherBooksPlaybackAfterPageResume("visible");
+    void refreshEutherShouldStrip();
+  } else {
+    clearTransientInputState();
   }
 });
 
+window.addEventListener("blur", clearTransientInputState);
+
 window.addEventListener("pageshow", () => {
   void recoverEutherBooksPlaybackAfterPageResume("pageshow");
+  void refreshEutherShouldStrip();
 });
 
 workspaceWindowLayer.addEventListener("click", (event) => {
@@ -4749,7 +4866,14 @@ stateGrid.addEventListener("click", async (event) => {
 document.querySelectorAll<HTMLButtonElement>("[data-pad]").forEach((button) => {
   const name = button.dataset.pad as keyof InputState;
   const set = (pressed: boolean) => {
+    const wasPressed = pointerState[name];
     pointerState[name] = pressed;
+    if (dogsMode && pressed !== wasPressed) {
+      queueDogsInputTelemetry("pointer", pressed ? "down" : "up");
+    }
+    if (dogsMode && pressed && !wasPressed && (name === "a" || name === "b")) {
+      queueDogsFirePulse(name, "pointer");
+    }
     recomputeInputState();
     button.classList.toggle("is-active", pressed);
   };
@@ -4880,11 +5004,24 @@ window.addEventListener("keydown", (event) => {
     }
   }
   const key = dogsMode ? dogsInputKeyForEvent(event.key) : keyForEvent(event.key);
-  if (!key || keyboardState[key]) {
+  if (!key) {
+    return;
+  }
+  if (event.repeat) {
+    event.preventDefault();
+    return;
+  }
+  if (keyboardState[key]) {
     return;
   }
   event.preventDefault();
   keyboardState[key] = true;
+  if (dogsMode) {
+    queueDogsInputTelemetry("keyboard", "down", event.key);
+  }
+  if (dogsMode && (key === "a" || key === "b")) {
+    queueDogsFirePulse(key, "keyboard");
+  }
   recomputeInputState();
 });
 
@@ -4903,7 +5040,11 @@ window.addEventListener("keyup", (event) => {
     return;
   }
   event.preventDefault();
+  const wasPressed = keyboardState[key];
   keyboardState[key] = false;
+  if (dogsMode && wasPressed) {
+    queueDogsInputTelemetry("keyboard", "up", event.key);
+  }
   recomputeInputState();
 });
 
@@ -5208,24 +5349,29 @@ function readStoredBindings(): Record<InputName, ControlBinding> {
 function readStoredDogsBindings(): Record<DogsBindingName, ControlBinding> {
   const defaults = cloneDefaultDogsBindings();
   try {
+    const storedSchema = Number(window.localStorage.getItem(dogsBindingsSchemaStorageKey) ?? "0");
     const raw = window.localStorage.getItem(dogsBindingsStorageKey);
     const parsed = raw ? (JSON.parse(raw) as Partial<Record<DogsBindingName, ControlBinding>>) : null;
-    if (!parsed) {
-      return defaults;
-    }
-    for (const name of dogsBindingNames) {
-      const binding = parsed[name];
-      if (binding?.key && binding.pad?.kind && binding.pad.code) {
-        defaults[name] = {
-          key: binding.key,
-          pad: {
-            kind: binding.pad.kind,
-            code: binding.pad.code,
-            direction: binding.pad.direction,
-          },
-        };
+    if (parsed) {
+      for (const name of dogsBindingNames) {
+        const binding = parsed[name];
+        if (binding?.key && binding.pad?.kind && binding.pad.code) {
+          defaults[name] = {
+            key: binding.key,
+            pad: {
+              kind: binding.pad.kind,
+              code: binding.pad.code,
+              direction: binding.pad.direction,
+            },
+          };
+        }
       }
     }
+    if (storedSchema < dogsBindingsSchemaVersion && defaults.a.key === "z") {
+      defaults.a.key = " ";
+      window.localStorage.setItem(dogsBindingsStorageKey, JSON.stringify(defaults));
+    }
+    window.localStorage.setItem(dogsBindingsSchemaStorageKey, String(dogsBindingsSchemaVersion));
   } catch {
     return defaults;
   }
@@ -5340,14 +5486,28 @@ async function readGamepadSnapshot(): Promise<GamepadSnapshot> {
       return browserGamepadSnapshot(String(err));
     }
   }
-  if (ui.runtime === "bridge") {
-    try {
-      return await bridgeJson<GamepadSnapshot>("/gamepads", {}, 300);
-    } catch (err) {
-      return browserGamepadSnapshot(String(err));
-    }
-  }
   return browserGamepadSnapshot(null);
+}
+
+function clearTransientInputState(): void {
+  let changed = false;
+  for (const name of inputNames) {
+    changed ||= keyboardState[name] || pointerState[name] || gamepadState[name];
+    keyboardState[name] = false;
+    pointerState[name] = false;
+    gamepadState[name] = false;
+  }
+  dogsPendingFirePulse = null;
+  dogsGamepadFireSamples.a = 0;
+  dogsGamepadFireSamples.b = 0;
+  dogsGamepadFireLatched.a = false;
+  dogsGamepadFireLatched.b = false;
+  if (changed) {
+    if (dogsMode) {
+      queueDogsInputTelemetry("system", "clear");
+    }
+    recomputeInputState();
+  }
 }
 
 function browserGamepadSnapshot(error: string | null): GamepadSnapshot {
@@ -5456,12 +5616,28 @@ function applyGamepadSnapshot(snapshot: GamepadSnapshot): void {
   if (dogsMode && !capturedPad) {
     applyDogsGamepadActions(snapshot);
   }
+  let fireQueued = false;
+  for (const name of ["a", "b"] as const) {
+    if (next[name]) {
+      dogsGamepadFireSamples[name] += 1;
+      if (dogsGamepadFireSamples[name] >= 2 && !dogsGamepadFireLatched[name]) {
+        dogsGamepadFireLatched[name] = true;
+        fireQueued = queueDogsFirePulse(name, "gamepad", next[name]) || fireQueued;
+      }
+    } else {
+      dogsGamepadFireSamples[name] = 0;
+      dogsGamepadFireLatched[name] = false;
+    }
+  }
   let changed = false;
   for (const name of inputNames) {
     changed ||= gamepadState[name] !== next[name];
     gamepadState[name] = next[name];
   }
-  if (changed) {
+  if (changed || fireQueued) {
+    if (dogsMode && changed) {
+      queueDogsInputTelemetry("gamepad", "poll");
+    }
     recomputeInputState();
   }
 }
@@ -16665,12 +16841,16 @@ async function animationLoop(): Promise<void> {
     return;
   }
   const now = performance.now();
-  if (now >= nextFrameDue - 1) {
+  // EutherDogs renders predicted network state, so every display refresh is useful.
+  // The emulator paths still need their PAL/NTSC frame-rate gate.
+  if (dogsMode || now >= nextFrameDue - 1) {
     await advanceFrame();
-    const frameMs = 1000 / (ui.timing === "PAL" ? 50 : 60);
-    nextFrameDue += frameMs;
-    if (nextFrameDue < performance.now() - frameMs) {
-      nextFrameDue = performance.now();
+    if (!dogsMode) {
+      const frameMs = 1000 / (ui.timing === "PAL" ? 50 : 60);
+      nextFrameDue += frameMs;
+      if (nextFrameDue < performance.now() - frameMs) {
+        nextFrameDue = performance.now();
+      }
     }
   }
   window.requestAnimationFrame(() => void animationLoop());
@@ -17642,7 +17822,9 @@ async function advanceFrame(): Promise<void> {
       drawSyntheticFrame();
     }
   } finally {
-    renderUi();
+    if (!dogsMode || !ui.playing) {
+      renderUi();
+    }
     stepping = false;
   }
 }
@@ -18039,6 +18221,92 @@ function dogsTileImageFit(tile: string): "contain" | "cover" {
   return "contain";
 }
 
+function dogsStaticWorldForFrame(frame: DogsCoreFrame, yScale: number): DogsStaticWorldCache {
+  const cached = dogsStaticWorldCache;
+  const sameGeometry = Boolean(
+    cached
+    && cached.width === frame.width
+    && cached.height === frame.height
+    && cached.tileWidth === frame.tileWidth
+    && cached.tileHeight === frame.tileHeight
+    && cached.assetMode === dogsAssetMode
+  );
+  if (cached && sameGeometry) {
+    if (cached.tiles === frame.tiles) {
+      return cached;
+    }
+    const sameTiles = cached.tiles.length === frame.tiles.length
+      && cached.tiles.every((tile, index) => tile === frame.tiles[index]);
+    if (sameTiles) {
+      cached.tiles = frame.tiles;
+      return cached;
+    }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = frame.width * frame.tileWidth;
+  canvas.height = Math.ceil(frame.height * frame.tileHeight * yScale);
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) {
+    throw new Error("EutherDogs static canvas unavailable");
+  }
+  context.imageSmoothingEnabled = false;
+  const baseFloorAsset = dogsAsset("tiles.floor", "sterile_tile");
+  for (let y = 0; y < frame.height; y += 1) {
+    for (let x = 0; x < frame.width; x += 1) {
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      const tileX = x * frame.tileWidth;
+      const tileY = Math.floor(y * frame.tileHeight * yScale);
+      const tileW = frame.tileWidth;
+      const tileH = Math.ceil(frame.tileHeight * yScale);
+      const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
+      drawDogsImageOnContext(
+        context,
+        baseFloorAsset,
+        tileX,
+        tileY,
+        tileW,
+        tileH,
+        eutherDogsTileFallbackColors.floor,
+        "cover",
+      );
+      if (tile !== "spilled_syrup") {
+        drawDogsImageOnContext(
+          context,
+          asset,
+          tileX,
+          tileY,
+          tileW,
+          tileH,
+          eutherDogsTileFallbackColors[tile] ?? "#65716b",
+          dogsTileImageFit(tile),
+        );
+      }
+    }
+  }
+  context.fillStyle = "rgba(0, 0, 0, 0.32)";
+  for (let y = 0; y < frame.height; y += 1) {
+    for (let x = 0; x < frame.width; x += 1) {
+      const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      if (!dogsWallTile(tile) || dogsWallTile(dogsTileAt(frame, x, y + 1))) continue;
+      const shadowX = x * frame.tileWidth + 3;
+      const shadowY = Math.floor(((y + 1) * frame.tileHeight - 3) * yScale);
+      const shadowW = frame.tileWidth - 4;
+      const shadowH = Math.max(2, Math.ceil(7 * yScale));
+      context.fillRect(shadowX, shadowY, shadowW, shadowH);
+    }
+  }
+  dogsStaticWorldCache = {
+    canvas,
+    tiles: frame.tiles,
+    width: frame.width,
+    height: frame.height,
+    tileWidth: frame.tileWidth,
+    tileHeight: frame.tileHeight,
+    assetMode: dogsAssetMode,
+  };
+  return dogsStaticWorldCache;
+}
+
 function drawDogsVisibleTiles(
   frame: DogsCoreFrame,
   cameraX: number,
@@ -18052,44 +18320,33 @@ function drawDogsVisibleTiles(
   exitReady: boolean,
   visualFrame: number,
 ): void {
-  const baseFloorAsset = dogsAsset("tiles.floor", "sterile_tile");
+  const background = dogsStaticWorldForFrame(frame, yScale).canvas;
+  const viewW = dogsCanvas.width / scale;
+  const viewH = dogsCanvas.height / (scale * yScale);
+  dogsContext.drawImage(
+    background,
+    cameraX,
+    cameraY * yScale,
+    viewW,
+    viewH * yScale,
+    0,
+    0,
+    dogsCanvas.width,
+    dogsCanvas.height,
+  );
   for (let y = firstTileY; y <= lastTileY; y += 1) {
     for (let x = firstTileX; x <= lastTileX; x += 1) {
       const tile = frame.tiles[y * frame.width + x] ?? "floor";
+      if (tile !== "spilled_syrup" && tile !== "service_elevator") continue;
       const tileX = Math.floor((x * frame.tileWidth - cameraX) * scale);
       const tileY = Math.floor((y * frame.tileHeight - cameraY) * yScale * scale);
       const tileW = Math.ceil(frame.tileWidth * scale);
       const tileH = Math.ceil(frame.tileHeight * yScale * scale);
-      const asset = dogsWallTile(tile) ? dogsWallAsset(frame, x, y, tile) : dogsTileAsset(tile);
-      drawDogsImage(baseFloorAsset, tileX, tileY, tileW, tileH, eutherDogsTileFallbackColors.floor, "cover");
       if (tile === "spilled_syrup") {
         drawDogsVentFan(tileX, tileY, tileW, tileH, visualFrame);
       } else {
-        drawDogsImage(
-          asset,
-          tileX,
-          tileY,
-          tileW,
-          tileH,
-          eutherDogsTileFallbackColors[tile] ?? "#65716b",
-          dogsTileImageFit(tile),
-        );
-      }
-      if (tile === "service_elevator") {
         drawDogsExitPortal(tileX, tileY, tileW, tileH, exitReady, visualFrame);
       }
-    }
-  }
-  dogsContext.fillStyle = "rgba(0, 0, 0, 0.32)";
-  for (let y = firstTileY; y <= lastTileY; y += 1) {
-    for (let x = firstTileX; x <= lastTileX; x += 1) {
-      const tile = frame.tiles[y * frame.width + x] ?? "floor";
-      if (!dogsWallTile(tile) || dogsWallTile(dogsTileAt(frame, x, y + 1))) continue;
-      const shadowX = Math.floor((x * frame.tileWidth - cameraX + 3) * scale);
-      const shadowY = Math.floor(((y + 1) * frame.tileHeight - cameraY - 3) * yScale * scale);
-      const shadowW = Math.ceil((frame.tileWidth - 4) * scale);
-      const shadowH = Math.max(2, Math.ceil(7 * scale));
-      dogsContext.fillRect(shadowX, shadowY, shadowW, shadowH);
     }
   }
 }
@@ -18265,11 +18522,13 @@ function dogsProjectileStyle(weapon: string): DogsProjectileStyle {
 }
 
 function dogsProjectileAsset(bullet: DogsCoreBullet): string | null {
-  return dogsAsset("sprites.projectiles", dogsProjectileStyle(bullet.weapon).asset);
+  const key = dogsProjectileStyle(bullet.weapon).asset;
+  return dogsHighresAsset("sprites.projectiles", key) ?? dogsAsset("sprites.projectiles", key);
 }
 
 function dogsEffectAsset(frameIndex: number): string | null {
-  return dogsAsset("sprites.effects", `explosion_0${Math.min(5, Math.max(1, frameIndex))}`);
+  const key = `explosion_0${Math.min(5, Math.max(1, frameIndex))}`;
+  return dogsHighresAsset("sprites.effects", key) ?? dogsAsset("sprites.effects", key);
 }
 
 function dogsWeaponAsset(weapon: string | null | undefined): string | null {
@@ -18326,6 +18585,7 @@ function scheduleDogsImageRedraw(): void {
   if (dogsDeferredImageRedraw || !dogsMode || !dogsFrame) {
     return;
   }
+  dogsStaticWorldCache = null;
   dogsDeferredImageRedraw = true;
   window.requestAnimationFrame(() => {
     dogsDeferredImageRedraw = false;
@@ -18501,7 +18761,8 @@ function dogsPreloadImageUrls(): string[] {
   for (const [key, url] of eutherDogsAssets) {
     if (!/\.(png|jpg|jpeg|webp|svg)(\?|#|$)/i.test(url)) continue;
     if (key.startsWith("highres.")) {
-      if (dogsAssetMode === "2x") {
+      const combatAsset = key.startsWith("highres.sprites.projectiles.") || key.startsWith("highres.sprites.effects.");
+      if (dogsAssetMode === "2x" || combatAsset) {
         urls.add(url);
       }
       continue;
@@ -18580,7 +18841,7 @@ async function preloadDogsVisualAssets(force = false): Promise<void> {
 
 function preloadDogsCombatAssets(): void {
   for (const style of Object.values(dogsProjectileStyles)) {
-    preloadDogsImage(dogsAsset("sprites.projectiles", style.asset));
+    preloadDogsImage(dogsHighresAsset("sprites.projectiles", style.asset) ?? dogsAsset("sprites.projectiles", style.asset));
   }
   for (let index = 1; index <= 5; index += 1) {
     preloadDogsImage(dogsEffectAsset(index));
@@ -18698,33 +18959,29 @@ function drawDogsProjectile(
   dogsContext.moveTo(cx - ux * trailLength, cy - uy * trailLength * yScale);
   dogsContext.lineTo(cx, cy);
   dogsContext.stroke();
-  if (style.glow > 0) {
-    const glow = dogsContext.createRadialGradient(cx, cy, 0, cx, cy, style.glow * scale);
-    glow.addColorStop(0, style.color);
-    glow.addColorStop(1, "rgba(0, 0, 0, 0)");
-    dogsContext.globalAlpha = bullet.ownerFaction === "player" ? 0.36 : 0.24;
-    dogsContext.fillStyle = glow;
-    dogsContext.fillRect(cx - style.glow * scale, cy - style.glow * scale, style.glow * 2 * scale, style.glow * 2 * scale);
-  }
   dogsContext.restore();
 
   const url = dogsProjectileAsset(bullet);
-  const image = url ? dogsImageCache.get(url) : null;
-  if (url && image?.complete && image.naturalWidth > 0 && style.spins) {
+  const image = url ? dogsImageForUrl(url) : null;
+  if (image?.complete && image.naturalWidth > 0) {
     dogsContext.save();
     dogsContext.translate(cx, cy);
-    dogsContext.rotate((frameTick * 0.22 + bullet.id) % (Math.PI * 2));
+    dogsContext.rotate(style.spins ? (frameTick * 0.22 + bullet.id) % (Math.PI * 2) : Math.atan2(uy, ux));
     dogsContext.drawImage(image, -size / 2, -size / 2, size, size);
     dogsContext.restore();
   } else {
-    drawDogsImage(
-      url,
-      Math.floor(cx - size / 2),
-      Math.floor(cy - size / 2),
-      size,
-      size,
-      bullet.ownerFaction === "player" ? style.color : "#ff3030",
-    );
+    dogsContext.save();
+    dogsContext.translate(cx, cy);
+    dogsContext.rotate(Math.atan2(uy, ux));
+    dogsContext.fillStyle = bullet.ownerFaction === "player" ? style.color : "#ff5a3d";
+    dogsContext.globalAlpha = 0.92;
+    dogsContext.beginPath();
+    dogsContext.moveTo(size * 0.55, 0);
+    dogsContext.lineTo(-size * 0.35, size * 0.24);
+    dogsContext.lineTo(-size * 0.35, -size * 0.24);
+    dogsContext.closePath();
+    dogsContext.fill();
+    dogsContext.restore();
   }
 }
 
@@ -18762,24 +19019,20 @@ function drawDogsImpactEffects(frame: DogsCoreFrame, cameraX: number, cameraY: n
     const pulse = Math.sin((age / 18) * Math.PI);
     const size = Math.max(8, Math.ceil((style.impact + pulse * style.impact * 0.45) * scale));
     const frameIndex = Math.min(5, Math.floor((age / 18) * 5) + 1);
-    dogsContext.save();
-    dogsContext.globalCompositeOperation = "lighter";
-    const glow = dogsContext.createRadialGradient(cx, cy, 0, cx, cy, size * 0.62);
-    glow.addColorStop(0, style.color);
-    glow.addColorStop(0.35, `${style.color}88`);
-    glow.addColorStop(1, "rgba(0, 0, 0, 0)");
-    dogsContext.globalAlpha = 0.42 * (1 - age / 20);
-    dogsContext.fillStyle = glow;
-    dogsContext.fillRect(cx - size, cy - size, size * 2, size * 2);
-    dogsContext.restore();
-    drawDogsImage(
-      dogsEffectAsset(frameIndex),
-      Math.floor(cx - size / 2),
-      Math.floor(cy - size / 2),
-      size,
-      size,
-      style.color,
-    );
+    const effectUrl = dogsEffectAsset(frameIndex);
+    const effectImage = effectUrl ? dogsImageForUrl(effectUrl) : null;
+    if (effectImage?.complete && effectImage.naturalWidth > 0) {
+      dogsContext.drawImage(effectImage, Math.floor(cx - size / 2), Math.floor(cy - size / 2), size, size);
+    } else {
+      dogsContext.save();
+      dogsContext.globalAlpha = Math.max(0, 1 - age / 18);
+      dogsContext.strokeStyle = style.color;
+      dogsContext.lineWidth = Math.max(1, Math.ceil(scale * 2));
+      dogsContext.beginPath();
+      dogsContext.arc(cx, cy, Math.max(2, size * (0.2 + age / 24)), 0, Math.PI * 2);
+      dogsContext.stroke();
+      dogsContext.restore();
+    }
   }
 }
 
@@ -18881,7 +19134,6 @@ function drawDogsVisibilityFog(
   lastTileY: number,
 ): void {
   dogsContext.save();
-  const time = frame.frame / 38;
   for (let y = firstTileY; y <= lastTileY; y += 1) {
     for (let x = firstTileX; x <= lastTileX; x += 1) {
       const visibility = dogsVisibilityAt(frame, x, y);
@@ -18890,42 +19142,12 @@ function drawDogsVisibilityFog(
       const tileY = Math.floor((y * frame.tileHeight - cameraY) * yScale * scale);
       const tileW = Math.ceil(frame.tileWidth * scale);
       const tileH = Math.ceil(frame.tileHeight * yScale * scale);
-      const ripple = (Math.sin(x * 0.73 + y * 1.17 + time) + 1) * 0.5;
       if (visibility <= 0) {
         dogsContext.fillStyle = "#00040a";
         dogsContext.fillRect(tileX, tileY, tileW, tileH);
-        const smoke = dogsContext.createRadialGradient(
-          tileX + tileW * (0.25 + ripple * 0.48),
-          tileY + tileH * (0.3 + (1 - ripple) * 0.34),
-          0,
-          tileX + tileW * 0.5,
-          tileY + tileH * 0.5,
-          Math.max(tileW, tileH) * 1.15,
-        );
-        smoke.addColorStop(0, `rgba(12, 32, 58, ${0.9 - ripple * 0.12})`);
-        smoke.addColorStop(0.45, `rgba(4, 12, 28, ${0.94})`);
-        smoke.addColorStop(1, "rgba(0, 4, 10, 1)");
-        dogsContext.fillStyle = smoke;
-        dogsContext.fillRect(tileX, tileY, tileW, tileH);
-        dogsContext.strokeStyle = `rgba(39, 242, 255, ${0.035 + ripple * 0.018})`;
-        dogsContext.strokeRect(tileX + 0.5, tileY + 0.5, Math.max(0, tileW - 1), Math.max(0, tileH - 1));
         continue;
       }
-      const alpha = 0.48 + ripple * 0.12;
-      dogsContext.fillStyle = `rgba(2, 13, 35, ${alpha})`;
-      dogsContext.fillRect(tileX, tileY, tileW, tileH);
-      const smoke = dogsContext.createRadialGradient(
-        tileX + tileW * (0.35 + ripple * 0.3),
-        tileY + tileH * 0.45,
-        0,
-        tileX + tileW * 0.5,
-        tileY + tileH * 0.5,
-        Math.max(tileW, tileH),
-      );
-      smoke.addColorStop(0, `rgba(72, 255, 225, ${0.05 + ripple * 0.025})`);
-      smoke.addColorStop(0.55, `rgba(255, 42, 205, ${0.025 + ripple * 0.018})`);
-      smoke.addColorStop(1, "rgba(0, 0, 0, 0)");
-      dogsContext.fillStyle = smoke;
+      dogsContext.fillStyle = "rgba(2, 13, 35, 0.54)";
       dogsContext.fillRect(tileX, tileY, tileW, tileH);
     }
   }
@@ -19186,9 +19408,24 @@ function dogsShouldSuppressServerShotSfx(sound: string): boolean {
 
 function playDogsLocalShotFeedback(): void {
   const hero = dogsFrame ? dogsLocalPlayer(dogsFrame) : undefined;
+  if (!hero || hero.ammo === 0) {
+    return;
+  }
   const weaponSound = hero?.activeWeapon || "scanner_blaster";
   dogsLastLocalShotAt = performance.now();
   dogsLastLocalShotSound = weaponSound;
+  if (hero && dogsFrame) {
+    const [dx, dy] = dogsDirectionVector(hero.direction);
+    dogsImpactEffects.push({
+      id: `${dogsFrame.frame}:local-shot:${dogsLastLocalShotAt}`,
+      x: hero.x + dogsFrame.characterWidth / 2 + dx * dogsFrame.characterWidth * 0.9,
+      y: hero.y + dogsFrame.characterHeight / 2 + dy * dogsFrame.characterHeight * 0.9,
+      weapon: weaponSound,
+      ownerFaction: "player",
+      startFrame: dogsFrame.frame,
+    });
+    drawDogsFrame(dogsFrame);
+  }
   if (!playDogsCachedSfxNow(weaponSound, 0.9)) {
     void loadDogsSfx(weaponSound);
   }
@@ -19463,15 +19700,17 @@ function startDogsBufferedSfx(context: AudioContext, buffer: AudioBuffer, gain: 
 
 async function playDogsMusic(track: string, gain = 0.34): Promise<void> {
   const url = dogsMusicAsset(track);
-  if (!url || dogsMusicKey === track) return;
+  if (!url || dogsMusicKey === track || dogsMusicPendingKey === track) return;
+  const requestId = ++dogsMusicRequestId;
+  dogsMusicPendingKey = track;
   try {
     const context = await ensureAudio();
     if (!context) return;
     const buffer = await loadDogsAudioBuffer(url, dogsMusicCache);
-    if (!buffer) {
+    if (!buffer || requestId !== dogsMusicRequestId || !dogsMode) {
       return;
     }
-    stopDogsMusic(false);
+    stopDogsMusic(false, false);
     const source = context.createBufferSource();
     const trackGain = context.createGain();
     source.buffer = buffer;
@@ -19499,6 +19738,10 @@ async function playDogsMusic(track: string, gain = 0.34): Promise<void> {
     source.start();
   } catch {
     pushTrace(`EutherDogs music skipped: ${track}`);
+  } finally {
+    if (requestId === dogsMusicRequestId) {
+      dogsMusicPendingKey = null;
+    }
   }
 }
 
@@ -19506,7 +19749,11 @@ function playDogsMissionMusic(mission: number | null | undefined): void {
   void playDogsMusic(dogsMissionMusicKey(mission), 0.34);
 }
 
-function stopDogsMusic(clearKey = true): void {
+function stopDogsMusic(clearKey = true, cancelPending = true): void {
+  if (cancelPending) {
+    dogsMusicRequestId += 1;
+    dogsMusicPendingKey = null;
+  }
   const source = dogsMusicSource;
   const gain = dogsMusicGain;
   dogsMusicSource = null;
@@ -19531,6 +19778,18 @@ function stopDogsMusic(clearKey = true): void {
     gain?.disconnect();
   } catch {
     // Already disconnected.
+  }
+}
+
+function maintainDogsMusic(frame: DogsCoreFrame): void {
+  const now = performance.now();
+  if (now - dogsLastMusicHealthCheckAt < 1000) return;
+  dogsLastMusicHealthCheckAt = now;
+  if (audioContext?.state === "suspended") {
+    void audioContext.resume().catch(() => undefined);
+  }
+  if (!dogsMusicSource && !dogsMusicPendingKey) {
+    playDogsMissionMusic(frame.summary.mission);
   }
 }
 
@@ -19578,19 +19837,44 @@ function updateDogsConsole(frame: DogsCoreFrame): void {
   const clock = dogsClockSource(frame.summary);
   const weaponIcon = dogsWeaponAsset(hero?.activeWeapon);
   const queueLeft = dogsQueueLeft(frame);
-  eutherDogsRxLeft.textContent = `${frame.summary.mission}/${frame.summary.maxMission}`;
-  eutherDogsTargetsLeft.textContent = String(queueLeft);
-  eutherDogsCash.textContent = `$${frame.summary.cash}`;
+  const rxText = `${frame.summary.mission}/${frame.summary.maxMission}`;
+  const targetsText = String(queueLeft);
+  const cashText = `$${frame.summary.cash}`;
+  const clockText = formatDogsClock(clock.ticks);
+  const weaponIconValue = weaponIcon ? `url("${weaponIcon}")` : "none";
+  const alertText = frame.summary.bossActive
+    ? `BOSS:${frame.summary.bossName ?? "NGR3"}`
+    : status === "RUNNING" ? `Mission ${frame.summary.mission}/${frame.summary.maxMission}` : `Mission ${status}`;
+  const hot = queueLeft > 0 && frame.summary.status === "running";
+  const signature = [
+    rxText,
+    targetsText,
+    cashText,
+    clock.label,
+    clockText,
+    weapon,
+    weaponIconValue,
+    alertText,
+    healthPercent,
+    hot,
+    queueLeft > 0,
+    Boolean(frame.summary.bossActive),
+    frame.summary.status !== "running",
+  ].join("\0");
+  if (signature === dogsLastConsoleSignature) {
+    return;
+  }
+  dogsLastConsoleSignature = signature;
+  eutherDogsRxLeft.textContent = rxText;
+  eutherDogsTargetsLeft.textContent = targetsText;
+  eutherDogsCash.textContent = cashText;
   eutherDogsClockLabel.textContent = clock.label;
-  eutherDogsClock.textContent = formatDogsClock(clock.ticks);
+  eutherDogsClock.textContent = clockText;
   eutherDogsWeapon.textContent = weapon;
-  eutherDogsWeapon.style.setProperty("--dogs-active-weapon", weaponIcon ? `url("${weaponIcon}")` : "none");
-  eutherDogsAlert.textContent =
-    frame.summary.bossActive
-      ? `BOSS:${frame.summary.bossName ?? "NGR3"}`
-      : status === "RUNNING" ? `Mission ${frame.summary.mission}/${frame.summary.maxMission}` : `Mission ${status}`;
+  eutherDogsWeapon.style.setProperty("--dogs-active-weapon", weaponIconValue);
+  eutherDogsAlert.textContent = alertText;
   eutherDogsHealthFill.style.width = `${healthPercent}%`;
-  eutherDogsLamp.classList.toggle("is-hot", queueLeft > 0 && frame.summary.status === "running");
+  eutherDogsLamp.classList.toggle("is-hot", hot);
   eutherDogsConsole.classList.toggle("is-alert", queueLeft > 0);
   eutherDogsConsole.classList.toggle("is-boss", Boolean(frame.summary.bossActive));
   eutherDogsConsole.classList.toggle("is-closed", frame.summary.status !== "running");
@@ -19609,25 +19893,22 @@ function dogsLocalPlayer(frame: DogsCoreFrame): DogsCoreActor | undefined {
 }
 
 function predictedDogsActor(actor: DogsCoreActor | undefined): DogsCoreActor | undefined {
-  if (!actor || actor.faction !== "player" || dogsInputSeq <= dogsLastAckedInputSeq) {
+  if (!actor) {
     return actor;
   }
-  const dx = Number(inputState.right) - Number(inputState.left);
-  const dy = Number(inputState.down) - Number(inputState.up);
-  if (dx === 0 && dy === 0) {
+  const snapshotAgeTicks = Math.min(2, Math.max(0, (performance.now() - lastDogsSnapshotAt) / (1000 / 60)));
+  const motion = dogsServerActorMotion.get(dogsActorWireKey(actor));
+  if (!motion || (motion.vx === 0 && motion.vy === 0)) {
     return actor;
   }
-  const unacked = Math.min(2, Math.max(1, dogsInputSeq - dogsLastAckedInputSeq));
-  const distance = 1.4 * unacked;
-  const diagonal = dx !== 0 && dy !== 0 ? Math.SQRT1_2 : 1;
   return {
     ...actor,
-    x: actor.x + Math.round(dx * distance * diagonal),
-    y: actor.y + Math.round(dy * distance * diagonal),
+    x: actor.x + motion.vx * snapshotAgeTicks,
+    y: actor.y + motion.vy * snapshotAgeTicks,
   };
 }
 
-function smoothDogsActor(actor: DogsCoreActor, isLocalPlayer: boolean): DogsCoreActor {
+function smoothDogsActor(actor: DogsCoreActor): DogsCoreActor {
   const key = `${actor.faction}:${actor.id}`;
   const previous = dogsRenderActorPositions.get(key);
   if (!previous) {
@@ -19640,10 +19921,10 @@ function smoothDogsActor(actor: DogsCoreActor, isLocalPlayer: boolean): DogsCore
     dogsRenderActorPositions.set(key, { x: actor.x, y: actor.y });
     return actor;
   }
-  const elapsedFrames = Math.min(3, Math.max(0.5, (performance.now() - dogsLastRenderAt) / (1000 / 60)));
   const distance = Math.hypot(dx, dy);
-  const maxStep = (isLocalPlayer ? 3.4 : 3.0) * elapsedFrames;
-  const step = distance <= maxStep || distance === 0 ? 1 : maxStep / distance;
+  const elapsedMs = Math.min(50, Math.max(4, performance.now() - dogsLastRenderAt));
+  const responseMs = 30;
+  const step = distance < 0.04 ? 1 : 1 - Math.exp(-elapsedMs / responseMs);
   const x = previous.x + dx * step;
   const y = previous.y + dy * step;
   const smoothed = { x, y };
@@ -20305,18 +20586,39 @@ function hideDogsMenu(): void {
 async function startDogsShift(): Promise<void> {
   await preloadDogsVisualAssets();
   await ensureAudio();
-  hideDogsMenu();
-  hideDogsInventory();
   if (controlsOpen) {
     closeControls();
   }
   ui.playing = true;
-  ui.status = "DOGS RUNNING";
+  ui.status = "DOGS SYNCING";
   playToggle.textContent = "Pause";
-  startDogsSnapshotStream();
-  nextFrameDue = performance.now();
+  eutherDogsStartShift.disabled = true;
+  eutherDogsStartShift.textContent = "SYNC";
+  const streamStartFrame = dogsFrame?.frame ?? -1;
   renderUi();
+  startDogsSnapshotStream();
+  await waitForDogsStreamFrame(streamStartFrame, 1200);
+  nextFrameDue = performance.now();
   void animationLoop();
+  await waitForDogsRenderWarmup();
+  hideDogsMenu();
+  hideDogsInventory();
+  ui.status = "DOGS RUNNING";
+}
+
+async function waitForDogsStreamFrame(startFrame: number, timeoutMs: number): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (dogsMode && ui.playing && (dogsFrame?.frame ?? -1) <= startFrame && performance.now() < deadline) {
+    await sleep(16);
+  }
+}
+
+async function waitForDogsRenderWarmup(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
 }
 
 function renderDogsMenu(): void {
@@ -20638,6 +20940,7 @@ function setDogsAssetMode(mode: DogsAssetMode): void {
   localStorage.setItem(dogsAssetModeStorageKey, mode);
   dogsImageCache.clear();
   dogsImageLoadPromises.clear();
+  dogsStaticWorldCache = null;
   dogsSfxCache.clear();
   dogsPreloadedAssetMode = null;
   dogsPreloadedAudioKey = null;
@@ -20822,6 +21125,7 @@ function leaveDogsMode(): void {
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
+  dogsLastMusicHealthCheckAt = 0;
   dogsInspectionAlertStartFrame = -1;
   dogsInspectionAlertUntilFrame = -1;
   dogsInspectionAlertTitle = "INSPECTION!!!";
@@ -20864,10 +21168,15 @@ function resetDogsMode(): void {
 
 async function runDogsFrame(): Promise<void> {
   const started = performance.now();
+  const previousFrame = dogsFrame;
   const previousFrameNumber = dogsFrame?.frame ?? -1;
   let fetched = started;
   try {
-    dogsFrame = await runDogsCoreFrame();
+    const nextFrame = await runDogsCoreFrame();
+    if (nextFrame !== previousFrame && nextFrame.frame !== previousFrameNumber) {
+      updateDogsServerActorMotion(previousFrame, nextFrame);
+    }
+    dogsFrame = nextFrame;
     fetched = performance.now();
     if (!dogsStream || dogsFrame.frame !== previousFrameNumber) {
       lastDogsSnapshotAt = fetched;
@@ -20894,6 +21203,7 @@ async function runDogsFrame(): Promise<void> {
     resolveDogsLocalExit(dogsFrame);
     lastDogsProcessedFrame = dogsFrame.frame;
   }
+  maintainDogsMusic(dogsFrame);
   const drawStarted = performance.now();
   drawDogsFrame(dogsFrame);
   const done = performance.now();
@@ -20919,18 +21229,34 @@ function startDogsSnapshotStream(): void {
   if (isTauri || ui.runtime !== "bridge" || dogsStream) {
     return;
   }
+  const startedAt = performance.now();
+  dogsLastStreamRestartAt = startedAt;
+  if (lastDogsSnapshotAt === 0) {
+    lastDogsSnapshotAt = startedAt;
+  }
   dogsStream = new EventSource(bridgeUrl(`/eutherdogs/stream?player=${playerPort}`), {
     withCredentials: true,
   });
   dogsStream.onmessage = (event) => {
     try {
-      dogsFrame = mergeDogsStreamFrame(dogsFrame, JSON.parse(event.data) as DogsStreamFrame | DogsCompactStreamFrame);
+      const previousFrame = dogsFrame;
+      const nextFrame = mergeDogsStreamFrame(previousFrame, JSON.parse(event.data) as DogsStreamFrame | DogsCompactStreamFrame);
+      updateDogsServerActorMotion(previousFrame, nextFrame);
+      dogsFrame = nextFrame;
       dogsLastAckedInputSeq = dogsFrame.ackedInputSeq ?? dogsLastAckedInputSeq;
       lastDogsSnapshotAt = performance.now();
       dogsSnapshotMisses = 0;
       ui.transportMode = "DOGS SSE";
     } catch (err) {
       ui.lastError = err instanceof Error ? err.message : String(err);
+      dogsSnapshotMisses += 1;
+      ui.transportMode = "DOGS SSE RESYNC";
+      stopDogsSnapshotStream();
+      window.setTimeout(() => {
+        if (dogsMode && ui.playing && !dogsStream) {
+          startDogsSnapshotStream();
+        }
+      }, 0);
     }
   };
   dogsStream.onerror = () => {
@@ -21024,6 +21350,29 @@ function dogsActorWireKey(actor: Pick<DogsCoreActor, "faction" | "id">): string 
   return `${actor.faction}:${actor.id}`;
 }
 
+function updateDogsServerActorMotion(previous: DogsCoreFrame | null, next: DogsCoreFrame): void {
+  const frameDelta = previous ? Math.max(1, next.frame - previous.frame) : 1;
+  const previousActors = new Map((previous?.characters ?? []).map((actor) => [dogsActorWireKey(actor), actor]));
+  const activeKeys = new Set<string>();
+  for (const actor of next.characters) {
+    const key = dogsActorWireKey(actor);
+    activeKeys.add(key);
+    const old = previousActors.get(key);
+    if (!old || !actor.alive) {
+      dogsServerActorMotion.set(key, { vx: 0, vy: 0 });
+      continue;
+    }
+    const vx = (actor.x - old.x) / frameDelta;
+    const vy = (actor.y - old.y) / frameDelta;
+    dogsServerActorMotion.set(key, Math.hypot(vx, vy) > 8 ? { vx: 0, vy: 0 } : { vx, vy });
+  }
+  for (const key of dogsServerActorMotion.keys()) {
+    if (!activeKeys.has(key)) {
+      dogsServerActorMotion.delete(key);
+    }
+  }
+}
+
 function decodeDogsActorRow(row: unknown): DogsCoreActor | null {
   if (!Array.isArray(row) || row.length < 11) {
     return null;
@@ -21108,11 +21457,16 @@ function stopDogsSnapshotStream(): void {
 function resetDogsRuntimeCaches(stopStream: boolean): void {
   dogsPreviousActorPositions = new Map();
   dogsRenderActorPositions = new Map();
+  dogsActorMovingUntil = new Map();
+  dogsActorWalkStartedAt = new Map();
+  dogsServerActorMotion = new Map();
+  dogsStaticWorldCache = null;
   dogsLastRenderAt = performance.now();
   dogsActorFacings = new Map();
   dogsLastExitReady = false;
   dogsLastPortalHumFrame = -9999;
   dogsPreviousAudioFrame = null;
+  dogsLastMusicHealthCheckAt = 0;
   dogsSawHostileQueue = false;
   dogsTrackedBullets = new Map();
   dogsImpactEffects = [];
@@ -21122,15 +21476,24 @@ function resetDogsRuntimeCaches(stopStream: boolean): void {
   dogsHighscoreSavedName = null;
   lastDogsInputJson = "";
   lastDogsInputSentAt = 0;
+  dogsLastPostedInputSeq = 0;
   lastDogsSnapshotAt = 0;
   dogsSnapshotMisses = 0;
+  dogsLastStreamRestartAt = 0;
   lastDogsProcessedFrame = -1;
   dogsInputSeq = 0;
   dogsLastAckedInputSeq = 0;
-  dogsFireArmed = true;
+  dogsPendingFirePulse = null;
+  dogsPendingInputTelemetry = null;
+  dogsLastFirePulseQueuedAt = 0;
+  dogsGamepadFireSamples.a = 0;
+  dogsGamepadFireSamples.b = 0;
+  dogsGamepadFireLatched.a = false;
+  dogsGamepadFireLatched.b = false;
   dogsLastLocalShotAt = 0;
   dogsLastLocalShotSound = null;
   dogsLastHudMarkup = "";
+  dogsLastConsoleSignature = "";
   if (stopStream) {
     stopDogsSnapshotStream();
   }
@@ -21186,47 +21549,117 @@ async function runDogsCoreFrame(): Promise<DogsCoreFrame> {
   if (isTauri) {
     return await invoke<DogsCoreFrame>("run_eutherdogs_frame", { input });
   }
-  if (dogsStream && dogsFrame) {
+  if (dogsFrame) {
     void syncDogsBridgeInput(input).catch((err) => {
       dogsSnapshotMisses += 1;
       ui.transportMode = "DOGS INPUT HOLD";
       ui.lastError = err instanceof Error ? err.message : String(err);
     });
-    const age = performance.now() - lastDogsSnapshotAt;
-    if (age > 450) {
+    const now = performance.now();
+    const age = now - lastDogsSnapshotAt;
+    if (!dogsStream) {
+      startDogsSnapshotStream();
+    } else if (age > 1000 && now - dogsLastStreamRestartAt > 2000) {
+      dogsLastStreamRestartAt = now;
       stopDogsSnapshotStream();
       ui.transportMode = "DOGS SSE RESTART";
       startDogsSnapshotStream();
     }
-    if (age > 90) {
-      return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
-    }
     return dogsFrame;
   }
   await syncDogsBridgeInput(input);
-  const now = performance.now();
-  if (dogsFrame && now - lastDogsSnapshotAt < 50) {
-    return dogsFrame;
-  }
   return await bridgeJson<DogsCoreFrame>(`/eutherdogs/snapshot?player=${playerPort}`, {}, 180);
 }
 
 function dogsInputForFrame(includeSeq = false): DogsBridgeInput {
-  const input: DogsBridgeInput = { ...inputState, player: playerPort };
-  const fireHeld = input.a || input.b;
-  if (!fireHeld) {
-    dogsFireArmed = true;
-  } else if (!dogsFireArmed) {
-    input.a = false;
-    input.b = false;
-  } else {
-    dogsFireArmed = false;
+  const fire = dogsPendingFirePulse;
+  const inputEvent = dogsPendingInputTelemetry;
+  const input: DogsBridgeInput = {
+    ...inputState,
+    player: playerPort,
+    a: fire?.button === "a",
+    b: fire?.button === "b",
+    ...(fire ? {
+      fireEventId: fire.eventId,
+      fireSession: dogsFireTelemetrySession,
+      fireSource: fire.source,
+      fireQueuedUnixMs: fire.queuedUnixMs,
+      fireKeyboard: fire.keyboard,
+      firePointer: fire.pointer,
+      fireGamepad: fire.gamepad,
+    } : {}),
+    ...(inputEvent ? {
+      fireSession: dogsFireTelemetrySession,
+      inputEventId: inputEvent.eventId,
+      inputEventSource: inputEvent.source,
+      inputEventKind: inputEvent.kind,
+      ...(inputEvent.key === undefined ? {} : { inputEventKey: inputEvent.key }),
+    } : {}),
+  };
+  dogsPendingInputTelemetry = null;
+  if (fire) {
+    dogsPendingFirePulse = null;
     playDogsLocalShotFeedback();
   }
   if (includeSeq) {
     input.seq = dogsInputSeq;
   }
   return input;
+}
+
+function queueDogsFirePulse(
+  button: "a" | "b",
+  source: DogsFireSource,
+  gamepadPressed = gamepadState[button],
+): boolean {
+  const now = performance.now();
+  if (
+    dogsPendingFirePulse
+    || (dogsLastFirePulseQueuedAt > 0 && now - dogsLastFirePulseQueuedAt < 100)
+  ) {
+    return false;
+  }
+  dogsNextFireEventId += 1;
+  dogsPendingFirePulse = {
+    button,
+    source,
+    eventId: dogsNextFireEventId,
+    queuedUnixMs: Date.now(),
+    keyboard: keyboardState[button],
+    pointer: pointerState[button],
+    gamepad: gamepadPressed,
+  };
+  dogsLastFirePulseQueuedAt = now;
+  return true;
+}
+
+function queueDogsInputTelemetry(
+  source: DogsInputTelemetrySource,
+  kind: DogsInputTelemetryKind,
+  key?: string,
+): void {
+  dogsNextInputEventId += 1;
+  dogsPendingInputTelemetry = {
+    eventId: dogsNextInputEventId,
+    source,
+    kind,
+    ...(key === undefined ? {} : { key: dogsTelemetryKeyCode(key) }),
+  };
+}
+
+function dogsTelemetryKeyCode(key: string): number {
+  if (Array.from(key).length === 1) {
+    return key.codePointAt(0) ?? 0;
+  }
+  return {
+    ArrowUp: 0x1_0001,
+    ArrowDown: 0x1_0002,
+    ArrowLeft: 0x1_0003,
+    ArrowRight: 0x1_0004,
+    Enter: 0x1_0005,
+    Shift: 0x1_0006,
+    Escape: 0x1_0007,
+  }[key] ?? 0x1_ffff;
 }
 
 async function syncDogsWeaponSlot(slot: number): Promise<void> {
@@ -21253,22 +21686,40 @@ async function answerDogsInspection(answer: "yes" | "no" | "other"): Promise<voi
 
 async function syncDogsBridgeInput(input: DogsBridgeInput): Promise<void> {
   const now = performance.now();
-  const changedInput = { ...input, seq: undefined };
+  const changedInput = {
+    player: input.player,
+    up: input.up,
+    down: input.down,
+    left: input.left,
+    right: input.right,
+    a: input.a,
+    b: input.b,
+    c: input.c,
+    start: input.start,
+    weaponSlot: input.weaponSlot,
+    inspectionAnswer: input.inspectionAnswer,
+  };
   const nextState = JSON.stringify(changedInput);
-  if (nextState === lastDogsInputJson && now - lastDogsInputSentAt < 120) {
-    return;
-  }
-  if (nextState !== lastDogsInputJson) {
+  const changed = nextState !== lastDogsInputJson;
+  if (changed) {
     dogsInputSeq += 1;
+    lastDogsInputJson = nextState;
+  } else {
+    const confirmedSeq = Math.max(dogsLastAckedInputSeq, dogsLastPostedInputSeq);
+    const retryMs = dogsInputSeq > confirmedSeq ? 250 : 2000;
+    if (now - lastDogsInputSentAt < retryMs) {
+      return;
+    }
   }
-  const payload = { ...input, seq: dogsInputSeq };
+  const sequence = dogsInputSeq;
+  const payload = { ...input, seq: sequence };
   const next = JSON.stringify(payload);
-  lastDogsInputJson = nextState;
   lastDogsInputSentAt = now;
   await bridgeRequest("/eutherdogs/input", {
     method: "POST",
     body: next,
   }, 180);
+  dogsLastPostedInputSeq = Math.max(dogsLastPostedInputSeq, sequence);
 }
 
 async function purchaseDogsCoreItem(itemId: string): Promise<DogsCoreFrame> {
@@ -21296,10 +21747,10 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   const worldW = frame.width * frame.tileWidth;
   const worldH = frame.height * frame.tileHeight;
   const serverPlayer = dogsLocalPlayer(frame);
-  const localPlayerTarget = predictedDogsActor(serverPlayer);
+  const localPlayerTarget = serverPlayer;
   const localPlayer =
     localPlayerTarget && serverPlayer
-      ? smoothDogsActor(localPlayerTarget, true)
+      ? smoothDogsActor(localPlayerTarget)
       : undefined;
   const player = localPlayer ?? frame.characters[0];
   const yScale = eutherDogsRenderYScale;
@@ -21350,10 +21801,10 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const isLocalPlayer = serverActor.id === localPlayerId && serverActor.faction === "player";
     const targetActor = isLocalPlayer
       ? localPlayerTarget ?? serverActor
-      : serverActor;
+      : predictedDogsActor(serverActor) ?? serverActor;
     const actor = isLocalPlayer && localPlayer
       ? localPlayer
-      : smoothDogsActor(targetActor, false);
+      : smoothDogsActor(targetActor);
     if (!actor.alive) continue;
     if (actor.faction === "player" && actor.id !== localPlayerId && dogsPixelVisibility(frame, actor.x, actor.y) < 255) {
       continue;
@@ -21369,19 +21820,37 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
     const y = Math.floor((actor.y - cameraY) * yScale * scale - Math.max(0, spriteH - bodyH));
     const actorKey = `${actor.faction}:${actor.id}`;
     const serverPrevious = dogsPreviousActorPositions.get(actorKey);
-    const moving = Boolean(serverPrevious && (serverPrevious.x !== targetActor.x || serverPrevious.y !== targetActor.y));
+    const serverMoved = Boolean(serverPrevious && (serverPrevious.x !== targetActor.x || serverPrevious.y !== targetActor.y));
+    if (serverMoved) {
+      dogsActorMovingUntil.set(actorKey, renderNow + 180);
+    }
+    const localInputMoving = isLocalPlayer && (inputState.up || inputState.down || inputState.left || inputState.right);
+    const moving = (dogsActorMovingUntil.get(actorKey) ?? 0) > renderNow;
+    if (moving && !dogsActorWalkStartedAt.has(actorKey)) {
+      dogsActorWalkStartedAt.set(actorKey, renderNow);
+    } else if (!moving) {
+      dogsActorWalkStartedAt.delete(actorKey);
+    }
     const serverFacing = dogsActorDirectionFacing(actor);
     const fallbackFacing = dogsActorFacings.get(actorKey) ?? serverFacing;
-    const facing = serverPrevious
-      ? moving
-        ? dogsFacingFromMovement(targetActor.x - serverPrevious.x, targetActor.y - serverPrevious.y, fallbackFacing)
-        : serverFacing
-      : serverFacing;
+    const facing = isLocalPlayer && localInputMoving
+      ? dogsFacingFromMovement(
+          Number(inputState.right) - Number(inputState.left),
+          Number(inputState.down) - Number(inputState.up),
+          fallbackFacing,
+        )
+      : serverPrevious
+        ? moving
+          ? dogsFacingFromMovement(targetActor.x - serverPrevious.x, targetActor.y - serverPrevious.y, fallbackFacing)
+          : serverFacing
+        : serverFacing;
     nextActorPositions.set(actorKey, { x: targetActor.x, y: targetActor.y });
     nextActorFacings.set(actorKey, facing);
     const sheetAsset = dogsActorSheetAsset(actor);
     if (sheetAsset) {
-      const frameColumn = moving ? Math.floor(visualFrame / 8) % 3 : 1;
+      const walkSequence = [0, 1, 2, 1];
+      const walkStartedAt = dogsActorWalkStartedAt.get(actorKey) ?? renderNow;
+      const frameColumn = moving ? walkSequence[Math.floor((renderNow - walkStartedAt) / 100) % walkSequence.length] : 1;
       const frameRow = dogsActorFacingRow(facing);
       const sheetFrameSize = dogsAssetMode === "2x" ? 64 : 32;
       const drewFrame = drawDogsImageFrame(
@@ -21408,13 +21877,19 @@ function drawDogsFrame(frame: DogsCoreFrame | null): void {
   for (const actorKey of Array.from(dogsRenderActorPositions.keys())) {
     if (!nextActorPositions.has(actorKey)) {
       dogsRenderActorPositions.delete(actorKey);
+      dogsActorMovingUntil.delete(actorKey);
+      dogsActorWalkStartedAt.delete(actorKey);
     }
   }
   updateDogsImpactEffects(frame);
   drawDogsImpactEffects(frame, cameraX, cameraY, scale, yScale);
   for (const bullet of frame.bullets) {
-    if (bullet.ownerFaction !== "player" && dogsPixelVisibility(frame, bullet.x, bullet.y) < 255) continue;
-    drawDogsProjectile(bullet, cameraX, cameraY, scale, yScale, visualFrame);
+    const snapshotAgeTicks = Math.min(2, Math.max(0, (renderNow - lastDogsSnapshotAt) / (1000 / 60)));
+    const renderedBullet = snapshotAgeTicks > 0
+      ? { ...bullet, x: bullet.x + bullet.dx * snapshotAgeTicks, y: bullet.y + bullet.dy * snapshotAgeTicks }
+      : bullet;
+    if (renderedBullet.ownerFaction !== "player" && dogsPixelVisibility(frame, renderedBullet.x, renderedBullet.y) < 255) continue;
+    drawDogsProjectile(renderedBullet, cameraX, cameraY, scale, yScale, visualFrame);
   }
   drawDogsVisibilityFog(frame, cameraX, cameraY, scale, yScale, firstTileX, firstTileY, lastTileX, lastTileY);
   drawDogsInspectionDialogues(frame, cameraX, cameraY, scale, yScale);
@@ -21480,6 +21955,7 @@ function setPlayerPort(port: PlayerPort): void {
   localStorage.setItem(playerPortStorageKey, String(port));
   lastInputJson = "";
   lastDogsInputJson = "";
+  dogsLastPostedInputSeq = 0;
   dogsInputSeq = 0;
   dogsLastAckedInputSeq = 0;
   if (dogsMode && ui.runtime === "bridge") {
@@ -22473,6 +22949,93 @@ function hashText(value: string): number {
   return hashBytes(new TextEncoder().encode(value));
 }
 
+function eutherShouldBriefingPath(): string {
+  try {
+    const raw = window.localStorage.getItem("euthershould.place");
+    const place = raw ? JSON.parse(raw) as EutherShouldPlace : null;
+    if (
+      place
+      && !place.home
+      && Number.isFinite(place.latitude)
+      && Number.isFinite(place.longitude)
+    ) {
+      const params = new URLSearchParams({
+        lat: String(place.latitude),
+        lon: String(place.longitude),
+        name: place.name || "Vald plats",
+      });
+      return `/euthershould/api/briefing?${params}`;
+    }
+  } catch {
+    // A damaged browser preference must never disturb the host UI.
+  }
+  return "/euthershould/api/briefing?home=1";
+}
+
+function eutherShouldIconFor(condition: string): string {
+  const value = condition.toLocaleLowerCase("sv");
+  if (value.includes("åska")) return "ϟ";
+  if (value.includes("snö")) return "❉";
+  if (value.includes("regn") || value.includes("dugg")) return "☂";
+  if (value.includes("dimma")) return "≋";
+  if (value.includes("klart")) return "☀";
+  return "◒";
+}
+
+function eutherShouldPrimaryCard(briefing: EutherShouldBriefing): EutherShouldCard | undefined {
+  const headline = briefing.headline.toLocaleLowerCase("sv");
+  const expectedId = headline.includes("klipp")
+    ? "mow"
+    : headline.includes("grill")
+      ? "grill"
+      : headline.includes("plog")
+        ? "plow"
+        : headline.includes("gå ut")
+          ? "outside"
+          : null;
+  if (expectedId) {
+    return briefing.cards.find((card) => card.id === expectedId);
+  }
+  return briefing.cards
+    .filter((card) => card.id !== "plow")
+    .sort((left, right) => right.score - left.score)[0];
+}
+
+async function refreshEutherShouldStrip(): Promise<void> {
+  eutherShouldStrip.classList.add("is-loading");
+  try {
+    const response = await fetch(eutherShouldBriefingPath(), {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`EutherShould HTTP ${response.status}`);
+    }
+    const briefing = await response.json() as EutherShouldBriefing;
+    const primary = eutherShouldPrimaryCard(briefing);
+    eutherShouldIcon.textContent = eutherShouldIconFor(briefing.current.condition);
+    eutherShouldTemperature.textContent = `${Math.round(briefing.current.temperature)}°`;
+    eutherShouldLocation.textContent = briefing.location;
+    eutherShouldHeadline.textContent = briefing.headline.replace(/\.$/, "");
+    eutherShouldWindow.textContent = primary?.window || briefing.lead;
+    eutherShouldStrip.title = briefing.lead;
+    eutherShouldStrip.setAttribute(
+      "aria-label",
+      `${briefing.location}: ${briefing.headline} ${primary?.window || briefing.lead}`,
+    );
+    eutherShouldStrip.classList.remove("is-unavailable");
+  } catch {
+    eutherShouldIcon.textContent = "◌";
+    eutherShouldTemperature.textContent = "--°";
+    eutherShouldLocation.textContent = "Vädret vilar";
+    eutherShouldHeadline.textContent = "öppna EutherShould";
+    eutherShouldWindow.textContent = "Prova den fullständiga prognosen";
+    eutherShouldStrip.title = "EutherShould kunde inte nås just nu";
+    eutherShouldStrip.classList.add("is-unavailable");
+  } finally {
+    eutherShouldStrip.classList.remove("is-loading");
+  }
+}
+
 function startMoleculeField(): void {
   const canvas = document.querySelector<HTMLCanvasElement>("#molecule-field")!;
   const context = canvas.getContext("2d")!;
@@ -22497,6 +23060,10 @@ function startMoleculeField(): void {
   resize();
 
   const draw = (time: number) => {
+    if (dogsMode || document.hidden) {
+      window.requestAnimationFrame(draw);
+      return;
+    }
     const width = window.innerWidth;
     const height = window.innerHeight;
     const protectedRect = screenGlass.getBoundingClientRect();
@@ -22578,6 +23145,12 @@ screenGlass.classList.toggle("has-shader", Boolean(shaderRenderer));
 drawSyntheticFrame();
 renderUi();
 startMoleculeField();
+void refreshEutherShouldStrip();
+window.setInterval(() => {
+  if (document.visibilityState === "visible") {
+    void refreshEutherShouldStrip();
+  }
+}, 10 * 60 * 1000);
 void (async () => {
   if (autoStartEutherDogs) {
     await refreshAuthStatus();
