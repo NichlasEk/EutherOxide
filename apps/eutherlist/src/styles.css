@@ -117,6 +117,27 @@ button {
   font-size: 1.1rem;
 }
 
+.sync-button {
+  flex: 0 0 auto;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.sync-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.sync-button.is-syncing {
+  animation: sync-spin 0.9s linear infinite;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .list-switcher {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr) 44px 44px;

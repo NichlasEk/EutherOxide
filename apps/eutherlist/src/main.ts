@@ -97,6 +97,13 @@ function renderSyncStatus(): void {
   if (status) {
     status.title = syncTitle(syncState);
   }
+  const syncButton = document.querySelector<HTMLButtonElement>("#sync-now");
+  if (syncButton) {
+    const syncing = syncState === "syncing";
+    syncButton.disabled = syncing;
+    syncButton.classList.toggle("is-syncing", syncing);
+    syncButton.setAttribute("aria-busy", syncing ? "true" : "false");
+  }
 }
 
 function rememberActiveServer(serverUrl: string): void {
@@ -181,6 +188,7 @@ function appMarkup(): string {
             <span class="sync-pill is-${syncState}">${syncLabel(syncState)}</span>
             <span class="sync-detail">${escapeHtml(syncDetail(syncState))}</span>
           </div>
+          <button id="sync-now" class="icon-button sync-button${syncState === "syncing" ? " is-syncing" : ""}" type="button" aria-label="Synka nu" title="Synka nu" ${syncState === "syncing" ? "disabled" : ""}>↻</button>
           <button id="settings-open" class="icon-button" type="button" aria-label="Settings">⚙</button>
         </div>
       </header>
@@ -284,6 +292,9 @@ function appIcon(): string {
 }
 
 function bindCommonActions(): void {
+  document.querySelector<HTMLButtonElement>("#sync-now")?.addEventListener("click", () => {
+    void syncNow();
+  });
   document.querySelector<HTMLButtonElement>("#settings-open")?.addEventListener("click", () => {
     settingsOpen = true;
     render();
@@ -328,6 +339,21 @@ function bindCommonActions(): void {
     settingsOpen = false;
     render();
   });
+}
+
+async function syncNow(): Promise<void> {
+  if (!settings.token || syncState === "syncing") {
+    return;
+  }
+  if (syncTimer !== null) {
+    window.clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+  if (store.isDirty()) {
+    await pushLocal();
+    return;
+  }
+  await syncFromStartup();
 }
 
 function bindLoginActions(): void {
