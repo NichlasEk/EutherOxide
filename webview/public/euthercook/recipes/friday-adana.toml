@@ -1,0 +1,116 @@
+id = "friday-adana"
+day = "Fredag"
+mood = "Rökigt & generöst"
+title = "Adana på plåt"
+description = "Lamm och nöt med spiskummin, isotpeppar och ordentlig stekyta. Serveras mitt på bordet med tomatbulgur, sumaklök och en rökig paprikasås."
+image = "./images/friday-adana.webp"
+image_alt = "Adanakebab på spett med bulgur, flatbröd, lök och grillade grönsaker"
+protein = "Lamm & nöt"
+difficulty = "Ledigt"
+total_minutes = 55
+base_servings = 5
+sauce_name = "Rökig paprikasås"
+variation_family = "Runda av med extra yoghurt och hoppa över isotpepparn i såsen."
+variation_original = "Söt rostad paprika, syrlig yoghurt och ett tydligt stråk av rök."
+variation_hot = "Dubbla isotpepparn och riv ner en färsk röd chili."
+tags = ["kebab", "fredag", "lamm", "nöt", "grill"]
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 450
+unit = "g"
+item = "lammfärs"
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 350
+unit = "g"
+item = "nötfärs"
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 5
+unit = "st"
+item = "libabröd"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 2
+unit = "st"
+item = "röda paprikor"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 4
+unit = "st"
+item = "tomater"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 2
+unit = "st"
+item = "rödlökar"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "knippe"
+item = "bladpersilja"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 250
+unit = "g"
+item = "turkisk yoghurt"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 350
+unit = "g"
+item = "bulgur"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "msk"
+item = "tomatpuré"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "spiskummin"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "isotpeppar"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "sumak"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "st"
+item = "citron"
+
+[[steps]]
+title = "Blanda färsen"
+text = "Riv en halv lök fint. Arbeta ihop lamm, nöt, lök, spiskummin, isotpeppar och 1,5 tsk salt tills färsen blir klibbig. Kyl 15 minuter."
+
+[[steps]]
+title = "Rosta såsen"
+text = "Rosta paprikorna hårt under grillelementet. Skala och mixa en paprika med yoghurt, tomatpuré, citron och en nypa isotpeppar."
+
+[[steps]]
+title = "Forma och stek"
+text = "Forma färsen till avlånga kebab runt spett eller direkt på en oljad plåt. Grilla högt i ugnen 10–12 minuter och vänd en gång."
+
+[[steps]]
+title = "Bygg bordet"
+text = "Koka bulgur med tomatpuré. Vänd tunt skivad rödlök med sumak, citron och persilja. Lägg upp allt med varmt bröd och rostade tomater."

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="sv">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="EutherCook sätter ihop levande svenska kokböcker av fristående recept."
+    />
+    <meta name="theme-color" content="#f2eadc" />
+    <title>EutherCook — Kebabhelgen</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/euthercook/" aria-label="EutherCook, startsida">
+        <span class="brand-mark" aria-hidden="true">EC</span>
+        <span>EutherCook</span>
+      </a>
+      <nav aria-label="Huvudmeny">
+        <a href="#helgen">Helgen</a>
+        <a href="#inkopslista">Inköpslista</a>
+        <button class="round-button" id="open-about" type="button" aria-label="Om EutherCook">?</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow" id="book-kicker">Helgkokbok · 3 middagar · 5 personer</p>
+          <h1>Tre kvällar.<br /><em>Tre kebab.</em></h1>
+          <p class="hero-lead" id="book-intro">
+            Från rökig Adana till citronkyckling och söndagens krispiga döner.
+            En helg där varje middag får sin egen sås och karaktär.
+          </p>
+          <div class="prompt-card">
+            <label for="book-prompt">Vad vill du laga?</label>
+            <div class="prompt-row">
+              <textarea id="book-prompt" rows="2">En helgkokbok med kebabtema för 5 personer. Olika kebab och såser fredag, lördag och söndag.</textarea>
+              <button id="compose-book" type="button">
+                <span>Sätt ihop</span>
+                <span aria-hidden="true">↗</span>
+              </button>
+            </div>
+            <p id="prompt-status" role="status">Första utgåvan kan kebab — precis lagom ambitiöst.</p>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="Omslag för Kebabhelgen">
+          <div class="cover-card cover-back" aria-hidden="true"></div>
+          <article class="cover-card cover-front">
+            <img src="./images/friday-adana.webp" alt="Adanakebab med bulgur och grillade grönsaker" />
+            <div class="cover-shade"></div>
+            <div class="cover-topline"><span>Vol. 01</span><span>EutherCook</span></div>
+            <div class="cover-title">
+              <span>Helgboken</span>
+              <strong>Kebab</strong>
+              <small>Fredag — söndag</small>
+            </div>
+          </article>
+          <div class="cover-stamp" aria-hidden="true">5<br /><small>pers</small></div>
+        </div>
+
+        <a class="scroll-cue" href="#helgen">
+          <span>Se helgen</span>
+          <span aria-hidden="true">↓</span>
+        </a>
+      </section>
+
+      <section class="book-tools" aria-label="Anpassa kokboken">
+        <div class="servings-control">
+          <span>Antal vid bordet</span>
+          <div>
+            <button id="servings-minus" type="button" aria-label="Minska antal personer">−</button>
+            <strong id="servings-value">5</strong>
+            <button id="servings-plus" type="button" aria-label="Öka antal personer">+</button>
+          </div>
+        </div>
+        <fieldset class="flavour-control">
+          <legend>Smakläge</legend>
+          <label><input type="radio" name="flavour" value="family" /> Mjuk</label>
+          <label><input type="radio" name="flavour" value="original" checked /> Original</label>
+          <label><input type="radio" name="flavour" value="hot" /> Het</label>
+        </fieldset>
+        <button class="text-button" id="print-book" type="button">Skriv ut boken <span>↗</span></button>
+      </section>
+
+      <section class="weekend" id="helgen">
+        <div class="section-heading">
+          <p class="eyebrow">Din meny</p>
+          <h2>Kebabhelgen</h2>
+          <p>Tre uttryck av samma idé. Varje recept står på egna ben, men råvarorna hjälper varandra genom helgen.</p>
+        </div>
+        <div class="recipe-list" id="recipe-list" aria-live="polite"></div>
+      </section>
+
+      <section class="shopping-section" id="inkopslista">
+        <div class="shopping-intro">
+          <p class="eyebrow">Allt på en gång</p>
+          <h2>En lista.<br />Tre middagar.</h2>
+          <p>
+            Mängderna följer antalet personer ovan. Kryssa medan du handlar —
+            listan stannar kvar i den här webbläsaren.
+          </p>
+          <button class="outline-button" id="clear-shopping" type="button">Rensa kryss</button>
+        </div>
+        <div class="shopping-paper">
+          <div class="paper-header">
+            <span>Inköpslista</span>
+            <span id="shopping-count">0 varor</span>
+          </div>
+          <div id="shopping-list"></div>
+        </div>
+      </section>
+
+      <section class="manifesto">
+        <span class="manifesto-mark">EC</span>
+        <blockquote>
+          “Recepten är byggklossar.<br />
+          <em>Kokboken är ögonblicket.</em>”
+        </blockquote>
+        <p>
+          Varje rätt bor i en egen TOML-fil. EutherCook väljer, skalar och binder ihop dem
+          till en bok efter tema, sällskap och tillfälle.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand footer-brand" href="#top"><span class="brand-mark">EC</span><span>EutherCook</span></a>
+      <p>En del av Eutherfamiljen · Kokboken lever i TOML</p>
+      <a href="#top">Till toppen ↑</a>
+    </footer>
+
+    <dialog id="recipe-dialog">
+      <button class="dialog-close" id="close-recipe" type="button" aria-label="Stäng recept">×</button>
+      <div id="recipe-dialog-content"></div>
+    </dialog>
+
+    <dialog id="about-dialog" class="about-dialog">
+      <button class="dialog-close" id="close-about" type="button" aria-label="Stäng">×</button>
+      <p class="eyebrow">Idén</p>
+      <h2>En kokbok som aldrig behöver bli färdig.</h2>
+      <p>
+        Receptbanken är fristående från böckerna. Samma sås kan följa med till en annan
+        helg, mängder skalar med sällskapet och nästa tema kan byggas utan att gränssnittet skrivs om.
+      </p>
+    </dialog>
+
+    <template id="recipe-card-template">
+      <article class="recipe-card">
+        <div class="recipe-image-wrap">
+          <img class="recipe-image" alt="" />
+          <span class="day-number"></span>
+        </div>
+        <div class="recipe-copy">
+          <p class="recipe-day"></p>
+          <h3></h3>
+          <p class="recipe-description"></p>
+          <div class="recipe-meta"></div>
+          <div class="sauce-callout">
+            <span>Helgens sås</span>
+            <strong></strong>
+            <p></p>
+          </div>
+          <div class="recipe-actions">
+            <button class="primary-button open-recipe" type="button">Öppna receptet <span>↗</span></button>
+            <button class="save-button" type="button" aria-label="Spara recept">♡</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

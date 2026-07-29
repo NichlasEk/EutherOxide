@@ -1,0 +1,116 @@
+id = "sunday-doner"
+day = "Söndag"
+mood = "Krispigt & tryggt"
+title = "Hemmadöner med klyftor"
+description = "Tunt skivad, kryddig biff med krispiga kanter läggs över ugnsrostad potatis. Svensk rosa kebabsås, rödkål och feferoni gör söndagen komplett."
+image = "./images/sunday-doner.webp"
+image_alt = "Skivad dönerkebab med potatisklyftor, pita, rödkål och rosa kebabsås"
+protein = "Nöt"
+difficulty = "Mellan"
+total_minutes = 65
+base_servings = 5
+sauce_name = "Rosa kebabsås"
+variation_family = "Använd mild chilisås och lite extra crème fraiche."
+variation_original = "Krämig, sötsyrlig och precis pepprig nog för svensk kebabnostalgi."
+variation_hot = "Byt halva chilisåsen mot stark ajvar och avsluta med cayenne."
+tags = ["kebab", "söndag", "nöt", "döner", "potatis"]
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 900
+unit = "g"
+item = "lövbiff"
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 5
+unit = "st"
+item = "pitabröd"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1200
+unit = "g"
+item = "fast potatis"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 0.5
+unit = "st"
+item = "rödkålshuvud"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 3
+unit = "st"
+item = "tomater"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "knippe"
+item = "bladpersilja"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 250
+unit = "g"
+item = "turkisk yoghurt"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 200
+unit = "g"
+item = "crème fraiche"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "dl"
+item = "mild chilisås"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "spiskummin"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "paprikapulver"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "tsk"
+item = "torkad oregano"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 200
+unit = "g"
+item = "feferoni"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "msk"
+item = "rödvinsvinäger"
+
+[[steps]]
+title = "Krydda köttet"
+text = "Strimla lövbiffen tunt. Blanda med spiskummin, paprikapulver, oregano, svartpeppar, salt och en skvätt olja."
+
+[[steps]]
+title = "Rosta potatisen"
+text = "Skär potatisen i klyftor, olja och salta. Rosta på 225 grader i 35–40 minuter tills kanterna är mörkt gyllene."
+
+[[steps]]
+title = "Rör rosa sås"
+text = "Blanda yoghurt, crème fraiche och chilisås. Smaka av med svartpeppar, salt och en liten skvätt vinäger."
+
+[[steps]]
+title = "Stek i omgångar"
+text = "Hetta upp en stor panna tills den ryker lätt. Stek köttet i små omgångar så att kanterna blir krispiga. Servera direkt över potatis med tunt skivad rödkål."

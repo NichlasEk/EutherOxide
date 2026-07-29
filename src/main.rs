@@ -1923,6 +1923,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             return send_redirect(stream, 308, &location);
         }
     }
+    if request.method == "GET" && path == "/euthercook" {
+        return send_redirect(stream, 308, "/euthercook/");
+    }
+    if request.method == "GET" && path.starts_with("/euthercook/") {
+        let static_path = if path == "/euthercook/" {
+            "/euthercook/index.html"
+        } else {
+            path
+        };
+        return send_host_static(stream, static_path);
+    }
     let app_token_request =
         host_app_token_path(path) && authenticated_app_user(state, &request)?.is_some();
     let eutherpal_public_request = is_eutherpal_proxy_path(path)
