@@ -8689,6 +8689,13 @@ const appDownloads: AppDownload[] = [
     status: "Test APK · No network permission",
   },
   {
+    title: "EutherTime",
+    detail: "Cyberpunk clock, exact alarms, countdowns and Egg Protocol",
+    platform: "Android phone · Test",
+    href: "/downloads/EutherTime-0.1.0-debug.apk",
+    status: "Test APK · No network permission",
+  },
+  {
     title: "EutherWire",
     detail: "Offline installation checklist for electrical, cable and room projects",
     platform: "Android phone · Test",
