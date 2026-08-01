@@ -8696,6 +8696,13 @@ const appDownloads: AppDownload[] = [
     status: "Test APK · v0.1.1 · No network permission",
   },
   {
+    title: "EutherPing",
+    detail: "Cyberpunk SMS with sonar threads and a future private channel",
+    platform: "Android phone · SMS beta",
+    href: "/downloads/EutherPing-0.2.0-debug.apk",
+    status: "Test APK · v0.2.0 · No internet permission",
+  },
+  {
     title: "EutherWire",
     detail: "Offline installation checklist for electrical, cable and room projects",
     platform: "Android phone · Test",

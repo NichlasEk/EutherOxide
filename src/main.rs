@@ -87,6 +87,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.1.1-debug.apk";
+const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.2.0-debug.apk";
 const LEGACY_EUTHERTIME_0_1_0_APK_PATH: &str = "/home/nichlas/EutherTime-0.1.0-debug.apk";
 const DEFAULT_EUTHERWIRE_APK_PATH: &str = "/home/nichlas/EutherWire-0.1.0-debug.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
@@ -2117,6 +2118,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("GET", path) if is_euthertime_apk_download_path(path) => {
             send_euthertime_apk(stream, path)
+        }
+        ("GET", path) if is_eutherping_apk_download_path(path) => {
+            send_eutherping_apk(stream, path)
         }
         ("GET", path) if is_eutherwire_apk_download_path(path) => send_eutherwire_apk(stream, path),
         ("GET", path) if is_eutherpal_mobile_apk_download_path(path) => {
@@ -10897,6 +10901,34 @@ fn is_euthertime_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_eutherping_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let apk_path = env::var("EUTHERPING_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPING_APK_PATH));
+    let download_filename = if path == "/downloads/EutherPing-0.2.0-debug.apk" {
+        "EutherPing-0.2.0-debug.apk"
+    } else {
+        "EutherPing-debug.apk"
+    };
+    send_android_apk(
+        stream,
+        &apk_path,
+        download_filename,
+        "EutherPing APK is not available",
+    )
+}
+
+fn is_eutherping_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherping.apk"
+            | "/downloads/EutherPing.apk"
+            | "/downloads/EutherPing-debug.apk"
+            | "/downloads/EutherPing-0.2.0-debug.apk"
+            | "/downloads/eutherping-debug.apk"
+    )
+}
+
 fn send_eutherwire_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let apk_path = env::var("EUTHERWIRE_APK_PATH")
         .map(PathBuf::from)
@@ -10976,6 +11008,7 @@ fn is_android_apk_download_path(path: &str) -> bool {
         || is_eutherid_apk_download_path(path)
         || is_eutherboard_apk_download_path(path)
         || is_euthertime_apk_download_path(path)
+        || is_eutherping_apk_download_path(path)
         || is_eutherwire_apk_download_path(path)
         || is_eutherpal_mobile_apk_download_path(path)
         || is_eutherpal_tv_apk_download_path(path)
@@ -23210,6 +23243,22 @@ mod tests {
         ));
         assert!(!is_euthertime_apk_download_path(
             "/downloads/EutherTime-0.2.0-debug.apk"
+        ));
+    }
+
+    #[test]
+    fn eutherping_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_eutherping_apk_download_path(
+            "/downloads/EutherPing-0.2.0-debug.apk"
+        ));
+        assert!(is_eutherping_apk_download_path(
+            "/downloads/EutherPing-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/EutherPing-0.2.0-debug.apk"
+        ));
+        assert!(!is_eutherping_apk_download_path(
+            "/downloads/EutherPing-0.3.0-debug.apk"
         ));
     }
 
