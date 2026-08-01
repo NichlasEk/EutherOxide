@@ -87,10 +87,11 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.1.1-debug.apk";
-const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.3.1-debug.apk";
+const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.3.2-debug.apk";
 const LEGACY_EUTHERPING_0_2_0_APK_PATH: &str = "/home/nichlas/EutherPing-0.2.0-debug.apk";
 const LEGACY_EUTHERPING_0_2_2_APK_PATH: &str = "/home/nichlas/EutherPing-0.2.2-debug.apk";
 const LEGACY_EUTHERPING_0_3_0_APK_PATH: &str = "/home/nichlas/EutherPing-0.3.0-debug.apk";
+const LEGACY_EUTHERPING_0_3_1_APK_PATH: &str = "/home/nichlas/EutherPing-0.3.1-debug.apk";
 const LEGACY_EUTHERTIME_0_1_0_APK_PATH: &str = "/home/nichlas/EutherTime-0.1.0-debug.apk";
 const DEFAULT_EUTHERWIRE_APK_PATH: &str = "/home/nichlas/EutherWire-0.1.0-debug.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
@@ -10924,12 +10925,17 @@ fn send_eutherping_apk(
             PathBuf::from(LEGACY_EUTHERPING_0_3_0_APK_PATH),
             "EutherPing-0.3.0-debug.apk",
         )
+    } else if path == "/downloads/EutherPing-0.3.1-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERPING_0_3_1_APK_PATH),
+            "EutherPing-0.3.1-debug.apk",
+        )
     } else {
         let apk_path = env::var("EUTHERPING_APK_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPING_APK_PATH));
-        let download_filename = if path == "/downloads/EutherPing-0.3.1-debug.apk" {
-            "EutherPing-0.3.1-debug.apk"
+        let download_filename = if path == "/downloads/EutherPing-0.3.2-debug.apk" {
+            "EutherPing-0.3.2-debug.apk"
         } else {
             "EutherPing-debug.apk"
         };
@@ -10954,6 +10960,7 @@ fn is_eutherping_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherPing-0.2.2-debug.apk"
             | "/downloads/EutherPing-0.3.0-debug.apk"
             | "/downloads/EutherPing-0.3.1-debug.apk"
+            | "/downloads/EutherPing-0.3.2-debug.apk"
             | "/downloads/eutherping-debug.apk"
     )
 }
@@ -23350,6 +23357,9 @@ mod tests {
         ));
         assert!(is_eutherping_apk_download_path(
             "/downloads/EutherPing-0.3.1-debug.apk"
+        ));
+        assert!(is_eutherping_apk_download_path(
+            "/downloads/EutherPing-0.3.2-debug.apk"
         ));
         assert!(!is_eutherping_apk_download_path(
             "/downloads/EutherPing-0.4.0-debug.apk"
