@@ -8690,10 +8690,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherTime",
-    detail: "Cyberpunk clock, exact alarms, countdowns and Egg Protocol",
+    detail: "Cyberpunk clock, discreet pre-alarm notices, countdowns and Egg Protocol",
     platform: "Android phone · Test",
-    href: "/downloads/EutherTime-0.1.0-debug.apk",
-    status: "Test APK · No network permission",
+    href: "/downloads/EutherTime-0.1.1-debug.apk",
+    status: "Test APK · v0.1.1 · No network permission",
   },
   {
     title: "EutherWire",
