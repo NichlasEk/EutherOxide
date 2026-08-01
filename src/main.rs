@@ -2121,7 +2121,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_euthertime_apk(stream, path)
         }
         ("GET", path) if is_eutherping_apk_download_path(path) => {
-            send_eutherping_apk(stream, path)
+            send_eutherping_apk(stream, &request, path)
         }
         ("GET", path) if is_eutherwire_apk_download_path(path) => send_eutherwire_apk(stream, path),
         ("GET", path) if is_eutherpal_mobile_apk_download_path(path) => {
@@ -10902,7 +10902,11 @@ fn is_euthertime_apk_download_path(path: &str) -> bool {
     )
 }
 
-fn send_eutherping_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+fn send_eutherping_apk(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    path: &str,
+) -> io::Result<()> {
     let (apk_path, download_filename) = if path == "/downloads/EutherPing-0.2.0-debug.apk" {
         (
             PathBuf::from(LEGACY_EUTHERPING_0_2_0_APK_PATH),
@@ -10919,11 +10923,12 @@ fn send_eutherping_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         };
         (apk_path, download_filename)
     };
-    send_android_apk(
+    send_android_apk_with_range(
         stream,
         &apk_path,
         download_filename,
         "EutherPing APK is not available",
+        header_value(request, "Range"),
     )
 }
 
@@ -11030,6 +11035,22 @@ fn send_android_apk(
     download_filename: &str,
     missing_message: &str,
 ) -> io::Result<()> {
+    send_android_apk_with_range(
+        stream,
+        apk_path,
+        download_filename,
+        missing_message,
+        None,
+    )
+}
+
+fn send_android_apk_with_range(
+    stream: &mut TcpStream,
+    apk_path: &Path,
+    download_filename: &str,
+    missing_message: &str,
+    range_header: Option<&str>,
+) -> io::Result<()> {
     let bytes = match fs::read(&apk_path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -11038,6 +11059,23 @@ fn send_android_apk(
         Err(err) => return Err(err),
     };
     let disposition = format!("attachment; filename=\"{download_filename}\"");
+    if let Some((start, end)) = parse_download_byte_range(range_header, bytes.len()) {
+        let chunk = &bytes[start..=end];
+        let content_range = format!("bytes {start}-{end}/{}", bytes.len());
+        return send_response_with_headers(
+            stream,
+            206,
+            "application/vnd.android.package-archive",
+            chunk,
+            &[
+                ("Content-Disposition", disposition.as_str()),
+                ("Accept-Ranges", "bytes"),
+                ("Content-Range", content_range.as_str()),
+                ("Cache-Control", "no-store, max-age=0"),
+                ("Pragma", "no-cache"),
+            ],
+        );
+    }
     send_response_with_headers(
         stream,
         200,
@@ -11045,10 +11083,32 @@ fn send_android_apk(
         &bytes,
         &[
             ("Content-Disposition", disposition.as_str()),
+            ("Accept-Ranges", "bytes"),
             ("Cache-Control", "no-store, max-age=0"),
             ("Pragma", "no-cache"),
         ],
     )
+}
+
+fn parse_download_byte_range(range_header: Option<&str>, total: usize) -> Option<(usize, usize)> {
+    if total == 0 {
+        return None;
+    }
+    let range = range_header?.strip_prefix("bytes=")?;
+    if range.contains(',') {
+        return None;
+    }
+    let (start_raw, end_raw) = range.split_once('-')?;
+    let start = start_raw.trim().parse::<usize>().ok()?;
+    if start >= total {
+        return None;
+    }
+    let end = if end_raw.trim().is_empty() {
+        total - 1
+    } else {
+        end_raw.trim().parse::<usize>().ok()?.min(total - 1)
+    };
+    (start <= end).then_some((start, end))
 }
 
 fn proxy_eutherbooks_request(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
@@ -17553,6 +17613,7 @@ fn send_response_with_headers(
         .any(|(name, _)| name.eq_ignore_ascii_case("Cache-Control"));
     let reason = match status {
         200 => "OK",
+        206 => "Partial Content",
         303 => "See Other",
         308 => "Permanent Redirect",
         204 => "No Content",
@@ -23273,6 +23334,15 @@ mod tests {
         assert!(!is_eutherping_apk_download_path(
             "/downloads/EutherPing-0.3.0-debug.apk"
         ));
+        assert_eq!(
+            parse_download_byte_range(Some("bytes=1024-2047"), 4096),
+            Some((1024, 2047))
+        );
+        assert_eq!(
+            parse_download_byte_range(Some("bytes=2048-"), 4096),
+            Some((2048, 4095))
+        );
+        assert_eq!(parse_download_byte_range(Some("bytes=4096-"), 4096), None);
     }
 
     #[test]
