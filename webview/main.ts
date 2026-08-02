@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherPing",
-    detail: "Cyberpunk SMS with phonebook sonar and one-SMS Secure Ping pairing",
+    detail: "Cyberpunk messaging with ordinary SMS under Signals and encrypted identities under Vessels",
     platform: "Android phone · SMS + Secure Beta",
-    href: "/downloads/EutherPing-0.3.3-debug.apk",
-    status: "Test APK · v0.3.3 · Visible Secure Invite · No internet permission",
+    href: "/downloads/EutherPing-0.4.0-debug.apk",
+    status: "Test APK · v0.4.0 · Signals/Vessels split · No internet permission",
   },
   {
     title: "EutherWire",
