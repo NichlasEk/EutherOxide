@@ -8699,8 +8699,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherPing",
     detail: "Cyberpunk messaging with carrier SMS/MMS under Signals and encrypted text, images and files under Vessels",
     platform: "Android phone · SMS + Secure Beta",
-    href: "/downloads/EutherPing-0.8.6-debug.apk",
-    status: "Test APK · v0.8.6 · Secure frame replay protection",
+    href: "/downloads/EutherPing-0.8.7-debug.apk",
+    status: "Test APK · v0.8.7 · Fail-closed identity-change review",
   },
   {
     title: "EutherWire",
