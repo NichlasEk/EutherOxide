@@ -87,7 +87,8 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.4.0-beta3-debug.apk";
-const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.12-debug.apk";
+const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.13-debug.apk";
+const LEGACY_EUTHERPING_0_8_12_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.12-debug.apk";
 const LEGACY_EUTHERPING_0_8_11_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.11-debug.apk";
 const LEGACY_EUTHERPING_0_8_10_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.10-debug.apk";
 const LEGACY_EUTHERPING_0_8_9_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.9-debug.apk";
@@ -11178,12 +11179,17 @@ fn send_eutherping_apk(
             PathBuf::from(LEGACY_EUTHERPING_0_8_11_APK_PATH),
             "EutherPing-0.8.11-debug.apk",
         )
+    } else if path == "/downloads/EutherPing-0.8.12-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERPING_0_8_12_APK_PATH),
+            "EutherPing-0.8.12-debug.apk",
+        )
     } else {
         let apk_path = env::var("EUTHERPING_APK_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPING_APK_PATH));
-        let download_filename = if path == "/downloads/EutherPing-0.8.12-debug.apk" {
-            "EutherPing-0.8.12-debug.apk"
+        let download_filename = if path == "/downloads/EutherPing-0.8.13-debug.apk" {
+            "EutherPing-0.8.13-debug.apk"
         } else {
             "EutherPing-debug.apk"
         };
@@ -11241,6 +11247,7 @@ fn is_eutherping_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherPing-0.8.10-debug.apk"
             | "/downloads/EutherPing-0.8.11-debug.apk"
             | "/downloads/EutherPing-0.8.12-debug.apk"
+            | "/downloads/EutherPing-0.8.13-debug.apk"
             | "/downloads/eutherping-debug.apk"
     )
 }
@@ -23853,6 +23860,12 @@ mod tests {
         ));
         assert!(is_android_apk_download_path(
             "/downloads/EutherPing-0.8.12-debug.apk"
+        ));
+        assert!(is_eutherping_apk_download_path(
+            "/downloads/EutherPing-0.8.13-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/EutherPing-0.8.13-debug.apk"
         ));
         assert_eq!(
             parse_download_byte_range(Some("bytes=1024-2047"), 4096),
