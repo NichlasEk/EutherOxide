@@ -87,7 +87,8 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.4.0-beta4-debug.apk";
-const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.2.0-beta1-debug.apk";
+const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.3.0-beta1-debug.apk";
+const LEGACY_EUTHERVOX_0_2_0_APK_PATH: &str = "/home/nichlas/EutherVox-0.2.0-beta1-debug.apk";
 const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.13-debug.apk";
 const LEGACY_EUTHERPING_0_8_12_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.12-debug.apk";
 const LEGACY_EUTHERPING_0_8_11_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.11-debug.apk";
@@ -11343,14 +11344,18 @@ fn is_eutherpal_tv_apk_download_path(path: &str) -> bool {
 }
 
 fn send_euthervox_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
-    let download_filename = if path == "/downloads/EutherVox-0.2.0-beta1-debug.apk" {
-        "EutherVox-0.2.0-beta1-debug.apk"
-    } else {
-        "EutherVox-debug.apk"
+    let (apk_path, download_filename) = match path {
+        "/downloads/EutherVox-0.3.0-beta1-debug.apk" => {
+            (DEFAULT_EUTHERVOX_APK_PATH, "EutherVox-0.3.0-beta1-debug.apk")
+        }
+        "/downloads/EutherVox-0.2.0-beta1-debug.apk" => {
+            (LEGACY_EUTHERVOX_0_2_0_APK_PATH, "EutherVox-0.2.0-beta1-debug.apk")
+        }
+        _ => (DEFAULT_EUTHERVOX_APK_PATH, "EutherVox-debug.apk"),
     };
     send_android_apk(
         stream,
-        Path::new(DEFAULT_EUTHERVOX_APK_PATH),
+        Path::new(apk_path),
         download_filename,
         "EutherVox APK is not available",
     )
@@ -11361,6 +11366,7 @@ fn is_euthervox_apk_download_path(path: &str) -> bool {
         path,
         "/downloads/EutherVox.apk"
             | "/downloads/EutherVox-debug.apk"
+            | "/downloads/EutherVox-0.3.0-beta1-debug.apk"
             | "/downloads/EutherVox-0.2.0-beta1-debug.apk"
     )
 }
@@ -23651,13 +23657,16 @@ mod tests {
     #[test]
     fn euthervox_apk_uses_only_current_and_compatibility_download_paths() {
         assert!(is_euthervox_apk_download_path(
-            "/downloads/EutherVox-0.2.0-beta1-debug.apk"
+            "/downloads/EutherVox-0.3.0-beta1-debug.apk"
         ));
         assert!(is_euthervox_apk_download_path(
             "/downloads/EutherVox-debug.apk"
         ));
-        assert!(is_android_apk_download_path(
+        assert!(is_euthervox_apk_download_path(
             "/downloads/EutherVox-0.2.0-beta1-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/EutherVox-0.3.0-beta1-debug.apk"
         ));
         assert!(!is_euthervox_apk_download_path(
             "/downloads/EutherVox-0.1.0-debug.apk"

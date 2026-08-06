@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Low-latency Swedish push-to-talk with Skinnskattaren",
+    detail: "Low-latency Swedish voice actions with Skinnskattaren",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.2.0-beta1-debug.apk",
-    status: "Beta APK · v0.2.0-beta.1 · EutherOxide login · WSS",
+    href: "/downloads/EutherVox-0.3.0-beta1-debug.apk",
+    status: "Beta APK · v0.3.0-beta.1 · YouTube Music playback · EutherOxide login · WSS",
   },
   {
     title: "EutherPing",
