@@ -87,6 +87,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.4.0-beta4-debug.apk";
+const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.2.0-beta1-debug.apk";
 const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.13-debug.apk";
 const LEGACY_EUTHERPING_0_8_12_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.12-debug.apk";
 const LEGACY_EUTHERPING_0_8_11_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.11-debug.apk";
@@ -2148,6 +2149,10 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 }),
             )
         }
+        ("GET", "/api/app/euthervox/authorize") => match authenticated_app_user(state, &request)? {
+            Some(_) => send_empty(stream, 204),
+            None => send_error(stream, 401, "login required"),
+        },
         ("POST", "/api/logout") => host_logout(stream, state, &request),
         ("POST", "/api/eutherduke/log") => host_eutherduke_log(stream, state, &request),
         ("POST", "/api/eutherbooks-player/log") => {
@@ -2161,6 +2166,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherid_apk_download_path(path) => send_eutherid_apk(stream, path),
         ("GET", path) if is_eutherboard_apk_download_path(path) => {
             send_eutherboard_apk(stream, path)
+        }
+        ("GET", path) if is_euthervox_apk_download_path(path) => {
+            if require_host_user_or_app(state, &request).is_err() {
+                return send_error(stream, 401, "login required");
+            }
+            send_euthervox_apk(stream, path)
         }
         ("GET", path) if is_euthertime_apk_download_path(path) => {
             send_euthertime_apk(stream, path)
@@ -11331,12 +11342,36 @@ fn is_eutherpal_tv_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_euthervox_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let download_filename = if path == "/downloads/EutherVox-0.2.0-beta1-debug.apk" {
+        "EutherVox-0.2.0-beta1-debug.apk"
+    } else {
+        "EutherVox-debug.apk"
+    };
+    send_android_apk(
+        stream,
+        Path::new(DEFAULT_EUTHERVOX_APK_PATH),
+        download_filename,
+        "EutherVox APK is not available",
+    )
+}
+
+fn is_euthervox_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/EutherVox.apk"
+            | "/downloads/EutherVox-debug.apk"
+            | "/downloads/EutherVox-0.2.0-beta1-debug.apk"
+    )
+}
+
 fn is_android_apk_download_path(path: &str) -> bool {
     is_eutherlist_apk_download_path(path)
         || is_euthersync_apk_download_path(path)
         || is_eutherbooks_player_apk_download_path(path)
         || is_eutherid_apk_download_path(path)
         || is_eutherboard_apk_download_path(path)
+        || is_euthervox_apk_download_path(path)
         || is_euthertime_apk_download_path(path)
         || is_eutherping_apk_download_path(path)
         || is_eutherwire_apk_download_path(path)
@@ -23610,6 +23645,22 @@ mod tests {
         ));
         assert!(is_eutherboard_apk_download_path(
             "/downloads/EutherBoard-0.2.4-debug.apk"
+        ));
+    }
+
+    #[test]
+    fn euthervox_apk_uses_only_current_and_compatibility_download_paths() {
+        assert!(is_euthervox_apk_download_path(
+            "/downloads/EutherVox-0.2.0-beta1-debug.apk"
+        ));
+        assert!(is_euthervox_apk_download_path(
+            "/downloads/EutherVox-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/EutherVox-0.2.0-beta1-debug.apk"
+        ));
+        assert!(!is_euthervox_apk_download_path(
+            "/downloads/EutherVox-0.1.0-debug.apk"
         ));
     }
 

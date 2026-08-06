@@ -8696,6 +8696,13 @@ const appDownloads: AppDownload[] = [
     status: "Beta APK · v0.4.0-beta4 · Visible pre-alarm + persistent Snooze/Dismiss · No network permission",
   },
   {
+    title: "EutherVox",
+    detail: "Low-latency Swedish push-to-talk with Skinnskattaren",
+    platform: "Android phone · Authenticated beta",
+    href: "/downloads/EutherVox-0.2.0-beta1-debug.apk",
+    status: "Beta APK · v0.2.0-beta.1 · EutherOxide login · WSS",
+  },
+  {
     title: "EutherPing",
     detail: "Cyberpunk messaging with carrier SMS/MMS under Signals and encrypted text, images and files under Vessels",
     platform: "Android phone · SMS + Secure Beta",
