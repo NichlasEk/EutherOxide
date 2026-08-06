@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish voice actions with free-form song requests, character-spoken acknowledgements and verified Nest playback",
+    detail: "Swedish voice actions with crash-hardened streaming audio, character-spoken acknowledgements and Nest playback",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.8.0-beta1-debug.apk",
-    status: "Beta APK · v0.8.0-beta.1 · Spoken character comments · Free-form song requests · WSS",
+    href: "/downloads/EutherVox-0.8.1-beta1-debug.apk",
+    status: "Beta APK · v0.8.1-beta.1 · Hardened AudioTrack lifecycle · Spoken character comments · WSS",
   },
   {
     title: "EutherPing",
