@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish voice actions and confirmed private YouTube playlists",
+    detail: "Swedish voice actions with private local playlists and per-user YouTube Music bridging",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.4.0-beta1-debug.apk",
-    status: "Beta APK · v0.4.0-beta.1 · Private playlists · Owner-bound OAuth · WSS",
+    href: "/downloads/EutherVox-0.5.0-beta1-debug.apk",
+    status: "Beta APK · v0.5.0-beta.1 · User-owned TOML playlists · Per-user OAuth · WSS",
   },
   {
     title: "EutherPing",
