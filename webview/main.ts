@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish voice actions with private playlists and voice-directed Nest music casting",
+    detail: "Swedish voice actions with private playlists, MCP tool planning and verified server-directed Nest audio",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.6.0-beta1-debug.apk",
-    status: "Beta APK · v0.6.0-beta.1 · Nest room routing · Manual Cast fallback · WSS",
+    href: "/downloads/EutherVox-0.7.0-beta1-debug.apk",
+    status: "Beta APK · v0.7.0-beta.1 · Clean action lifecycle · Direct Nest audio · WSS",
   },
   {
     title: "EutherPing",
