@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Low-latency Swedish voice actions with Skinnskattaren",
+    detail: "Swedish voice actions and confirmed private YouTube playlists",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.3.0-beta1-debug.apk",
-    status: "Beta APK · v0.3.0-beta.1 · YouTube Music playback · EutherOxide login · WSS",
+    href: "/downloads/EutherVox-0.4.0-beta1-debug.apk",
+    status: "Beta APK · v0.4.0-beta.1 · Private playlists · Owner-bound OAuth · WSS",
   },
   {
     title: "EutherPing",
