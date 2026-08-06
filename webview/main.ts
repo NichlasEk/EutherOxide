@@ -8690,10 +8690,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherTime",
-    detail: "Cyberpunk clock, multi-stage wake sets, progressive alarm profiles, original interface sounds and optional NFC release",
+    detail: "Cyberpunk clock with actionable lock-screen alarms, multi-stage wake sets, progressive sound profiles and optional NFC release",
     platform: "Android phone · Test",
-    href: "/downloads/EutherTime-0.4.0-beta3-debug.apk",
-    status: "Beta APK · v0.4.0-beta3 · Interface audio + progressive alarms + NFC · No network permission",
+    href: "/downloads/EutherTime-0.4.0-beta4-debug.apk",
+    status: "Beta APK · v0.4.0-beta4 · Visible pre-alarm + persistent Snooze/Dismiss · No network permission",
   },
   {
     title: "EutherPing",
