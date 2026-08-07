@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish and English voice conversations with selectable characters, automatic turn-taking and Nest playback",
+    detail: "Swedish and English voice conversations, Nest playback and a local BLE light discovery laboratory",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.13.0-beta2-debug.apk",
-    status: "Beta APK · v0.13.0-beta.2 · Playback backpressure fix · Sherlock English · WSS",
+    href: "/downloads/EutherVox-0.14.0-beta1-debug.apk",
+    status: "Beta APK · v0.14.0-beta.1 · BLE light discovery + GATT diagnostics · Sherlock English · WSS",
   },
   {
     title: "EutherPing",
