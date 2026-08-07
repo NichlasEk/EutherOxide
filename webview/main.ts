@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish and English voice conversations, Nest playback and local Magic Home Wi-Fi light control",
+    detail: "Voice conversations, Nest playback and named room-aware Magic Home lighting with exact color control",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.15.0-beta1-debug.apk",
-    status: "Beta APK · v0.15.0-beta.1 · Magic Home Wi-Fi discovery, control and local setup · WSS",
+    href: "/downloads/EutherVox-0.16.0-beta1-debug.apk",
+    status: "Beta APK · v0.16.0-beta.1 · Named lights, room voice tools, exact color/brightness and effects · WSS",
   },
   {
     title: "EutherPing",
