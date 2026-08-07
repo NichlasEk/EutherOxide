@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish voice conversations with automatic turn-taking, short-term context, streaming replies and Nest playback",
+    detail: "Swedish voice conversations with selectable NST, Lisa and Chatterbox V3 voices, automatic turn-taking and Nest playback",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.9.0-beta1-debug.apk",
-    status: "Beta APK · v0.9.0-beta.1 · Conversation mode · Automatic endpointing · Barge-in · WSS",
+    href: "/downloads/EutherVox-0.10.0-beta1-debug.apk",
+    status: "Beta APK · v0.10.0-beta.1 · Selectable Swedish voices · Pronunciation profiles · NST fallback · WSS",
   },
   {
     title: "EutherPing",
