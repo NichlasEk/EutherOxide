@@ -8697,10 +8697,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Swedish voice conversations with selectable characters, streaming MOSS Nano, automatic turn-taking and Nest playback",
+    detail: "Swedish and English voice conversations with selectable characters, automatic turn-taking and Nest playback",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.12.0-beta1-debug.apk",
-    status: "Beta APK · v0.12.0-beta.1 · Skinnskattaren + Christian · MOSS voice profiles · WSS",
+    href: "/downloads/EutherVox-0.13.0-beta1-debug.apk",
+    status: "Beta APK · v0.13.0-beta.1 · Sherlock English + Swedish input · GrapheneOS Matcha · WSS",
   },
   {
     title: "EutherPing",
