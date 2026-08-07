@@ -87,7 +87,9 @@ const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxid
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.4.0-beta4-debug.apk";
-const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.16.0-beta4-debug.apk";
+const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.16.0-beta5-debug.apk";
+const LEGACY_EUTHERVOX_0_16_0_BETA4_APK_PATH: &str =
+    "/home/nichlas/EutherVox-0.16.0-beta4-debug.apk";
 const LEGACY_EUTHERVOX_0_16_0_BETA3_APK_PATH: &str =
     "/home/nichlas/EutherVox-0.16.0-beta3-debug.apk";
 const LEGACY_EUTHERVOX_0_16_0_BETA2_APK_PATH: &str =
@@ -11386,8 +11388,12 @@ fn is_eutherpal_tv_apk_download_path(path: &str) -> bool {
 
 fn send_euthervox_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let (apk_path, download_filename) = match path {
-        "/downloads/EutherVox-0.16.0-beta4-debug.apk" => (
+        "/downloads/EutherVox-0.16.0-beta5-debug.apk" => (
             DEFAULT_EUTHERVOX_APK_PATH,
+            "EutherVox-0.16.0-beta5-debug.apk",
+        ),
+        "/downloads/EutherVox-0.16.0-beta4-debug.apk" => (
+            LEGACY_EUTHERVOX_0_16_0_BETA4_APK_PATH,
             "EutherVox-0.16.0-beta4-debug.apk",
         ),
         "/downloads/EutherVox-0.16.0-beta3-debug.apk" => (
@@ -11485,6 +11491,7 @@ fn is_euthervox_apk_download_path(path: &str) -> bool {
         path,
         "/downloads/EutherVox.apk"
             | "/downloads/EutherVox-debug.apk"
+            | "/downloads/EutherVox-0.16.0-beta5-debug.apk"
             | "/downloads/EutherVox-0.16.0-beta4-debug.apk"
             | "/downloads/EutherVox-0.16.0-beta3-debug.apk"
             | "/downloads/EutherVox-0.16.0-beta2-debug.apk"
@@ -23785,6 +23792,9 @@ mod tests {
 
     #[test]
     fn euthervox_apk_uses_only_current_and_compatibility_download_paths() {
+        assert!(is_euthervox_apk_download_path(
+            "/downloads/EutherVox-0.16.0-beta5-debug.apk"
+        ));
         assert!(is_euthervox_apk_download_path(
             "/downloads/EutherVox-0.16.0-beta4-debug.apk"
         ));
