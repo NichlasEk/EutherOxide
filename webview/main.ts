@@ -8690,10 +8690,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "BusMancer",
-    detail: "Portable local context scanner with real BLE and Wi-Fi observations, conservative physical-device identity and session-only state",
+    detail: "Portable local context scanner with real BLE, Wi-Fi and USB Host observations, conservative physical-device identity and session-only state",
     platform: "Android phone · Alpha",
-    href: "/downloads/BusMancer-0.1.0-alpha1-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha1 · BLE + Wi-Fi · No network permission",
+    href: "/downloads/BusMancer-0.1.0-alpha2-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha2 · BLE + Wi-Fi + USB Host · No network permission",
   },
   {
     title: "EutherTime",
@@ -8713,8 +8713,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherPing",
     detail: "Cyberpunk messaging with carrier SMS/MMS under Signals and encrypted text, images and files under Vessels",
     platform: "Android phone · SMS + Secure Beta",
-    href: "/downloads/EutherPing-0.8.14-debug.apk",
-    status: "Ratchet Beta · v0.8.14 · Faster complete SMS threads · EP3 attachments",
+    href: "/downloads/EutherPing-0.8.15-debug.apk",
+    status: "Ratchet Beta · v0.8.15 · Own SMS stay read · Complete threads · EP3 attachments",
   },
   {
     title: "EutherWire",
