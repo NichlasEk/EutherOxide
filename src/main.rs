@@ -86,6 +86,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
+const DEFAULT_BUSMANCER_APK_PATH: &str = "/home/nichlas/BusMancer-0.1.0-alpha1-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.4.0-beta4-debug.apk";
 const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.18.0-beta1-debug.apk";
 const LEGACY_EUTHERVOX_0_17_0_BETA1_APK_PATH: &str =
@@ -2211,6 +2212,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherboard_apk_download_path(path) => {
             send_eutherboard_apk(stream, path)
         }
+        ("GET", path) if is_busmancer_apk_download_path(path) => send_busmancer_apk(stream, path),
         ("GET", path) if is_euthervox_apk_download_path(path) => {
             if require_host_user_or_app(state, &request).is_err() {
                 return send_error(stream, 401, "login required");
@@ -10963,6 +10965,33 @@ fn is_eutherboard_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_busmancer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let apk_path = env::var("BUSMANCER_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_BUSMANCER_APK_PATH));
+    let download_filename = if path == "/downloads/BusMancer-0.1.0-alpha1-debug.apk" {
+        "BusMancer-0.1.0-alpha1-debug.apk"
+    } else {
+        "BusMancer-debug.apk"
+    };
+    send_android_apk(
+        stream,
+        &apk_path,
+        download_filename,
+        "BusMancer APK is not available",
+    )
+}
+
+fn is_busmancer_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/busmancer.apk"
+            | "/downloads/BusMancer.apk"
+            | "/downloads/BusMancer-debug.apk"
+            | "/downloads/BusMancer-0.1.0-alpha1-debug.apk"
+    )
+}
+
 fn send_euthertime_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let (apk_path, download_filename) = if path == "/downloads/EutherTime-0.1.0-debug.apk" {
         (
@@ -11536,6 +11565,7 @@ fn is_android_apk_download_path(path: &str) -> bool {
         || is_eutherbooks_player_apk_download_path(path)
         || is_eutherid_apk_download_path(path)
         || is_eutherboard_apk_download_path(path)
+        || is_busmancer_apk_download_path(path)
         || is_euthervox_apk_download_path(path)
         || is_euthertime_apk_download_path(path)
         || is_eutherping_apk_download_path(path)
@@ -23801,6 +23831,22 @@ mod tests {
         ));
         assert!(is_eutherboard_apk_download_path(
             "/downloads/EutherBoard-0.2.4-debug.apk"
+        ));
+    }
+
+    #[test]
+    fn busmancer_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_busmancer_apk_download_path(
+            "/downloads/BusMancer-0.1.0-alpha1-debug.apk"
+        ));
+        assert!(is_busmancer_apk_download_path(
+            "/downloads/BusMancer-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/BusMancer-0.1.0-alpha1-debug.apk"
+        ));
+        assert!(!is_busmancer_apk_download_path(
+            "/downloads/BusMancer-0.2.0-debug.apk"
         ));
     }
 

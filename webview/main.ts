@@ -8689,6 +8689,13 @@ const appDownloads: AppDownload[] = [
     status: "Test APK · No network permission",
   },
   {
+    title: "BusMancer",
+    detail: "Portable local context scanner with real BLE and Wi-Fi observations, conservative physical-device identity and session-only state",
+    platform: "Android phone · Alpha",
+    href: "/downloads/BusMancer-0.1.0-alpha1-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha1 · BLE + Wi-Fi · No network permission",
+  },
+  {
     title: "EutherTime",
     detail: "Cyberpunk clock with actionable lock-screen alarms, multi-stage wake sets, progressive sound profiles and optional NFC release",
     platform: "Android phone · Test",
