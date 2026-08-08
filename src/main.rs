@@ -86,9 +86,11 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_BUSMANCER_APK_PATH: &str = "/home/nichlas/BusMancer-0.1.0-alpha2-debug.apk";
+const DEFAULT_BUSMANCER_APK_PATH: &str = "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const LEGACY_BUSMANCER_0_1_0_ALPHA1_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha1-debug.apk";
+const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
+    "/home/nichlas/BusMancer-0.1.0-alpha2-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.4.0-beta4-debug.apk";
 const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.18.0-beta1-debug.apk";
 const LEGACY_EUTHERVOX_0_17_0_BETA1_APK_PATH: &str =
@@ -10974,12 +10976,17 @@ fn send_busmancer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             PathBuf::from(LEGACY_BUSMANCER_0_1_0_ALPHA1_APK_PATH),
             "BusMancer-0.1.0-alpha1-debug.apk",
         )
+    } else if path == "/downloads/BusMancer-0.1.0-alpha2-debug.apk" {
+        (
+            PathBuf::from(LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH),
+            "BusMancer-0.1.0-alpha2-debug.apk",
+        )
     } else {
         let apk_path = env::var("BUSMANCER_APK_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_BUSMANCER_APK_PATH));
-        let download_filename = if path == "/downloads/BusMancer-0.1.0-alpha2-debug.apk" {
-            "BusMancer-0.1.0-alpha2-debug.apk"
+        let download_filename = if path == "/downloads/BusMancer-0.1.0-alpha3-debug.apk" {
+            "BusMancer-0.1.0-alpha3-debug.apk"
         } else {
             "BusMancer-debug.apk"
         };
@@ -11001,6 +11008,7 @@ fn is_busmancer_apk_download_path(path: &str) -> bool {
             | "/downloads/BusMancer-debug.apk"
             | "/downloads/BusMancer-0.1.0-alpha1-debug.apk"
             | "/downloads/BusMancer-0.1.0-alpha2-debug.apk"
+            | "/downloads/BusMancer-0.1.0-alpha3-debug.apk"
     )
 }
 
@@ -23855,19 +23863,22 @@ mod tests {
     #[test]
     fn busmancer_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_busmancer_apk_download_path(
-            "/downloads/BusMancer-0.1.0-alpha2-debug.apk"
+            "/downloads/BusMancer-0.1.0-alpha3-debug.apk"
         ));
         assert!(is_busmancer_apk_download_path(
             "/downloads/BusMancer-debug.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/BusMancer-0.1.0-alpha2-debug.apk"
+            "/downloads/BusMancer-0.1.0-alpha3-debug.apk"
         ));
         assert!(is_busmancer_apk_download_path(
             "/downloads/BusMancer-0.1.0-alpha1-debug.apk"
         ));
+        assert!(is_busmancer_apk_download_path(
+            "/downloads/BusMancer-0.1.0-alpha2-debug.apk"
+        ));
         assert!(!is_busmancer_apk_download_path(
-            "/downloads/BusMancer-0.1.0-alpha3-debug.apk"
+            "/downloads/BusMancer-0.1.0-alpha4-debug.apk"
         ));
     }
 
