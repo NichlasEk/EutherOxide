@@ -3416,7 +3416,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 return proxy_eutherid_request(stream, &request, &upstream_path, internal_auth);
             }
             if is_euthergate_proxy_path(path) {
-                if let Err(err) = require_host_admin(state, &request) {
+                if !is_public_busmancer_gateway_path(&request.method, path)
+                    && let Err(err) = require_host_admin(state, &request)
+                {
                     return send_error(stream, 403, &err.to_string());
                 }
                 if euthergate_request_requires_eutherid(&request.method, path) {
@@ -13906,6 +13908,17 @@ fn euthergate_upstream_path(path: &str) -> String {
         .to_string()
 }
 
+fn is_public_busmancer_gateway_path(method: &str, path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    matches!(
+        (method, path),
+        ("POST", "/euthergate/api/busmancer/enroll")
+            | ("POST", "/euthergate/api/busmancer/challenge")
+            | ("POST", "/euthergate/api/busmancer/session")
+            | ("GET", "/euthergate/ws/busmancer/terminal")
+    )
+}
+
 fn euthergate_request_requires_eutherid(method: &str, path: &str) -> bool {
     method == "POST" && path == "/euthergate/api/displays/wake"
 }
@@ -13914,7 +13927,10 @@ fn proxy_euthergate_request(stream: &mut TcpStream, request: &HttpRequest) -> io
     if !matches!(request.method.as_str(), "GET" | "POST") {
         return send_error(stream, 405, "method not allowed");
     }
-    if request.method != "GET" && header_value(request, "sec-fetch-site") != Some("same-origin") {
+    if request.method != "GET"
+        && !is_public_busmancer_gateway_path(&request.method, &request.path)
+        && header_value(request, "sec-fetch-site") != Some("same-origin")
+    {
         return send_error(stream, 403, "same-origin admin request required");
     }
     if is_websocket_upgrade(request) {
@@ -23539,6 +23555,30 @@ mod tests {
             "POST",
             "/euthergate/api/status"
         ));
+    }
+
+    #[test]
+    fn busmancer_gateway_public_routes_are_exact_and_minimal() {
+        for path in [
+            "/euthergate/api/busmancer/enroll",
+            "/euthergate/api/busmancer/challenge",
+            "/euthergate/api/busmancer/session",
+        ] {
+            assert!(is_public_busmancer_gateway_path("POST", path));
+        }
+        assert!(is_public_busmancer_gateway_path(
+            "GET",
+            "/euthergate/ws/busmancer/terminal"
+        ));
+        assert!(!is_public_busmancer_gateway_path(
+            "POST",
+            "/euthergate/api/busmancer/enrollment"
+        ));
+        assert!(!is_public_busmancer_gateway_path(
+            "GET",
+            "/euthergate/api/busmancer/enroll"
+        ));
+        assert!(!is_public_busmancer_gateway_path("GET", "/euthergate/"));
     }
 
     #[test]
