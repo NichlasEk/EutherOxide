@@ -8690,10 +8690,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "BusMancer",
-    detail: "Portable local context scanner with real BLE, Wi-Fi and USB Host observations, trusted active-target selection and session-only state",
+    detail: "Portable context node with real BLE, Wi-Fi and USB Host observations, trusted target selection and enrolled EutherGate terminal attachment",
     platform: "Android phone · Alpha",
-    href: "/downloads/BusMancer-0.1.0-alpha3-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha3 · Trusted target banner · No network permission",
+    href: "/downloads/BusMancer-0.1.0-alpha4-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha4 · Android Keystore identity · Signed WSS session",
   },
   {
     title: "EutherTime",
