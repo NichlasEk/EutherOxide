@@ -8706,8 +8706,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherVox",
     detail: "Voice conversations, Nest playback and named room-aware Magic Home lighting with exact color control",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.18.0-beta1-debug.apk",
-    status: "Beta APK · v0.18.0-beta.1 · NEC-TV, tvs.toml, röst och MCP · WSS",
+    href: "/downloads/EutherVox-0.18.0-beta2-debug.apk",
+    status: "Beta APK · v0.18.0-beta.2 · robustare röstkommandon och obrutna kvittenser · WSS",
   },
   {
     title: "EutherPing",
