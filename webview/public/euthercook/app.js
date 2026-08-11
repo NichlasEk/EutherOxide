@@ -105,7 +105,7 @@ function renderRecipes() {
     image.src = recipe.image;
     image.alt = recipe.image_alt;
     card.querySelector(".day-number").textContent = String(index + 1).padStart(2, "0");
-    card.querySelector(".recipe-day").textContent = `${recipe.day} · ${recipe.mood}`;
+    card.querySelector(".recipe-day").textContent = `${recipe.day} · ${recipe.meal} · ${recipe.mood}`;
     card.querySelector("h3").textContent = recipe.title;
     card.querySelector(".recipe-description").textContent = recipe.description;
     card.querySelector(".recipe-meta").innerHTML = [
@@ -166,7 +166,7 @@ function openRecipe(recipe) {
   recipeDialogContent.innerHTML = `
     <div class="dialog-hero"><img src="${escapeHtml(recipe.image)}" alt="${escapeHtml(recipe.image_alt)}" /></div>
     <div class="dialog-body">
-      <p class="eyebrow">${escapeHtml(recipe.day)} · ${state.servings} personer · ${recipe.total_minutes} min</p>
+      <p class="eyebrow">${escapeHtml(recipe.day)} · ${escapeHtml(recipe.meal)} · ${state.servings} personer · ${recipe.total_minutes} min</p>
       <h2>${escapeHtml(recipe.title)}</h2>
       <p>${escapeHtml(recipe.description)}</p>
       <div class="sauce-callout">
@@ -244,8 +244,10 @@ function renderShoppingList() {
 function renderAll() {
   servingsValue.textContent = state.servings;
   document.querySelector(".cover-stamp").innerHTML = `${state.servings}<br><small>pers</small>`;
+  const lunches = state.recipes.filter((recipe) => recipe.meal === "Lunch").length;
+  const dinners = state.recipes.filter((recipe) => recipe.meal === "Middag").length;
   document.querySelector("#book-kicker").textContent =
-    `Helgkokbok · ${state.recipes.length} middagar · ${state.servings} personer`;
+    `Helgkokbok · ${lunches} luncher · ${dinners} middagar · ${state.servings} personer`;
   renderRecipes();
   renderShoppingList();
 }
@@ -287,10 +289,10 @@ function composeFromPrompt() {
   const status = document.querySelector("#prompt-status");
   const people = prompt.match(/(\d{1,2})\s*(?:person|pers)/i);
   if (people) state.servings = Math.max(2, Math.min(12, Number(people[1])));
-  if (!/kebab/i.test(prompt)) {
-    status.textContent = "Den här första utgåvan har bara kebabrecept. Nästa tema kan flytta in i samma receptbank.";
+  if (!/grek|souvlaki|gyros|tzatziki|bläckfisk/i.test(prompt)) {
+    status.textContent = "Den här utgåvan är bunden kring Grekland. Skriv gärna in antal personer så skalar hela helgen.";
   } else {
-    status.textContent = `Klart — kebabhelgen är ombunden för ${state.servings} personer.`;
+    status.textContent = `Klart — den grekiska helgen är ombunden för ${state.servings} personer.`;
   }
   renderAll();
   document.querySelector("#helgen").scrollIntoView({ behavior: "smooth" });

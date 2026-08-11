@@ -1,4 +1,4 @@
-title = "Kebabhelgen"
+title = "En helg i Grekland"
 language = "sv"
-edition = 1
-recipes = ["friday-adana.toml", "saturday-chicken.toml", "sunday-doner.toml"]
+edition = 2
+recipes = ["greek-friday-dakos.toml", "greek-friday-souvlaki.toml", "greek-saturday-spanakopita.toml", "greek-saturday-octopus.toml", "greek-sunday-gyros.toml", "greek-sunday-moussaka.toml"]

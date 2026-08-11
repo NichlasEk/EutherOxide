@@ -1,0 +1,163 @@
+id = "greek-sunday-moussaka"
+day = "Söndag"
+meal = "Middag"
+mood = "Långsamt & ombonat"
+title = "Moussaka för lång söndag"
+description = "Aubergine, potatis och kaneldoftande lammfärs byggs i lager under en gyllene béchamel. En citronig örtsallad bredvid gör finalen både rik och klar."
+image = "./images/greek-sunday-moussaka.webp"
+image_alt = "Grekisk moussaka med lager av aubergine, lammfärs och gyllene béchamel"
+protein = "Lamm"
+difficulty = "Helgprojekt"
+total_minutes = 125
+base_servings = 5
+sauce_name = "Kaneltomat & gyllene béchamel"
+variation_family = "Använd en halv tesked kanel och en mild lagrad ost på toppen."
+variation_original = "Kanel och oregano värmer lammragun medan muskot och ost ger béchamelen djup."
+variation_hot = "Låt chiliflakes fräsa med löken och servera inlagd peperoncini bredvid."
+tags = ["grekiskt", "söndag", "middag", "moussaka", "lamm"]
+
+[[ingredients]]
+group = "Kött"
+amount = 800
+unit = "g"
+item = "lammfärs"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 4
+unit = "st"
+item = "aubergine"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 800
+unit = "g"
+item = "fast potatis"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 2
+unit = "st"
+item = "gul lök"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 4
+unit = "st"
+item = "vitlöksklyftor"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "st"
+item = "romansallad"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "st"
+item = "gurka"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "st"
+item = "citron"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "knippe"
+item = "bladpersilja"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 100
+unit = "g"
+item = "smör"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 8
+unit = "dl"
+item = "mjölk"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 2
+unit = "st"
+item = "ägg"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 150
+unit = "g"
+item = "kefalotyri eller parmesan"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 800
+unit = "g"
+item = "krossade tomater"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "msk"
+item = "tomatpuré"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "dl"
+item = "rött vin"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "dl"
+item = "vetemjöl"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "dl"
+item = "olivolja"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "tsk"
+item = "malen kanel"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "torkad oregano"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 0.5
+unit = "tsk"
+item = "mald muskot"
+
+[[steps]]
+title = "Rosta grönsakerna"
+text = "Skiva aubergine och potatis knappt en centimeter tjockt. Pensla med olivolja, salta och rosta på plåtar i 225 grader 25–30 minuter tills de mjuknat och fått färg."
+
+[[steps]]
+title = "Koka lammragun"
+text = "Fräs hackad lök mjuk, tillsätt vitlök och lammfärs och bryn ordentligt. Rör ner tomatpuré, kanel och oregano. Slå på vin och krossad tomat och sjud utan lock i 25 minuter tills ragun är tjock."
+
+[[steps]]
+title = "Vispa béchamel"
+text = "Smält smöret, vispa ner mjölet och sedan mjölken lite i taget. Sjud under vispning tills såsen är tjock. Ta från värmen och rör ner muskot, hälften av osten och de uppvispade äggen."
+
+[[steps]]
+title = "Bygg och grädda"
+text = "Lägg potatis, hälften av auberginen, all ragu och resten av auberginen i en djup form. Bred över béchamel och strö på resten av osten. Grädda på 200 grader i 35–40 minuter."
+
+[[steps]]
+title = "Vila och servera"
+text = "Låt moussakan vila minst 20 minuter så att lagren sätter sig. Vänd romansallad, gurka och persilja med citron, olivolja och salt och servera bredvid."

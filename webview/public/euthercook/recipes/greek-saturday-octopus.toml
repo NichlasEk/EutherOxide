@@ -1,0 +1,109 @@
+id = "greek-saturday-octopus"
+day = "Lördag"
+meal = "Middag"
+mood = "Havssalt & solnedgång"
+title = "Grillad bläckfisk med fava"
+description = "Mör bläckfisk får rökiga kanter över sammetslen Santorini-fava av gula ärter. Kapris, tomat, rödlök och citron håller den stora lördagsmiddagen klar och salt."
+image = "./images/greek-saturday-octopus.webp"
+image_alt = "Grillade bläckfiskarmar på gulärtskräm med tomat, kapris och citron"
+protein = "Bläckfisk"
+difficulty = "Helgprojekt"
+total_minutes = 105
+base_servings = 5
+sauce_name = "Santorini-fava & kaprissallad"
+variation_family = "Skölj kaprisen och servera rödlök samt chili separat."
+variation_original = "Len gulärtskräm, kolad bläckfisk och en skarp sallad av kapris, tomat och citron."
+variation_hot = "Låt en skivad röd chili gå ner i kaprissalladen och avsluta med chiliolja."
+tags = ["grekiskt", "lördag", "middag", "bläckfisk", "fava"]
+
+[[ingredients]]
+group = "Fisk & skaldjur"
+amount = 1500
+unit = "g"
+item = "rensad åttaarmad bläckfisk"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 300
+unit = "g"
+item = "körsbärstomater"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 2
+unit = "st"
+item = "gul lök"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "st"
+item = "rödlök"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 3
+unit = "st"
+item = "vitlöksklyftor"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 2
+unit = "st"
+item = "citron"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "knippe"
+item = "bladpersilja"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 400
+unit = "g"
+item = "gula splitärter"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 4
+unit = "msk"
+item = "kapris"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1.5
+unit = "dl"
+item = "olivolja"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 3
+unit = "msk"
+item = "rödvinsvinäger"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "st"
+item = "lagerblad"
+
+[[steps]]
+title = "Sjud bläckfisken mör"
+text = "Lägg bläckfisken i en gryta med ett lagerblad, en halverad gul lök och en skvätt vatten. Sjud under lock 55–70 minuter tills den grövsta delen lätt kan stickas med kniv. Låt svalna i spadet."
+
+[[steps]]
+title = "Koka fava"
+text = "Skölj splitärterna och sjud dem med återstående gul lök, två vitlöksklyftor, lagerblad och 1,2 liter vatten i cirka 45 minuter. Skumma och rör då och då."
+
+[[steps]]
+title = "Mixa sidenlent"
+text = "Ta bort lagerbladet. Mixa ärterna med saft från en citron, 0,75 dl olivolja och salt till en tjock, slät kräm. Späd med varmt vatten om det behövs."
+
+[[steps]]
+title = "Blanda kaprissalladen"
+text = "Kvarta tomaterna och blanda med tunt skivad rödlök, kapris, persilja, vinäger, riven vitlök, citronzest och en skvätt olivolja."
+
+[[steps]]
+title = "Grilla hårt"
+text = "Skär loss bläckfiskarmarna, torka dem noga och pensla med olja. Grilla eller stek i glödhet panna 2–3 minuter per sida tills ytan är krispig. Servera direkt över varm fava med kaprissalladen."

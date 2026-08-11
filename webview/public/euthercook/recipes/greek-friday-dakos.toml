@@ -1,0 +1,93 @@
+id = "greek-friday-dakos"
+day = "Fredag"
+meal = "Lunch"
+mood = "Solvarmt & enkelt"
+title = "Dakos med tomat och feta"
+description = "Kretensiska kornskorpor suger upp mogen tomat, olivolja och vinäger utan att tappa sitt bett. Feta, kapris, oliver och en sval gurksallad gör helgens första bord på tjugofem minuter."
+image = "./images/greek-friday-dakos.webp"
+image_alt = "Dakos med riven tomat, feta, kapris, oliver och gurksallad"
+protein = "Vegetarisk"
+difficulty = "Mycket enkel"
+total_minutes = 25
+base_servings = 5
+sauce_name = "Tomat, feta & kapris"
+variation_family = "Skölj kaprisen och lägg oliverna vid sidan så blir sälta och syra mjukare."
+variation_original = "Låt tomatjuice, olivolja och oregano dra in i skorporna men behåll en knaprig kärna."
+variation_hot = "Avsluta med chiliflakes och en extra skvätt pepprig olivolja."
+tags = ["grekiskt", "fredag", "lunch", "vegetariskt", "dakos"]
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 10
+unit = "st"
+item = "kornskorpor eller paximadia"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 750
+unit = "g"
+item = "mogna tomater"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "st"
+item = "gurka"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "st"
+item = "rödlök"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 250
+unit = "g"
+item = "fetaost"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 150
+unit = "g"
+item = "kalamataoliver"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 3
+unit = "msk"
+item = "kapris"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "dl"
+item = "olivolja"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "msk"
+item = "rödvinsvinäger"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "torkad oregano"
+
+[[steps]]
+title = "Riv tomaten"
+text = "Halvera tomaterna och riv köttsidan grovt mot ett rivjärn tills bara skalet återstår. Blanda fruktköttet med hälften av olivoljan, vinäger, oregano, salt och svartpeppar."
+
+[[steps]]
+title = "Väck skorporna"
+text = "Doppa skorporna hastigt i kallt vatten och lägg dem på ett fat. Skeda över tomaten och låt stå 8–10 minuter så att ytan mjuknar men mitten behåller bett."
+
+[[steps]]
+title = "Bygg dakos"
+text = "Smula över feta och fördela kapris, oliver och tunt skivad rödlök. Ringla över resten av olivoljan och dra ett varv med svartpepparkvarnen."
+
+[[steps]]
+title = "Gör salladen"
+text = "Hyvla gurkan, salta lätt och vänd med en sked av tomatdressingen. Servera direkt bredvid dakos."

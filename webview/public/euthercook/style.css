@@ -2,12 +2,12 @@
   color-scheme: light;
   --ink: #1d211d;
   --muted: #65685f;
-  --paper: #f4eee3;
-  --paper-light: #fbf8f1;
-  --green: #173e31;
-  --green-soft: #315d4b;
-  --tomato: #d8583f;
-  --mustard: #e1ad36;
+  --paper: #f2eee4;
+  --paper-light: #fcfaf4;
+  --green: #123f58;
+  --green-soft: #286987;
+  --tomato: #d95f43;
+  --mustard: #e7b83f;
   --line: rgba(29, 33, 29, 0.18);
   --serif: "Fraunces", Georgia, serif;
   --sans: "DM Sans", system-ui, sans-serif;
@@ -29,7 +29,7 @@ body {
   margin: 0;
   min-width: 320px;
   background:
-    radial-gradient(circle at 78% 3%, rgba(225, 173, 54, 0.14), transparent 24rem),
+    radial-gradient(circle at 78% 3%, rgba(42, 117, 153, 0.15), transparent 24rem),
     var(--paper);
 }
 
@@ -675,7 +675,7 @@ button {
   display: grid;
   grid-template-columns: minmax(250px, 0.65fr) minmax(450px, 1fr);
   gap: clamp(50px, 9vw, 150px);
-  background: #e1ad36;
+  background: #e7b83f;
 }
 
 .shopping-intro {

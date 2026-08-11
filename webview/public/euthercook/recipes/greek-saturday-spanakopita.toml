@@ -1,0 +1,121 @@
+id = "greek-saturday-spanakopita"
+day = "Lördag"
+meal = "Lunch"
+mood = "Frasigt & grönt"
+title = "Spanakopita och bysallad"
+description = "Frasig filodeg gömmer spenat, feta, dill och salladslök. En klassisk horiatiki med stora grönsaksbitar gör lunchen frisk nog för en lång eftermiddag."
+image = "./images/greek-saturday-spanakopita.webp"
+image_alt = "Frasiga bitar spanakopita med grekisk tomat- och fetasallad"
+protein = "Vegetarisk"
+difficulty = "Mellan"
+total_minutes = 70
+base_servings = 5
+sauce_name = "Dill, feta & citron"
+variation_family = "Minska dillen något och låt den milda fetan dominera fyllningen."
+variation_original = "Örtig spenat, salt feta och citron får kontrast av riktigt frasig filo."
+variation_hot = "Smula chiliflakes i fyllningen och servera med het honung vid bordet."
+tags = ["grekiskt", "lördag", "lunch", "vegetariskt", "spanakopita"]
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 500
+unit = "g"
+item = "filodeg"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 700
+unit = "g"
+item = "färsk spenat"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "knippe"
+item = "salladslök"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "knippe"
+item = "dill"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 600
+unit = "g"
+item = "mogna tomater"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "st"
+item = "gurka"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "st"
+item = "rödlök"
+
+[[ingredients]]
+group = "Bröd & grönt"
+amount = 1
+unit = "st"
+item = "citron"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 450
+unit = "g"
+item = "fetaost"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 100
+unit = "g"
+item = "smör"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 3
+unit = "st"
+item = "ägg"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 150
+unit = "g"
+item = "kalamataoliver"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 0.75
+unit = "dl"
+item = "olivolja"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "tsk"
+item = "torkad oregano"
+
+[[steps]]
+title = "Torka fyllningen"
+text = "Fräs spenaten i omgångar tills den faller ihop. Låt svalna och krama ur så mycket vätska som möjligt. Hacka grovt."
+
+[[steps]]
+title = "Blanda grönt och feta"
+text = "Blanda spenat med skivad salladslök, hackad dill, 300 g smulad feta, ägg, citronzest, svartpeppar och lite salt."
+
+[[steps]]
+title = "Vik pajen"
+text = "Pensla en form med smält smör. Lägg i hälften av filodegsarken med smör mellan lagren, bred ut fyllningen och täck med resten. Vik in kanterna och skär försiktigt portionsrutor i ytan."
+
+[[steps]]
+title = "Grädda frasig"
+text = "Grädda på 200 grader i 35–40 minuter tills pajen är djupt gyllene. Låt vila 10 minuter före servering."
+
+[[steps]]
+title = "Gör horiatiki"
+text = "Skär tomat och gurka grovt. Vänd med rödlök, oliver, oregano, olivolja och citronsaft. Lägg resterande feta ovanpå i stora bitar."

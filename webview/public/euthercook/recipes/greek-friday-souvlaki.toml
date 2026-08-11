@@ -1,0 +1,115 @@
+id = "greek-friday-souvlaki"
+day = "Fredag"
+meal = "Middag"
+mood = "Citronigt & generöst"
+title = "Kycklingsouvlaki med citronpotatis"
+description = "Oreganodoftande kycklinglår grillas hårt på spett och landar med frasig citronpotatis, varm pita, rödlök och en tjock tzatziki. Fredagsbordet får gärna vara stökigt."
+image = "./images/greek-friday-souvlaki.webp"
+image_alt = "Kycklingsouvlaki med citronpotatis, tzatziki, pita och rödlök"
+protein = "Kyckling"
+difficulty = "Enkel"
+total_minutes = 65
+base_servings = 5
+sauce_name = "Tzatziki & grillad citron"
+variation_family = "Ta en vitlöksklyfta i tzatzikin och servera chilin separat."
+variation_original = "Syrlig, vitlöksdoftande yoghurt möter oregano, grillrök och söt citron."
+variation_hot = "Lägg en tesked chiliflakes i marinaden och toppa tzatzikin med chiliolja."
+tags = ["grekiskt", "fredag", "middag", "souvlaki", "kyckling"]
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 1000
+unit = "g"
+item = "kycklinglårfilé"
+
+[[ingredients]]
+group = "Kött & bröd"
+amount = 5
+unit = "st"
+item = "pitabröd"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1200
+unit = "g"
+item = "fast potatis"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 3
+unit = "st"
+item = "citron"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "st"
+item = "gurka"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "st"
+item = "rödlök"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 5
+unit = "st"
+item = "vitlöksklyftor"
+
+[[ingredients]]
+group = "Frukt & grönt"
+amount = 1
+unit = "knippe"
+item = "bladpersilja"
+
+[[ingredients]]
+group = "Mejeri"
+amount = 500
+unit = "g"
+item = "grekisk yoghurt"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "dl"
+item = "olivolja"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 3
+unit = "tsk"
+item = "torkad oregano"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 2
+unit = "tsk"
+item = "paprikapulver"
+
+[[ingredients]]
+group = "Skafferi"
+amount = 1
+unit = "msk"
+item = "honung"
+
+[[steps]]
+title = "Marinera"
+text = "Skär kycklingen i stora bitar. Blanda med zest och saft från en citron, tre rivna vitlöksklyftor, oregano, paprikapulver, honung, hälften av olivoljan och 2 tsk salt. Marinera medan ugnen blir varm."
+
+[[steps]]
+title = "Rosta potatisen"
+text = "Klyfta potatisen och blanda med saft från en citron, resten av olivoljan, salt och svartpeppar. Rosta på 225 grader i 40–45 minuter och vänd efter halva tiden."
+
+[[steps]]
+title = "Rör tzatziki"
+text = "Riv gurkan grovt, salta och krama ur vätskan. Blanda med yoghurt, två rivna vitlöksklyftor, en skvätt citron, salt och svartpeppar."
+
+[[steps]]
+title = "Grilla spetten"
+text = "Trä kycklingen glest på spett. Grilla, stek eller kör högt under grillelementet 10–12 minuter tills bitarna har ordentlig färg och är genomstekta. Grilla samtidigt citronhalvor."
+
+[[steps]]
+title = "Duka tavernan"
+text = "Värm pitabröden. Lägg upp spett, potatis, tzatziki, persilja och tunt skivad rödlök mitt på bordet och pressa över grillad citron."
