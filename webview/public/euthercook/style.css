@@ -8,6 +8,7 @@
   --green-soft: #286987;
   --tomato: #d95f43;
   --mustard: #e7b83f;
+  --hero-wash: rgba(42, 117, 153, 0.15);
   --line: rgba(29, 33, 29, 0.18);
   --serif: "Fraunces", Georgia, serif;
   --sans: "DM Sans", system-ui, sans-serif;
@@ -15,6 +16,14 @@
   background: var(--paper);
   color: var(--ink);
   font-synthesis: none;
+}
+
+:root[data-concept="kebab-weekend"] {
+  --green: #173e31;
+  --green-soft: #315d4b;
+  --tomato: #d8583f;
+  --mustard: #e1ad36;
+  --hero-wash: rgba(225, 173, 54, 0.14);
 }
 
 * {
@@ -29,7 +38,7 @@ body {
   margin: 0;
   min-width: 320px;
   background:
-    radial-gradient(circle at 78% 3%, rgba(42, 117, 153, 0.15), transparent 24rem),
+    radial-gradient(circle at 78% 3%, var(--hero-wash), transparent 24rem),
     var(--paper);
 }
 
@@ -111,6 +120,35 @@ button {
 .site-header nav a:hover {
   text-decoration: underline;
   text-underline-offset: 5px;
+}
+
+.index-button {
+  min-height: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(252, 250, 244, 0.6);
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.index-button > span:first-child {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+#recipe-index-count {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: var(--green);
+  color: white;
+  font-size: 0.65rem;
+  text-align: center;
 }
 
 .round-button {
@@ -675,7 +713,7 @@ button {
   display: grid;
   grid-template-columns: minmax(250px, 0.65fr) minmax(450px, 1fr);
   gap: clamp(50px, 9vw, 150px);
-  background: #e7b83f;
+  background: var(--mustard);
 }
 
 .shopping-intro {
@@ -856,6 +894,18 @@ dialog::backdrop {
   backdrop-filter: blur(4px);
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .dialog-close {
   position: sticky;
   top: 16px;
@@ -969,6 +1019,229 @@ dialog::backdrop {
   line-height: 1.3;
 }
 
+.index-dialog {
+  width: min(680px, calc(100vw - 28px));
+}
+
+.index-dialog .dialog-close {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.index-dialog-body {
+  padding: clamp(34px, 6vw, 62px);
+}
+
+.index-dialog-body h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(2.7rem, 7vw, 4.8rem);
+  font-weight: 500;
+  letter-spacing: -0.06em;
+  line-height: 0.95;
+}
+
+.index-intro {
+  margin: 18px 0 24px;
+  color: var(--muted);
+}
+
+.index-search {
+  position: relative;
+  display: block;
+}
+
+.index-search input {
+  width: 100%;
+  height: 50px;
+  padding: 0 46px 0 16px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: white;
+  color: var(--ink);
+  outline: none;
+}
+
+.index-search input:focus {
+  box-shadow: inset 0 0 0 2px var(--mustard);
+}
+
+.index-search > span:last-child {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1.25rem;
+}
+
+.index-status {
+  min-height: 18px;
+  margin: 10px 0 14px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.index-results {
+  max-height: min(430px, 54vh);
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+
+.index-section-label {
+  margin: 0;
+  padding: 15px 4px 7px;
+  color: var(--green-soft);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.concept-result {
+  width: 100%;
+  padding: 12px 8px;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 15px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: rgba(40, 105, 135, 0.05);
+  text-align: left;
+  cursor: pointer;
+}
+
+.concept-result:hover,
+.concept-result:focus-visible {
+  background: rgba(231, 184, 63, 0.16);
+}
+
+.concept-result.active {
+  box-shadow: inset 3px 0 var(--tomato);
+}
+
+.concept-result img {
+  width: 92px;
+  height: 62px;
+  object-fit: cover;
+}
+
+.concept-result > span:nth-child(2) {
+  min-width: 0;
+}
+
+.concept-result small,
+.concept-result strong,
+.concept-result > span:nth-child(2) > span {
+  display: block;
+}
+
+.concept-result small {
+  color: var(--tomato);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.concept-result strong {
+  margin: 2px 0;
+  overflow: hidden;
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.concept-result > span:nth-child(2) > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.concept-result > span:last-child {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  font-size: 0.66rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.concept-result.active > span:last-child {
+  border-color: var(--green);
+  background: var(--green);
+  color: white;
+}
+
+.index-result {
+  width: 100%;
+  padding: 10px 4px;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.index-result:hover,
+.index-result:focus-visible {
+  background: rgba(231, 184, 63, 0.12);
+}
+
+.index-result img {
+  width: 64px;
+  height: 50px;
+  object-fit: cover;
+}
+
+.index-result > span:nth-child(2) {
+  min-width: 0;
+}
+
+.index-result small,
+.index-result strong,
+.index-result > span:nth-child(2) > span {
+  display: block;
+}
+
+.index-result small {
+  color: var(--green-soft);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.index-result strong {
+  margin: 2px 0;
+  overflow: hidden;
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.index-result > span:nth-child(2) > span {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.index-result > span:last-child {
+  padding-right: 8px;
+}
+
+.index-empty {
+  padding: 28px 4px;
+  color: var(--muted);
+}
+
 .about-dialog {
   max-width: 620px;
   padding: clamp(34px, 7vw, 75px);
@@ -1050,6 +1323,56 @@ dialog::backdrop {
 
   .site-header nav a {
     display: none;
+  }
+
+  .site-header nav {
+    gap: 9px;
+  }
+
+  .index-button {
+    width: 48px;
+    padding: 0 5px;
+    justify-content: center;
+    gap: 3px;
+  }
+
+  .index-button-label {
+    display: none;
+  }
+
+  #recipe-index-count {
+    min-width: 17px;
+    padding: 1px 4px;
+  }
+
+  .index-dialog-body {
+    padding: 32px 18px 22px;
+  }
+
+  .index-result {
+    grid-template-columns: 54px minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .index-result img {
+    width: 54px;
+    height: 46px;
+  }
+
+  .concept-result {
+    grid-template-columns: 66px minmax(0, 1fr) auto;
+    gap: 10px;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .concept-result img {
+    width: 66px;
+    height: 52px;
+  }
+
+  .concept-result > span:last-child {
+    padding: 4px 5px;
   }
 
   .hero {

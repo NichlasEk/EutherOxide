@@ -1,5 +1,7 @@
 id = "saturday-chicken"
 day = "Lördag"
+meal = "Middag"
+collection = "Kebabhelgen"
 mood = "Ljust & citronigt"
 title = "Citronkyckling på spett"
 description = "Saftig kycklinglårfilé får paprika, citron och vitlök innan den grillas hårt. På bordet: fluffig toum, örtig yoghurt och krispig gurksallad."

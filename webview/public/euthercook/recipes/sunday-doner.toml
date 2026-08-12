@@ -1,5 +1,7 @@
 id = "sunday-doner"
 day = "Söndag"
+meal = "Middag"
+collection = "Kebabhelgen"
 mood = "Krispigt & tryggt"
 title = "Hemmadöner med klyftor"
 description = "Tunt skivad, kryddig biff med krispiga kanter läggs över ugnsrostad potatis. Svensk rosa kebabsås, rödkål och feferoni gör söndagen komplett."

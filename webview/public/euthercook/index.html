@@ -24,6 +24,11 @@
         <span>EutherCook</span>
       </a>
       <nav aria-label="Huvudmeny">
+        <button class="index-button" id="open-recipe-index" type="button" aria-label="Öppna sökbart receptindex">
+          <span aria-hidden="true">⌕</span>
+          <span class="index-button-label">Receptindex</span>
+          <span id="recipe-index-count">0</span>
+        </button>
         <a href="#helgen">Helgen</a>
         <a href="#inkopslista">Inköpslista</a>
         <button class="round-button" id="open-about" type="button" aria-label="Om EutherCook">?</button>
@@ -34,7 +39,7 @@
       <section class="hero" id="top">
         <div class="hero-copy">
           <p class="eyebrow" id="book-kicker">Helgkokbok · 3 luncher · 3 middagar · 5 personer</p>
-          <h1>Tre dagar.<br /><em>Sex grekiska bord.</em></h1>
+          <h1><span id="book-headline">Tre dagar.</span><br /><em id="book-headline-emphasis">Sex grekiska bord.</em></h1>
           <p class="hero-lead" id="book-intro">
             Från solvarm dakos till souvlaki, bläckfisk och söndagens moussaka.
             En helg som rör sig från enkel taverna till lång middag vid havet.
@@ -52,16 +57,16 @@
           </div>
         </div>
 
-        <div class="hero-visual" aria-label="Omslag för En helg i Grekland">
+        <div class="hero-visual" id="book-cover" aria-label="Omslag för En helg i Grekland">
           <div class="cover-card cover-back" aria-hidden="true"></div>
           <article class="cover-card cover-front">
-            <img src="./images/greek-friday-souvlaki.webp" alt="Kycklingsouvlaki med citronpotatis, tzatziki och pitabröd" />
+            <img id="book-cover-image" src="./images/greek-friday-souvlaki.webp" alt="Kycklingsouvlaki med citronpotatis, tzatziki och pitabröd" />
             <div class="cover-shade"></div>
-            <div class="cover-topline"><span>Vol. 02</span><span>EutherCook</span></div>
+            <div class="cover-topline"><span id="book-volume">Vol. 02</span><span>EutherCook</span></div>
             <div class="cover-title">
               <span>Helgboken</span>
-              <strong>Grekland</strong>
-              <small>Fredag — söndag</small>
+              <strong id="book-cover-label">Grekland</strong>
+              <small id="book-schedule">Fredag — söndag</small>
             </div>
           </article>
           <div class="cover-stamp" aria-hidden="true">5<br /><small>pers</small></div>
@@ -94,8 +99,8 @@
       <section class="weekend" id="helgen">
         <div class="section-heading">
           <p class="eyebrow">Din meny</p>
-          <h2>En helg i Grekland</h2>
-          <p>Sex måltider med egen rytm. Citron, oregano, feta, yoghurt och örter vandrar vidare genom helgen så att både smakerna och inköpen hänger ihop.</p>
+          <h2 id="book-title">En helg i Grekland</h2>
+          <p id="book-description">Sex måltider med egen rytm. Citron, oregano, feta, yoghurt och örter vandrar vidare genom helgen så att både smakerna och inköpen hänger ihop.</p>
         </div>
         <div class="recipe-list" id="recipe-list" aria-live="polite"></div>
       </section>
@@ -103,7 +108,7 @@
       <section class="shopping-section" id="inkopslista">
         <div class="shopping-intro">
           <p class="eyebrow">Allt på en gång</p>
-          <h2>En lista.<br />Sex måltider.</h2>
+          <h2>En lista.<br /><span id="shopping-summary">Sex måltider.</span></h2>
           <p>
             Mängderna följer antalet personer ovan. Kryssa medan du handlar —
             listan stannar kvar i den här webbläsaren.
@@ -141,6 +146,22 @@
     <dialog id="recipe-dialog">
       <button class="dialog-close" id="close-recipe" type="button" aria-label="Stäng recept">×</button>
       <div id="recipe-dialog-content"></div>
+    </dialog>
+
+    <dialog id="recipe-index-dialog" class="index-dialog">
+      <button class="dialog-close" id="close-recipe-index" type="button" aria-label="Stäng receptindex">×</button>
+      <div class="index-dialog-body">
+        <p class="eyebrow">Hela receptbanken</p>
+        <h2>Hitta en helg eller rätt</h2>
+        <p class="index-intro">Välj en helgbok som helhet eller öppna ett enskilt recept.</p>
+        <label class="index-search" for="recipe-index-search">
+          <span class="sr-only">Sök bland recepten</span>
+          <input id="recipe-index-search" type="search" placeholder="Sök Kebabhelgen, kyckling, lördag …" autocomplete="off" />
+          <span aria-hidden="true">⌕</span>
+        </label>
+        <p class="index-status" id="recipe-index-status" role="status"></p>
+        <div class="index-results" id="recipe-index-results"></div>
+      </div>
     </dialog>
 
     <dialog id="about-dialog" class="about-dialog">

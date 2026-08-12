@@ -5,7 +5,11 @@ const state = {
   servings: BASE_SERVINGS,
   flavour: "original",
   recipes: [],
-  checked: new Set(JSON.parse(localStorage.getItem("euthercook-shopping") || "[]")),
+  library: [],
+  concepts: [],
+  activeConcept: null,
+  recipeByPath: new Map(),
+  checked: new Set(),
 };
 
 const recipeList = document.querySelector("#recipe-list");
@@ -15,6 +19,10 @@ const shoppingList = document.querySelector("#shopping-list");
 const shoppingCount = document.querySelector("#shopping-count");
 const recipeDialog = document.querySelector("#recipe-dialog");
 const recipeDialogContent = document.querySelector("#recipe-dialog-content");
+const recipeIndexDialog = document.querySelector("#recipe-index-dialog");
+const recipeIndexSearch = document.querySelector("#recipe-index-search");
+const recipeIndexResults = document.querySelector("#recipe-index-results");
+const recipeIndexStatus = document.querySelector("#recipe-index-status");
 const aboutDialog = document.querySelector("#about-dialog");
 
 function stripComment(line) {
@@ -133,6 +141,152 @@ function renderRecipes() {
   observeRecipeCards();
 }
 
+function normaliseSearch(value) {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("sv");
+}
+
+function recipeSearchText(recipe) {
+  return normaliseSearch([
+    recipe.title,
+    recipe.collection,
+    recipe.day,
+    recipe.meal,
+    recipe.mood,
+    recipe.protein,
+    recipe.description,
+    ...(recipe.tags || []),
+  ].join(" "));
+}
+
+function conceptSearchText(concept) {
+  return normaliseSearch([
+    concept.title,
+    concept.headline,
+    concept.headline_emphasis,
+    concept.intro,
+    concept.description,
+    ...(concept.tags || []),
+  ].join(" "));
+}
+
+function conceptRecipes(concept) {
+  return concept.recipes.map((path) => state.recipeByPath.get(path)).filter(Boolean);
+}
+
+function mealSummary(recipes) {
+  const lunches = recipes.filter((recipe) => recipe.meal === "Lunch").length;
+  const dinners = recipes.filter((recipe) => recipe.meal === "Middag").length;
+  return [
+    lunches ? `${lunches} ${lunches === 1 ? "lunch" : "luncher"}` : "",
+    dinners ? `${dinners} ${dinners === 1 ? "middag" : "middagar"}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function shoppingStorageKey() {
+  return `euthercook-shopping-${state.activeConcept.id}`;
+}
+
+function loadCheckedForConcept() {
+  let saved = localStorage.getItem(shoppingStorageKey());
+  if (saved === null && state.activeConcept.id === "greek-weekend") {
+    saved = localStorage.getItem("euthercook-shopping");
+  }
+  state.checked = new Set(JSON.parse(saved || "[]"));
+}
+
+function applyConceptContent(concept) {
+  document.title = `EutherCook — ${concept.title}`;
+  document.documentElement.dataset.concept = concept.id;
+  document.querySelector("#book-headline").textContent = concept.headline;
+  document.querySelector("#book-headline-emphasis").textContent = concept.headline_emphasis;
+  document.querySelector("#book-intro").textContent = concept.intro;
+  document.querySelector("#book-prompt").value = concept.prompt;
+  document.querySelector("#prompt-status").textContent = concept.prompt_status;
+  document.querySelector("#book-cover").setAttribute("aria-label", `Omslag för ${concept.title}`);
+  const coverImage = document.querySelector("#book-cover-image");
+  coverImage.src = concept.cover_image;
+  coverImage.alt = concept.cover_alt;
+  document.querySelector("#book-volume").textContent = concept.volume;
+  document.querySelector("#book-cover-label").textContent = concept.cover_label;
+  document.querySelector("#book-schedule").textContent = concept.schedule;
+  document.querySelector("#book-title").textContent = concept.title;
+  document.querySelector("#book-description").textContent = concept.description;
+  document.querySelector("#shopping-summary").textContent = concept.shopping_summary;
+}
+
+function activateConcept(concept, { scrollToTop = false } = {}) {
+  state.activeConcept = concept;
+  state.recipes = conceptRecipes(concept);
+  localStorage.setItem("euthercook-active-concept", concept.id);
+  loadCheckedForConcept();
+  applyConceptContent(concept);
+  renderAll();
+  renderRecipeIndex(recipeIndexSearch.value);
+  if (scrollToTop) window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function renderRecipeIndex(query = "") {
+  const needle = normaliseSearch(query.trim());
+  const conceptMatches = state.concepts.filter((concept) => !needle || conceptSearchText(concept).includes(needle));
+  const recipeMatches = state.library.filter((recipe) => !needle || recipeSearchText(recipe).includes(needle));
+  recipeIndexStatus.textContent = `${conceptMatches.length} helgböcker · ${recipeMatches.length} recept`;
+  recipeIndexResults.replaceChildren();
+
+  if (!conceptMatches.length && !recipeMatches.length) {
+    recipeIndexResults.innerHTML = `<p class="index-empty">Ingen helgbok eller rätt matchade “${escapeHtml(query.trim())}”.</p>`;
+    return;
+  }
+
+  if (conceptMatches.length) {
+    recipeIndexResults.insertAdjacentHTML("beforeend", '<p class="index-section-label">Helgböcker</p>');
+  }
+  conceptMatches.forEach((concept) => {
+    const recipes = conceptRecipes(concept);
+    const active = concept.id === state.activeConcept?.id;
+    const button = document.createElement("button");
+    button.className = `concept-result${active ? " active" : ""}`;
+    button.type = "button";
+    button.innerHTML = `
+      <img src="${escapeHtml(concept.cover_image)}" alt="" loading="lazy" />
+      <span>
+        <small>Helgkoncept</small>
+        <strong>${escapeHtml(concept.title)}</strong>
+        <span>${escapeHtml(mealSummary(recipes))}</span>
+      </span>
+      <span>${active ? "Vald" : "Välj ↗"}</span>`;
+    button.addEventListener("click", () => {
+      recipeIndexDialog.close();
+      activateConcept(concept, { scrollToTop: true });
+    });
+    recipeIndexResults.append(button);
+  });
+
+  if (recipeMatches.length) {
+    recipeIndexResults.insertAdjacentHTML("beforeend", '<p class="index-section-label">Enskilda recept</p>');
+  }
+  recipeMatches.forEach((recipe) => {
+    const button = document.createElement("button");
+    button.className = "index-result";
+    button.type = "button";
+    button.innerHTML = `
+      <img src="${escapeHtml(recipe.image)}" alt="" loading="lazy" />
+      <span>
+        <small>${escapeHtml(recipe.collection)}</small>
+        <strong>${escapeHtml(recipe.title)}</strong>
+        <span>${escapeHtml(recipe.day)} · ${escapeHtml(recipe.meal)} · ${escapeHtml(recipe.protein)}</span>
+      </span>
+      <span aria-hidden="true">↗</span>`;
+    button.addEventListener("click", () => {
+      recipeIndexDialog.close();
+      openRecipe(recipe);
+    });
+    recipeIndexResults.append(button);
+  });
+}
+
 function openRecipe(recipe) {
   const groups = groupBy(recipe.ingredients, "group");
   const ingredientHtml = Object.entries(groups)
@@ -236,7 +390,7 @@ function renderShoppingList() {
     input.addEventListener("change", () => {
       if (input.checked) state.checked.add(input.dataset.shoppingKey);
       else state.checked.delete(input.dataset.shoppingKey);
-      localStorage.setItem("euthercook-shopping", JSON.stringify([...state.checked]));
+      localStorage.setItem(shoppingStorageKey(), JSON.stringify([...state.checked]));
     });
   });
 }
@@ -244,10 +398,8 @@ function renderShoppingList() {
 function renderAll() {
   servingsValue.textContent = state.servings;
   document.querySelector(".cover-stamp").innerHTML = `${state.servings}<br><small>pers</small>`;
-  const lunches = state.recipes.filter((recipe) => recipe.meal === "Lunch").length;
-  const dinners = state.recipes.filter((recipe) => recipe.meal === "Middag").length;
   document.querySelector("#book-kicker").textContent =
-    `Helgkokbok · ${lunches} luncher · ${dinners} middagar · ${state.servings} personer`;
+    `Helgkokbok · ${mealSummary(state.recipes)} · ${state.servings} personer`;
   renderRecipes();
   renderShoppingList();
 }
@@ -289,11 +441,7 @@ function composeFromPrompt() {
   const status = document.querySelector("#prompt-status");
   const people = prompt.match(/(\d{1,2})\s*(?:person|pers)/i);
   if (people) state.servings = Math.max(2, Math.min(12, Number(people[1])));
-  if (!/grek|souvlaki|gyros|tzatziki|bläckfisk/i.test(prompt)) {
-    status.textContent = "Den här utgåvan är bunden kring Grekland. Skriv gärna in antal personer så skalar hela helgen.";
-  } else {
-    status.textContent = `Klart — den grekiska helgen är ombunden för ${state.servings} personer.`;
-  }
+  status.textContent = `Klart — ${state.activeConcept.title} är ombunden för ${state.servings} personer.`;
   renderAll();
   document.querySelector("#helgen").scrollIntoView({ behavior: "smooth" });
 }
@@ -310,13 +458,21 @@ document.querySelectorAll('input[name="flavour"]').forEach((input) => {
 });
 document.querySelector("#clear-shopping").addEventListener("click", () => {
   state.checked.clear();
-  localStorage.removeItem("euthercook-shopping");
+  localStorage.setItem(shoppingStorageKey(), "[]");
+  if (state.activeConcept.id === "greek-weekend") localStorage.removeItem("euthercook-shopping");
   renderShoppingList();
 });
 document.querySelector("#close-recipe").addEventListener("click", () => recipeDialog.close());
+document.querySelector("#open-recipe-index").addEventListener("click", () => {
+  renderRecipeIndex(recipeIndexSearch.value);
+  recipeIndexDialog.showModal();
+  recipeIndexSearch.focus();
+});
+document.querySelector("#close-recipe-index").addEventListener("click", () => recipeIndexDialog.close());
+recipeIndexSearch.addEventListener("input", () => renderRecipeIndex(recipeIndexSearch.value));
 document.querySelector("#open-about").addEventListener("click", () => aboutDialog.showModal());
 document.querySelector("#close-about").addEventListener("click", () => aboutDialog.close());
-[recipeDialog, aboutDialog].forEach((dialog) => {
+[recipeDialog, recipeIndexDialog, aboutDialog].forEach((dialog) => {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
@@ -325,8 +481,17 @@ document.querySelector("#close-about").addEventListener("click", () => aboutDial
 async function init() {
   try {
     const catalog = await loadToml(CATALOG_PATH);
-    state.recipes = await Promise.all(catalog.recipes.map((path) => loadToml(`./recipes/${path}`)));
-    renderAll();
+    const libraryPaths = catalog.library || catalog.recipes;
+    const loaded = await Promise.all(libraryPaths.map(async (path) => [path, await loadToml(`./recipes/${path}`)]));
+    state.recipeByPath = new Map(loaded);
+    state.library = libraryPaths.map((path) => state.recipeByPath.get(path));
+    state.concepts = catalog.concepts || [];
+    document.querySelector("#recipe-index-count").textContent = `${state.concepts.length}+${state.library.length}`;
+    const savedConcept = localStorage.getItem("euthercook-active-concept");
+    const initialConcept = state.concepts.find((concept) => concept.id === savedConcept)
+      || state.concepts.find((concept) => concept.id === catalog.default_concept)
+      || state.concepts[0];
+    activateConcept(initialConcept);
   } catch (error) {
     recipeList.innerHTML = `<p>Kokboken gick inte att läsa: ${escapeHtml(error.message)}</p>`;
   }

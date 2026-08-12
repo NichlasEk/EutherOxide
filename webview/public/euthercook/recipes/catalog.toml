@@ -1,4 +1,42 @@
 title = "En helg i Grekland"
 language = "sv"
 edition = 2
+default_concept = "greek-weekend"
 recipes = ["greek-friday-dakos.toml", "greek-friday-souvlaki.toml", "greek-saturday-spanakopita.toml", "greek-saturday-octopus.toml", "greek-sunday-gyros.toml", "greek-sunday-moussaka.toml"]
+library = ["greek-friday-dakos.toml", "greek-friday-souvlaki.toml", "greek-saturday-spanakopita.toml", "greek-saturday-octopus.toml", "greek-sunday-gyros.toml", "greek-sunday-moussaka.toml", "friday-adana.toml", "saturday-chicken.toml", "sunday-doner.toml"]
+
+[[concepts]]
+id = "greek-weekend"
+title = "En helg i Grekland"
+volume = "Vol. 02"
+headline = "Tre dagar."
+headline_emphasis = "Sex grekiska bord."
+intro = "Från solvarm dakos till souvlaki, bläckfisk och söndagens moussaka. En helg som rör sig från enkel taverna till lång middag vid havet."
+cover_image = "./images/greek-friday-souvlaki.webp"
+cover_alt = "Kycklingsouvlaki med citronpotatis, tzatziki och pitabröd"
+cover_label = "Grekland"
+schedule = "Fredag — söndag"
+prompt = "En grekisk helgkokbok för 5 personer med tre luncher och tre middagar, fredag till söndag."
+prompt_status = "Utgåva två tar hela vägen runt det grekiska helgbordet."
+description = "Sex måltider med egen rytm. Citron, oregano, feta, yoghurt och örter vandrar vidare genom helgen så att både smakerna och inköpen hänger ihop."
+shopping_summary = "Sex måltider."
+tags = ["grekiskt", "grekland", "medelhavet", "souvlaki", "gyros", "bläckfisk", "moussaka"]
+recipes = ["greek-friday-dakos.toml", "greek-friday-souvlaki.toml", "greek-saturday-spanakopita.toml", "greek-saturday-octopus.toml", "greek-sunday-gyros.toml", "greek-sunday-moussaka.toml"]
+
+[[concepts]]
+id = "kebab-weekend"
+title = "Kebabhelgen"
+volume = "Vol. 01"
+headline = "Tre kvällar."
+headline_emphasis = "Tre kebab."
+intro = "Från rökig Adana till citronkyckling och söndagens krispiga döner. En helg där varje middag får sin egen sås och karaktär."
+cover_image = "./images/friday-adana.webp"
+cover_alt = "Adanakebab med bulgur, flatbröd och grillade grönsaker"
+cover_label = "Kebab"
+schedule = "Fredag — söndag"
+prompt = "En helgkokbok med kebabtema för 5 personer. Olika kebab och såser fredag, lördag och söndag."
+prompt_status = "Originalutgåvan samlar tre kebabmiddagar med helt olika uttryck."
+description = "Tre uttryck av samma idé. Varje recept står på egna ben, men råvarorna och såserna hjälper varandra genom helgen."
+shopping_summary = "Tre middagar."
+tags = ["kebab", "adana", "döner", "kyckling", "grill", "helg"]
+recipes = ["friday-adana.toml", "saturday-chicken.toml", "sunday-doner.toml"]
