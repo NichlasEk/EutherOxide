@@ -18145,7 +18145,11 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
         method,
         path,
         headers: request_headers,
-        content_length: body.len(),
+        content_length: if raw_social_attachment_upload {
+            content_length
+        } else {
+            body.len()
+        },
         body,
     })
 }
@@ -23517,6 +23521,24 @@ fn write_ppm(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_attachment_request_preserves_declared_content_length() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .write_all(
+                b"POST /api/social/attachments/raw?name=clipboard.png&contentType=image%2Fpng HTTP/1.1\r\nContent-Length: 64\r\n\r\n",
+            )
+            .unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+
+        let request = read_http_request(&mut server).unwrap();
+
+        assert_eq!(request.content_length, 64);
+        assert!(request.body.is_empty());
+    }
 
     #[test]
     fn safe_relative_path_accepts_normal_paths() {
