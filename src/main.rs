@@ -3539,6 +3539,15 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                     "/home/nichlas/eutherduke-runtime",
                 );
             }
+            if path.starts_with("/euthershot-runtime/") {
+                return send_external_runtime_static(
+                    stream,
+                    path,
+                    "/euthershot-runtime/",
+                    "EUTHERSHOT_RUNTIME_PATH",
+                    "/home/nichlas/EutherShot/dist",
+                );
+            }
             if path.starts_with("/eutheralert-runtime/") {
                 return send_external_runtime_static(
                     stream,

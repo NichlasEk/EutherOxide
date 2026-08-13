@@ -473,7 +473,7 @@ type VideoChatResult = {
   signals: VideoChatSignal[];
 };
 
-type PlayMode = "megadrive" | "eutherdogs" | "euthercivet" | "eutheralert" | "eutherdoom" | "eutherduke";
+type PlayMode = "megadrive" | "eutherdogs" | "euthercivet" | "eutheralert" | "eutherdoom" | "eutherduke" | "euthershot";
 type AppRoute = "playHome" | PlayMode | "interactionLobby";
 type WorkspaceWindow = "interaction" | "shopping" | "eutherium" | "books" | "apps" | "friends" | "spaces" | "profile" | "settings";
 
@@ -1983,6 +1983,13 @@ const playModeCards: Array<{
     detail: "EDuke32/WASM vessel foundation for real client-side Duke.",
     action: "Open EutherDuke",
   },
+  {
+    mode: "euthershot",
+    label: "EutherShot",
+    kicker: "Office violence toy",
+    detail: "Two colleagues, one table and twelve professionally questionable attacks.",
+    action: "Open EutherShot",
+  },
 ];
 const shoppingCategoryOrder = [
   "Frukt & grönt",
@@ -2160,6 +2167,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button data-play-mode="eutheralert" type="button">EutherAlert</button>
             <button data-play-mode="eutherdoom" type="button">EutherDoom</button>
             <button data-play-mode="eutherduke" type="button">EutherDuke</button>
+            <button data-play-mode="euthershot" type="button">EutherShot</button>
             <button data-eutherpal-tv-link type="button">EutherPål</button>
           </div>
         </div>
@@ -2407,6 +2415,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <span>EDuke32 / WebAssembly Vessel</span>
               <strong>EutherDuke runtime not installed</strong>
               <p>Expected external runtime at /home/nichlas/eutherduke-runtime with index.html, wasm/data files, and legal Duke game data.</p>
+            </div>
+          </div>
+          <div id="euthershot-renderer" class="euthershot-renderer" aria-hidden="true">
+            <iframe id="euthershot-frame" class="euthershot-frame" title="EutherShot runtime"></iframe>
+            <div id="euthershot-runtime-panel" class="euthershot-runtime-panel">
+              <span>Take Your Best Shot: 2026</span>
+              <strong>EutherShot runtime not installed</strong>
+              <p>Expected the built web runtime at /home/nichlas/EutherShot/dist.</p>
             </div>
           </div>
           <div id="eutheralert-renderer" class="eutheralert-renderer" aria-hidden="true">
@@ -2837,6 +2853,9 @@ const eutherDoomRendererStatus = document.querySelector<HTMLDivElement>("#euther
 const eutherDukeRenderer = document.querySelector<HTMLDivElement>("#eutherduke-renderer")!;
 const eutherDukeFrame = document.querySelector<HTMLIFrameElement>("#eutherduke-frame")!;
 const eutherDukeRuntimePanel = document.querySelector<HTMLDivElement>("#eutherduke-runtime-panel")!;
+const eutherShotRenderer = document.querySelector<HTMLDivElement>("#euthershot-renderer")!;
+const eutherShotFrame = document.querySelector<HTMLIFrameElement>("#euthershot-frame")!;
+const eutherShotRuntimePanel = document.querySelector<HTMLDivElement>("#euthershot-runtime-panel")!;
 const eutherAlertRenderer = document.querySelector<HTMLDivElement>("#eutheralert-renderer")!;
 const eutherAlertFrame = document.querySelector<HTMLIFrameElement>("#eutheralert-frame")!;
 const eutherAlertRuntimePanel = document.querySelector<HTMLDivElement>("#eutheralert-runtime-panel")!;
@@ -7606,6 +7625,31 @@ function stopEutherDukeRenderer(): void {
   eutherDukeFrame.hidden = true;
 }
 
+async function startEutherShotRenderer(): Promise<void> {
+  eutherShotRenderer.setAttribute("aria-hidden", "false");
+  eutherShotRuntimePanel.hidden = false;
+  eutherShotFrame.hidden = true;
+  try {
+    const response = await fetch("/euthershot-runtime/index.html", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("EutherShot runtime not installed");
+    }
+    eutherShotRuntimePanel.hidden = true;
+    eutherShotFrame.hidden = false;
+    eutherShotFrame.src = `/euthershot-runtime/index.html?v=${Date.now()}`;
+  } catch {
+    eutherShotFrame.removeAttribute("src");
+    eutherShotFrame.hidden = true;
+    eutherShotRuntimePanel.hidden = false;
+  }
+}
+
+function stopEutherShotRenderer(): void {
+  eutherShotRenderer.setAttribute("aria-hidden", "true");
+  eutherShotFrame.removeAttribute("src");
+  eutherShotFrame.hidden = true;
+}
+
 async function startEutherAlertRenderer(): Promise<void> {
   const startToken = ++eutherAlertRendererStartToken;
   eutherAlertRenderer.setAttribute("aria-hidden", "false");
@@ -8228,6 +8272,11 @@ function appRouteFromToken(token: string | undefined): AppRoute | null {
     case "play/eutherduke":
     case "play/duke":
       return "eutherduke";
+    case "euthershot":
+    case "shot":
+    case "play/euthershot":
+    case "play/shot":
+      return "euthershot";
     default:
       return null;
   }
@@ -8267,6 +8316,7 @@ function applyAppRoute(): void {
   document.body.classList.toggle("play-mode-eutheralert", !showingLobby && appRoute === "eutheralert");
   document.body.classList.toggle("play-mode-eutherdoom", !showingLobby && appRoute === "eutherdoom");
   document.body.classList.toggle("play-mode-eutherduke", !showingLobby && appRoute === "eutherduke");
+  document.body.classList.toggle("play-mode-euthershot", !showingLobby && appRoute === "euthershot");
 
   playHomePanel.hidden = showingLobby || appRoute !== "playHome";
   reactionLobbyHome.hidden = showingLobby || appRoute !== "playHome";
@@ -8308,6 +8358,11 @@ function applyAppRoute(): void {
   } else {
     stopEutherDukeRenderer();
   }
+  if (!showingLobby && appRoute === "euthershot") {
+    void startEutherShotRenderer();
+  } else {
+    stopEutherShotRenderer();
+  }
   if (!showingLobby && appRoute === "eutheralert") {
     void startEutherAlertRenderer();
   } else {
@@ -8331,7 +8386,8 @@ function isPlayMode(value: unknown): value is PlayMode {
     value === "euthercivet" ||
     value === "eutheralert" ||
     value === "eutherdoom" ||
-    value === "eutherduke"
+    value === "eutherduke" ||
+    value === "euthershot"
   );
 }
 
@@ -8349,6 +8405,8 @@ function playModeLabel(mode: PlayMode | null): string {
       return "EutherDoom";
     case "eutherduke":
       return "EutherDuke";
+    case "euthershot":
+      return "EutherShot";
     default:
       return "Mode Launcher";
   }
@@ -13932,7 +13990,7 @@ async function activatePlayMode(mode: PlayMode): Promise<void> {
     return;
   }
 
-  if (mode === "eutherduke") {
+  if (mode === "eutherduke" || mode === "euthershot") {
     return;
   }
 

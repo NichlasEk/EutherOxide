@@ -231,7 +231,11 @@ button:disabled {
 .play-mode-eutherduke #video,
 .play-mode-eutherduke #shader-video,
 .play-mode-eutherduke #bridge-video,
-.play-mode-eutherduke #eutherdogs-canvas {
+.play-mode-eutherduke #eutherdogs-canvas,
+.play-mode-euthershot #video,
+.play-mode-euthershot #shader-video,
+.play-mode-euthershot #bridge-video,
+.play-mode-euthershot #eutherdogs-canvas {
   opacity: 0;
   pointer-events: none;
 }
@@ -300,6 +304,7 @@ button:disabled {
 }
 
 .eutherduke-renderer,
+.euthershot-renderer,
 .eutheralert-renderer {
   position: absolute;
   inset: 0;
@@ -322,6 +327,11 @@ button:disabled {
 }
 
 .play-mode-eutherduke .eutherduke-renderer {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.play-mode-euthershot .euthershot-renderer {
   opacity: 1;
   pointer-events: auto;
 }
@@ -918,6 +928,7 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
 }
 
 .eutherduke-frame,
+.euthershot-frame,
 .eutheralert-frame {
   width: 100%;
   height: 100%;
@@ -926,6 +937,7 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
 }
 
 .eutherduke-runtime-panel,
+.euthershot-runtime-panel,
 .eutheralert-runtime-panel {
   place-self: center;
   display: grid;
@@ -941,6 +953,9 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
 .eutherduke-runtime-panel span,
 .eutherduke-runtime-panel strong,
 .eutherduke-runtime-panel p,
+.euthershot-runtime-panel span,
+.euthershot-runtime-panel strong,
+.euthershot-runtime-panel p,
 .eutheralert-runtime-panel span,
 .eutheralert-runtime-panel strong,
 .eutheralert-runtime-panel p {
@@ -949,6 +964,7 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
 }
 
 .eutherduke-runtime-panel span,
+.euthershot-runtime-panel span,
 .eutheralert-runtime-panel span {
   color: #ffcf64;
   font-size: 0.68rem;
@@ -957,12 +973,14 @@ body.play-mode-eutheralert .eutheralert-renderer:-webkit-full-screen {
 }
 
 .eutherduke-runtime-panel strong,
+.euthershot-runtime-panel strong,
 .eutheralert-runtime-panel strong {
   color: #fff1ca;
   font-size: 1rem;
 }
 
 .eutherduke-runtime-panel p,
+.euthershot-runtime-panel p,
 .eutheralert-runtime-panel p {
   color: #d9b9a8;
   font-size: 0.76rem;
@@ -4127,6 +4145,10 @@ h2 {
 
 .reaction-mode-eutherduke {
   border-color: rgba(255, 207, 100, 0.28);
+}
+
+.reaction-mode-euthershot {
+  border-color: rgba(120, 213, 227, 0.32);
 }
 
 .reaction-lobby-start-grid,
