@@ -9784,6 +9784,64 @@ h2 {
   }
 }
 
+/* EutherShot owns the mobile viewport. Without this override the responsive
+   EutherOxide columns stack the game stage below the complete control rail. */
+@media (max-width: 1100px) {
+  body.play-mode-euthershot {
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
+    background: #000;
+  }
+
+  .play-mode-euthershot #molecule-field,
+  .play-mode-euthershot .user-menu,
+  .play-mode-euthershot .euthershould-strip,
+  .play-mode-euthershot .control-rail,
+  .play-mode-euthershot .telemetry-panel,
+  .play-mode-euthershot .stage-header,
+  .play-mode-euthershot .reaction-strip,
+  .play-mode-euthershot .mobile-pad {
+    display: none;
+  }
+
+  .play-mode-euthershot .oxide-shell,
+  .play-mode-euthershot .reactor-stage,
+  .play-mode-euthershot .screen-vessel,
+  .play-mode-euthershot .screen-glass,
+  .play-mode-euthershot .euthershot-renderer,
+  .play-mode-euthershot .euthershot-frame {
+    position: fixed;
+    inset: 0;
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    aspect-ratio: auto;
+    background: #000;
+    box-shadow: none;
+  }
+
+  .play-mode-euthershot .euthershot-renderer {
+    z-index: 120;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .play-mode-euthershot .screen-glass .scanlines,
+  .play-mode-euthershot .screen-glass .oxidation-ring {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
