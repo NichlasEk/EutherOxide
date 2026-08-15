@@ -94,10 +94,11 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.4-debug.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_1_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_1_1_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.1-debug.apk";
 const LEGACY_EUTHERSURFER_0_1_2_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.2-debug.apk";
+const LEGACY_EUTHERSURFER_0_1_4_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.4-debug.apk";
 const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.18.0-beta4-debug.apk";
 const LEGACY_EUTHERVOX_0_18_0_BETA3_APK_PATH: &str =
     "/home/nichlas/EutherVox-0.18.0-beta3-debug.apk";
@@ -221,6 +222,10 @@ const EUTHERID_PUBLIC_PROXY_PREFIX: &str = "/api/eutherid";
 const EUTHERLINK_ADMIN_PROXY_PREFIX: &str = "/api/admin/eutherlink";
 static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
+static EUTHERSURFER_SCORE_LOCK: Mutex<()> = Mutex::new(());
+const EUTHERSURFER_SCORE_LIMIT: usize = 30;
+const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
+const EUTHERSURFER_MAX_SUSHI: u64 = 1_000_000;
 
 thread_local! {
     static RESPONSE_CORS_ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -897,6 +902,22 @@ struct HttpRequest {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     content_length: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EutherSurferScoreEntry {
+    name: String,
+    score: u64,
+    sushi: u64,
+    created_unix_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct EutherSurferScoreSubmit {
+    name: String,
+    score: u64,
+    sushi: u64,
 }
 
 #[derive(Clone)]
@@ -2068,6 +2089,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherid/login/complete"
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
+        && path != "/api/euthersurfer/scores"
         && !is_eutherbooks_proxy_path(path)
         && !is_eutherpal_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
@@ -2228,6 +2250,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("POST", "/api/eutherbooks-player/log") => {
             host_eutherbooks_player_log(stream, state, &request)
         }
+        ("GET", "/api/euthersurfer/scores") => send_euthersurfer_scores(stream),
+        ("POST", "/api/euthersurfer/scores") => submit_euthersurfer_score(stream, &request),
         ("GET", path) if is_eutherlist_apk_download_path(path) => send_eutherlist_apk(stream),
         ("GET", path) if is_euthersync_apk_download_path(path) => send_euthersync_apk(stream),
         ("GET", path) if is_eutherbooks_player_apk_download_path(path) => {
@@ -11163,9 +11187,13 @@ fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             LEGACY_EUTHERSURFER_0_1_2_APK_PATH,
             "EutherSurfer-0.1.2-debug.apk",
         ),
+        "/downloads/EutherSurfer-0.1.4-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_1_4_APK_PATH,
+            "EutherSurfer-0.1.4-debug.apk",
+        ),
         _ => (
             DEFAULT_EUTHERSURFER_APK_PATH,
-            "EutherSurfer-0.1.4-debug.apk",
+            "EutherSurfer-0.3.0-debug.apk",
         ),
     };
     send_android_apk(
@@ -11186,7 +11214,123 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-0.1.1-debug.apk"
             | "/downloads/EutherSurfer-0.1.2-debug.apk"
             | "/downloads/EutherSurfer-0.1.4-debug.apk"
+            | "/downloads/EutherSurfer-0.3.0-debug.apk"
     )
+}
+
+fn euthersurfer_score_path() -> PathBuf {
+    host_dir().join("euthersurfer-scores.json")
+}
+
+fn normalize_euthersurfer_name(name: &str) -> io::Result<String> {
+    let normalized = name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(14)
+        .collect::<String>();
+    if normalized.is_empty() {
+        return Err(invalid_request("player name is required"));
+    }
+    Ok(normalized)
+}
+
+fn read_euthersurfer_scores() -> io::Result<Vec<EutherSurferScoreEntry>> {
+    let path = euthersurfer_score_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read(&path)?;
+    serde_json::from_slice(&data).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid EutherSurfer score file: {err}"),
+        )
+    })
+}
+
+fn rank_euthersurfer_scores(scores: &mut Vec<EutherSurferScoreEntry>) {
+    scores.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.sushi.cmp(&left.sushi))
+            .then_with(|| left.created_unix_ms.cmp(&right.created_unix_ms))
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    scores.truncate(EUTHERSURFER_SCORE_LIMIT);
+}
+
+fn euthersurfer_scores_payload(scores: &[EutherSurferScoreEntry]) -> serde_json::Value {
+    let ranked = scores
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            serde_json::json!({
+                "rank": index + 1,
+                "name": entry.name,
+                "score": entry.score,
+                "sushi": entry.sushi,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "scores": ranked })
+}
+
+fn write_euthersurfer_scores(scores: &[EutherSurferScoreEntry]) -> io::Result<()> {
+    let path = euthersurfer_score_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    let data = serde_json::to_vec_pretty(scores)
+        .map_err(|err| io::Error::other(format!("could not serialize scores: {err}")))?;
+    fs::write(&temporary, data)?;
+    fs::rename(temporary, path)
+}
+
+fn send_euthersurfer_scores(stream: &mut TcpStream) -> io::Result<()> {
+    let _guard = EUTHERSURFER_SCORE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer score lock poisoned"))?;
+    let mut scores = read_euthersurfer_scores()?;
+    rank_euthersurfer_scores(&mut scores);
+    send_json(stream, &euthersurfer_scores_payload(&scores))
+}
+
+fn submit_euthersurfer_score(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    let submission: EutherSurferScoreSubmit = serde_json::from_slice(&request.body)
+        .map_err(|err| invalid_request(format!("invalid score payload: {err}")))?;
+    let name = normalize_euthersurfer_name(&submission.name)?;
+    if submission.score == 0 || submission.score > EUTHERSURFER_MAX_SCORE {
+        return Err(invalid_request("score is outside the accepted range"));
+    }
+    if submission.sushi > EUTHERSURFER_MAX_SUSHI {
+        return Err(invalid_request("sushi count is outside the accepted range"));
+    }
+
+    let _guard = EUTHERSURFER_SCORE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer score lock poisoned"))?;
+    let mut scores = read_euthersurfer_scores()?;
+    let is_retry = scores.iter().any(|entry| {
+        entry.name.eq_ignore_ascii_case(&name)
+            && entry.score == submission.score
+            && entry.sushi == submission.sushi
+    });
+    if !is_retry {
+        scores.push(EutherSurferScoreEntry {
+            name,
+            score: submission.score,
+            sushi: submission.sushi,
+            created_unix_ms: unix_ms_now(),
+        });
+    }
+    rank_euthersurfer_scores(&mut scores);
+    write_euthersurfer_scores(&scores)?;
+    send_json(stream, &euthersurfer_scores_payload(&scores))
 }
 
 fn send_eutherping_apk(
@@ -24229,6 +24373,9 @@ mod tests {
     #[test]
     fn euthersurfer_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_euthersurfer_apk_download_path(
+            "/downloads/EutherSurfer-0.3.0-debug.apk"
+        ));
+        assert!(is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-0.1.4-debug.apk"
         ));
         assert!(is_euthersurfer_apk_download_path(
@@ -24249,6 +24396,36 @@ mod tests {
         assert!(!is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-0.2.0-debug.apk"
         ));
+    }
+
+    #[test]
+    fn euthersurfer_leaderboard_normalizes_sorts_and_limits_runs() {
+        assert_eq!(
+            normalize_euthersurfer_name("  Sakura   Runner  ").unwrap(),
+            "Sakura Runner"
+        );
+        assert_eq!(
+            normalize_euthersurfer_name("abcdefghijklmnop").unwrap(),
+            "abcdefghijklmn"
+        );
+        assert!(normalize_euthersurfer_name(" \n\t ").is_err());
+
+        let mut scores = (0..35)
+            .map(|index| EutherSurferScoreEntry {
+                name: format!("Runner {index}"),
+                score: index,
+                sushi: index % 4,
+                created_unix_ms: index,
+            })
+            .collect::<Vec<_>>();
+        rank_euthersurfer_scores(&mut scores);
+        assert_eq!(scores.len(), EUTHERSURFER_SCORE_LIMIT);
+        assert_eq!(scores.first().map(|entry| entry.score), Some(34));
+        assert_eq!(scores.last().map(|entry| entry.score), Some(5));
+
+        let payload = euthersurfer_scores_payload(&scores);
+        assert_eq!(payload["scores"][0]["rank"], 1);
+        assert_eq!(payload["scores"][0]["score"], 34);
     }
 
     #[test]
