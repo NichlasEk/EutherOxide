@@ -94,7 +94,10 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.2-debug.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.4-debug.apk";
+const LEGACY_EUTHERSURFER_0_1_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.0-debug.apk";
+const LEGACY_EUTHERSURFER_0_1_1_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.1-debug.apk";
+const LEGACY_EUTHERSURFER_0_1_2_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.2-debug.apk";
 const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.18.0-beta4-debug.apk";
 const LEGACY_EUTHERVOX_0_18_0_BETA3_APK_PATH: &str =
     "/home/nichlas/EutherVox-0.18.0-beta3-debug.apk";
@@ -2242,7 +2245,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_euthervox_apk(stream, path)
         }
         ("GET", path) if is_euthertime_apk_download_path(path) => send_euthertime_apk(stream, path),
-        ("GET", path) if is_euthersurfer_apk_download_path(path) => send_euthersurfer_apk(stream),
+        ("GET", path) if is_euthersurfer_apk_download_path(path) => {
+            send_euthersurfer_apk(stream, path)
+        }
         ("GET", path) if is_eutherping_apk_download_path(path) => {
             send_eutherping_apk(stream, &request, path)
         }
@@ -11144,11 +11149,29 @@ fn is_euthertime_apk_download_path(path: &str) -> bool {
     )
 }
 
-fn send_euthersurfer_apk(stream: &mut TcpStream) -> io::Result<()> {
+fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let (apk_path, download_filename) = match path {
+        "/downloads/EutherSurfer-0.1.0-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_1_0_APK_PATH,
+            "EutherSurfer-0.1.0-debug.apk",
+        ),
+        "/downloads/EutherSurfer-0.1.1-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_1_1_APK_PATH,
+            "EutherSurfer-0.1.1-debug.apk",
+        ),
+        "/downloads/EutherSurfer-0.1.2-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_1_2_APK_PATH,
+            "EutherSurfer-0.1.2-debug.apk",
+        ),
+        _ => (
+            DEFAULT_EUTHERSURFER_APK_PATH,
+            "EutherSurfer-0.1.4-debug.apk",
+        ),
+    };
     send_android_apk(
         stream,
-        Path::new(DEFAULT_EUTHERSURFER_APK_PATH),
-        "EutherSurfer-0.1.2-debug.apk",
+        Path::new(apk_path),
+        download_filename,
         "EutherSurfer APK is not available",
     )
 }
@@ -11162,6 +11185,7 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-0.1.0-debug.apk"
             | "/downloads/EutherSurfer-0.1.1-debug.apk"
             | "/downloads/EutherSurfer-0.1.2-debug.apk"
+            | "/downloads/EutherSurfer-0.1.4-debug.apk"
     )
 }
 
@@ -24204,6 +24228,9 @@ mod tests {
 
     #[test]
     fn euthersurfer_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_euthersurfer_apk_download_path(
+            "/downloads/EutherSurfer-0.1.4-debug.apk"
+        ));
         assert!(is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-0.1.2-debug.apk"
         ));

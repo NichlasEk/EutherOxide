@@ -8764,8 +8764,8 @@ const appDownloads: AppDownload[] = [
     title: "Sakura Sprint",
     detail: "Colorful endless runner where a Japanese macaque dodges festival obstacles and collects sushi",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherSurfer-0.1.2-debug.apk",
-    status: "Prototype APK · v0.1.2 · Startup crash fix · Offline",
+    href: "/downloads/EutherSurfer-0.1.4-debug.apk",
+    status: "Prototype APK · v0.1.4 · Moving track · Fairer collisions · Offline",
   },
   {
     title: "EutherVox",
