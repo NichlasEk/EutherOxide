@@ -8761,6 +8761,13 @@ const appDownloads: AppDownload[] = [
     status: "Beta APK · v0.5.0-beta1 · Specific dates + weekly schedules · No network permission",
   },
   {
+    title: "Sakura Sprint",
+    detail: "Colorful endless runner where a Japanese macaque dodges festival obstacles and collects sushi",
+    platform: "Android phone · Game prototype",
+    href: "/downloads/EutherSurfer-0.1.0-debug.apk",
+    status: "Prototype APK · v0.1.0 · Offline · Swipe controls",
+  },
+  {
     title: "EutherVox",
     detail: "Voice conversations with selectable Qwen models, Nest playback and named room-aware Magic Home lighting with exact color control",
     platform: "Android phone · Authenticated beta",
