@@ -8751,8 +8751,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherMajn",
     detail: "Rust voxel sandbox with biomes, persistent worlds, placeable kiln and workbench, refined materials and pyrotechnics",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherMajn-0.11.0-debug.apk",
-    status: "Prototype APK · v0.11.0 · Processing stations + production chain",
+    href: "/downloads/EutherMajn-0.11.1-debug.apk",
+    status: "Prototype APK · v0.11.1 · Smooth HUD performance hotfix",
   },
   {
     title: "BusMancer",
