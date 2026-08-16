@@ -86,7 +86,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.13.0-debug.apk";
+const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.12.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_1_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.1.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_2_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.2.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_3_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.3.0-debug.apk";
@@ -99,7 +99,6 @@ const LEGACY_EUTHERMAJN_0_9_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.9.0-d
 const LEGACY_EUTHERMAJN_0_10_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.10.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_11_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.11.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_11_1_APK_PATH: &str = "/home/nichlas/EutherMajn-0.11.1-debug.apk";
-const LEGACY_EUTHERMAJN_0_12_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.12.0-debug.apk";
 const DEFAULT_BUSMANCER_APK_PATH: &str = "/home/nichlas/BusMancer-0.1.0-alpha4-debug.apk";
 const LEGACY_BUSMANCER_0_1_0_ALPHA1_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha1-debug.apk";
@@ -108,7 +107,8 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.6.0-debug.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.7.0-debug.apk";
+const LEGACY_EUTHERSURFER_0_6_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.6.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_5_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.5.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_4_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.4.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_1_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1.0-debug.apk";
@@ -246,18 +246,39 @@ static EUTHERSURFER_ACHIEVEMENT_LOCK: Mutex<()> = Mutex::new(());
 const EUTHERSURFER_SCORE_LIMIT: usize = 30;
 const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
 const EUTHERSURFER_MAX_SUSHI: u64 = 1_000_000;
-const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 11] = [
+const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 12] = [
     ("first_steps", "Första stegen", "Spring i tre sekunder."),
     ("first_sushi", "Itadakimasu!", "Samla din första sushi."),
-    ("sushi_25", "Sushimästare", "Samla 25 sushi under samma run."),
+    (
+        "sushi_25",
+        "Sushimästare",
+        "Samla 25 sushi under samma run.",
+    ),
     ("combo_10", "Tio i rad", "Bygg en combo på tio."),
-    ("uni_hunter", "Sjöborrejägare", "Hitta den sällsynta uni-biten."),
-    ("steroid_smash", "Farmaceutisk diplomati", "Krossa ett hinder under steroidrus."),
+    (
+        "uni_hunter",
+        "Sjöborrejägare",
+        "Hitta den sällsynta uni-biten.",
+    ),
+    (
+        "steroid_smash",
+        "Farmaceutisk diplomati",
+        "Krossa ett hinder under steroidrus.",
+    ),
+    (
+        "sauce_burn",
+        "Stark sås",
+        "Bränn fem hinder under samma run.",
+    ),
     ("score_10000", "Fem siffror", "Nå 10 000 poäng."),
     ("oni_down", "Trumslagaren tystnade", "Besegra Raijin Oni."),
     ("tengu_down", "Vingklippt express", "Besegra Hayate Tengu."),
     ("shogun_down", "Stål mot wasabi", "Besegra Kurogane Shogun."),
-    ("boss_rush", "Tre bossar, en run", "Besegra alla tre bossar under samma run."),
+    (
+        "boss_rush",
+        "Tre bossar, en run",
+        "Besegra alla tre bossar under samma run.",
+    ),
 ];
 
 thread_local! {
@@ -11136,14 +11157,10 @@ fn send_euthermajn_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             "EutherMajn-0.11.1-debug.apk",
         ),
         "/downloads/EutherMajn-0.12.0-debug.apk" => (
-            PathBuf::from(LEGACY_EUTHERMAJN_0_12_0_APK_PATH),
-            "EutherMajn-0.12.0-debug.apk",
-        ),
-        "/downloads/EutherMajn-0.13.0-debug.apk" => (
             env::var("EUTHERMAJN_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERMAJN_APK_PATH)),
-            "EutherMajn-0.13.0-debug.apk",
+            "EutherMajn-0.12.0-debug.apk",
         ),
         _ => (
             env::var("EUTHERMAJN_APK_PATH")
@@ -11179,7 +11196,6 @@ fn is_euthermajn_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherMajn-0.11.0-debug.apk"
             | "/downloads/EutherMajn-0.11.1-debug.apk"
             | "/downloads/EutherMajn-0.12.0-debug.apk"
-            | "/downloads/EutherMajn-0.13.0-debug.apk"
             | "/downloads/euthermajn-debug.apk"
     )
 }
@@ -11367,9 +11383,13 @@ fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             LEGACY_EUTHERSURFER_0_5_0_APK_PATH,
             "EutherSurfer-0.5.0-debug.apk",
         ),
+        "/downloads/EutherSurfer-0.6.0-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_6_0_APK_PATH,
+            "EutherSurfer-0.6.0-debug.apk",
+        ),
         _ => (
             DEFAULT_EUTHERSURFER_APK_PATH,
-            "EutherSurfer-0.6.0-debug.apk",
+            "EutherSurfer-0.7.0-debug.apk",
         ),
     };
     send_android_apk(
@@ -11396,6 +11416,7 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-0.4.0-debug.apk"
             | "/downloads/EutherSurfer-0.5.0-debug.apk"
             | "/downloads/EutherSurfer-0.6.0-debug.apk"
+            | "/downloads/EutherSurfer-0.7.0-debug.apk"
     )
 }
 
@@ -11606,10 +11627,7 @@ fn euthersurfer_achievements_payload(
     })
 }
 
-fn send_euthersurfer_achievements(
-    stream: &mut TcpStream,
-    request: &HttpRequest,
-) -> io::Result<()> {
+fn send_euthersurfer_achievements(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
     let requested_name = query_string_value(&request.path, "name")?
         .map(|name| normalize_euthersurfer_name(&name))
         .transpose()?;
@@ -24538,7 +24556,7 @@ mod tests {
             "/downloads/EutherMajn-debug.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherMajn-0.13.0-debug.apk"
+            "/downloads/EutherMajn-0.12.0-debug.apk"
         ));
         assert!(is_euthermajn_apk_download_path(
             "/downloads/EutherMajn-0.2.0-debug.apk"
@@ -24576,11 +24594,8 @@ mod tests {
         assert!(is_euthermajn_apk_download_path(
             "/downloads/EutherMajn-0.12.0-debug.apk"
         ));
-        assert!(is_euthermajn_apk_download_path(
-            "/downloads/EutherMajn-0.13.0-debug.apk"
-        ));
         assert!(!is_euthermajn_apk_download_path(
-            "/downloads/EutherMajn-0.14.0-debug.apk"
+            "/downloads/EutherMajn-0.13.0-debug.apk"
         ));
     }
 
@@ -24755,6 +24770,9 @@ mod tests {
     #[test]
     fn euthersurfer_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_euthersurfer_apk_download_path(
+            "/downloads/EutherSurfer-0.7.0-debug.apk"
+        ));
+        assert!(is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-0.6.0-debug.apk"
         ));
         assert!(is_euthersurfer_apk_download_path(
@@ -24829,18 +24847,20 @@ mod tests {
     fn euthersurfer_achievements_are_idempotent_and_global() {
         let mut entries = Vec::new();
         let first = vec!["first_steps".to_string(), "oni_down".to_string()];
-        assert_eq!(merge_euthersurfer_achievements(&mut entries, "Momo", &first, 10), 2);
-        assert_eq!(merge_euthersurfer_achievements(&mut entries, "momo", &first, 20), 0);
         assert_eq!(
-            merge_euthersurfer_achievements(
-                &mut entries,
-                "Hana",
-                &["first_steps".to_string()],
-                30,
-            ),
+            merge_euthersurfer_achievements(&mut entries, "Momo", &first, 10),
+            2
+        );
+        assert_eq!(
+            merge_euthersurfer_achievements(&mut entries, "momo", &first, 20),
+            0
+        );
+        assert_eq!(
+            merge_euthersurfer_achievements(&mut entries, "Hana", &["first_steps".to_string()], 30,),
             1,
         );
         assert!(known_euthersurfer_achievement("boss_rush"));
+        assert!(known_euthersurfer_achievement("sauce_burn"));
         assert!(!known_euthersurfer_achievement("invented_badge"));
 
         let payload = euthersurfer_achievements_payload(&entries, Some("MOMO"));

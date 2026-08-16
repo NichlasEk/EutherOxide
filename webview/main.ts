@@ -8751,8 +8751,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherMajn",
     detail: "Rust voxel sandbox with biomes, persistent worlds, placeable kiln and workbench, refined materials and pyrotechnics",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherMajn-0.13.0-debug.apk",
-    status: "Prototype APK · v0.13.0 · Physical debris + collectible block drops",
+    href: "/downloads/EutherMajn-0.12.0-debug.apk",
+    status: "Prototype APK · v0.12.0 · Clear controls + keybinding help",
   },
   {
     title: "BusMancer",
@@ -8770,10 +8770,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "Sakura Sprint",
-    detail: "Japanese macaque endless runner with three districts, boss battles, rare sushi, powerups and global achievements",
+    detail: "Japanese macaque endless runner with three districts, boss battles, rare sushi, red-sauce fire breath and global achievements",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherSurfer-0.6.0-debug.apk",
-    status: "Prototype APK · v0.6.0 · 3 districts · 3 bosses · Global achievements",
+    href: "/downloads/EutherSurfer-0.7.0-debug.apk",
+    status: "Prototype APK · v0.7.0 · Red-sauce fire breath · 3 bosses · Global achievements",
   },
   {
     title: "EutherVox",
