@@ -110,7 +110,8 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.7.0-debug.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.8.0-debug.apk";
+const LEGACY_EUTHERSURFER_0_7_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.7.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_6_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.6.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_5_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.5.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_4_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.4.0-debug.apk";
@@ -11405,9 +11406,13 @@ fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             LEGACY_EUTHERSURFER_0_6_0_APK_PATH,
             "EutherSurfer-0.6.0-debug.apk",
         ),
+        "/downloads/EutherSurfer-0.7.0-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_7_0_APK_PATH,
+            "EutherSurfer-0.7.0-debug.apk",
+        ),
         _ => (
             DEFAULT_EUTHERSURFER_APK_PATH,
-            "EutherSurfer-0.7.0-debug.apk",
+            "EutherSurfer-0.8.0-debug.apk",
         ),
     };
     send_android_apk(
@@ -11435,6 +11440,7 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-0.5.0-debug.apk"
             | "/downloads/EutherSurfer-0.6.0-debug.apk"
             | "/downloads/EutherSurfer-0.7.0-debug.apk"
+            | "/downloads/EutherSurfer-0.8.0-debug.apk"
     )
 }
 
@@ -24796,6 +24802,9 @@ mod tests {
 
     #[test]
     fn euthersurfer_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_euthersurfer_apk_download_path(
+            "/downloads/EutherSurfer-0.8.0-debug.apk"
+        ));
         assert!(is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-0.7.0-debug.apk"
         ));
