@@ -2156,6 +2156,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="app-nav-grid">
             <button data-app-route="play" type="button">Reaction Lobby</button>
             <a class="app-nav-link" href="/projects/">Public Projects</a>
+            <a class="app-nav-link" href="/euthermig/">EutherMIG</a>
           </div>
         </div>
         <div class="app-nav-group">
