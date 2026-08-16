@@ -8748,6 +8748,13 @@ const appDownloads: AppDownload[] = [
     status: "Test APK · No network permission",
   },
   {
+    title: "EutherMajn",
+    detail: "Cross-platform Rust voxel sandbox prototype with deterministic geology and a shared wgpu renderer",
+    platform: "Android phone · Game prototype",
+    href: "/downloads/EutherMajn-0.1.0-debug.apk",
+    status: "Prototype APK · v0.1.0 · First voxel engine checkpoint",
+  },
+  {
     title: "BusMancer",
     detail: "Portable context node with trusted device selection and a locally approved receive-only Bluetooth Classic SPP probe",
     platform: "Android phone · Alpha",
