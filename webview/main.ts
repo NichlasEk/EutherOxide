@@ -8749,10 +8749,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherMajn",
-    detail: "Playable Rust voxel sandbox prototype with touch movement, free look, deterministic terrain and a shared wgpu renderer",
+    detail: "Playable Rust voxel sandbox with touch movement, jumping, terrain collision and crosshair mining",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherMajn-0.2.0-debug.apk",
-    status: "Prototype APK · v0.2.0 · Touch controls + first-person terrain",
+    href: "/downloads/EutherMajn-0.3.0-debug.apk",
+    status: "Prototype APK · v0.3.0 · Jump, gravity + mineable voxels",
   },
   {
     title: "BusMancer",
