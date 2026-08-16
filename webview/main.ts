@@ -8749,10 +8749,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherMajn",
-    detail: "Playable Rust voxel sandbox with mining, material inventory and timed prototype charges",
+    detail: "Playable Rust voxel sandbox with material recovery, mining and fictional charge crafting",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherMajn-0.4.0-debug.apk",
-    status: "Prototype APK · v0.4.0 · Inventory + material-sensitive voxel blasts",
+    href: "/downloads/EutherMajn-0.5.0-debug.apk",
+    status: "Prototype APK · v0.5.0 · Material HUD + renewable prototype charges",
   },
   {
     title: "BusMancer",
