@@ -8751,8 +8751,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherMajn",
     detail: "Rust voxel sandbox with biomes, persistent worlds, placeable kiln and workbench, refined materials and pyrotechnics",
     platform: "Android phone · Game prototype",
-    href: "/downloads/EutherMajn-0.14.0-debug.apk",
-    status: "Prototype APK · v0.14.0 · Field Journal records + six persistent achievements",
+    href: "/downloads/EutherMajn-0.15.0-debug.apk",
+    status: "Prototype APK · v0.15.0 · Nitrate barn · Block cows · Hay-fed crystal harvest",
   },
   {
     title: "BusMancer",
