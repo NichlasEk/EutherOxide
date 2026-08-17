@@ -265,6 +265,7 @@ static EUTHERSURFER_ACHIEVEMENT_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_DAILY_SCORE_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_WEEKLY_BOSS_LOCK: Mutex<()> = Mutex::new(());
 const EUTHERSURFER_SCORE_LIMIT: usize = 30;
+const EUTHERSURFER_ACHIEVEMENT_RETENTION_MS: u64 = 366 * 24 * 60 * 60 * 1_000;
 const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
 const EUTHERSURFER_MAX_SUSHI: u64 = 1_000_000;
 const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 23] = [
@@ -1031,6 +1032,8 @@ struct EutherSurferScoreEntry {
     created_unix_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publisher_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1042,6 +1045,8 @@ struct EutherSurferScoreSubmit {
     duration_ms: Option<u64>,
     #[serde(default)]
     run_id: Option<String>,
+    #[serde(default)]
+    publisher_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1053,6 +1058,8 @@ struct EutherSurferDailyScoreEntry {
     created_unix_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publisher_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1067,6 +1074,8 @@ struct EutherSurferDailyScoreSubmit {
     duration_ms: Option<u64>,
     #[serde(default)]
     run_id: Option<String>,
+    #[serde(default)]
+    publisher_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1081,6 +1090,8 @@ struct EutherSurferWeeklyBossEntry {
     created_unix_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publisher_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1093,6 +1104,8 @@ struct EutherSurferWeeklyBossSubmit {
     victory: bool,
     duration_ms: u64,
     run_id: String,
+    #[serde(default)]
+    publisher_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1100,6 +1113,8 @@ struct EutherSurferAchievementEntry {
     name: String,
     achievement_id: String,
     unlocked_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publisher_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1109,6 +1124,13 @@ struct EutherSurferAchievementSubmit {
     achievement_id: Option<String>,
     #[serde(default)]
     achievement_ids: Vec<String>,
+    #[serde(default)]
+    publisher_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EutherSurferPrivacyDelete {
+    publisher_token: String,
 }
 
 #[derive(Clone)]
@@ -2309,6 +2331,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/euthersurfer/daily-scores"
         && path != "/api/euthersurfer/weekly-boss"
         && path != "/api/euthersurfer/achievements"
+        && path != "/api/euthersurfer/privacy/delete"
         && path != "/api/euthersurfer/purchases/verify"
         && path != "/api/euthersurfer/purchases/restore"
         && path != "/api/euthersurfer/purchases/rtdn"
@@ -2491,6 +2514,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/euthersurfer/achievements") => {
             submit_euthersurfer_achievements(stream, &request)
+        }
+        ("POST", "/api/euthersurfer/privacy/delete") => {
+            delete_euthersurfer_publications(stream, &request)
         }
         ("GET", "/api/euthersurfer/purchases/status") => {
             let response = state.euthersurfer_commerce.status();
@@ -11729,7 +11755,44 @@ fn normalize_euthersurfer_name(name: &str) -> io::Result<String> {
     if normalized.is_empty() {
         return Err(invalid_request("player name is required"));
     }
+    let lowercase = normalized.to_lowercase();
+    let numeric_characters = normalized
+        .chars()
+        .filter(|character| character.is_numeric())
+        .count();
+    if normalized.contains('@')
+        || lowercase.contains("http://")
+        || lowercase.contains("https://")
+        || lowercase.contains("www.")
+        || numeric_characters >= 6
+    {
+        return Err(invalid_request(
+            "player name must not contain contact details",
+        ));
+    }
     Ok(normalized)
+}
+
+fn euthersurfer_publisher_hash(token: Option<&str>) -> io::Result<Option<String>> {
+    let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
+        return Ok(None);
+    };
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid_request("publisher token has an invalid format"));
+    }
+    Ok(Some(sha256_hex(
+        format!("euthersurfer-publisher-v1:{}", token.to_ascii_lowercase()).as_bytes(),
+    )))
+}
+
+fn remove_euthersurfer_publisher_entries<T>(
+    entries: &mut Vec<T>,
+    publisher_hash: &str,
+    owner: impl for<'a> Fn(&'a T) -> Option<&'a str>,
+) -> usize {
+    let before = entries.len();
+    entries.retain(|entry| owner(entry) != Some(publisher_hash));
+    before - entries.len()
 }
 
 fn validate_euthersurfer_run(
@@ -11835,6 +11898,7 @@ fn submit_euthersurfer_score(stream: &mut TcpStream, request: &HttpRequest) -> i
     let submission: EutherSurferScoreSubmit = serde_json::from_slice(&request.body)
         .map_err(|err| invalid_request(format!("invalid score payload: {err}")))?;
     let name = normalize_euthersurfer_name(&submission.name)?;
+    let publisher_hash = euthersurfer_publisher_hash(submission.publisher_token.as_deref())?;
     if submission.score == 0 || submission.score > EUTHERSURFER_MAX_SCORE {
         return Err(invalid_request("score is outside the accepted range"));
     }
@@ -11865,6 +11929,7 @@ fn submit_euthersurfer_score(stream: &mut TcpStream, request: &HttpRequest) -> i
             sushi: submission.sushi,
             created_unix_ms: unix_ms_now(),
             run_id: submission.run_id,
+            publisher_hash,
         });
     }
     rank_euthersurfer_scores(&mut scores);
@@ -11938,6 +12003,13 @@ fn read_euthersurfer_daily_scores() -> io::Result<Vec<EutherSurferDailyScoreEntr
     })
 }
 
+fn prune_euthersurfer_daily_scores(entries: &mut Vec<EutherSurferDailyScoreEntry>) -> usize {
+    let before = entries.len();
+    let cutoff = current_utc_epoch_day() - 31;
+    entries.retain(|entry| epoch_day_from_iso(&entry.day).is_ok_and(|day| day >= cutoff));
+    before - entries.len()
+}
+
 fn write_euthersurfer_daily_scores(scores: &[EutherSurferDailyScoreEntry]) -> io::Result<()> {
     let path = euthersurfer_daily_score_path();
     if let Some(parent) = path.parent() {
@@ -11963,6 +12035,7 @@ fn euthersurfer_daily_scores_for_day(
             sushi: entry.sushi,
             created_unix_ms: entry.created_unix_ms,
             run_id: entry.run_id.clone(),
+            publisher_hash: entry.publisher_hash.clone(),
         })
         .collect::<Vec<_>>();
     rank_euthersurfer_scores(&mut scores);
@@ -11981,7 +12054,10 @@ fn send_euthersurfer_daily_scores(stream: &mut TcpStream, request: &HttpRequest)
     let _guard = EUTHERSURFER_DAILY_SCORE_LOCK
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer daily score lock poisoned"))?;
-    let entries = read_euthersurfer_daily_scores()?;
+    let mut entries = read_euthersurfer_daily_scores()?;
+    if prune_euthersurfer_daily_scores(&mut entries) > 0 {
+        write_euthersurfer_daily_scores(&entries)?;
+    }
     let scores = euthersurfer_daily_scores_for_day(&entries, &day);
     send_json(stream, &euthersurfer_scores_payload(&scores))
 }
@@ -12005,6 +12081,7 @@ fn submit_euthersurfer_daily_score(
         ));
     }
     let name = normalize_euthersurfer_name(&submission.name)?;
+    let publisher_hash = euthersurfer_publisher_hash(submission.publisher_token.as_deref())?;
     if submission.score == 0 || submission.score > EUTHERSURFER_MAX_SCORE {
         return Err(invalid_request("score is outside the accepted range"));
     }
@@ -12037,10 +12114,10 @@ fn submit_euthersurfer_daily_score(
             sushi: submission.sushi,
             created_unix_ms: unix_ms_now(),
             run_id: submission.run_id,
+            publisher_hash,
         });
     }
-    let cutoff = current_utc_epoch_day() - 31;
-    entries.retain(|entry| epoch_day_from_iso(&entry.day).is_ok_and(|day| day >= cutoff));
+    prune_euthersurfer_daily_scores(&mut entries);
     let ranked = euthersurfer_daily_scores_for_day(&entries, &submission.day);
     let keep = ranked
         .iter()
@@ -12115,6 +12192,18 @@ fn read_euthersurfer_weekly_boss_scores() -> io::Result<Vec<EutherSurferWeeklyBo
     })
 }
 
+fn prune_euthersurfer_weekly_boss_scores(entries: &mut Vec<EutherSurferWeeklyBossEntry>) -> usize {
+    let before = entries.len();
+    let (year, week_number) =
+        parse_euthersurfer_week(&current_euthersurfer_week()).unwrap_or((1970, 1));
+    let cutoff = year * 53 + week_number - 12;
+    entries.retain(|entry| {
+        parse_euthersurfer_week(&entry.week)
+            .is_ok_and(|(entry_year, entry_week)| entry_year * 53 + entry_week >= cutoff)
+    });
+    before - entries.len()
+}
+
 fn write_euthersurfer_weekly_boss_scores(scores: &[EutherSurferWeeklyBossEntry]) -> io::Result<()> {
     let path = euthersurfer_weekly_boss_path();
     if let Some(parent) = path.parent() {
@@ -12178,7 +12267,10 @@ fn send_euthersurfer_weekly_boss_scores(
     let _guard = EUTHERSURFER_WEEKLY_BOSS_LOCK
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer weekly boss lock poisoned"))?;
-    let entries = read_euthersurfer_weekly_boss_scores()?;
+    let mut entries = read_euthersurfer_weekly_boss_scores()?;
+    if prune_euthersurfer_weekly_boss_scores(&mut entries) > 0 {
+        write_euthersurfer_weekly_boss_scores(&entries)?;
+    }
     let ranked = rank_euthersurfer_weekly_boss_scores(&entries, &week);
     send_json(stream, &euthersurfer_weekly_boss_payload(&ranked))
 }
@@ -12212,6 +12304,7 @@ fn submit_euthersurfer_weekly_boss_score(
         Some(&submission.run_id),
     )?;
     let name = normalize_euthersurfer_name(&submission.name)?;
+    let publisher_hash = euthersurfer_publisher_hash(submission.publisher_token.as_deref())?;
     let _guard = EUTHERSURFER_WEEKLY_BOSS_LOCK
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer weekly boss lock poisoned"))?;
@@ -12230,13 +12323,10 @@ fn submit_euthersurfer_weekly_boss_score(
             duration_ms: submission.duration_ms,
             created_unix_ms: unix_ms_now(),
             run_id: Some(submission.run_id),
+            publisher_hash,
         });
     }
-    let cutoff = year * 53 + week_number - 12;
-    entries.retain(|entry| {
-        parse_euthersurfer_week(&entry.week)
-            .is_ok_and(|(entry_year, entry_week)| entry_year * 53 + entry_week >= cutoff)
-    });
+    prune_euthersurfer_weekly_boss_scores(&mut entries);
     let ranked = rank_euthersurfer_weekly_boss_scores(&entries, &submission.week);
     let kept_run_ids = ranked
         .iter()
@@ -12271,6 +12361,16 @@ fn read_euthersurfer_achievements() -> io::Result<Vec<EutherSurferAchievementEnt
     })
 }
 
+fn prune_euthersurfer_achievements(
+    entries: &mut Vec<EutherSurferAchievementEntry>,
+    now: u64,
+) -> usize {
+    let before = entries.len();
+    let cutoff = now.saturating_sub(EUTHERSURFER_ACHIEVEMENT_RETENTION_MS);
+    entries.retain(|entry| entry.unlocked_unix_ms >= cutoff);
+    before - entries.len()
+}
+
 fn write_euthersurfer_achievements(entries: &[EutherSurferAchievementEntry]) -> io::Result<()> {
     let path = euthersurfer_achievement_path();
     if let Some(parent) = path.parent() {
@@ -12294,6 +12394,7 @@ fn merge_euthersurfer_achievements(
     name: &str,
     achievement_ids: &[String],
     now: u64,
+    publisher_hash: Option<&str>,
 ) -> usize {
     let mut added = 0;
     for achievement_id in achievement_ids {
@@ -12305,6 +12406,7 @@ fn merge_euthersurfer_achievements(
                 name: name.to_string(),
                 achievement_id: achievement_id.clone(),
                 unlocked_unix_ms: now,
+                publisher_hash: publisher_hash.map(str::to_string),
             });
             added += 1;
         }
@@ -12352,7 +12454,10 @@ fn send_euthersurfer_achievements(stream: &mut TcpStream, request: &HttpRequest)
     let _guard = EUTHERSURFER_ACHIEVEMENT_LOCK
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer achievement lock poisoned"))?;
-    let entries = read_euthersurfer_achievements()?;
+    let mut entries = read_euthersurfer_achievements()?;
+    if prune_euthersurfer_achievements(&mut entries, unix_ms_now()) > 0 {
+        write_euthersurfer_achievements(&entries)?;
+    }
     send_json(
         stream,
         &euthersurfer_achievements_payload(&entries, requested_name.as_deref()),
@@ -12366,6 +12471,7 @@ fn submit_euthersurfer_achievements(
     let submission: EutherSurferAchievementSubmit = serde_json::from_slice(&request.body)
         .map_err(|err| invalid_request(format!("invalid achievement payload: {err}")))?;
     let name = normalize_euthersurfer_name(&submission.name)?;
+    let publisher_hash = euthersurfer_publisher_hash(submission.publisher_token.as_deref())?;
     let mut ids = submission.achievement_ids;
     if let Some(id) = submission.achievement_id {
         ids.push(id);
@@ -12382,12 +12488,93 @@ fn submit_euthersurfer_achievements(
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer achievement lock poisoned"))?;
     let mut entries = read_euthersurfer_achievements()?;
-    if merge_euthersurfer_achievements(&mut entries, &name, &ids, unix_ms_now()) > 0 {
+    let pruned = prune_euthersurfer_achievements(&mut entries, unix_ms_now());
+    if merge_euthersurfer_achievements(
+        &mut entries,
+        &name,
+        &ids,
+        unix_ms_now(),
+        publisher_hash.as_deref(),
+    ) > 0
+        || pruned > 0
+    {
         write_euthersurfer_achievements(&entries)?;
     }
     send_json(
         stream,
         &euthersurfer_achievements_payload(&entries, Some(&name)),
+    )
+}
+
+fn delete_euthersurfer_publications(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let deletion: EutherSurferPrivacyDelete = serde_json::from_slice(&request.body)
+        .map_err(|err| invalid_request(format!("invalid privacy delete payload: {err}")))?;
+    let publisher_hash = euthersurfer_publisher_hash(Some(&deletion.publisher_token))?
+        .ok_or_else(|| invalid_request("publisher token is required"))?;
+
+    let _score_guard = EUTHERSURFER_SCORE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer score lock poisoned"))?;
+    let _daily_guard = EUTHERSURFER_DAILY_SCORE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer daily score lock poisoned"))?;
+    let _weekly_guard = EUTHERSURFER_WEEKLY_BOSS_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer weekly boss lock poisoned"))?;
+    let _achievement_guard = EUTHERSURFER_ACHIEVEMENT_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer achievement lock poisoned"))?;
+
+    let mut scores = read_euthersurfer_scores()?;
+    let removed_scores =
+        remove_euthersurfer_publisher_entries(&mut scores, &publisher_hash, |entry| {
+            entry.publisher_hash.as_deref()
+        });
+    if removed_scores > 0 {
+        write_euthersurfer_scores(&scores)?;
+    }
+
+    let mut daily = read_euthersurfer_daily_scores()?;
+    let removed_daily =
+        remove_euthersurfer_publisher_entries(&mut daily, &publisher_hash, |entry| {
+            entry.publisher_hash.as_deref()
+        });
+    if removed_daily > 0 {
+        write_euthersurfer_daily_scores(&daily)?;
+    }
+
+    let mut weekly = read_euthersurfer_weekly_boss_scores()?;
+    let removed_weekly =
+        remove_euthersurfer_publisher_entries(&mut weekly, &publisher_hash, |entry| {
+            entry.publisher_hash.as_deref()
+        });
+    if removed_weekly > 0 {
+        write_euthersurfer_weekly_boss_scores(&weekly)?;
+    }
+
+    let mut achievements = read_euthersurfer_achievements()?;
+    let removed_achievements =
+        remove_euthersurfer_publisher_entries(&mut achievements, &publisher_hash, |entry| {
+            entry.publisher_hash.as_deref()
+        });
+    if removed_achievements > 0 {
+        write_euthersurfer_achievements(&achievements)?;
+    }
+
+    send_json(
+        stream,
+        &serde_json::json!({
+            "deleted": {
+                "scores": removed_scores,
+                "daily_scores": removed_daily,
+                "weekly_boss_scores": removed_weekly,
+                "achievements": removed_achievements,
+                "total": removed_scores + removed_daily + removed_weekly + removed_achievements,
+            }
+        }),
     )
 }
 
@@ -25640,6 +25827,10 @@ mod tests {
             "abcdefghijklmn"
         );
         assert!(normalize_euthersurfer_name(" \n\t ").is_err());
+        assert!(normalize_euthersurfer_name("kid@example.com").is_err());
+        assert!(normalize_euthersurfer_name("www.example.se").is_err());
+        assert!(normalize_euthersurfer_name("0701234567").is_err());
+        assert!(normalize_euthersurfer_name("Runner 12345").is_ok());
 
         let mut scores = (0..35)
             .map(|index| EutherSurferScoreEntry {
@@ -25648,6 +25839,7 @@ mod tests {
                 sushi: index % 4,
                 created_unix_ms: index,
                 run_id: None,
+                publisher_hash: None,
             })
             .collect::<Vec<_>>();
         rank_euthersurfer_scores(&mut scores);
@@ -25658,6 +25850,7 @@ mod tests {
         let payload = euthersurfer_scores_payload(&scores);
         assert_eq!(payload["scores"][0]["rank"], 1);
         assert_eq!(payload["scores"][0]["score"], 34);
+        assert!(payload["scores"][0].get("publisherHash").is_none());
     }
 
     #[test]
@@ -25679,6 +25872,7 @@ mod tests {
                 sushi: 4,
                 created_unix_ms: 1,
                 run_id: None,
+                publisher_hash: None,
             },
             EutherSurferDailyScoreEntry {
                 day: "2026-08-16".to_string(),
@@ -25687,6 +25881,7 @@ mod tests {
                 sushi: 8,
                 created_unix_ms: 2,
                 run_id: None,
+                publisher_hash: None,
             },
             EutherSurferDailyScoreEntry {
                 day: "2026-08-17".to_string(),
@@ -25695,6 +25890,7 @@ mod tests {
                 sushi: 5,
                 created_unix_ms: 3,
                 run_id: None,
+                publisher_hash: None,
             },
         ];
         let ranked = euthersurfer_daily_scores_for_day(&entries, "2026-08-17");
@@ -25728,6 +25924,7 @@ mod tests {
                 duration_ms,
                 created_unix_ms: duration_ms,
                 run_id: None,
+                publisher_hash: None,
             }
         };
         let entries = vec![
@@ -25750,15 +25947,21 @@ mod tests {
         let mut entries = Vec::new();
         let first = vec!["first_steps".to_string(), "oni_down".to_string()];
         assert_eq!(
-            merge_euthersurfer_achievements(&mut entries, "Momo", &first, 10),
+            merge_euthersurfer_achievements(&mut entries, "Momo", &first, 10, None),
             2
         );
         assert_eq!(
-            merge_euthersurfer_achievements(&mut entries, "momo", &first, 20),
+            merge_euthersurfer_achievements(&mut entries, "momo", &first, 20, None),
             0
         );
         assert_eq!(
-            merge_euthersurfer_achievements(&mut entries, "Hana", &["first_steps".to_string()], 30,),
+            merge_euthersurfer_achievements(
+                &mut entries,
+                "Hana",
+                &["first_steps".to_string()],
+                30,
+                None,
+            ),
             1,
         );
         assert!(known_euthersurfer_achievement("boss_rush"));
@@ -25790,6 +25993,70 @@ mod tests {
             .unwrap();
         assert_eq!(shogun["global_unlocks"], 0);
         assert_eq!(shogun["unlocked"], false);
+    }
+
+    #[test]
+    fn euthersurfer_publisher_tokens_are_hashed_and_delete_only_their_entries() {
+        let token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let other = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let publisher_hash = euthersurfer_publisher_hash(Some(token)).unwrap().unwrap();
+        let other_hash = euthersurfer_publisher_hash(Some(other)).unwrap().unwrap();
+        assert_ne!(publisher_hash, token);
+        assert_ne!(publisher_hash, other_hash);
+        assert!(euthersurfer_publisher_hash(Some("short")).is_err());
+        assert_eq!(euthersurfer_publisher_hash(None).unwrap(), None);
+
+        let mut entries = vec![
+            EutherSurferAchievementEntry {
+                name: "Momo".to_string(),
+                achievement_id: "first_steps".to_string(),
+                unlocked_unix_ms: 10,
+                publisher_hash: Some(publisher_hash.clone()),
+            },
+            EutherSurferAchievementEntry {
+                name: "Hana".to_string(),
+                achievement_id: "first_steps".to_string(),
+                unlocked_unix_ms: 20,
+                publisher_hash: Some(other_hash.clone()),
+            },
+            EutherSurferAchievementEntry {
+                name: "Legacy".to_string(),
+                achievement_id: "first_steps".to_string(),
+                unlocked_unix_ms: 30,
+                publisher_hash: None,
+            },
+        ];
+        assert_eq!(
+            remove_euthersurfer_publisher_entries(&mut entries, &publisher_hash, |entry| {
+                entry.publisher_hash.as_deref()
+            }),
+            1,
+        );
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry.name == "Hana"));
+        assert!(entries.iter().any(|entry| entry.name == "Legacy"));
+    }
+
+    #[test]
+    fn euthersurfer_achievement_retention_is_bounded() {
+        let now = EUTHERSURFER_ACHIEVEMENT_RETENTION_MS + 100;
+        let mut entries = vec![
+            EutherSurferAchievementEntry {
+                name: "Old".to_string(),
+                achievement_id: "first_steps".to_string(),
+                unlocked_unix_ms: 99,
+                publisher_hash: None,
+            },
+            EutherSurferAchievementEntry {
+                name: "Boundary".to_string(),
+                achievement_id: "first_steps".to_string(),
+                unlocked_unix_ms: 100,
+                publisher_hash: None,
+            },
+        ];
+        assert_eq!(prune_euthersurfer_achievements(&mut entries, now), 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Boundary");
     }
 
     #[test]
