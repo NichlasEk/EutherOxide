@@ -111,7 +111,8 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.8.0-debug.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.9.0-debug.apk";
+const LEGACY_EUTHERSURFER_0_8_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.8.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_7_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.7.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_6_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.6.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_5_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.5.0-debug.apk";
@@ -977,6 +978,8 @@ struct EutherSurferScoreEntry {
     score: u64,
     sushi: u64,
     created_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -984,6 +987,10 @@ struct EutherSurferScoreSubmit {
     name: String,
     score: u64,
     sushi: u64,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    run_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -993,6 +1000,8 @@ struct EutherSurferDailyScoreEntry {
     score: u64,
     sushi: u64,
     created_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1003,6 +1012,10 @@ struct EutherSurferDailyScoreSubmit {
     name: String,
     score: u64,
     sushi: u64,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    run_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -11449,9 +11462,13 @@ fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             LEGACY_EUTHERSURFER_0_7_0_APK_PATH,
             "EutherSurfer-0.7.0-debug.apk",
         ),
+        "/downloads/EutherSurfer-0.8.0-debug.apk" => (
+            LEGACY_EUTHERSURFER_0_8_0_APK_PATH,
+            "EutherSurfer-0.8.0-debug.apk",
+        ),
         _ => (
             DEFAULT_EUTHERSURFER_APK_PATH,
-            "EutherSurfer-0.8.0-debug.apk",
+            "EutherSurfer-0.9.0-debug.apk",
         ),
     };
     send_android_apk(
@@ -11480,6 +11497,7 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-0.6.0-debug.apk"
             | "/downloads/EutherSurfer-0.7.0-debug.apk"
             | "/downloads/EutherSurfer-0.8.0-debug.apk"
+            | "/downloads/EutherSurfer-0.9.0-debug.apk"
     )
 }
 
@@ -11500,6 +11518,42 @@ fn normalize_euthersurfer_name(name: &str) -> io::Result<String> {
         return Err(invalid_request("player name is required"));
     }
     Ok(normalized)
+}
+
+fn validate_euthersurfer_run(
+    score: u64,
+    sushi: u64,
+    duration_ms: Option<u64>,
+    run_id: Option<&str>,
+) -> io::Result<()> {
+    match (duration_ms, run_id) {
+        (None, None) => return Ok(()), // Compatibility with pre-0.9.0 clients.
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(invalid_request(
+                "run id and duration must be supplied together",
+            ));
+        }
+        _ => {}
+    }
+    let duration_ms = duration_ms.unwrap_or_default();
+    let run_id = run_id.unwrap_or_default();
+    if !(2_000..=7_200_000).contains(&duration_ms) {
+        return Err(invalid_request(
+            "run duration is outside the accepted range",
+        ));
+    }
+    if run_id.len() != 36
+        || !run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return Err(invalid_request("run id has an invalid format"));
+    }
+    let seconds = (duration_ms / 1_000).max(1);
+    if score > 12_000 + seconds * 2_500 || sushi > 20 + seconds * 8 {
+        return Err(invalid_request("run result exceeds the accepted pace"));
+    }
+    Ok(())
 }
 
 fn read_euthersurfer_scores() -> io::Result<Vec<EutherSurferScoreEntry>> {
@@ -11575,15 +11629,22 @@ fn submit_euthersurfer_score(stream: &mut TcpStream, request: &HttpRequest) -> i
     if submission.sushi > EUTHERSURFER_MAX_SUSHI {
         return Err(invalid_request("sushi count is outside the accepted range"));
     }
+    validate_euthersurfer_run(
+        submission.score,
+        submission.sushi,
+        submission.duration_ms,
+        submission.run_id.as_deref(),
+    )?;
 
     let _guard = EUTHERSURFER_SCORE_LOCK
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer score lock poisoned"))?;
     let mut scores = read_euthersurfer_scores()?;
     let is_retry = scores.iter().any(|entry| {
-        entry.name.eq_ignore_ascii_case(&name)
-            && entry.score == submission.score
-            && entry.sushi == submission.sushi
+        submission.run_id.is_some() && entry.run_id == submission.run_id
+            || entry.name.eq_ignore_ascii_case(&name)
+                && entry.score == submission.score
+                && entry.sushi == submission.sushi
     });
     if !is_retry {
         scores.push(EutherSurferScoreEntry {
@@ -11591,6 +11652,7 @@ fn submit_euthersurfer_score(stream: &mut TcpStream, request: &HttpRequest) -> i
             score: submission.score,
             sushi: submission.sushi,
             created_unix_ms: unix_ms_now(),
+            run_id: submission.run_id,
         });
     }
     rank_euthersurfer_scores(&mut scores);
@@ -11688,6 +11750,7 @@ fn euthersurfer_daily_scores_for_day(
             score: entry.score,
             sushi: entry.sushi,
             created_unix_ms: entry.created_unix_ms,
+            run_id: entry.run_id.clone(),
         })
         .collect::<Vec<_>>();
     rank_euthersurfer_scores(&mut scores);
@@ -11736,16 +11799,23 @@ fn submit_euthersurfer_daily_score(
     if submission.sushi > EUTHERSURFER_MAX_SUSHI {
         return Err(invalid_request("sushi count is outside the accepted range"));
     }
+    validate_euthersurfer_run(
+        submission.score,
+        submission.sushi,
+        submission.duration_ms,
+        submission.run_id.as_deref(),
+    )?;
 
     let _guard = EUTHERSURFER_DAILY_SCORE_LOCK
         .lock()
         .map_err(|_| io::Error::other("EutherSurfer daily score lock poisoned"))?;
     let mut entries = read_euthersurfer_daily_scores()?;
     let is_retry = entries.iter().any(|entry| {
-        entry.day == submission.day
-            && entry.name.eq_ignore_ascii_case(&name)
-            && entry.score == submission.score
-            && entry.sushi == submission.sushi
+        submission.run_id.is_some() && entry.run_id == submission.run_id
+            || entry.day == submission.day
+                && entry.name.eq_ignore_ascii_case(&name)
+                && entry.score == submission.score
+                && entry.sushi == submission.sushi
     });
     if !is_retry {
         entries.push(EutherSurferDailyScoreEntry {
@@ -11754,6 +11824,7 @@ fn submit_euthersurfer_daily_score(
             score: submission.score,
             sushi: submission.sushi,
             created_unix_ms: unix_ms_now(),
+            run_id: submission.run_id,
         });
     }
     let cutoff = current_utc_epoch_day() - 31;
@@ -25018,6 +25089,9 @@ mod tests {
     #[test]
     fn euthersurfer_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_euthersurfer_apk_download_path(
+            "/downloads/EutherSurfer-0.9.0-debug.apk"
+        ));
+        assert!(is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-0.8.0-debug.apk"
         ));
         assert!(is_euthersurfer_apk_download_path(
@@ -25082,6 +25156,7 @@ mod tests {
                 score: index,
                 sushi: index % 4,
                 created_unix_ms: index,
+                run_id: None,
             })
             .collect::<Vec<_>>();
         rank_euthersurfer_scores(&mut scores);
@@ -25112,6 +25187,7 @@ mod tests {
                 score: 900,
                 sushi: 4,
                 created_unix_ms: 1,
+                run_id: None,
             },
             EutherSurferDailyScoreEntry {
                 day: "2026-08-16".to_string(),
@@ -25119,6 +25195,7 @@ mod tests {
                 score: 2_000,
                 sushi: 8,
                 created_unix_ms: 2,
+                run_id: None,
             },
             EutherSurferDailyScoreEntry {
                 day: "2026-08-17".to_string(),
@@ -25126,12 +25203,17 @@ mod tests {
                 score: 1_200,
                 sushi: 5,
                 created_unix_ms: 3,
+                run_id: None,
             },
         ];
         let ranked = euthersurfer_daily_scores_for_day(&entries, "2026-08-17");
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].name, "Kiko");
         assert_eq!(ranked[1].name, "Momo");
+        let valid_id = "123e4567-e89b-12d3-a456-426614174000";
+        assert!(validate_euthersurfer_run(12_000, 12, Some(20_000), Some(valid_id)).is_ok());
+        assert!(validate_euthersurfer_run(99_000, 12, Some(2_000), Some(valid_id)).is_err());
+        assert!(validate_euthersurfer_run(500, 1, Some(20_000), Some("bad-id")).is_err());
     }
 
     #[test]
