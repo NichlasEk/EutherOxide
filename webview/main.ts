@@ -8772,8 +8772,8 @@ const appDownloads: AppDownload[] = [
     title: "Sakura Sprint",
     detail: "Japanese macaque endless runner with six districts, tactical boss throws, daily challenges, temple cosmetics and global boards",
     platform: "Android phone · Game",
-    href: "/downloads/EutherSurfer-1.0.0.apk",
-    status: "Release APK · v1.0.0 · Yuki-Onna + Ryujin · Boss health and guard phases · New music",
+    href: "/downloads/EutherSurfer-1.0.1.apk",
+    status: "Release APK · v1.0.1 · Balanced boss speed · Longer attack windows · Six-boss journey",
   },
   {
     title: "EutherVox",
