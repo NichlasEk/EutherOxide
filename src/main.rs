@@ -253,7 +253,7 @@ static EUTHERSURFER_DAILY_SCORE_LOCK: Mutex<()> = Mutex::new(());
 const EUTHERSURFER_SCORE_LIMIT: usize = 30;
 const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
 const EUTHERSURFER_MAX_SUSHI: u64 = 1_000_000;
-const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 14] = [
+const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 18] = [
     ("first_steps", "Första stegen", "Spring i tre sekunder."),
     ("first_sushi", "Itadakimasu!", "Samla din första sushi."),
     (
@@ -283,6 +283,13 @@ const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 14] = [
     ("shogun_down", "Stål mot wasabi", "Besegra Kurogane Shogun."),
     ("kage9_down", "Nio svansar, noll chanser", "Besegra KAGE-9."),
     (
+        "clean_shot",
+        "Fri sikt",
+        "Träffa en boss genom en helt fri fil.",
+    ),
+    ("yuki_down", "Töväder i templet", "Besegra Yuki-Onna."),
+    ("ryujin_down", "Stormen har lagt sig", "Besegra Ryujin."),
+    (
         "boss_rush",
         "Tre bossar, en run",
         "Besegra alla tre bossar under samma run.",
@@ -291,6 +298,11 @@ const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 14] = [
         "neon_legend",
         "Neonlegenden",
         "Besegra alla fyra bossar under samma run.",
+    ),
+    (
+        "six_boss_run",
+        "Sex bossar, en legend",
+        "Besegra hela bossresan under samma run.",
     ),
 ];
 
@@ -25236,6 +25248,10 @@ mod tests {
         assert!(known_euthersurfer_achievement("sauce_burn"));
         assert!(known_euthersurfer_achievement("kage9_down"));
         assert!(known_euthersurfer_achievement("neon_legend"));
+        assert!(known_euthersurfer_achievement("clean_shot"));
+        assert!(known_euthersurfer_achievement("yuki_down"));
+        assert!(known_euthersurfer_achievement("ryujin_down"));
+        assert!(known_euthersurfer_achievement("six_boss_run"));
         assert!(!known_euthersurfer_achievement("invented_badge"));
 
         let payload = euthersurfer_achievements_payload(&entries, Some("MOMO"));
