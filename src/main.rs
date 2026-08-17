@@ -1,3 +1,5 @@
+mod euthersurfer_commerce;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
@@ -1199,6 +1201,7 @@ struct HostState {
     alert_touch_events: Arc<Mutex<Vec<HostAlertTouchEvent>>>,
     next_alert_touch_id: Arc<Mutex<u64>>,
     active_requests: Arc<AtomicUsize>,
+    euthersurfer_commerce: Arc<euthersurfer_commerce::EutherSurferCommerce>,
 }
 
 struct HostOpenRaProcess {
@@ -1330,6 +1333,7 @@ struct HostConfig {
     app_public_server_url: Option<String>,
     app_lan_server_url: Option<String>,
     eutherbooks_server_urls: Vec<String>,
+    euthersurfer_commerce_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -2132,6 +2136,11 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
 
 fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     let config = load_host_config()?;
+    let euthersurfer_commerce =
+        Arc::new(euthersurfer_commerce::EutherSurferCommerce::new_disabled(
+            config.euthersurfer_commerce_enabled,
+            host_dir().join("euthersurfer-purchases.json"),
+        ));
     if let Some(rom_dir) = config.rom_dir.as_deref() {
         let canonical = validate_rom_root(rom_dir)?;
         write_rom_dir_setting(&canonical)?;
@@ -2181,6 +2190,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         alert_touch_events: Arc::new(Mutex::new(Vec::new())),
         next_alert_touch_id: Arc::new(Mutex::new(1)),
         active_requests: Arc::new(AtomicUsize::new(0)),
+        euthersurfer_commerce,
     };
     #[cfg(unix)]
     start_host_automation_socket(&state)?;
@@ -2282,6 +2292,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/euthersurfer/daily-scores"
         && path != "/api/euthersurfer/weekly-boss"
         && path != "/api/euthersurfer/achievements"
+        && path != "/api/euthersurfer/purchases/verify"
+        && path != "/api/euthersurfer/purchases/restore"
         && !is_eutherbooks_proxy_path(path)
         && !is_eutherpal_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
@@ -2461,6 +2473,54 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/euthersurfer/achievements") => {
             submit_euthersurfer_achievements(stream, &request)
+        }
+        ("GET", "/api/euthersurfer/purchases/status") => {
+            let response = state.euthersurfer_commerce.status();
+            send_json_status(stream, response.status, &response.body)
+        }
+        ("POST", "/api/euthersurfer/purchases/verify") => {
+            let response = if header_value(&request, "content-type")
+                .is_some_and(|value| value.starts_with("application/json"))
+            {
+                state.euthersurfer_commerce.verify(
+                    &request.body,
+                    &host_remote_addr(stream, &request),
+                    unix_ms_now(),
+                )
+            } else {
+                euthersurfer_commerce::CommerceHttpResponse {
+                    status: 415,
+                    body: serde_json::json!({
+                        "error": {
+                            "code": "unsupported_media_type",
+                            "message": "Purchase verification requires application/json",
+                        }
+                    }),
+                }
+            };
+            send_json_status(stream, response.status, &response.body)
+        }
+        ("POST", "/api/euthersurfer/purchases/restore") => {
+            let response = if header_value(&request, "content-type")
+                .is_some_and(|value| value.starts_with("application/json"))
+            {
+                state.euthersurfer_commerce.restore(
+                    &request.body,
+                    &host_remote_addr(stream, &request),
+                    unix_ms_now(),
+                )
+            } else {
+                euthersurfer_commerce::CommerceHttpResponse {
+                    status: 415,
+                    body: serde_json::json!({
+                        "error": {
+                            "code": "unsupported_media_type",
+                            "message": "Purchase restore requires application/json",
+                        }
+                    }),
+                }
+            };
+            send_json_status(stream, response.status, &response.body)
         }
         ("GET", path) if is_eutherlist_apk_download_path(path) => send_eutherlist_apk(stream),
         ("GET", path) if is_euthersync_apk_download_path(path) => send_euthersync_apk(stream),
@@ -19405,6 +19465,11 @@ fn send_json(stream: &mut TcpStream, value: &impl Serialize) -> io::Result<()> {
     send_response(stream, 200, "application/json", &body)
 }
 
+fn send_json_status(stream: &mut TcpStream, status: u16, value: &impl Serialize) -> io::Result<()> {
+    let body = serde_json::to_vec(value).map_err(|_| invalid_request("invalid JSON response"))?;
+    send_response(stream, status, "application/json", &body)
+}
+
 fn send_json_with_headers(
     stream: &mut TcpStream,
     value: &impl Serialize,
@@ -21259,7 +21324,8 @@ fn load_host_config() -> io::Result<HostConfig> {
              library_read_only = true\n\
              app_public_server_url = \"https://apothictech.se\"\n\
              app_lan_server_url = \"http://192.168.32.186:8080\"\n\
-             eutherbooks_server_urls = \"http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks\"\n",
+             eutherbooks_server_urls = \"http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks\"\n\
+             euthersurfer_commerce_enabled = false\n",
         )?;
     }
     let contents = fs::read_to_string(&path)?;
@@ -21297,6 +21363,8 @@ fn load_host_config() -> io::Result<HostConfig> {
         .filter(|url| !url.is_empty())
         .map(|url| url.trim_end_matches('/').to_string())
         .collect();
+    let euthersurfer_commerce_enabled =
+        parse_toml_bool(&contents, "euthersurfer_commerce_enabled").unwrap_or(false);
     Ok(HostConfig {
         bind,
         rom_dir,
@@ -21309,6 +21377,7 @@ fn load_host_config() -> io::Result<HostConfig> {
         app_public_server_url,
         app_lan_server_url,
         eutherbooks_server_urls,
+        euthersurfer_commerce_enabled,
     })
 }
 

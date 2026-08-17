@@ -223,7 +223,15 @@ library_read_only = true
 app_public_server_url = "https://apothictech.se"
 app_lan_server_url = "http://192.168.32.186:8080"
 eutherbooks_server_urls = "http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks"
+euthersurfer_commerce_enabled = false
 ```
+
+Keep `euthersurfer_commerce_enabled = false` until Google Play service-account
+verification, RTDN handling, token-log redaction, server acknowledgement and the
+license-tester matrix have all passed. The public readiness endpoint is
+`GET /api/euthersurfer/purchases/status`; while disabled it reports both sales
+and restore as unavailable. `POST .../verify` and `POST .../restore` return a
+stable fail-closed JSON error and never persist their request bodies or tokens.
 
 Create users with:
 
