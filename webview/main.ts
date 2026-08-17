@@ -8786,8 +8786,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherPing",
     detail: "Cyberpunk messaging with carrier SMS/MMS under Signals and encrypted text, images and files under Vessels",
     platform: "Android phone · SMS + Secure Beta",
-    href: "/downloads/EutherPing-0.8.21-debug.apk",
-    status: "Ratchet Beta · v0.8.21 · Cinematic terminal sounds · Optional mute",
+    href: "/downloads/EutherPing-0.8.22-debug.apk",
+    status: "Ratchet Beta · v0.8.22 · Compact composer · Smart latest-message scroll",
   },
   {
     title: "EutherWire",
