@@ -2611,4 +2611,18 @@ mod tests {
         assert!(!next_query.contains_key("startTime"));
         assert!(!next_query.contains_key("endTime"));
     }
+
+    #[test]
+    fn voided_reconciler_exits_after_commerce_owner_is_dropped() {
+        let commerce = Arc::new(EutherSurferCommerce::new_disabled(
+            false,
+            test_path("voided-worker-shutdown"),
+        ));
+        let weak = Arc::downgrade(&commerce);
+        drop(commerce);
+        let worker = thread::spawn(move || {
+            run_voided_reconciler(weak, Duration::from_millis(1));
+        });
+        assert!(worker.join().is_ok());
+    }
 }
