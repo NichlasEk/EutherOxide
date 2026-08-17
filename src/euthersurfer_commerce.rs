@@ -1,3 +1,5 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,10 @@ const GOOGLE_SCOPE: &str = "https://www.googleapis.com/auth/androidpublisher";
 const GOOGLE_API_ROOT: &str = "https://androidpublisher.googleapis.com/";
 const MAX_PROVIDER_BODY_BYTES: u64 = 64 * 1024;
 const ACCESS_TOKEN_REFRESH_MARGIN_SECS: u64 = 60;
+const GOOGLE_TOKEN_INFO_URI: &str = "https://oauth2.googleapis.com/tokeninfo";
+const MAX_RTDN_MESSAGE_IDS: usize = 4_096;
+const MAX_OIDC_TOKEN_BYTES: usize = 8 * 1024;
+const MAX_OIDC_CACHE_ENTRIES: usize = 32;
 
 #[derive(Clone, Copy)]
 struct ProductDefinition {
@@ -96,6 +102,183 @@ impl PlayPurchaseProvider for DisabledPlayPurchaseProvider {
     ) -> Result<(), PlayProviderError> {
         Err(PlayProviderError::Unavailable)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RtdnAuthError {
+    Invalid,
+    Unavailable,
+}
+
+trait RtdnAuthenticator: Send + Sync {
+    fn configured(&self) -> bool;
+    fn verify(&self, token: &str, now_epoch_secs: u64) -> Result<(), RtdnAuthError>;
+}
+
+struct DisabledRtdnAuthenticator;
+
+impl RtdnAuthenticator for DisabledRtdnAuthenticator {
+    fn configured(&self) -> bool {
+        false
+    }
+
+    fn verify(&self, _token: &str, _now_epoch_secs: u64) -> Result<(), RtdnAuthError> {
+        Err(RtdnAuthError::Unavailable)
+    }
+}
+
+struct GooglePubSubAuthenticator {
+    client: reqwest::blocking::Client,
+    expected_audience: String,
+    expected_email: String,
+    verified_tokens: Mutex<HashMap<String, u64>>,
+}
+
+impl GooglePubSubAuthenticator {
+    fn new(expected_audience: String, expected_email: String) -> Result<Self, RtdnAuthError> {
+        if !expected_audience.starts_with("https://")
+            || expected_audience.len() > 2_048
+            || expected_audience.chars().any(char::is_control)
+            || !expected_email.ends_with(".gserviceaccount.com")
+            || expected_email.len() > 320
+            || expected_email.chars().any(char::is_control)
+        {
+            return Err(RtdnAuthError::Invalid);
+        }
+        let client = reqwest::blocking::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .user_agent("EutherOxide-Sakura-RTDN/1")
+            .build()
+            .map_err(|_| RtdnAuthError::Unavailable)?;
+        Ok(Self {
+            client,
+            expected_audience,
+            expected_email,
+            verified_tokens: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn validate_claims(
+        &self,
+        claims: &serde_json::Value,
+        now_epoch_secs: u64,
+    ) -> Result<u64, RtdnAuthError> {
+        let string_claim = |name: &str| {
+            claims
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+        };
+        let number_claim = |name: &str| {
+            claims.get(name).and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
+            })
+        };
+        let email_verified = claims
+            .get("email_verified")
+            .is_some_and(|value| value == true || value.as_str() == Some("true"));
+        let issuer = string_claim("iss").ok_or(RtdnAuthError::Invalid)?;
+        let issued_at = number_claim("iat").ok_or(RtdnAuthError::Invalid)?;
+        let expires_at = number_claim("exp").ok_or(RtdnAuthError::Invalid)?;
+        if string_claim("aud") != Some(self.expected_audience.as_str())
+            || string_claim("email") != Some(self.expected_email.as_str())
+            || !email_verified
+            || !matches!(
+                issuer,
+                "accounts.google.com" | "https://accounts.google.com"
+            )
+            || string_claim("sub").is_none()
+            || issued_at > now_epoch_secs.saturating_add(60)
+            || now_epoch_secs.saturating_sub(issued_at) > 3_700
+            || expires_at <= now_epoch_secs
+            || expires_at.saturating_sub(issued_at) > 3_700
+        {
+            return Err(RtdnAuthError::Invalid);
+        }
+        Ok(expires_at)
+    }
+}
+
+impl RtdnAuthenticator for GooglePubSubAuthenticator {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn verify(&self, token: &str, now_epoch_secs: u64) -> Result<(), RtdnAuthError> {
+        if token.is_empty()
+            || token.len() > MAX_OIDC_TOKEN_BYTES
+            || token.chars().any(char::is_control)
+            || token.split('.').count() != 3
+        {
+            return Err(RtdnAuthError::Invalid);
+        }
+        let fingerprint = token_fingerprint(token);
+        {
+            let mut cache = self
+                .verified_tokens
+                .lock()
+                .map_err(|_| RtdnAuthError::Unavailable)?;
+            cache.retain(|_, expires_at| *expires_at > now_epoch_secs);
+            if cache
+                .get(&fingerprint)
+                .is_some_and(|expires_at| *expires_at > now_epoch_secs.saturating_add(30))
+            {
+                return Ok(());
+            }
+        }
+        let mut response = self
+            .client
+            .get(GOOGLE_TOKEN_INFO_URI)
+            .query(&[("id_token", token)])
+            .send()
+            .map_err(|_| RtdnAuthError::Unavailable)?;
+        let status = response.status();
+        if status == StatusCode::BAD_REQUEST || status == StatusCode::UNAUTHORIZED {
+            let _ = read_bounded_rtdn_auth_body(&mut response);
+            return Err(RtdnAuthError::Invalid);
+        }
+        if status != StatusCode::OK {
+            let _ = read_bounded_rtdn_auth_body(&mut response);
+            return Err(RtdnAuthError::Unavailable);
+        }
+        let body = read_bounded_rtdn_auth_body(&mut response)?;
+        let claims: serde_json::Value =
+            serde_json::from_slice(&body).map_err(|_| RtdnAuthError::Invalid)?;
+        let expires_at = self.validate_claims(&claims, now_epoch_secs)?;
+        let mut cache = self
+            .verified_tokens
+            .lock()
+            .map_err(|_| RtdnAuthError::Unavailable)?;
+        if cache.len() >= MAX_OIDC_CACHE_ENTRIES
+            && let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, expires_at)| **expires_at)
+                .map(|(fingerprint, _)| fingerprint.clone())
+        {
+            cache.remove(&oldest);
+        }
+        cache.insert(fingerprint, expires_at);
+        Ok(())
+    }
+}
+
+fn read_bounded_rtdn_auth_body(
+    response: &mut reqwest::blocking::Response,
+) -> Result<Vec<u8>, RtdnAuthError> {
+    let mut body = Vec::new();
+    response
+        .take(MAX_PROVIDER_BODY_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| RtdnAuthError::Unavailable)?;
+    if body.len() as u64 > MAX_PROVIDER_BODY_BYTES {
+        return Err(RtdnAuthError::Unavailable);
+    }
+    Ok(body)
 }
 
 #[derive(Deserialize)]
@@ -525,6 +708,50 @@ struct RestoreRequest {
     purchases: Vec<PurchaseEvidence>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PubSubPushEnvelope {
+    message: PubSubMessage,
+    subscription: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PubSubMessage {
+    data: String,
+    message_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeveloperNotification {
+    version: String,
+    package_name: String,
+    event_time_millis: String,
+    one_time_product_notification: Option<OneTimeProductNotification>,
+    voided_purchase_notification: Option<VoidedPurchaseNotification>,
+    test_notification: Option<serde_json::Value>,
+    subscription_notification: Option<serde_json::Value>,
+    pending_refund_review_notification: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OneTimeProductNotification {
+    version: String,
+    notification_type: u8,
+    purchase_token: String,
+    sku: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoidedPurchaseNotification {
+    purchase_token: String,
+    product_type: u8,
+    refund_type: u8,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PurchaseEvidence {
@@ -544,6 +771,8 @@ struct EntitlementResponse {
 struct PurchaseLedger {
     schema_version: u32,
     purchases: Vec<PurchaseRecord>,
+    #[serde(default)]
+    processed_rtdn_message_fingerprints: Vec<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -560,36 +789,71 @@ struct PurchaseRecord {
 pub struct EutherSurferCommerce {
     enabled: bool,
     provider: Arc<dyn PlayPurchaseProvider>,
+    rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
     ledger_path: PathBuf,
     ledger_lock: Mutex<()>,
+    rtdn_lock: Mutex<()>,
     attempts: Mutex<HashMap<String, VecDeque<u64>>>,
 }
 
 impl EutherSurferCommerce {
-    pub fn new(enabled: bool, ledger_path: PathBuf, service_account_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        enabled: bool,
+        ledger_path: PathBuf,
+        service_account_path: Option<PathBuf>,
+        rtdn_audience: Option<String>,
+        rtdn_service_account_email: Option<String>,
+    ) -> Self {
         let provider: Arc<dyn PlayPurchaseProvider> = service_account_path
             .as_ref()
             .and_then(|path| GooglePlayPurchaseProvider::from_file(path).ok())
             .map(|provider| Arc::new(provider) as Arc<dyn PlayPurchaseProvider>)
             .unwrap_or_else(|| Arc::new(DisabledPlayPurchaseProvider));
-        Self::with_provider(enabled, ledger_path, provider)
+        let rtdn_authenticator: Arc<dyn RtdnAuthenticator> = rtdn_audience
+            .zip(rtdn_service_account_email)
+            .and_then(|(audience, email)| GooglePubSubAuthenticator::new(audience, email).ok())
+            .map(|authenticator| Arc::new(authenticator) as Arc<dyn RtdnAuthenticator>)
+            .unwrap_or_else(|| Arc::new(DisabledRtdnAuthenticator));
+        Self::with_provider_and_rtdn_auth(enabled, ledger_path, provider, rtdn_authenticator)
     }
 
     #[cfg(test)]
     fn new_disabled(enabled: bool, ledger_path: PathBuf) -> Self {
-        Self::with_provider(enabled, ledger_path, Arc::new(DisabledPlayPurchaseProvider))
+        Self::with_provider_and_rtdn_auth(
+            enabled,
+            ledger_path,
+            Arc::new(DisabledPlayPurchaseProvider),
+            Arc::new(DisabledRtdnAuthenticator),
+        )
     }
 
-    pub fn with_provider(
+    #[cfg(test)]
+    fn with_provider(
         enabled: bool,
         ledger_path: PathBuf,
         provider: Arc<dyn PlayPurchaseProvider>,
     ) -> Self {
+        Self::with_provider_and_rtdn_auth(
+            enabled,
+            ledger_path,
+            provider,
+            Arc::new(DisabledRtdnAuthenticator),
+        )
+    }
+
+    fn with_provider_and_rtdn_auth(
+        enabled: bool,
+        ledger_path: PathBuf,
+        provider: Arc<dyn PlayPurchaseProvider>,
+        rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
+    ) -> Self {
         Self {
             enabled,
             provider,
+            rtdn_authenticator,
             ledger_path,
             ledger_lock: Mutex::new(()),
+            rtdn_lock: Mutex::new(()),
             attempts: Mutex::new(HashMap::new()),
         }
     }
@@ -598,6 +862,7 @@ impl EutherSurferCommerce {
         CommerceHttpResponse::ok(serde_json::json!({
             "enabled": self.enabled,
             "providerConfigured": self.provider.configured(),
+            "rtdnConfigured": self.rtdn_authenticator.configured(),
             "catalogVersion": CATALOG_VERSION,
             "salesEnabled": false,
             "restoresEnabled": false,
@@ -679,6 +944,156 @@ impl EutherSurferCommerce {
             }
         }
         success_response(entitlements, now_ms)
+    }
+
+    pub fn rtdn(
+        &self,
+        body: &[u8],
+        authorization: Option<&str>,
+        now_ms: u64,
+    ) -> CommerceHttpResponse {
+        if !self.enabled {
+            return CommerceHttpResponse::error(
+                503,
+                "commerce_disabled",
+                "Sakura Sprint commerce is not enabled",
+            );
+        }
+        if !self.provider.configured() {
+            return CommerceHttpResponse::error(
+                503,
+                "provider_not_configured",
+                "Google Play verification is not configured",
+            );
+        }
+        if !self.rtdn_authenticator.configured() {
+            return CommerceHttpResponse::error(
+                503,
+                "rtdn_not_configured",
+                "Google Pub/Sub verification is not configured",
+            );
+        }
+        if body.len() > MAX_BODY_BYTES {
+            return CommerceHttpResponse::error(
+                413,
+                "request_too_large",
+                "RTDN request is too large",
+            );
+        }
+        let token = match authorization.and_then(parse_bearer_token) {
+            Some(token) => token,
+            None => {
+                return CommerceHttpResponse::error(
+                    401,
+                    "rtdn_unauthorized",
+                    "RTDN authentication failed",
+                );
+            }
+        };
+        match self.rtdn_authenticator.verify(token, now_ms / 1_000) {
+            Ok(()) => {}
+            Err(RtdnAuthError::Invalid) => {
+                return CommerceHttpResponse::error(
+                    401,
+                    "rtdn_unauthorized",
+                    "RTDN authentication failed",
+                );
+            }
+            Err(RtdnAuthError::Unavailable) => {
+                return CommerceHttpResponse::error(
+                    503,
+                    "rtdn_auth_unavailable",
+                    "RTDN authentication is temporarily unavailable",
+                );
+            }
+        }
+        let _guard = match self.rtdn_lock.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return CommerceHttpResponse::error(
+                    503,
+                    "rtdn_unavailable",
+                    "RTDN processing is temporarily unavailable",
+                );
+            }
+        };
+        let envelope: PubSubPushEnvelope = match serde_json::from_slice(body) {
+            Ok(envelope) => envelope,
+            Err(_) => return invalid_rtdn(),
+        };
+        if !valid_pubsub_envelope(&envelope) {
+            return invalid_rtdn();
+        }
+        let message_fingerprint = token_fingerprint(&envelope.message.message_id);
+        match self.rtdn_was_processed(&message_fingerprint) {
+            Ok(true) => return rtdn_accepted(true),
+            Ok(false) => {}
+            Err(_) => return provider_error_response(PlayProviderError::Unavailable),
+        }
+        let decoded = match BASE64_STANDARD.decode(envelope.message.data.as_bytes()) {
+            Ok(decoded) if decoded.len() <= MAX_BODY_BYTES => decoded,
+            _ => return invalid_rtdn(),
+        };
+        let notification: DeveloperNotification = match serde_json::from_slice(&decoded) {
+            Ok(notification) => notification,
+            Err(_) => return invalid_rtdn(),
+        };
+        if !valid_developer_notification(&notification) {
+            return invalid_rtdn();
+        }
+
+        let result = if let Some(one_time) = notification.one_time_product_notification.as_ref() {
+            self.process_rtdn_one_time(one_time, now_ms)
+        } else if let Some(voided) = notification.voided_purchase_notification.as_ref() {
+            self.process_rtdn_voided(voided, now_ms)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result {
+            return provider_error_response(error);
+        }
+        if self.mark_rtdn_processed(message_fingerprint).is_err() {
+            return provider_error_response(PlayProviderError::Unavailable);
+        }
+        rtdn_accepted(false)
+    }
+
+    fn process_rtdn_one_time(
+        &self,
+        notification: &OneTimeProductNotification,
+        now_ms: u64,
+    ) -> Result<(), PlayProviderError> {
+        if notification.version != "1.0"
+            || !matches!(notification.notification_type, 1 | 2)
+            || validate_evidence(&notification.sku, &notification.purchase_token).is_err()
+        {
+            return Err(PlayProviderError::Rejected);
+        }
+        self.process_purchase(
+            &PurchaseEvidence {
+                product_id: notification.sku.clone(),
+                purchase_token: notification.purchase_token.clone(),
+            },
+            now_ms,
+        )?;
+        Ok(())
+    }
+
+    fn process_rtdn_voided(
+        &self,
+        notification: &VoidedPurchaseNotification,
+        now_ms: u64,
+    ) -> Result<(), PlayProviderError> {
+        if notification.product_type != 2
+            || !matches!(notification.refund_type, 1 | 2)
+            || notification.purchase_token.len() < 8
+            || notification.purchase_token.len() > MAX_TOKEN_BYTES
+            || notification.purchase_token.chars().any(char::is_control)
+        {
+            return Err(PlayProviderError::Rejected);
+        }
+        self.revoke_by_token(&notification.purchase_token, now_ms)
+            .map_err(|_| PlayProviderError::Unavailable)
     }
 
     fn preflight(&self, body: &[u8], remote: &str, now_ms: u64) -> Option<CommerceHttpResponse> {
@@ -843,22 +1258,81 @@ impl EutherSurferCommerce {
         self.write_ledger(&ledger)
     }
 
+    fn revoke_by_token(&self, purchase_token: &str, now_ms: u64) -> io::Result<()> {
+        let _guard = self
+            .ledger_lock
+            .lock()
+            .map_err(|_| io::Error::other("purchase ledger lock poisoned"))?;
+        let mut ledger = self.read_ledger()?;
+        let fingerprint = token_fingerprint(purchase_token);
+        for record in ledger
+            .purchases
+            .iter_mut()
+            .filter(|record| record.token_fingerprint == fingerprint)
+        {
+            record.active = false;
+            record.verified_at_epoch_ms = now_ms;
+        }
+        self.write_ledger(&ledger)
+    }
+
+    fn rtdn_was_processed(&self, message_fingerprint: &str) -> io::Result<bool> {
+        let _guard = self
+            .ledger_lock
+            .lock()
+            .map_err(|_| io::Error::other("purchase ledger lock poisoned"))?;
+        Ok(self
+            .read_ledger()?
+            .processed_rtdn_message_fingerprints
+            .iter()
+            .any(|fingerprint| fingerprint == message_fingerprint))
+    }
+
+    fn mark_rtdn_processed(&self, message_fingerprint: String) -> io::Result<()> {
+        let _guard = self
+            .ledger_lock
+            .lock()
+            .map_err(|_| io::Error::other("purchase ledger lock poisoned"))?;
+        let mut ledger = self.read_ledger()?;
+        if !ledger
+            .processed_rtdn_message_fingerprints
+            .iter()
+            .any(|fingerprint| fingerprint == &message_fingerprint)
+        {
+            ledger
+                .processed_rtdn_message_fingerprints
+                .push(message_fingerprint);
+            let overflow = ledger
+                .processed_rtdn_message_fingerprints
+                .len()
+                .saturating_sub(MAX_RTDN_MESSAGE_IDS);
+            if overflow > 0 {
+                ledger
+                    .processed_rtdn_message_fingerprints
+                    .drain(0..overflow);
+            }
+        }
+        self.write_ledger(&ledger)
+    }
+
     fn read_ledger(&self) -> io::Result<PurchaseLedger> {
         if !self.ledger_path.exists() {
             return Ok(PurchaseLedger {
-                schema_version: 1,
+                schema_version: 2,
                 purchases: Vec::new(),
+                processed_rtdn_message_fingerprints: Vec::new(),
             });
         }
         let bytes = fs::read(&self.ledger_path)?;
-        let ledger: PurchaseLedger = serde_json::from_slice(&bytes)
+        let mut ledger: PurchaseLedger = serde_json::from_slice(&bytes)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid purchase ledger"))?;
-        if ledger.schema_version != 1 {
+        if !matches!(ledger.schema_version, 1 | 2) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unsupported purchase ledger schema",
             ));
         }
+        ledger.schema_version = 2;
         Ok(ledger)
     }
 
@@ -873,6 +1347,57 @@ impl EutherSurferCommerce {
         file.sync_all()?;
         fs::rename(temporary, &self.ledger_path)
     }
+}
+
+fn parse_bearer_token(authorization: &str) -> Option<&str> {
+    authorization
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty() && !token.contains(char::is_whitespace))
+}
+
+fn valid_pubsub_envelope(envelope: &PubSubPushEnvelope) -> bool {
+    !envelope.subscription.is_empty()
+        && envelope.subscription.len() <= 1_024
+        && !envelope.subscription.chars().any(char::is_control)
+        && !envelope.message.message_id.is_empty()
+        && envelope.message.message_id.len() <= 128
+        && envelope
+            .message
+            .message_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        && !envelope.message.data.is_empty()
+}
+
+fn valid_developer_notification(notification: &DeveloperNotification) -> bool {
+    let notification_count = [
+        notification.one_time_product_notification.is_some(),
+        notification.voided_purchase_notification.is_some(),
+        notification.test_notification.is_some(),
+        notification.subscription_notification.is_some(),
+        notification.pending_refund_review_notification.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    notification.version == "1.0"
+        && notification.package_name == PACKAGE_NAME
+        && notification_count == 1
+        && notification
+            .event_time_millis
+            .parse::<u64>()
+            .is_ok_and(|value| value > 0)
+}
+
+fn invalid_rtdn() -> CommerceHttpResponse {
+    CommerceHttpResponse::error(400, "invalid_rtdn", "Invalid Google Pub/Sub notification")
+}
+
+fn rtdn_accepted(duplicate: bool) -> CommerceHttpResponse {
+    CommerceHttpResponse::ok(serde_json::json!({
+        "accepted": true,
+        "duplicate": duplicate,
+    }))
 }
 
 fn valid_request_header(provider: &str, package_name: &str, catalog_version: u32) -> bool {
@@ -966,6 +1491,7 @@ mod tests {
 
     struct FakeProvider {
         state: PlayPurchaseState,
+        verifications: AtomicUsize,
         acknowledgements: AtomicUsize,
     }
 
@@ -982,6 +1508,7 @@ mod tests {
         ) -> Result<PlayPurchaseState, PlayProviderError> {
             assert_eq!(package_name, PACKAGE_NAME);
             assert!(product(product_id).is_some());
+            self.verifications.fetch_add(1, Ordering::Relaxed);
             Ok(self.state)
         }
 
@@ -995,6 +1522,23 @@ mod tests {
             assert!(product(product_id).is_some());
             self.acknowledgements.fetch_add(1, Ordering::Relaxed);
             Ok(())
+        }
+    }
+
+    struct FakeRtdnAuthenticator {
+        result: Result<(), RtdnAuthError>,
+        calls: AtomicUsize,
+    }
+
+    impl RtdnAuthenticator for FakeRtdnAuthenticator {
+        fn configured(&self) -> bool {
+            true
+        }
+
+        fn verify(&self, token: &str, _now_epoch_secs: u64) -> Result<(), RtdnAuthError> {
+            assert_eq!(token, "signed.oidc.token");
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.result
         }
     }
 
@@ -1045,6 +1589,54 @@ mod tests {
         .unwrap()
     }
 
+    fn rtdn_body(message_id: &str, notification: serde_json::Value) -> Vec<u8> {
+        let data = BASE64_STANDARD.encode(serde_json::to_vec(&notification).unwrap());
+        serde_json::to_vec(&serde_json::json!({
+            "message": {
+                "data": data,
+                "messageId": message_id,
+            },
+            "subscription": "projects/sakura/subscriptions/play-rtdn",
+        }))
+        .unwrap()
+    }
+
+    fn one_time_notification(product_id: &str, purchase_token: &str) -> serde_json::Value {
+        serde_json::json!({
+            "version": "1.0",
+            "packageName": PACKAGE_NAME,
+            "eventTimeMillis": "1786980000000",
+            "oneTimeProductNotification": {
+                "version": "1.0",
+                "notificationType": 1,
+                "purchaseToken": purchase_token,
+                "sku": product_id,
+            }
+        })
+    }
+
+    fn voided_notification(purchase_token: &str) -> serde_json::Value {
+        serde_json::json!({
+            "version": "1.0",
+            "packageName": PACKAGE_NAME,
+            "eventTimeMillis": "1786980001000",
+            "voidedPurchaseNotification": {
+                "purchaseToken": purchase_token,
+                "orderId": "GS.0000-1111-2222-33333",
+                "productType": 2,
+                "refundType": 1,
+            }
+        })
+    }
+
+    fn rtdn_commerce(
+        path: PathBuf,
+        provider: Arc<FakeProvider>,
+        authenticator: Arc<FakeRtdnAuthenticator>,
+    ) -> EutherSurferCommerce {
+        EutherSurferCommerce::with_provider_and_rtdn_auth(true, path, provider, authenticator)
+    }
+
     #[test]
     fn disabled_status_and_endpoint_are_fail_closed() {
         let commerce = EutherSurferCommerce::new_disabled(false, test_path("disabled"));
@@ -1063,6 +1655,7 @@ mod tests {
             state: PlayPurchaseState::Purchased {
                 acknowledged: false,
             },
+            verifications: AtomicUsize::new(0),
             acknowledgements: AtomicUsize::new(0),
         });
         let commerce = EutherSurferCommerce::with_provider(true, path.clone(), provider.clone());
@@ -1082,6 +1675,7 @@ mod tests {
         let path = test_path("pending");
         let provider = Arc::new(FakeProvider {
             state: PlayPurchaseState::Pending,
+            verifications: AtomicUsize::new(0),
             acknowledgements: AtomicUsize::new(0),
         });
         let commerce = EutherSurferCommerce::with_provider(true, path, provider);
@@ -1100,6 +1694,7 @@ mod tests {
         let path = test_path("rate");
         let provider = Arc::new(FakeProvider {
             state: PlayPurchaseState::NotPurchased,
+            verifications: AtomicUsize::new(0),
             acknowledgements: AtomicUsize::new(0),
         });
         let commerce = EutherSurferCommerce::with_provider(true, path.clone(), provider);
@@ -1254,6 +1849,7 @@ mod tests {
         let path = test_path("token-product-conflict");
         let provider = Arc::new(FakeProvider {
             state: PlayPurchaseState::Purchased { acknowledged: true },
+            verifications: AtomicUsize::new(0),
             acknowledgements: AtomicUsize::new(0),
         });
         let commerce = EutherSurferCommerce::with_provider(true, path.clone(), provider);
@@ -1275,5 +1871,153 @@ mod tests {
         assert_eq!(conflict.status, 503);
         assert!(!fs::read_to_string(&path).unwrap().contains("shared-token"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rtdn_requires_authenticated_pubsub_before_parsing_body() {
+        let path = test_path("rtdn-auth");
+        let provider = Arc::new(FakeProvider {
+            state: PlayPurchaseState::Purchased { acknowledged: true },
+            verifications: AtomicUsize::new(0),
+            acknowledgements: AtomicUsize::new(0),
+        });
+        let authenticator = Arc::new(FakeRtdnAuthenticator {
+            result: Ok(()),
+            calls: AtomicUsize::new(0),
+        });
+        let commerce = rtdn_commerce(path, provider, authenticator.clone());
+        let response = commerce.rtdn(b"not-json", None, 1_786_980_000_000);
+        assert_eq!(response.status, 401);
+        assert_eq!(response.body["error"]["code"], "rtdn_unauthorized");
+        assert_eq!(authenticator.calls.load(Ordering::Relaxed), 0);
+        assert!(!response.body.to_string().contains("not-json"));
+    }
+
+    #[test]
+    fn rtdn_purchase_is_reverified_deduplicated_and_token_redacted() {
+        let path = test_path("rtdn-purchase");
+        let provider = Arc::new(FakeProvider {
+            state: PlayPurchaseState::Purchased {
+                acknowledged: false,
+            },
+            verifications: AtomicUsize::new(0),
+            acknowledgements: AtomicUsize::new(0),
+        });
+        let authenticator = Arc::new(FakeRtdnAuthenticator {
+            result: Ok(()),
+            calls: AtomicUsize::new(0),
+        });
+        let commerce = rtdn_commerce(path.clone(), provider.clone(), authenticator);
+        let body = rtdn_body(
+            "message-100",
+            one_time_notification("sakura_sprint.supporter.sakura.v1", "rtdn-secret-token"),
+        );
+        let first = commerce.rtdn(&body, Some("Bearer signed.oidc.token"), 1_786_980_000_000);
+        assert_eq!(first.status, 200);
+        assert_eq!(first.body["duplicate"], false);
+        let duplicate = commerce.rtdn(&body, Some("Bearer signed.oidc.token"), 1_786_980_000_100);
+        assert_eq!(duplicate.status, 200);
+        assert_eq!(duplicate.body["duplicate"], true);
+        assert_eq!(provider.verifications.load(Ordering::Relaxed), 1);
+        assert_eq!(provider.acknowledgements.load(Ordering::Relaxed), 1);
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(!stored.contains("rtdn-secret-token"));
+        assert!(!stored.contains("message-100"));
+        assert!(stored.contains("processedRtdnMessageFingerprints"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn authenticated_voided_rtdn_revokes_without_storing_order_or_token() {
+        let path = test_path("rtdn-voided");
+        let provider = Arc::new(FakeProvider {
+            state: PlayPurchaseState::Purchased { acknowledged: true },
+            verifications: AtomicUsize::new(0),
+            acknowledgements: AtomicUsize::new(0),
+        });
+        let authenticator = Arc::new(FakeRtdnAuthenticator {
+            result: Ok(()),
+            calls: AtomicUsize::new(0),
+        });
+        let commerce = rtdn_commerce(path.clone(), provider, authenticator);
+        assert_eq!(
+            commerce
+                .verify(&verify_body("voided-secret-token"), "client-a", 100)
+                .status,
+            200
+        );
+        let response = commerce.rtdn(
+            &rtdn_body("message-voided", voided_notification("voided-secret-token")),
+            Some("Bearer signed.oidc.token"),
+            1_786_980_001_000,
+        );
+        assert_eq!(response.status, 200);
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("\"active\": false"));
+        assert!(!stored.contains("voided-secret-token"));
+        assert!(!stored.contains("GS.0000-1111-2222-33333"));
+        assert!(!stored.contains("message-voided"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rtdn_auth_outage_is_retryable_and_does_not_touch_ledger() {
+        let path = test_path("rtdn-auth-outage");
+        let provider = Arc::new(FakeProvider {
+            state: PlayPurchaseState::Purchased { acknowledged: true },
+            verifications: AtomicUsize::new(0),
+            acknowledgements: AtomicUsize::new(0),
+        });
+        let authenticator = Arc::new(FakeRtdnAuthenticator {
+            result: Err(RtdnAuthError::Unavailable),
+            calls: AtomicUsize::new(0),
+        });
+        let commerce = rtdn_commerce(path.clone(), provider.clone(), authenticator);
+        let response = commerce.rtdn(
+            &rtdn_body(
+                "message-outage",
+                one_time_notification("sakura_sprint.supporter.sakura.v1", "outage-secret-token"),
+            ),
+            Some("Bearer signed.oidc.token"),
+            1_786_980_000_000,
+        );
+        assert_eq!(response.status, 503);
+        assert_eq!(response.body["error"]["code"], "rtdn_auth_unavailable");
+        assert_eq!(provider.verifications.load(Ordering::Relaxed), 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn pubsub_claims_require_exact_audience_email_issuer_and_freshness() {
+        let authenticator = GooglePubSubAuthenticator::new(
+            "https://apothictech.se/api/euthersurfer/purchases/rtdn".to_string(),
+            "sakura-rtdn@example.iam.gserviceaccount.com".to_string(),
+        )
+        .unwrap();
+        let now = 1_786_980_000;
+        let valid = serde_json::json!({
+            "aud": "https://apothictech.se/api/euthersurfer/purchases/rtdn",
+            "email": "sakura-rtdn@example.iam.gserviceaccount.com",
+            "email_verified": true,
+            "iss": "https://accounts.google.com",
+            "sub": "1234567890",
+            "iat": now - 60,
+            "exp": now + 3_000,
+        });
+        assert_eq!(authenticator.validate_claims(&valid, now), Ok(now + 3_000));
+        for (field, value) in [
+            ("aud", serde_json::json!("https://evil.example/rtdn")),
+            ("email", serde_json::json!("attacker@example.com")),
+            ("email_verified", serde_json::json!(false)),
+            ("iss", serde_json::json!("https://evil.example")),
+            ("exp", serde_json::json!(now - 1)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert_eq!(
+                authenticator.validate_claims(&invalid, now),
+                Err(RtdnAuthError::Invalid)
+            );
+        }
     }
 }

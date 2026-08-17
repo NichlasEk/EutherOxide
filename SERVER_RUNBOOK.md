@@ -225,6 +225,8 @@ app_lan_server_url = "http://192.168.32.186:8080"
 eutherbooks_server_urls = "http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks"
 euthersurfer_commerce_enabled = false
 euthersurfer_google_service_account_file = ""
+euthersurfer_rtdn_audience = ""
+euthersurfer_rtdn_service_account_email = ""
 ```
 
 Keep `euthersurfer_commerce_enabled = false` until Google Play service-account
@@ -240,6 +242,19 @@ the status reports `providerConfigured: true` before enabling sales. An absent,
 unreadable, malformed, non-service-account, or nonstandard OAuth credential
 remains fail-closed. Never commit the JSON credential or paste its private key
 into this TOML file.
+
+For Real-time Developer Notifications, create an authenticated Pub/Sub push
+subscription targeting
+`https://apothictech.se/api/euthersurfer/purchases/rtdn`. Set that exact value as
+the push authentication audience and in `euthersurfer_rtdn_audience`; put only
+the dedicated push-auth service account email in
+`euthersurfer_rtdn_service_account_email`. The endpoint validates Google's OIDC
+token, audience, issuer, email, verified-email claim and lifetime before decoding
+the Pub/Sub body. It stores only hashes of purchase tokens and Pub/Sub message
+IDs, deduplicates retries, re-verifies one-time purchase events with Google Play,
+and revokes matching entitlements for authenticated voided-purchase events.
+Leave both RTDN values empty until the subscription and Play license-test matrix
+are ready; `rtdnConfigured` then remains false.
 
 Create users with:
 

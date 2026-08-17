@@ -1335,6 +1335,8 @@ struct HostConfig {
     eutherbooks_server_urls: Vec<String>,
     euthersurfer_commerce_enabled: bool,
     euthersurfer_google_service_account_file: Option<String>,
+    euthersurfer_rtdn_audience: Option<String>,
+    euthersurfer_rtdn_service_account_email: Option<String>,
 }
 
 #[derive(Clone)]
@@ -2144,6 +2146,8 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
             .euthersurfer_google_service_account_file
             .as_deref()
             .map(PathBuf::from),
+        config.euthersurfer_rtdn_audience.clone(),
+        config.euthersurfer_rtdn_service_account_email.clone(),
     ));
     if let Some(rom_dir) = config.rom_dir.as_deref() {
         let canonical = validate_rom_root(rom_dir)?;
@@ -2298,6 +2302,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/euthersurfer/achievements"
         && path != "/api/euthersurfer/purchases/verify"
         && path != "/api/euthersurfer/purchases/restore"
+        && path != "/api/euthersurfer/purchases/rtdn"
         && !is_eutherbooks_proxy_path(path)
         && !is_eutherpal_proxy_path(path)
         && !is_camera_frigate_proxy_path(path)
@@ -2520,6 +2525,28 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                         "error": {
                             "code": "unsupported_media_type",
                             "message": "Purchase restore requires application/json",
+                        }
+                    }),
+                }
+            };
+            send_json_status(stream, response.status, &response.body)
+        }
+        ("POST", "/api/euthersurfer/purchases/rtdn") => {
+            let response = if header_value(&request, "content-type")
+                .is_some_and(|value| value.starts_with("application/json"))
+            {
+                state.euthersurfer_commerce.rtdn(
+                    &request.body,
+                    header_value(&request, "authorization"),
+                    unix_ms_now(),
+                )
+            } else {
+                euthersurfer_commerce::CommerceHttpResponse {
+                    status: 415,
+                    body: serde_json::json!({
+                        "error": {
+                            "code": "unsupported_media_type",
+                            "message": "RTDN delivery requires application/json",
                         }
                     }),
                 }
@@ -21330,7 +21357,9 @@ fn load_host_config() -> io::Result<HostConfig> {
              app_lan_server_url = \"http://192.168.32.186:8080\"\n\
              eutherbooks_server_urls = \"http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks\"\n\
              euthersurfer_commerce_enabled = false\n\
-             euthersurfer_google_service_account_file = \"\"\n",
+             euthersurfer_google_service_account_file = \"\"\n\
+             euthersurfer_rtdn_audience = \"\"\n\
+             euthersurfer_rtdn_service_account_email = \"\"\n",
         )?;
     }
     let contents = fs::read_to_string(&path)?;
@@ -21373,6 +21402,11 @@ fn load_host_config() -> io::Result<HostConfig> {
     let euthersurfer_google_service_account_file =
         parse_toml_string(&contents, "euthersurfer_google_service_account_file")
             .filter(|value| !value.is_empty());
+    let euthersurfer_rtdn_audience = parse_toml_string(&contents, "euthersurfer_rtdn_audience")
+        .filter(|value| !value.is_empty());
+    let euthersurfer_rtdn_service_account_email =
+        parse_toml_string(&contents, "euthersurfer_rtdn_service_account_email")
+            .filter(|value| !value.is_empty());
     Ok(HostConfig {
         bind,
         rom_dir,
@@ -21387,6 +21421,8 @@ fn load_host_config() -> io::Result<HostConfig> {
         eutherbooks_server_urls,
         euthersurfer_commerce_enabled,
         euthersurfer_google_service_account_file,
+        euthersurfer_rtdn_audience,
+        euthersurfer_rtdn_service_account_email,
     })
 }
 
