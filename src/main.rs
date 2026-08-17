@@ -111,7 +111,8 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.6.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.1.0.apk";
+const LEGACY_EUTHERSURFER_1_0_6_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.6.apk";
 const LEGACY_EUTHERSURFER_1_0_5_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.5.apk";
 const LEGACY_EUTHERSURFER_1_0_4_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.4.apk";
 const LEGACY_EUTHERSURFER_1_0_3_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.3.apk";
@@ -257,10 +258,11 @@ static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_SCORE_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_ACHIEVEMENT_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_DAILY_SCORE_LOCK: Mutex<()> = Mutex::new(());
+static EUTHERSURFER_WEEKLY_BOSS_LOCK: Mutex<()> = Mutex::new(());
 const EUTHERSURFER_SCORE_LIMIT: usize = 30;
 const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
 const EUTHERSURFER_MAX_SUSHI: u64 = 1_000_000;
-const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 18] = [
+const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 23] = [
     ("first_steps", "Första stegen", "Spring i tre sekunder."),
     ("first_sushi", "Itadakimasu!", "Samla din första sushi."),
     (
@@ -310,6 +312,31 @@ const EUTHERSURFER_ACHIEVEMENTS: [(&str, &str, &str); 18] = [
         "six_boss_run",
         "Sex bossar, en legend",
         "Besegra hela bossresan under samma run.",
+    ),
+    (
+        "golden_detour",
+        "Den gyllene omvägen",
+        "Välj den farliga gyllene vägen.",
+    ),
+    (
+        "zen_focus",
+        "Tiden mellan trumslagen",
+        "Aktivera en full fokusmätare.",
+    ),
+    (
+        "kintsugi_rescue",
+        "Vackrare efter kraschen",
+        "Låt en komplett kintsugiskål rädda Momo.",
+    ),
+    (
+        "perfect_finisher",
+        "Det avgörande slaget",
+        "Tajma ett perfekt slutslag mot en boss.",
+    ),
+    (
+        "weekly_victor",
+        "Veckans legend",
+        "Besegra den globala veckobossen.",
     ),
 ];
 
@@ -1035,6 +1062,32 @@ struct EutherSurferDailyScoreSubmit {
     duration_ms: Option<u64>,
     #[serde(default)]
     run_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct EutherSurferWeeklyBossEntry {
+    week: String,
+    seed: i32,
+    boss_index: u8,
+    name: String,
+    damage: u64,
+    victory: bool,
+    duration_ms: u64,
+    created_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EutherSurferWeeklyBossSubmit {
+    week: String,
+    seed: i32,
+    boss_index: u8,
+    name: String,
+    damage: u64,
+    victory: bool,
+    duration_ms: u64,
+    run_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2224,6 +2277,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherbooks-player/log"
         && path != "/api/euthersurfer/scores"
         && path != "/api/euthersurfer/daily-scores"
+        && path != "/api/euthersurfer/weekly-boss"
         && path != "/api/euthersurfer/achievements"
         && !is_eutherbooks_proxy_path(path)
         && !is_eutherpal_proxy_path(path)
@@ -2392,6 +2446,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("POST", "/api/euthersurfer/daily-scores") => {
             submit_euthersurfer_daily_score(stream, &request)
+        }
+        ("GET", "/api/euthersurfer/weekly-boss") => {
+            send_euthersurfer_weekly_boss_scores(stream, &request)
+        }
+        ("POST", "/api/euthersurfer/weekly-boss") => {
+            submit_euthersurfer_weekly_boss_score(stream, &request)
         }
         ("GET", "/api/euthersurfer/achievements") => {
             send_euthersurfer_achievements(stream, &request)
@@ -11507,7 +11567,10 @@ fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         "/downloads/EutherSurfer-1.0.5.apk" => {
             (LEGACY_EUTHERSURFER_1_0_5_APK_PATH, "EutherSurfer-1.0.5.apk")
         }
-        _ => (DEFAULT_EUTHERSURFER_APK_PATH, "EutherSurfer-1.0.6.apk"),
+        "/downloads/EutherSurfer-1.0.6.apk" => {
+            (LEGACY_EUTHERSURFER_1_0_6_APK_PATH, "EutherSurfer-1.0.6.apk")
+        }
+        _ => (DEFAULT_EUTHERSURFER_APK_PATH, "EutherSurfer-1.1.0.apk"),
     };
     send_android_apk(
         stream,
@@ -11543,6 +11606,7 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-1.0.4.apk"
             | "/downloads/EutherSurfer-1.0.5.apk"
             | "/downloads/EutherSurfer-1.0.6.apk"
+            | "/downloads/EutherSurfer-1.1.0.apk"
     )
 }
 
@@ -11885,6 +11949,194 @@ fn submit_euthersurfer_daily_score(
     });
     write_euthersurfer_daily_scores(&entries)?;
     send_json(stream, &euthersurfer_scores_payload(&ranked))
+}
+
+fn euthersurfer_weekly_boss_path() -> PathBuf {
+    host_dir().join("euthersurfer-weekly-boss.json")
+}
+
+fn iso_week_from_epoch_day(epoch_day: i64) -> (i64, i64) {
+    let weekday = (epoch_day + 3).rem_euclid(7) + 1;
+    let thursday = epoch_day + 4 - weekday;
+    let mut year = 1970 + thursday.div_euclid(365);
+    while epoch_day_from_iso(&format!("{year:04}-01-01")).is_ok_and(|day| day > thursday) {
+        year -= 1;
+    }
+    while epoch_day_from_iso(&format!("{:04}-01-01", year + 1)).is_ok_and(|day| day <= thursday) {
+        year += 1;
+    }
+    let jan4 = epoch_day_from_iso(&format!("{year:04}-01-04")).unwrap_or(thursday);
+    let jan4_weekday = (jan4 + 3).rem_euclid(7) + 1;
+    let week1_monday = jan4 - (jan4_weekday - 1);
+    (year, (epoch_day - week1_monday).div_euclid(7) + 1)
+}
+
+fn parse_euthersurfer_week(week: &str) -> io::Result<(i64, i64)> {
+    if week.len() != 8 || week.as_bytes().get(4..6) != Some(b"-W") {
+        return Err(invalid_request("weekly boss week must use YYYY-Www"));
+    }
+    let year = week[0..4]
+        .parse::<i64>()
+        .map_err(|_| invalid_request("weekly boss year is invalid"))?;
+    let number = week[6..8]
+        .parse::<i64>()
+        .map_err(|_| invalid_request("weekly boss number is invalid"))?;
+    if !(2024..=2100).contains(&year) || !(1..=53).contains(&number) {
+        return Err(invalid_request("weekly boss week is invalid"));
+    }
+    Ok((year, number))
+}
+
+fn weekly_boss_identity(year: i64, week: i64) -> (i32, u8) {
+    let seed = ((year * 10_000 + week * 7_919) as i32) ^ 0x5745_454B_i32;
+    let boss_index = (year + week).rem_euclid(6) as u8;
+    (seed, boss_index)
+}
+
+fn current_euthersurfer_week() -> String {
+    let (year, week) = iso_week_from_epoch_day(current_utc_epoch_day());
+    format!("{year:04}-W{week:02}")
+}
+
+fn read_euthersurfer_weekly_boss_scores() -> io::Result<Vec<EutherSurferWeeklyBossEntry>> {
+    let path = euthersurfer_weekly_boss_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read(&path)?;
+    serde_json::from_slice(&data).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid EutherSurfer weekly boss file: {err}"),
+        )
+    })
+}
+
+fn write_euthersurfer_weekly_boss_scores(scores: &[EutherSurferWeeklyBossEntry]) -> io::Result<()> {
+    let path = euthersurfer_weekly_boss_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    let data = serde_json::to_vec_pretty(scores).map_err(|err| {
+        io::Error::other(format!("could not serialize weekly boss scores: {err}"))
+    })?;
+    fs::write(&temporary, data)?;
+    fs::rename(temporary, path)
+}
+
+fn rank_euthersurfer_weekly_boss_scores(
+    entries: &[EutherSurferWeeklyBossEntry],
+    week: &str,
+) -> Vec<EutherSurferWeeklyBossEntry> {
+    let mut ranked = entries
+        .iter()
+        .filter(|entry| entry.week == week)
+        .cloned()
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .victory
+            .cmp(&left.victory)
+            .then_with(|| right.damage.cmp(&left.damage))
+            .then_with(|| left.duration_ms.cmp(&right.duration_ms))
+            .then_with(|| left.created_unix_ms.cmp(&right.created_unix_ms))
+    });
+    let mut names = HashSet::new();
+    ranked.retain(|entry| names.insert(entry.name.to_lowercase()));
+    ranked.truncate(EUTHERSURFER_SCORE_LIMIT);
+    ranked
+}
+
+fn euthersurfer_weekly_boss_payload(scores: &[EutherSurferWeeklyBossEntry]) -> serde_json::Value {
+    serde_json::json!({
+        "scores": scores.iter().enumerate().map(|(index, entry)| serde_json::json!({
+            "rank": index + 1,
+            "name": entry.name,
+            "damage": entry.damage,
+            "victory": entry.victory,
+            "duration_ms": entry.duration_ms,
+        })).collect::<Vec<_>>()
+    })
+}
+
+fn requested_euthersurfer_week(request: &HttpRequest) -> io::Result<String> {
+    let week = query_string_value(&request.path, "week")?
+        .ok_or_else(|| invalid_request("weekly boss week is required"))?;
+    parse_euthersurfer_week(&week)?;
+    Ok(week)
+}
+
+fn send_euthersurfer_weekly_boss_scores(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let week = requested_euthersurfer_week(request)?;
+    let _guard = EUTHERSURFER_WEEKLY_BOSS_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer weekly boss lock poisoned"))?;
+    let entries = read_euthersurfer_weekly_boss_scores()?;
+    let ranked = rank_euthersurfer_weekly_boss_scores(&entries, &week);
+    send_json(stream, &euthersurfer_weekly_boss_payload(&ranked))
+}
+
+fn submit_euthersurfer_weekly_boss_score(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let submission: EutherSurferWeeklyBossSubmit = serde_json::from_slice(&request.body)
+        .map_err(|err| invalid_request(format!("invalid weekly boss payload: {err}")))?;
+    let (year, week_number) = parse_euthersurfer_week(&submission.week)?;
+    if submission.week != current_euthersurfer_week() {
+        return Err(invalid_request(
+            "only the current weekly boss accepts scores",
+        ));
+    }
+    let (expected_seed, expected_boss) = weekly_boss_identity(year, week_number);
+    if submission.seed != expected_seed || submission.boss_index != expected_boss {
+        return Err(invalid_request(
+            "weekly boss identity does not match the week",
+        ));
+    }
+    let max_damage = 14 + u64::from(expected_boss);
+    if submission.damage > max_damage || submission.victory != (submission.damage == max_damage) {
+        return Err(invalid_request("weekly boss damage or victory is invalid"));
+    }
+    validate_euthersurfer_run(
+        submission.damage.max(1),
+        0,
+        Some(submission.duration_ms),
+        Some(&submission.run_id),
+    )?;
+    let name = normalize_euthersurfer_name(&submission.name)?;
+    let _guard = EUTHERSURFER_WEEKLY_BOSS_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer weekly boss lock poisoned"))?;
+    let mut entries = read_euthersurfer_weekly_boss_scores()?;
+    let is_retry = entries
+        .iter()
+        .any(|entry| entry.run_id.as_deref() == Some(&submission.run_id));
+    if !is_retry {
+        entries.push(EutherSurferWeeklyBossEntry {
+            week: submission.week.clone(),
+            seed: submission.seed,
+            boss_index: submission.boss_index,
+            name,
+            damage: submission.damage,
+            victory: submission.victory,
+            duration_ms: submission.duration_ms,
+            created_unix_ms: unix_ms_now(),
+            run_id: Some(submission.run_id),
+        });
+    }
+    let cutoff = year * 53 + week_number - 12;
+    entries.retain(|entry| {
+        parse_euthersurfer_week(&entry.week)
+            .is_ok_and(|(entry_year, entry_week)| entry_year * 53 + entry_week >= cutoff)
+    });
+    let ranked = rank_euthersurfer_weekly_boss_scores(&entries, &submission.week);
+    write_euthersurfer_weekly_boss_scores(&entries)?;
+    send_json(stream, &euthersurfer_weekly_boss_payload(&ranked))
 }
 
 fn euthersurfer_achievement_path() -> PathBuf {
@@ -25134,6 +25386,9 @@ mod tests {
     #[test]
     fn euthersurfer_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_euthersurfer_apk_download_path(
+            "/downloads/EutherSurfer-1.1.0.apk"
+        ));
+        assert!(is_euthersurfer_apk_download_path(
             "/downloads/EutherSurfer-1.0.6.apk"
         ));
         assert!(is_euthersurfer_apk_download_path(
@@ -25283,6 +25538,44 @@ mod tests {
     }
 
     #[test]
+    fn euthersurfer_weekly_boss_identity_and_ranking_are_deterministic() {
+        let epoch_day = epoch_day_from_iso("2026-08-17").unwrap();
+        assert_eq!(iso_week_from_epoch_day(epoch_day), (2026, 34));
+        assert_eq!(parse_euthersurfer_week("2026-W34").unwrap(), (2026, 34));
+        assert!(parse_euthersurfer_week("2026-W99").is_err());
+        assert_eq!(
+            weekly_boss_identity(2026, 34),
+            weekly_boss_identity(2026, 34)
+        );
+        let make_entry = |name: &str, damage: u64, victory: bool, duration_ms: u64| {
+            EutherSurferWeeklyBossEntry {
+                week: "2026-W34".to_string(),
+                seed: weekly_boss_identity(2026, 34).0,
+                boss_index: weekly_boss_identity(2026, 34).1,
+                name: name.to_string(),
+                damage,
+                victory,
+                duration_ms,
+                created_unix_ms: duration_ms,
+                run_id: None,
+            }
+        };
+        let entries = vec![
+            make_entry("Momo", 5, false, 10_000),
+            make_entry("Hana", 16, true, 40_000),
+            make_entry("Momo", 16, true, 45_000),
+            make_entry("momo", 8, false, 9_000),
+        ];
+        let ranked = rank_euthersurfer_weekly_boss_scores(&entries, "2026-W34");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].name, "Hana");
+        assert_eq!(ranked[1].name, "Momo");
+        assert!(ranked.iter().all(|entry| entry.victory));
+        let payload = euthersurfer_weekly_boss_payload(&ranked);
+        assert_eq!(payload["scores"][0]["rank"], 1);
+    }
+
+    #[test]
     fn euthersurfer_achievements_are_idempotent_and_global() {
         let mut entries = Vec::new();
         let first = vec!["first_steps".to_string(), "oni_down".to_string()];
@@ -25306,6 +25599,11 @@ mod tests {
         assert!(known_euthersurfer_achievement("yuki_down"));
         assert!(known_euthersurfer_achievement("ryujin_down"));
         assert!(known_euthersurfer_achievement("six_boss_run"));
+        assert!(known_euthersurfer_achievement("golden_detour"));
+        assert!(known_euthersurfer_achievement("zen_focus"));
+        assert!(known_euthersurfer_achievement("kintsugi_rescue"));
+        assert!(known_euthersurfer_achievement("perfect_finisher"));
+        assert!(known_euthersurfer_achievement("weekly_victor"));
         assert!(!known_euthersurfer_achievement("invented_badge"));
 
         let payload = euthersurfer_achievements_payload(&entries, Some("MOMO"));
