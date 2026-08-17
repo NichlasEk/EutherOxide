@@ -1339,6 +1339,7 @@ struct HostConfig {
     euthersurfer_google_service_account_file: Option<String>,
     euthersurfer_rtdn_audience: Option<String>,
     euthersurfer_rtdn_service_account_email: Option<String>,
+    euthersurfer_voided_reconciliation_interval_minutes: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -2152,7 +2153,11 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
             .map(PathBuf::from),
         config.euthersurfer_rtdn_audience.clone(),
         config.euthersurfer_rtdn_service_account_email.clone(),
+        config
+            .euthersurfer_voided_reconciliation_interval_minutes
+            .map(|minutes| Duration::from_secs(minutes.saturating_mul(60))),
     ));
+    euthersurfer_commerce.start_voided_reconciliation();
     if let Some(rom_dir) = config.rom_dir.as_deref() {
         let canonical = validate_rom_root(rom_dir)?;
         write_rom_dir_setting(&canonical)?;
@@ -21365,7 +21370,8 @@ fn load_host_config() -> io::Result<HostConfig> {
              euthersurfer_restores_enabled = false\n\
              euthersurfer_google_service_account_file = \"\"\n\
              euthersurfer_rtdn_audience = \"\"\n\
-             euthersurfer_rtdn_service_account_email = \"\"\n",
+             euthersurfer_rtdn_service_account_email = \"\"\n\
+             euthersurfer_voided_reconciliation_interval_minutes = 0\n",
         )?;
     }
     let contents = fs::read_to_string(&path)?;
@@ -21417,6 +21423,11 @@ fn load_host_config() -> io::Result<HostConfig> {
     let euthersurfer_rtdn_service_account_email =
         parse_toml_string(&contents, "euthersurfer_rtdn_service_account_email")
             .filter(|value| !value.is_empty());
+    let euthersurfer_voided_reconciliation_interval_minutes = parse_toml_u64(
+        &contents,
+        "euthersurfer_voided_reconciliation_interval_minutes",
+    )
+    .filter(|minutes| (15..=1_440).contains(minutes));
     Ok(HostConfig {
         bind,
         rom_dir,
@@ -21435,6 +21446,7 @@ fn load_host_config() -> io::Result<HostConfig> {
         euthersurfer_google_service_account_file,
         euthersurfer_rtdn_audience,
         euthersurfer_rtdn_service_account_email,
+        euthersurfer_voided_reconciliation_interval_minutes,
     })
 }
 

@@ -229,6 +229,7 @@ euthersurfer_restores_enabled = false
 euthersurfer_google_service_account_file = ""
 euthersurfer_rtdn_audience = ""
 euthersurfer_rtdn_service_account_email = ""
+euthersurfer_voided_reconciliation_interval_minutes = 0
 ```
 
 Keep `euthersurfer_commerce_enabled = false` until Google Play service-account
@@ -264,6 +265,15 @@ restore have independent switches: a production incident should normally set
 `euthersurfer_restores_enabled = true` so existing customers keep access to
 recovery. None of the three switches may be enabled before the license-test
 matrix passes.
+
+After the Play service account has been validated, set
+`euthersurfer_voided_reconciliation_interval_minutes` to a value from 15 through
+1440. The worker starts only when the commerce master switch, provider and
+interval are all configured. Each successful run requests only in-app products,
+includes quantity-based partial refunds, follows bounded token pagination and
+advances a server cursor with a five-minute overlap. It stores no order IDs or
+raw tokens and can only revoke an existing entitlement. Keep the value `0`
+until the license-test refund/revoke cases pass.
 
 Create users with:
 

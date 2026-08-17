@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const CATALOG_VERSION: u32 = 1;
@@ -27,6 +28,10 @@ const GOOGLE_TOKEN_INFO_URI: &str = "https://oauth2.googleapis.com/tokeninfo";
 const MAX_RTDN_MESSAGE_IDS: usize = 4_096;
 const MAX_OIDC_TOKEN_BYTES: usize = 8 * 1024;
 const MAX_OIDC_CACHE_ENTRIES: usize = 32;
+const VOIDED_LOOKBACK_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+const VOIDED_OVERLAP_MS: u64 = 5 * 60 * 1_000;
+const MAX_VOIDED_PAGES: usize = 20;
+const VOIDED_PAGE_SIZE: usize = 100;
 
 #[derive(Clone, Copy)]
 struct ProductDefinition {
@@ -76,6 +81,18 @@ pub trait PlayPurchaseProvider: Send + Sync {
         product_id: &str,
         purchase_token: &str,
     ) -> Result<(), PlayProviderError>;
+    fn list_voided(
+        &self,
+        package_name: &str,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    ) -> Result<Vec<VoidedPurchase>, PlayProviderError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoidedPurchase {
+    purchase_token: String,
+    voided_at_ms: u64,
 }
 
 pub struct DisabledPlayPurchaseProvider;
@@ -100,6 +117,15 @@ impl PlayPurchaseProvider for DisabledPlayPurchaseProvider {
         _product_id: &str,
         _purchase_token: &str,
     ) -> Result<(), PlayProviderError> {
+        Err(PlayProviderError::Unavailable)
+    }
+
+    fn list_voided(
+        &self,
+        _package_name: &str,
+        _start_time_ms: u64,
+        _end_time_ms: u64,
+    ) -> Result<Vec<VoidedPurchase>, PlayProviderError> {
         Err(PlayProviderError::Unavailable)
     }
 }
@@ -344,6 +370,27 @@ struct GooglePurchaseStateContext {
     purchase_state: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleVoidedPurchasesResponse {
+    #[serde(default)]
+    voided_purchases: Vec<GoogleVoidedPurchase>,
+    token_pagination: Option<GoogleTokenPagination>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleVoidedPurchase {
+    purchase_token: String,
+    voided_time_millis: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleTokenPagination {
+    next_page_token: Option<String>,
+}
+
 pub struct GooglePlayPurchaseProvider {
     client: reqwest::blocking::Client,
     client_email: String,
@@ -505,6 +552,45 @@ impl GooglePlayPurchaseProvider {
         reqwest::Url::parse(&with_action).map_err(|_| PlayProviderError::Unavailable)
     }
 
+    fn voided_purchases_url(package_name: &str) -> Result<reqwest::Url, PlayProviderError> {
+        let mut url =
+            reqwest::Url::parse(GOOGLE_API_ROOT).map_err(|_| PlayProviderError::Unavailable)?;
+        url.path_segments_mut()
+            .map_err(|_| PlayProviderError::Unavailable)?
+            .extend([
+                "androidpublisher",
+                "v3",
+                "applications",
+                package_name,
+                "purchases",
+                "voidedpurchases",
+            ]);
+        Ok(url)
+    }
+
+    fn voided_page_url(
+        package_name: &str,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        page_token: Option<&str>,
+    ) -> Result<reqwest::Url, PlayProviderError> {
+        let mut url = Self::voided_purchases_url(package_name)?;
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("pageSelection.maxResults", &VOIDED_PAGE_SIZE.to_string())
+            .append_pair("type", "0")
+            .append_pair("includeQuantityBasedPartialRefund", "true");
+        if let Some(page_token) = page_token {
+            query.append_pair("pageSelection.token", page_token);
+        } else {
+            query
+                .append_pair("startTime", &start_time_ms.to_string())
+                .append_pair("endTime", &end_time_ms.to_string());
+        }
+        drop(query);
+        Ok(url)
+    }
+
     fn verify_once(
         &self,
         package_name: &str,
@@ -551,6 +637,32 @@ impl GooglePlayPurchaseProvider {
         let status = response.status();
         let _ = read_bounded_body(&mut response);
         Ok(status)
+    }
+
+    fn list_voided_page_once(
+        &self,
+        package_name: &str,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        page_token: Option<&str>,
+        force_refresh: bool,
+    ) -> Result<(StatusCode, Option<GoogleVoidedPurchasesResponse>), PlayProviderError> {
+        let token = self.access_token(force_refresh)?;
+        let url = Self::voided_page_url(package_name, start_time_ms, end_time_ms, page_token)?;
+        let mut response = self
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        let status = response.status();
+        if status == StatusCode::OK {
+            let body = read_bounded_body(&mut response)?;
+            let page = serde_json::from_slice(&body).map_err(|_| PlayProviderError::Rejected)?;
+            return Ok((status, Some(page)));
+        }
+        let _ = read_bounded_body(&mut response);
+        Ok((status, None))
     }
 }
 
@@ -605,6 +717,86 @@ impl PlayPurchaseProvider for GooglePlayPurchaseProvider {
         } else {
             Err(PlayProviderError::Unavailable)
         }
+    }
+
+    fn list_voided(
+        &self,
+        package_name: &str,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    ) -> Result<Vec<VoidedPurchase>, PlayProviderError> {
+        if package_name != PACKAGE_NAME
+            || start_time_ms >= end_time_ms
+            || end_time_ms.saturating_sub(start_time_ms) > VOIDED_LOOKBACK_MS
+        {
+            return Err(PlayProviderError::Rejected);
+        }
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        let mut seen_purchase_tokens = HashSet::new();
+        let mut purchases = Vec::new();
+        for _ in 0..MAX_VOIDED_PAGES {
+            let (mut status, mut page) = self.list_voided_page_once(
+                package_name,
+                start_time_ms,
+                end_time_ms,
+                page_token.as_deref(),
+                false,
+            )?;
+            if status == StatusCode::UNAUTHORIZED {
+                (status, page) = self.list_voided_page_once(
+                    package_name,
+                    start_time_ms,
+                    end_time_ms,
+                    page_token.as_deref(),
+                    true,
+                )?;
+            }
+            if status != StatusCode::OK {
+                return if matches!(status.as_u16(), 400 | 404 | 410) {
+                    Err(PlayProviderError::Rejected)
+                } else {
+                    Err(PlayProviderError::Unavailable)
+                };
+            }
+            let page = page.ok_or(PlayProviderError::Rejected)?;
+            for purchase in page.voided_purchases {
+                if purchase.purchase_token.len() < 8
+                    || purchase.purchase_token.len() > MAX_TOKEN_BYTES
+                    || purchase.purchase_token.chars().any(char::is_control)
+                {
+                    return Err(PlayProviderError::Rejected);
+                }
+                let voided_at_ms = purchase
+                    .voided_time_millis
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or(PlayProviderError::Rejected)?;
+                let fingerprint = token_fingerprint(&purchase.purchase_token);
+                if seen_purchase_tokens.insert(fingerprint) {
+                    purchases.push(VoidedPurchase {
+                        purchase_token: purchase.purchase_token,
+                        voided_at_ms,
+                    });
+                }
+            }
+            let next = page
+                .token_pagination
+                .and_then(|pagination| pagination.next_page_token)
+                .filter(|token| !token.is_empty());
+            let Some(next) = next else {
+                return Ok(purchases);
+            };
+            if next.len() > MAX_TOKEN_BYTES
+                || next.chars().any(char::is_control)
+                || !seen_page_tokens.insert(next.clone())
+            {
+                return Err(PlayProviderError::Rejected);
+            }
+            page_token = Some(next);
+        }
+        Err(PlayProviderError::Unavailable)
     }
 }
 
@@ -773,6 +965,8 @@ struct PurchaseLedger {
     purchases: Vec<PurchaseRecord>,
     #[serde(default)]
     processed_rtdn_message_fingerprints: Vec<String>,
+    #[serde(default)]
+    voided_reconciliation_cursor_ms: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -790,6 +984,7 @@ pub struct EutherSurferCommerce {
     enabled: bool,
     sales_enabled: bool,
     restores_enabled: bool,
+    voided_reconciliation_interval: Option<Duration>,
     provider: Arc<dyn PlayPurchaseProvider>,
     rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
     ledger_path: PathBuf,
@@ -807,6 +1002,7 @@ impl EutherSurferCommerce {
         service_account_path: Option<PathBuf>,
         rtdn_audience: Option<String>,
         rtdn_service_account_email: Option<String>,
+        voided_reconciliation_interval: Option<Duration>,
     ) -> Self {
         let provider: Arc<dyn PlayPurchaseProvider> = service_account_path
             .as_ref()
@@ -825,6 +1021,7 @@ impl EutherSurferCommerce {
             ledger_path,
             provider,
             rtdn_authenticator,
+            voided_reconciliation_interval,
         )
     }
 
@@ -866,6 +1063,7 @@ impl EutherSurferCommerce {
             ledger_path,
             provider,
             rtdn_authenticator,
+            None,
         )
     }
 
@@ -876,11 +1074,13 @@ impl EutherSurferCommerce {
         ledger_path: PathBuf,
         provider: Arc<dyn PlayPurchaseProvider>,
         rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
+        voided_reconciliation_interval: Option<Duration>,
     ) -> Self {
         Self {
             enabled,
             sales_enabled,
             restores_enabled,
+            voided_reconciliation_interval,
             provider,
             rtdn_authenticator,
             ledger_path,
@@ -895,10 +1095,64 @@ impl EutherSurferCommerce {
             "enabled": self.enabled,
             "providerConfigured": self.provider.configured(),
             "rtdnConfigured": self.rtdn_authenticator.configured(),
+            "voidedReconciliationConfigured": self.voided_reconciliation_interval.is_some()
+                && self.provider.configured(),
             "catalogVersion": CATALOG_VERSION,
             "salesEnabled": self.enabled && self.sales_enabled && self.provider.configured(),
             "restoresEnabled": self.enabled && self.restores_enabled && self.provider.configured(),
         }))
+    }
+
+    pub fn start_voided_reconciliation(self: &Arc<Self>) {
+        let Some(interval) = self.voided_reconciliation_interval else {
+            return;
+        };
+        if !self.enabled || !self.provider.configured() {
+            return;
+        }
+        let commerce = Arc::downgrade(self);
+        if thread::Builder::new()
+            .name("sakura-voided-reconciler".to_string())
+            .spawn(move || run_voided_reconciler(commerce, interval))
+            .is_err()
+        {
+            eprintln!("[euthersurfer-commerce] could not start voided reconciler");
+        }
+    }
+
+    fn reconcile_voided_once(&self, now_ms: u64) -> Result<usize, PlayProviderError> {
+        if !self.enabled
+            || !self.provider.configured()
+            || self.voided_reconciliation_interval.is_none()
+        {
+            return Err(PlayProviderError::Unavailable);
+        }
+        let _guard = self
+            .rtdn_lock
+            .lock()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        let cursor = self
+            .voided_reconciliation_cursor()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        let start_time_ms = cursor
+            .map(|value| value.saturating_sub(VOIDED_OVERLAP_MS))
+            .unwrap_or_else(|| {
+                now_ms.saturating_sub(VOIDED_LOOKBACK_MS.saturating_sub(VOIDED_OVERLAP_MS))
+            });
+        if start_time_ms >= now_ms {
+            return Ok(0);
+        }
+        let purchases = self
+            .provider
+            .list_voided(PACKAGE_NAME, start_time_ms, now_ms)?;
+        if purchases
+            .iter()
+            .any(|purchase| purchase.voided_at_ms > now_ms.saturating_add(VOIDED_OVERLAP_MS))
+        {
+            return Err(PlayProviderError::Rejected);
+        }
+        self.apply_voided_reconciliation(&purchases, now_ms)
+            .map_err(|_| PlayProviderError::Unavailable)
     }
 
     pub fn verify(&self, body: &[u8], remote: &str, now_ms: u64) -> CommerceHttpResponse {
@@ -1337,6 +1591,41 @@ impl EutherSurferCommerce {
         self.write_ledger(&ledger)
     }
 
+    fn voided_reconciliation_cursor(&self) -> io::Result<Option<u64>> {
+        let _guard = self
+            .ledger_lock
+            .lock()
+            .map_err(|_| io::Error::other("purchase ledger lock poisoned"))?;
+        Ok(self.read_ledger()?.voided_reconciliation_cursor_ms)
+    }
+
+    fn apply_voided_reconciliation(
+        &self,
+        purchases: &[VoidedPurchase],
+        cursor_ms: u64,
+    ) -> io::Result<usize> {
+        let _guard = self
+            .ledger_lock
+            .lock()
+            .map_err(|_| io::Error::other("purchase ledger lock poisoned"))?;
+        let mut ledger = self.read_ledger()?;
+        let fingerprints = purchases
+            .iter()
+            .map(|purchase| token_fingerprint(&purchase.purchase_token))
+            .collect::<HashSet<_>>();
+        let mut revoked = 0;
+        for record in &mut ledger.purchases {
+            if record.active && fingerprints.contains(&record.token_fingerprint) {
+                record.active = false;
+                record.verified_at_epoch_ms = cursor_ms;
+                revoked += 1;
+            }
+        }
+        ledger.voided_reconciliation_cursor_ms = Some(cursor_ms);
+        self.write_ledger(&ledger)?;
+        Ok(revoked)
+    }
+
     fn rtdn_was_processed(&self, message_fingerprint: &str) -> io::Result<bool> {
         let _guard = self
             .ledger_lock
@@ -1382,6 +1671,7 @@ impl EutherSurferCommerce {
                 schema_version: 2,
                 purchases: Vec::new(),
                 processed_rtdn_message_fingerprints: Vec::new(),
+                voided_reconciliation_cursor_ms: None,
             });
         }
         let bytes = fs::read(&self.ledger_path)?;
@@ -1407,6 +1697,26 @@ impl EutherSurferCommerce {
         file.write_all(&bytes)?;
         file.sync_all()?;
         fs::rename(temporary, &self.ledger_path)
+    }
+}
+
+fn run_voided_reconciler(commerce: Weak<EutherSurferCommerce>, interval: Duration) {
+    loop {
+        let Some(commerce) = commerce.upgrade() else {
+            return;
+        };
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or_default();
+        match commerce.reconcile_voided_once(now_ms) {
+            Ok(revoked) => eprintln!(
+                "[euthersurfer-commerce] voided reconciliation completed; revoked={revoked}"
+            ),
+            Err(_) => eprintln!("[euthersurfer-commerce] voided reconciliation failed"),
+        }
+        drop(commerce);
+        thread::sleep(interval);
     }
 }
 
@@ -1584,6 +1894,16 @@ mod tests {
             self.acknowledgements.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
+
+        fn list_voided(
+            &self,
+            package_name: &str,
+            _start_time_ms: u64,
+            _end_time_ms: u64,
+        ) -> Result<Vec<VoidedPurchase>, PlayProviderError> {
+            assert_eq!(package_name, PACKAGE_NAME);
+            Ok(Vec::new())
+        }
     }
 
     struct FakeRtdnAuthenticator {
@@ -1600,6 +1920,51 @@ mod tests {
             assert_eq!(token, "signed.oidc.token");
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.result
+        }
+    }
+
+    struct FakeVoidedProvider {
+        result: Result<Vec<VoidedPurchase>, PlayProviderError>,
+        ranges: Mutex<Vec<(u64, u64)>>,
+    }
+
+    impl PlayPurchaseProvider for FakeVoidedProvider {
+        fn configured(&self) -> bool {
+            true
+        }
+
+        fn verify(
+            &self,
+            package_name: &str,
+            product_id: &str,
+            _purchase_token: &str,
+        ) -> Result<PlayPurchaseState, PlayProviderError> {
+            assert_eq!(package_name, PACKAGE_NAME);
+            assert!(product(product_id).is_some());
+            Ok(PlayPurchaseState::Purchased { acknowledged: true })
+        }
+
+        fn acknowledge(
+            &self,
+            _package_name: &str,
+            _product_id: &str,
+            _purchase_token: &str,
+        ) -> Result<(), PlayProviderError> {
+            Ok(())
+        }
+
+        fn list_voided(
+            &self,
+            package_name: &str,
+            start_time_ms: u64,
+            end_time_ms: u64,
+        ) -> Result<Vec<VoidedPurchase>, PlayProviderError> {
+            assert_eq!(package_name, PACKAGE_NAME);
+            self.ranges
+                .lock()
+                .unwrap()
+                .push((start_time_ms, end_time_ms));
+            self.result.clone()
         }
     }
 
@@ -2097,6 +2462,7 @@ mod tests {
             path.clone(),
             provider.clone(),
             Arc::new(DisabledRtdnAuthenticator),
+            None,
         );
         let status = commerce.status();
         assert_eq!(status.body["salesEnabled"], false);
@@ -2118,5 +2484,131 @@ mod tests {
         assert_eq!(commerce.restore(&restore_body, "client-a", 101).status, 200);
         assert_eq!(provider.verifications.load(Ordering::Relaxed), 1);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn voided_reconciliation_revokes_once_and_advances_overlapping_cursor() {
+        let path = test_path("voided-reconciliation");
+        let now_ms = VOIDED_LOOKBACK_MS + 10_000;
+        let provider = Arc::new(FakeVoidedProvider {
+            result: Ok(vec![
+                VoidedPurchase {
+                    purchase_token: "reconciled-secret-token".to_string(),
+                    voided_at_ms: now_ms - 1_000,
+                },
+                VoidedPurchase {
+                    purchase_token: "reconciled-secret-token".to_string(),
+                    voided_at_ms: now_ms - 1_000,
+                },
+            ]),
+            ranges: Mutex::new(Vec::new()),
+        });
+        let commerce = EutherSurferCommerce::with_controls(
+            true,
+            false,
+            true,
+            path.clone(),
+            provider.clone(),
+            Arc::new(DisabledRtdnAuthenticator),
+            Some(Duration::from_secs(15 * 60)),
+        );
+        assert_eq!(
+            commerce
+                .restore(
+                    &serde_json::to_vec(&serde_json::json!({
+                        "provider": PROVIDER,
+                        "packageName": PACKAGE_NAME,
+                        "catalogVersion": CATALOG_VERSION,
+                        "purchases": [{
+                            "productId": "sakura_sprint.supporter.sakura.v1",
+                            "purchaseToken": "reconciled-secret-token",
+                        }]
+                    }))
+                    .unwrap(),
+                    "client-a",
+                    100,
+                )
+                .status,
+            200
+        );
+        assert_eq!(commerce.reconcile_voided_once(now_ms), Ok(1));
+        let second_now = now_ms + 60_000;
+        assert_eq!(commerce.reconcile_voided_once(second_now), Ok(0));
+        let ranges = provider.ranges.lock().unwrap();
+        assert_eq!(
+            ranges[0],
+            (now_ms - (VOIDED_LOOKBACK_MS - VOIDED_OVERLAP_MS), now_ms)
+        );
+        assert_eq!(ranges[1], (now_ms - VOIDED_OVERLAP_MS, second_now));
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("\"active\": false"));
+        assert!(stored.contains(&format!("\"voidedReconciliationCursorMs\": {second_now}")));
+        assert!(!stored.contains("reconciled-secret-token"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn voided_reconciliation_failure_never_advances_cursor() {
+        let path = test_path("voided-reconciliation-failure");
+        let provider = Arc::new(FakeVoidedProvider {
+            result: Err(PlayProviderError::Unavailable),
+            ranges: Mutex::new(Vec::new()),
+        });
+        let commerce = EutherSurferCommerce::with_controls(
+            true,
+            false,
+            true,
+            path.clone(),
+            provider,
+            Arc::new(DisabledRtdnAuthenticator),
+            Some(Duration::from_secs(15 * 60)),
+        );
+        assert_eq!(
+            commerce.reconcile_voided_once(VOIDED_LOOKBACK_MS + 20_000),
+            Err(PlayProviderError::Unavailable)
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn voided_api_urls_are_bounded_to_in_app_products_and_token_paging() {
+        let first =
+            GooglePlayPurchaseProvider::voided_page_url(PACKAGE_NAME, 100, 200, None).unwrap();
+        let first_query = first.query_pairs().collect::<HashMap<_, _>>();
+        assert_eq!(
+            first_query.get("type").map(|value| value.as_ref()),
+            Some("0")
+        );
+        assert_eq!(
+            first_query
+                .get("includeQuantityBasedPartialRefund")
+                .map(|value| value.as_ref()),
+            Some("true")
+        );
+        assert_eq!(
+            first_query.get("startTime").map(|value| value.as_ref()),
+            Some("100")
+        );
+        assert_eq!(
+            first_query.get("endTime").map(|value| value.as_ref()),
+            Some("200")
+        );
+
+        let next = GooglePlayPurchaseProvider::voided_page_url(
+            PACKAGE_NAME,
+            100,
+            200,
+            Some("next/page token"),
+        )
+        .unwrap();
+        let next_query = next.query_pairs().collect::<HashMap<_, _>>();
+        assert_eq!(
+            next_query
+                .get("pageSelection.token")
+                .map(|value| value.as_ref()),
+            Some("next/page token")
+        );
+        assert!(!next_query.contains_key("startTime"));
+        assert!(!next_query.contains_key("endTime"));
     }
 }
