@@ -788,6 +788,8 @@ struct PurchaseRecord {
 
 pub struct EutherSurferCommerce {
     enabled: bool,
+    sales_enabled: bool,
+    restores_enabled: bool,
     provider: Arc<dyn PlayPurchaseProvider>,
     rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
     ledger_path: PathBuf,
@@ -799,6 +801,8 @@ pub struct EutherSurferCommerce {
 impl EutherSurferCommerce {
     pub fn new(
         enabled: bool,
+        sales_enabled: bool,
+        restores_enabled: bool,
         ledger_path: PathBuf,
         service_account_path: Option<PathBuf>,
         rtdn_audience: Option<String>,
@@ -814,7 +818,14 @@ impl EutherSurferCommerce {
             .and_then(|(audience, email)| GooglePubSubAuthenticator::new(audience, email).ok())
             .map(|authenticator| Arc::new(authenticator) as Arc<dyn RtdnAuthenticator>)
             .unwrap_or_else(|| Arc::new(DisabledRtdnAuthenticator));
-        Self::with_provider_and_rtdn_auth(enabled, ledger_path, provider, rtdn_authenticator)
+        Self::with_controls(
+            enabled,
+            sales_enabled,
+            restores_enabled,
+            ledger_path,
+            provider,
+            rtdn_authenticator,
+        )
     }
 
     #[cfg(test)]
@@ -841,14 +852,35 @@ impl EutherSurferCommerce {
         )
     }
 
+    #[cfg(test)]
     fn with_provider_and_rtdn_auth(
         enabled: bool,
         ledger_path: PathBuf,
         provider: Arc<dyn PlayPurchaseProvider>,
         rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
     ) -> Self {
+        Self::with_controls(
+            enabled,
+            true,
+            true,
+            ledger_path,
+            provider,
+            rtdn_authenticator,
+        )
+    }
+
+    fn with_controls(
+        enabled: bool,
+        sales_enabled: bool,
+        restores_enabled: bool,
+        ledger_path: PathBuf,
+        provider: Arc<dyn PlayPurchaseProvider>,
+        rtdn_authenticator: Arc<dyn RtdnAuthenticator>,
+    ) -> Self {
         Self {
             enabled,
+            sales_enabled,
+            restores_enabled,
             provider,
             rtdn_authenticator,
             ledger_path,
@@ -864,13 +896,20 @@ impl EutherSurferCommerce {
             "providerConfigured": self.provider.configured(),
             "rtdnConfigured": self.rtdn_authenticator.configured(),
             "catalogVersion": CATALOG_VERSION,
-            "salesEnabled": false,
-            "restoresEnabled": false,
+            "salesEnabled": self.enabled && self.sales_enabled && self.provider.configured(),
+            "restoresEnabled": self.enabled && self.restores_enabled && self.provider.configured(),
         }))
     }
 
     pub fn verify(&self, body: &[u8], remote: &str, now_ms: u64) -> CommerceHttpResponse {
-        if let Some(response) = self.preflight(body, remote, now_ms) {
+        if let Some(response) = self.preflight(
+            body,
+            remote,
+            now_ms,
+            self.sales_enabled,
+            "sales_disabled",
+            "Sakura Sprint sales are not enabled",
+        ) {
             return response;
         }
         let request: VerifyRequest = match serde_json::from_slice(body) {
@@ -903,7 +942,14 @@ impl EutherSurferCommerce {
     }
 
     pub fn restore(&self, body: &[u8], remote: &str, now_ms: u64) -> CommerceHttpResponse {
-        if let Some(response) = self.preflight(body, remote, now_ms) {
+        if let Some(response) = self.preflight(
+            body,
+            remote,
+            now_ms,
+            self.restores_enabled,
+            "restores_disabled",
+            "Sakura Sprint restores are not enabled",
+        ) {
             return response;
         }
         let request: RestoreRequest = match serde_json::from_slice(body) {
@@ -1096,7 +1142,15 @@ impl EutherSurferCommerce {
             .map_err(|_| PlayProviderError::Unavailable)
     }
 
-    fn preflight(&self, body: &[u8], remote: &str, now_ms: u64) -> Option<CommerceHttpResponse> {
+    fn preflight(
+        &self,
+        body: &[u8],
+        remote: &str,
+        now_ms: u64,
+        operation_enabled: bool,
+        disabled_code: &'static str,
+        disabled_message: &'static str,
+    ) -> Option<CommerceHttpResponse> {
         if !self.enabled {
             return Some(CommerceHttpResponse::error(
                 503,
@@ -1109,6 +1163,13 @@ impl EutherSurferCommerce {
                 503,
                 "provider_not_configured",
                 "Google Play verification is not configured",
+            ));
+        }
+        if !operation_enabled {
+            return Some(CommerceHttpResponse::error(
+                503,
+                disabled_code,
+                disabled_message,
             ));
         }
         if body.len() > MAX_BODY_BYTES {
@@ -2019,5 +2080,43 @@ mod tests {
                 Err(RtdnAuthError::Invalid)
             );
         }
+    }
+
+    #[test]
+    fn sales_can_stop_while_verified_restore_remains_available() {
+        let path = test_path("independent-kill-switches");
+        let provider = Arc::new(FakeProvider {
+            state: PlayPurchaseState::Purchased { acknowledged: true },
+            verifications: AtomicUsize::new(0),
+            acknowledgements: AtomicUsize::new(0),
+        });
+        let commerce = EutherSurferCommerce::with_controls(
+            true,
+            false,
+            true,
+            path.clone(),
+            provider.clone(),
+            Arc::new(DisabledRtdnAuthenticator),
+        );
+        let status = commerce.status();
+        assert_eq!(status.body["salesEnabled"], false);
+        assert_eq!(status.body["restoresEnabled"], true);
+        let sale = commerce.verify(&verify_body("restore-only-token"), "client-a", 100);
+        assert_eq!(sale.status, 503);
+        assert_eq!(sale.body["error"]["code"], "sales_disabled");
+
+        let restore_body = serde_json::to_vec(&serde_json::json!({
+            "provider": PROVIDER,
+            "packageName": PACKAGE_NAME,
+            "catalogVersion": CATALOG_VERSION,
+            "purchases": [{
+                "productId": "sakura_sprint.supporter.sakura.v1",
+                "purchaseToken": "restore-only-token",
+            }]
+        }))
+        .unwrap();
+        assert_eq!(commerce.restore(&restore_body, "client-a", 101).status, 200);
+        assert_eq!(provider.verifications.load(Ordering::Relaxed), 1);
+        let _ = fs::remove_file(path);
     }
 }

@@ -224,6 +224,8 @@ app_public_server_url = "https://apothictech.se"
 app_lan_server_url = "http://192.168.32.186:8080"
 eutherbooks_server_urls = "http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks"
 euthersurfer_commerce_enabled = false
+euthersurfer_sales_enabled = false
+euthersurfer_restores_enabled = false
 euthersurfer_google_service_account_file = ""
 euthersurfer_rtdn_audience = ""
 euthersurfer_rtdn_service_account_email = ""
@@ -255,6 +257,13 @@ IDs, deduplicates retries, re-verifies one-time purchase events with Google Play
 and revokes matching entitlements for authenticated voided-purchase events.
 Leave both RTDN values empty until the subscription and Play license-test matrix
 are ready; `rtdnConfigured` then remains false.
+
+`euthersurfer_commerce_enabled` is the master emergency switch. Sales and
+restore have independent switches: a production incident should normally set
+`euthersurfer_sales_enabled = false` while leaving
+`euthersurfer_restores_enabled = true` so existing customers keep access to
+recovery. None of the three switches may be enabled before the license-test
+matrix passes.
 
 Create users with:
 

@@ -1334,6 +1334,8 @@ struct HostConfig {
     app_lan_server_url: Option<String>,
     eutherbooks_server_urls: Vec<String>,
     euthersurfer_commerce_enabled: bool,
+    euthersurfer_sales_enabled: bool,
+    euthersurfer_restores_enabled: bool,
     euthersurfer_google_service_account_file: Option<String>,
     euthersurfer_rtdn_audience: Option<String>,
     euthersurfer_rtdn_service_account_email: Option<String>,
@@ -2141,6 +2143,8 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     let config = load_host_config()?;
     let euthersurfer_commerce = Arc::new(euthersurfer_commerce::EutherSurferCommerce::new(
         config.euthersurfer_commerce_enabled,
+        config.euthersurfer_sales_enabled,
+        config.euthersurfer_restores_enabled,
         host_dir().join("euthersurfer-purchases.json"),
         config
             .euthersurfer_google_service_account_file
@@ -21357,6 +21361,8 @@ fn load_host_config() -> io::Result<HostConfig> {
              app_lan_server_url = \"http://192.168.32.186:8080\"\n\
              eutherbooks_server_urls = \"http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks\"\n\
              euthersurfer_commerce_enabled = false\n\
+             euthersurfer_sales_enabled = false\n\
+             euthersurfer_restores_enabled = false\n\
              euthersurfer_google_service_account_file = \"\"\n\
              euthersurfer_rtdn_audience = \"\"\n\
              euthersurfer_rtdn_service_account_email = \"\"\n",
@@ -21399,6 +21405,10 @@ fn load_host_config() -> io::Result<HostConfig> {
         .collect();
     let euthersurfer_commerce_enabled =
         parse_toml_bool(&contents, "euthersurfer_commerce_enabled").unwrap_or(false);
+    let euthersurfer_sales_enabled =
+        parse_toml_bool(&contents, "euthersurfer_sales_enabled").unwrap_or(false);
+    let euthersurfer_restores_enabled =
+        parse_toml_bool(&contents, "euthersurfer_restores_enabled").unwrap_or(false);
     let euthersurfer_google_service_account_file =
         parse_toml_string(&contents, "euthersurfer_google_service_account_file")
             .filter(|value| !value.is_empty());
@@ -21420,6 +21430,8 @@ fn load_host_config() -> io::Result<HostConfig> {
         app_lan_server_url,
         eutherbooks_server_urls,
         euthersurfer_commerce_enabled,
+        euthersurfer_sales_enabled,
+        euthersurfer_restores_enabled,
         euthersurfer_google_service_account_file,
         euthersurfer_rtdn_audience,
         euthersurfer_rtdn_service_account_email,
