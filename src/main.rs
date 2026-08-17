@@ -248,6 +248,7 @@ static EUTHERDUKE_BROWSER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERBOOKS_PLAYER_LOG_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_SCORE_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_ACHIEVEMENT_LOCK: Mutex<()> = Mutex::new(());
+static EUTHERSURFER_DAILY_SCORE_LOCK: Mutex<()> = Mutex::new(());
 const EUTHERSURFER_SCORE_LIMIT: usize = 30;
 const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
 const EUTHERSURFER_MAX_SUSHI: u64 = 1_000_000;
@@ -974,6 +975,25 @@ struct EutherSurferScoreEntry {
 
 #[derive(Deserialize)]
 struct EutherSurferScoreSubmit {
+    name: String,
+    score: u64,
+    sushi: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct EutherSurferDailyScoreEntry {
+    day: String,
+    name: String,
+    score: u64,
+    sushi: u64,
+    created_unix_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct EutherSurferDailyScoreSubmit {
+    day: String,
+    seed: i32,
+    modifier: String,
     name: String,
     score: u64,
     sushi: u64,
@@ -2165,6 +2185,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
         && path != "/api/euthersurfer/scores"
+        && path != "/api/euthersurfer/daily-scores"
         && path != "/api/euthersurfer/achievements"
         && !is_eutherbooks_proxy_path(path)
         && !is_eutherpal_proxy_path(path)
@@ -2328,6 +2349,12 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         }
         ("GET", "/api/euthersurfer/scores") => send_euthersurfer_scores(stream),
         ("POST", "/api/euthersurfer/scores") => submit_euthersurfer_score(stream, &request),
+        ("GET", "/api/euthersurfer/daily-scores") => {
+            send_euthersurfer_daily_scores(stream, &request)
+        }
+        ("POST", "/api/euthersurfer/daily-scores") => {
+            submit_euthersurfer_daily_score(stream, &request)
+        }
         ("GET", "/api/euthersurfer/achievements") => {
             send_euthersurfer_achievements(stream, &request)
         }
@@ -11563,6 +11590,179 @@ fn submit_euthersurfer_score(stream: &mut TcpStream, request: &HttpRequest) -> i
     rank_euthersurfer_scores(&mut scores);
     write_euthersurfer_scores(&scores)?;
     send_json(stream, &euthersurfer_scores_payload(&scores))
+}
+
+fn euthersurfer_daily_score_path() -> PathBuf {
+    host_dir().join("euthersurfer-daily-scores.json")
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+fn epoch_day_from_iso(day: &str) -> io::Result<i64> {
+    let parts = day
+        .split('-')
+        .map(str::parse::<i64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid_request("daily challenge day must use YYYY-MM-DD"))?;
+    if parts.len() != 3 || day.len() != 10 {
+        return Err(invalid_request("daily challenge day must use YYYY-MM-DD"));
+    }
+    let (year, month, date) = (parts[0], parts[1], parts[2]);
+    if !(2024..=2100).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)).contains(&date)
+    {
+        return Err(invalid_request("daily challenge day is invalid"));
+    }
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + date - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Ok(era * 146_097 + day_of_era - 719_468)
+}
+
+fn daily_challenge_identity(epoch_day: i64) -> (i32, &'static str) {
+    let seed = ((epoch_day * 1_103_515_245_i64) ^ 0x5341_4B55_i64) as i32;
+    let modifier = match epoch_day.rem_euclid(3) {
+        0 => "SUSHI_FEAST",
+        1 => "SHOGUN_TEMPO",
+        _ => "WASABI_WEATHER",
+    };
+    (seed, modifier)
+}
+
+fn current_utc_epoch_day() -> i64 {
+    (unix_ms_now() / 86_400_000) as i64
+}
+
+fn read_euthersurfer_daily_scores() -> io::Result<Vec<EutherSurferDailyScoreEntry>> {
+    let path = euthersurfer_daily_score_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read(&path)?;
+    serde_json::from_slice(&data).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid EutherSurfer daily score file: {err}"),
+        )
+    })
+}
+
+fn write_euthersurfer_daily_scores(scores: &[EutherSurferDailyScoreEntry]) -> io::Result<()> {
+    let path = euthersurfer_daily_score_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    let data = serde_json::to_vec_pretty(scores)
+        .map_err(|err| io::Error::other(format!("could not serialize daily scores: {err}")))?;
+    fs::write(&temporary, data)?;
+    fs::rename(temporary, path)
+}
+
+fn euthersurfer_daily_scores_for_day(
+    entries: &[EutherSurferDailyScoreEntry],
+    day: &str,
+) -> Vec<EutherSurferScoreEntry> {
+    let mut scores = entries
+        .iter()
+        .filter(|entry| entry.day == day)
+        .map(|entry| EutherSurferScoreEntry {
+            name: entry.name.clone(),
+            score: entry.score,
+            sushi: entry.sushi,
+            created_unix_ms: entry.created_unix_ms,
+        })
+        .collect::<Vec<_>>();
+    rank_euthersurfer_scores(&mut scores);
+    scores
+}
+
+fn requested_daily_day(request: &HttpRequest) -> io::Result<String> {
+    let day = query_string_value(&request.path, "day")?
+        .ok_or_else(|| invalid_request("daily challenge day is required"))?;
+    epoch_day_from_iso(&day)?;
+    Ok(day)
+}
+
+fn send_euthersurfer_daily_scores(stream: &mut TcpStream, request: &HttpRequest) -> io::Result<()> {
+    let day = requested_daily_day(request)?;
+    let _guard = EUTHERSURFER_DAILY_SCORE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer daily score lock poisoned"))?;
+    let entries = read_euthersurfer_daily_scores()?;
+    let scores = euthersurfer_daily_scores_for_day(&entries, &day);
+    send_json(stream, &euthersurfer_scores_payload(&scores))
+}
+
+fn submit_euthersurfer_daily_score(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let submission: EutherSurferDailyScoreSubmit = serde_json::from_slice(&request.body)
+        .map_err(|err| invalid_request(format!("invalid daily score payload: {err}")))?;
+    let epoch_day = epoch_day_from_iso(&submission.day)?;
+    if epoch_day != current_utc_epoch_day() {
+        return Err(invalid_request(
+            "only today's daily challenge accepts scores",
+        ));
+    }
+    let (expected_seed, expected_modifier) = daily_challenge_identity(epoch_day);
+    if submission.seed != expected_seed || submission.modifier != expected_modifier {
+        return Err(invalid_request(
+            "daily challenge identity does not match the day",
+        ));
+    }
+    let name = normalize_euthersurfer_name(&submission.name)?;
+    if submission.score == 0 || submission.score > EUTHERSURFER_MAX_SCORE {
+        return Err(invalid_request("score is outside the accepted range"));
+    }
+    if submission.sushi > EUTHERSURFER_MAX_SUSHI {
+        return Err(invalid_request("sushi count is outside the accepted range"));
+    }
+
+    let _guard = EUTHERSURFER_DAILY_SCORE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("EutherSurfer daily score lock poisoned"))?;
+    let mut entries = read_euthersurfer_daily_scores()?;
+    let is_retry = entries.iter().any(|entry| {
+        entry.day == submission.day
+            && entry.name.eq_ignore_ascii_case(&name)
+            && entry.score == submission.score
+            && entry.sushi == submission.sushi
+    });
+    if !is_retry {
+        entries.push(EutherSurferDailyScoreEntry {
+            day: submission.day.clone(),
+            name,
+            score: submission.score,
+            sushi: submission.sushi,
+            created_unix_ms: unix_ms_now(),
+        });
+    }
+    let cutoff = current_utc_epoch_day() - 31;
+    entries.retain(|entry| epoch_day_from_iso(&entry.day).is_ok_and(|day| day >= cutoff));
+    let ranked = euthersurfer_daily_scores_for_day(&entries, &submission.day);
+    let keep = ranked
+        .iter()
+        .map(|entry| (entry.name.to_lowercase(), entry.score, entry.sushi))
+        .collect::<HashSet<_>>();
+    entries.retain(|entry| {
+        entry.day != submission.day
+            || keep.contains(&(entry.name.to_lowercase(), entry.score, entry.sushi))
+    });
+    write_euthersurfer_daily_scores(&entries)?;
+    send_json(stream, &euthersurfer_scores_payload(&ranked))
 }
 
 fn euthersurfer_achievement_path() -> PathBuf {
@@ -24886,6 +25086,46 @@ mod tests {
         let payload = euthersurfer_scores_payload(&scores);
         assert_eq!(payload["scores"][0]["rank"], 1);
         assert_eq!(payload["scores"][0]["score"], 34);
+    }
+
+    #[test]
+    fn euthersurfer_daily_challenge_is_deterministic_and_isolated_by_day() {
+        let first_day = epoch_day_from_iso("2026-08-17").unwrap();
+        assert_eq!(epoch_day_from_iso("2026-08-17").unwrap(), first_day);
+        assert!(epoch_day_from_iso("2026-02-30").is_err());
+        assert!(epoch_day_from_iso("not-a-day").is_err());
+        assert_eq!(
+            daily_challenge_identity(first_day),
+            daily_challenge_identity(first_day)
+        );
+
+        let entries = vec![
+            EutherSurferDailyScoreEntry {
+                day: "2026-08-17".to_string(),
+                name: "Momo".to_string(),
+                score: 900,
+                sushi: 4,
+                created_unix_ms: 1,
+            },
+            EutherSurferDailyScoreEntry {
+                day: "2026-08-16".to_string(),
+                name: "Hana".to_string(),
+                score: 2_000,
+                sushi: 8,
+                created_unix_ms: 2,
+            },
+            EutherSurferDailyScoreEntry {
+                day: "2026-08-17".to_string(),
+                name: "Kiko".to_string(),
+                score: 1_200,
+                sushi: 5,
+                created_unix_ms: 3,
+            },
+        ];
+        let ranked = euthersurfer_daily_scores_for_day(&entries, "2026-08-17");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].name, "Kiko");
+        assert_eq!(ranked[1].name, "Momo");
     }
 
     #[test]
