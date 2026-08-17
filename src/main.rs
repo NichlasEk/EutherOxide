@@ -12135,6 +12135,17 @@ fn submit_euthersurfer_weekly_boss_score(
             .is_ok_and(|(entry_year, entry_week)| entry_year * 53 + entry_week >= cutoff)
     });
     let ranked = rank_euthersurfer_weekly_boss_scores(&entries, &submission.week);
+    let kept_run_ids = ranked
+        .iter()
+        .filter_map(|entry| entry.run_id.clone())
+        .collect::<HashSet<_>>();
+    entries.retain(|entry| {
+        entry.week != submission.week
+            || entry
+                .run_id
+                .as_ref()
+                .is_some_and(|run_id| kept_run_ids.contains(run_id))
+    });
     write_euthersurfer_weekly_boss_scores(&entries)?;
     send_json(stream, &euthersurfer_weekly_boss_payload(&ranked))
 }
