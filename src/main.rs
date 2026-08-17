@@ -1334,6 +1334,7 @@ struct HostConfig {
     app_lan_server_url: Option<String>,
     eutherbooks_server_urls: Vec<String>,
     euthersurfer_commerce_enabled: bool,
+    euthersurfer_google_service_account_file: Option<String>,
 }
 
 #[derive(Clone)]
@@ -2136,11 +2137,14 @@ fn new_bridge_state(emulator: Emulator) -> BridgeState {
 
 fn serve_host_server(emulator: Emulator) -> io::Result<()> {
     let config = load_host_config()?;
-    let euthersurfer_commerce =
-        Arc::new(euthersurfer_commerce::EutherSurferCommerce::new_disabled(
-            config.euthersurfer_commerce_enabled,
-            host_dir().join("euthersurfer-purchases.json"),
-        ));
+    let euthersurfer_commerce = Arc::new(euthersurfer_commerce::EutherSurferCommerce::new(
+        config.euthersurfer_commerce_enabled,
+        host_dir().join("euthersurfer-purchases.json"),
+        config
+            .euthersurfer_google_service_account_file
+            .as_deref()
+            .map(PathBuf::from),
+    ));
     if let Some(rom_dir) = config.rom_dir.as_deref() {
         let canonical = validate_rom_root(rom_dir)?;
         write_rom_dir_setting(&canonical)?;
@@ -21325,7 +21329,8 @@ fn load_host_config() -> io::Result<HostConfig> {
              app_public_server_url = \"https://apothictech.se\"\n\
              app_lan_server_url = \"http://192.168.32.186:8080\"\n\
              eutherbooks_server_urls = \"http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks\"\n\
-             euthersurfer_commerce_enabled = false\n",
+             euthersurfer_commerce_enabled = false\n\
+             euthersurfer_google_service_account_file = \"\"\n",
         )?;
     }
     let contents = fs::read_to_string(&path)?;
@@ -21365,6 +21370,9 @@ fn load_host_config() -> io::Result<HostConfig> {
         .collect();
     let euthersurfer_commerce_enabled =
         parse_toml_bool(&contents, "euthersurfer_commerce_enabled").unwrap_or(false);
+    let euthersurfer_google_service_account_file =
+        parse_toml_string(&contents, "euthersurfer_google_service_account_file")
+            .filter(|value| !value.is_empty());
     Ok(HostConfig {
         bind,
         rom_dir,
@@ -21378,6 +21386,7 @@ fn load_host_config() -> io::Result<HostConfig> {
         app_lan_server_url,
         eutherbooks_server_urls,
         euthersurfer_commerce_enabled,
+        euthersurfer_google_service_account_file,
     })
 }
 

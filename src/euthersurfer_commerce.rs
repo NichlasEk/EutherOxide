@@ -1,10 +1,13 @@
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const CATALOG_VERSION: u32 = 1;
 pub const PACKAGE_NAME: &str = "se.euther.euthersurfer";
@@ -13,6 +16,11 @@ const MAX_BODY_BYTES: usize = 32 * 1024;
 const MAX_TOKEN_BYTES: usize = 4 * 1024;
 const RATE_WINDOW_MS: u64 = 60_000;
 const RATE_MAX_REQUESTS: usize = 12;
+const GOOGLE_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
+const GOOGLE_SCOPE: &str = "https://www.googleapis.com/auth/androidpublisher";
+const GOOGLE_API_ROOT: &str = "https://androidpublisher.googleapis.com/";
+const MAX_PROVIDER_BODY_BYTES: u64 = 64 * 1024;
+const ACCESS_TOKEN_REFRESH_MARGIN_SECS: u64 = 60;
 
 #[derive(Clone, Copy)]
 struct ProductDefinition {
@@ -87,6 +95,395 @@ impl PlayPurchaseProvider for DisabledPlayPurchaseProvider {
         _purchase_token: &str,
     ) -> Result<(), PlayProviderError> {
         Err(PlayProviderError::Unavailable)
+    }
+}
+
+#[derive(Deserialize)]
+struct GoogleServiceAccountFile {
+    #[serde(rename = "type")]
+    account_type: String,
+    client_email: String,
+    private_key: String,
+    #[serde(default)]
+    private_key_id: Option<String>,
+    token_uri: String,
+}
+
+#[derive(Serialize)]
+struct GoogleJwtClaims<'a> {
+    iss: &'a str,
+    scope: &'static str,
+    aud: &'static str,
+    iat: u64,
+    exp: u64,
+}
+
+#[derive(Deserialize)]
+struct GoogleTokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+}
+
+struct CachedAccessToken {
+    value: String,
+    expires_at_epoch_secs: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleProductPurchaseV2 {
+    #[serde(default)]
+    product_line_item: Vec<GoogleProductLineItem>,
+    purchase_state_context: Option<GooglePurchaseStateContext>,
+    acknowledgement_state: Option<String>,
+    purchase_completion_time: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleProductLineItem {
+    product_id: String,
+    product_offer_details: Option<GoogleProductOfferDetails>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleProductOfferDetails {
+    quantity: Option<i64>,
+    refundable_quantity: Option<i64>,
+    consumption_state: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GooglePurchaseStateContext {
+    purchase_state: Option<String>,
+}
+
+pub struct GooglePlayPurchaseProvider {
+    client: reqwest::blocking::Client,
+    client_email: String,
+    private_key_id: Option<String>,
+    encoding_key: EncodingKey,
+    access_token: Mutex<Option<CachedAccessToken>>,
+}
+
+impl GooglePlayPurchaseProvider {
+    fn from_file(path: &PathBuf) -> Result<Self, PlayProviderError> {
+        let bytes = fs::read(path).map_err(|_| PlayProviderError::Unavailable)?;
+        if bytes.len() > MAX_PROVIDER_BODY_BYTES as usize {
+            return Err(PlayProviderError::Rejected);
+        }
+        let account: GoogleServiceAccountFile =
+            serde_json::from_slice(&bytes).map_err(|_| PlayProviderError::Rejected)?;
+        if account.account_type != "service_account"
+            || account.token_uri != GOOGLE_TOKEN_URI
+            || account.client_email.len() > 320
+            || !account.client_email.contains('@')
+            || account.client_email.chars().any(char::is_control)
+            || account.private_key.len() > MAX_PROVIDER_BODY_BYTES as usize
+            || account.private_key_id.as_deref().is_some_and(|key_id| {
+                key_id.is_empty() || key_id.len() > 256 || key_id.chars().any(char::is_control)
+            })
+        {
+            return Err(PlayProviderError::Rejected);
+        }
+        let encoding_key = EncodingKey::from_rsa_pem(account.private_key.as_bytes())
+            .map_err(|_| PlayProviderError::Rejected)?;
+        let client = reqwest::blocking::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .user_agent("EutherOxide-Sakura-Commerce/1")
+            .build()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        Ok(Self {
+            client,
+            client_email: account.client_email,
+            private_key_id: account.private_key_id,
+            encoding_key,
+            access_token: Mutex::new(None),
+        })
+    }
+
+    fn now_epoch_secs() -> Result<u64, PlayProviderError> {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .map_err(|_| PlayProviderError::Unavailable)
+    }
+
+    fn access_token(&self, force_refresh: bool) -> Result<String, PlayProviderError> {
+        let now = Self::now_epoch_secs()?;
+        if !force_refresh {
+            let cache = self
+                .access_token
+                .lock()
+                .map_err(|_| PlayProviderError::Unavailable)?;
+            if let Some(token) = cache.as_ref()
+                && token.expires_at_epoch_secs
+                    > now.saturating_add(ACCESS_TOKEN_REFRESH_MARGIN_SECS)
+            {
+                return Ok(token.value.clone());
+            }
+        }
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = self.private_key_id.clone();
+        let claims = GoogleJwtClaims {
+            iss: &self.client_email,
+            scope: GOOGLE_SCOPE,
+            aud: GOOGLE_TOKEN_URI,
+            iat: now,
+            exp: now.saturating_add(3_300),
+        };
+        let assertion = encode(&header, &claims, &self.encoding_key)
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        let mut response = self
+            .client
+            .post(GOOGLE_TOKEN_URI)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", assertion.as_str()),
+            ])
+            .send()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        if response.status() != StatusCode::OK {
+            return Err(PlayProviderError::Unavailable);
+        }
+        let body = read_bounded_body(&mut response)?;
+        let token: GoogleTokenResponse =
+            serde_json::from_slice(&body).map_err(|_| PlayProviderError::Unavailable)?;
+        if !token.token_type.eq_ignore_ascii_case("bearer")
+            || token.access_token.is_empty()
+            || token.access_token.len() > 8 * 1024
+            || token.access_token.chars().any(char::is_control)
+            || !(120..=3_600).contains(&token.expires_in)
+        {
+            return Err(PlayProviderError::Unavailable);
+        }
+        let expires_at_epoch_secs = now.saturating_add(token.expires_in);
+        let value = token.access_token;
+        let mut cache = self
+            .access_token
+            .lock()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        *cache = Some(CachedAccessToken {
+            value: value.clone(),
+            expires_at_epoch_secs,
+        });
+        Ok(value)
+    }
+
+    fn purchase_url(
+        package_name: &str,
+        purchase_token: &str,
+    ) -> Result<reqwest::Url, PlayProviderError> {
+        let mut url =
+            reqwest::Url::parse(GOOGLE_API_ROOT).map_err(|_| PlayProviderError::Unavailable)?;
+        url.path_segments_mut()
+            .map_err(|_| PlayProviderError::Unavailable)?
+            .extend([
+                "androidpublisher",
+                "v3",
+                "applications",
+                package_name,
+                "purchases",
+                "productsv2",
+                "tokens",
+                purchase_token,
+            ]);
+        Ok(url)
+    }
+
+    fn acknowledge_url(
+        package_name: &str,
+        product_id: &str,
+        purchase_token: &str,
+    ) -> Result<reqwest::Url, PlayProviderError> {
+        let mut url =
+            reqwest::Url::parse(GOOGLE_API_ROOT).map_err(|_| PlayProviderError::Unavailable)?;
+        url.path_segments_mut()
+            .map_err(|_| PlayProviderError::Unavailable)?
+            .extend([
+                "androidpublisher",
+                "v3",
+                "applications",
+                package_name,
+                "purchases",
+                "products",
+                product_id,
+                "tokens",
+                purchase_token,
+            ]);
+        let with_action = format!("{}:acknowledge", url.as_str());
+        reqwest::Url::parse(&with_action).map_err(|_| PlayProviderError::Unavailable)
+    }
+
+    fn verify_once(
+        &self,
+        package_name: &str,
+        purchase_token: &str,
+        force_refresh: bool,
+    ) -> Result<(StatusCode, Option<GoogleProductPurchaseV2>), PlayProviderError> {
+        let token = self.access_token(force_refresh)?;
+        let mut response = self
+            .client
+            .get(Self::purchase_url(package_name, purchase_token)?)
+            .bearer_auth(token)
+            .send()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        let status = response.status();
+        if status == StatusCode::OK {
+            let body = read_bounded_body(&mut response)?;
+            let purchase =
+                serde_json::from_slice(&body).map_err(|_| PlayProviderError::Rejected)?;
+            return Ok((status, Some(purchase)));
+        }
+        let _ = read_bounded_body(&mut response);
+        Ok((status, None))
+    }
+
+    fn acknowledge_once(
+        &self,
+        package_name: &str,
+        product_id: &str,
+        purchase_token: &str,
+        force_refresh: bool,
+    ) -> Result<StatusCode, PlayProviderError> {
+        let token = self.access_token(force_refresh)?;
+        let mut response = self
+            .client
+            .post(Self::acknowledge_url(
+                package_name,
+                product_id,
+                purchase_token,
+            )?)
+            .bearer_auth(token)
+            .json(&serde_json::json!({}))
+            .send()
+            .map_err(|_| PlayProviderError::Unavailable)?;
+        let status = response.status();
+        let _ = read_bounded_body(&mut response);
+        Ok(status)
+    }
+}
+
+impl PlayPurchaseProvider for GooglePlayPurchaseProvider {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn verify(
+        &self,
+        package_name: &str,
+        product_id: &str,
+        purchase_token: &str,
+    ) -> Result<PlayPurchaseState, PlayProviderError> {
+        if package_name != PACKAGE_NAME || product(product_id).is_none() {
+            return Err(PlayProviderError::Rejected);
+        }
+        let (mut status, mut purchase) = self.verify_once(package_name, purchase_token, false)?;
+        if status == StatusCode::UNAUTHORIZED {
+            (status, purchase) = self.verify_once(package_name, purchase_token, true)?;
+        }
+        if status == StatusCode::OK {
+            return classify_purchase(
+                purchase.as_ref().ok_or(PlayProviderError::Rejected)?,
+                product_id,
+            );
+        }
+        if matches!(status.as_u16(), 400 | 404 | 410) {
+            Err(PlayProviderError::Rejected)
+        } else {
+            Err(PlayProviderError::Unavailable)
+        }
+    }
+
+    fn acknowledge(
+        &self,
+        package_name: &str,
+        product_id: &str,
+        purchase_token: &str,
+    ) -> Result<(), PlayProviderError> {
+        if package_name != PACKAGE_NAME || product(product_id).is_none() {
+            return Err(PlayProviderError::Rejected);
+        }
+        let mut status = self.acknowledge_once(package_name, product_id, purchase_token, false)?;
+        if status == StatusCode::UNAUTHORIZED {
+            status = self.acknowledge_once(package_name, product_id, purchase_token, true)?;
+        }
+        if status.is_success() {
+            Ok(())
+        } else if matches!(status.as_u16(), 400 | 404 | 410) {
+            Err(PlayProviderError::Rejected)
+        } else {
+            Err(PlayProviderError::Unavailable)
+        }
+    }
+}
+
+fn read_bounded_body(
+    response: &mut reqwest::blocking::Response,
+) -> Result<Vec<u8>, PlayProviderError> {
+    let mut body = Vec::new();
+    response
+        .take(MAX_PROVIDER_BODY_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| PlayProviderError::Unavailable)?;
+    if body.len() as u64 > MAX_PROVIDER_BODY_BYTES {
+        return Err(PlayProviderError::Unavailable);
+    }
+    Ok(body)
+}
+
+fn classify_purchase(
+    purchase: &GoogleProductPurchaseV2,
+    expected_product_id: &str,
+) -> Result<PlayPurchaseState, PlayProviderError> {
+    let state = purchase
+        .purchase_state_context
+        .as_ref()
+        .and_then(|context| context.purchase_state.as_deref())
+        .ok_or(PlayProviderError::Rejected)?;
+    match state {
+        "PENDING" => return Ok(PlayPurchaseState::Pending),
+        "CANCELLED" | "PURCHASE_STATE_UNSPECIFIED" => {
+            return Ok(PlayPurchaseState::NotPurchased);
+        }
+        "PURCHASED" => {}
+        _ => return Err(PlayProviderError::Rejected),
+    }
+    if purchase
+        .purchase_completion_time
+        .as_deref()
+        .is_none_or(str::is_empty)
+        || purchase.product_line_item.len() != 1
+    {
+        return Err(PlayProviderError::Rejected);
+    }
+    let item = &purchase.product_line_item[0];
+    let offer = item
+        .product_offer_details
+        .as_ref()
+        .ok_or(PlayProviderError::Rejected)?;
+    if item.product_id != expected_product_id
+        || offer.quantity != Some(1)
+        || offer.refundable_quantity != Some(1)
+        || offer.consumption_state.as_deref() != Some("CONSUMPTION_STATE_YET_TO_BE_CONSUMED")
+    {
+        return Ok(PlayPurchaseState::NotPurchased);
+    }
+    match purchase.acknowledgement_state.as_deref() {
+        Some("ACKNOWLEDGEMENT_STATE_PENDING") => Ok(PlayPurchaseState::Purchased {
+            acknowledged: false,
+        }),
+        Some("ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED") => {
+            Ok(PlayPurchaseState::Purchased { acknowledged: true })
+        }
+        _ => Err(PlayProviderError::Rejected),
     }
 }
 
@@ -169,7 +566,17 @@ pub struct EutherSurferCommerce {
 }
 
 impl EutherSurferCommerce {
-    pub fn new_disabled(enabled: bool, ledger_path: PathBuf) -> Self {
+    pub fn new(enabled: bool, ledger_path: PathBuf, service_account_path: Option<PathBuf>) -> Self {
+        let provider: Arc<dyn PlayPurchaseProvider> = service_account_path
+            .as_ref()
+            .and_then(|path| GooglePlayPurchaseProvider::from_file(path).ok())
+            .map(|provider| Arc::new(provider) as Arc<dyn PlayPurchaseProvider>)
+            .unwrap_or_else(|| Arc::new(DisabledPlayPurchaseProvider));
+        Self::with_provider(enabled, ledger_path, provider)
+    }
+
+    #[cfg(test)]
+    fn new_disabled(enabled: bool, ledger_path: PathBuf) -> Self {
         Self::with_provider(enabled, ledger_path, Arc::new(DisabledPlayPurchaseProvider))
     }
 
@@ -393,6 +800,15 @@ impl EutherSurferCommerce {
             .lock()
             .map_err(|_| io::Error::other("purchase ledger lock poisoned"))?;
         let mut ledger = self.read_ledger()?;
+        if ledger.purchases.iter().any(|existing| {
+            existing.token_fingerprint == record.token_fingerprint
+                && existing.product_id != record.product_id
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "purchase token already belongs to another product",
+            ));
+        }
         if let Some(existing) = ledger.purchases.iter_mut().find(|existing| {
             existing.token_fingerprint == record.token_fingerprint
                 && existing.product_id == record.product_id
@@ -591,12 +1007,40 @@ mod tests {
     }
 
     fn verify_body(token: &str) -> Vec<u8> {
+        verify_body_for("sakura_sprint.supporter.sakura.v1", token)
+    }
+
+    fn verify_body_for(product_id: &str, token: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "provider": PROVIDER,
             "packageName": PACKAGE_NAME,
             "catalogVersion": CATALOG_VERSION,
-            "productId": "sakura_sprint.supporter.sakura.v1",
+            "productId": product_id,
             "purchaseToken": token,
+        }))
+        .unwrap()
+    }
+
+    fn google_purchase(
+        purchase_state: &str,
+        product_id: &str,
+        acknowledgement_state: &str,
+        quantity: i64,
+        refundable_quantity: i64,
+        consumption_state: &str,
+    ) -> GoogleProductPurchaseV2 {
+        serde_json::from_value(serde_json::json!({
+            "productLineItem": [{
+                "productId": product_id,
+                "productOfferDetails": {
+                    "quantity": quantity,
+                    "refundableQuantity": refundable_quantity,
+                    "consumptionState": consumption_state,
+                }
+            }],
+            "purchaseStateContext": { "purchaseState": purchase_state },
+            "acknowledgementState": acknowledgement_state,
+            "purchaseCompletionTime": "2026-08-17T12:00:00Z",
         }))
         .unwrap()
     }
@@ -692,5 +1136,144 @@ mod tests {
                     .iter()
                     .all(|id| !forbidden.iter().any(|word| id.contains(word)))
         }));
+    }
+
+    #[test]
+    fn google_contract_grants_only_exact_active_unconsumed_product() {
+        let product_id = "sakura_sprint.supporter.sakura.v1";
+        let pending_ack = google_purchase(
+            "PURCHASED",
+            product_id,
+            "ACKNOWLEDGEMENT_STATE_PENDING",
+            1,
+            1,
+            "CONSUMPTION_STATE_YET_TO_BE_CONSUMED",
+        );
+        assert_eq!(
+            classify_purchase(&pending_ack, product_id),
+            Ok(PlayPurchaseState::Purchased {
+                acknowledged: false
+            })
+        );
+        let acknowledged = GoogleProductPurchaseV2 {
+            acknowledgement_state: Some("ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED".to_string()),
+            ..pending_ack
+        };
+        assert_eq!(
+            classify_purchase(&acknowledged, product_id),
+            Ok(PlayPurchaseState::Purchased { acknowledged: true })
+        );
+    }
+
+    #[test]
+    fn google_contract_rejects_wrong_product_refund_consumption_and_unknown_state() {
+        let product_id = "sakura_sprint.supporter.sakura.v1";
+        for purchase in [
+            google_purchase(
+                "PURCHASED",
+                "sakura_sprint.supporter.moonlight.v1",
+                "ACKNOWLEDGEMENT_STATE_PENDING",
+                1,
+                1,
+                "CONSUMPTION_STATE_YET_TO_BE_CONSUMED",
+            ),
+            google_purchase(
+                "PURCHASED",
+                product_id,
+                "ACKNOWLEDGEMENT_STATE_PENDING",
+                1,
+                0,
+                "CONSUMPTION_STATE_YET_TO_BE_CONSUMED",
+            ),
+            google_purchase(
+                "PURCHASED",
+                product_id,
+                "ACKNOWLEDGEMENT_STATE_PENDING",
+                1,
+                1,
+                "CONSUMPTION_STATE_CONSUMED",
+            ),
+        ] {
+            assert_eq!(
+                classify_purchase(&purchase, product_id),
+                Ok(PlayPurchaseState::NotPurchased)
+            );
+        }
+        let unknown = google_purchase(
+            "FUTURE_STATE",
+            product_id,
+            "ACKNOWLEDGEMENT_STATE_PENDING",
+            1,
+            1,
+            "CONSUMPTION_STATE_YET_TO_BE_CONSUMED",
+        );
+        assert_eq!(
+            classify_purchase(&unknown, product_id),
+            Err(PlayProviderError::Rejected)
+        );
+    }
+
+    #[test]
+    fn google_contract_preserves_pending_and_cancelled_without_entitlements() {
+        let product_id = "sakura_sprint.supporter.sakura.v1";
+        for (state, expected) in [
+            ("PENDING", PlayPurchaseState::Pending),
+            ("CANCELLED", PlayPurchaseState::NotPurchased),
+        ] {
+            let purchase = google_purchase(
+                state,
+                product_id,
+                "ACKNOWLEDGEMENT_STATE_PENDING",
+                1,
+                1,
+                "CONSUMPTION_STATE_YET_TO_BE_CONSUMED",
+            );
+            assert_eq!(classify_purchase(&purchase, product_id), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn google_urls_encode_untrusted_path_segments() {
+        let purchase = GooglePlayPurchaseProvider::purchase_url(PACKAGE_NAME, "token/with spaces")
+            .unwrap()
+            .to_string();
+        assert!(purchase.contains("token%2Fwith%20spaces"));
+        assert!(!purchase.contains("token/with spaces"));
+        let acknowledge = GooglePlayPurchaseProvider::acknowledge_url(
+            PACKAGE_NAME,
+            "sakura_sprint.supporter.sakura.v1",
+            "token/with spaces",
+        )
+        .unwrap()
+        .to_string();
+        assert!(acknowledge.ends_with("token%2Fwith%20spaces:acknowledge"));
+    }
+
+    #[test]
+    fn one_purchase_token_cannot_claim_two_products() {
+        let path = test_path("token-product-conflict");
+        let provider = Arc::new(FakeProvider {
+            state: PlayPurchaseState::Purchased { acknowledged: true },
+            acknowledgements: AtomicUsize::new(0),
+        });
+        let commerce = EutherSurferCommerce::with_provider(true, path.clone(), provider);
+        assert_eq!(
+            commerce
+                .verify(
+                    &verify_body_for("sakura_sprint.supporter.sakura.v1", "shared-token"),
+                    "client-a",
+                    10,
+                )
+                .status,
+            200
+        );
+        let conflict = commerce.verify(
+            &verify_body_for("sakura_sprint.supporter.moonlight.v1", "shared-token"),
+            "client-a",
+            11,
+        );
+        assert_eq!(conflict.status, 503);
+        assert!(!fs::read_to_string(&path).unwrap().contains("shared-token"));
+        let _ = fs::remove_file(path);
     }
 }

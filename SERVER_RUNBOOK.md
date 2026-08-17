@@ -224,6 +224,7 @@ app_public_server_url = "https://apothictech.se"
 app_lan_server_url = "http://192.168.32.186:8080"
 eutherbooks_server_urls = "http://192.168.32.186:8088,http://192.168.32.186:8080/eutherbooks,https://apothictech.se/eutherbooks"
 euthersurfer_commerce_enabled = false
+euthersurfer_google_service_account_file = ""
 ```
 
 Keep `euthersurfer_commerce_enabled = false` until Google Play service-account
@@ -232,6 +233,13 @@ license-tester matrix have all passed. The public readiness endpoint is
 `GET /api/euthersurfer/purchases/status`; while disabled it reports both sales
 and restore as unavailable. `POST .../verify` and `POST .../restore` return a
 stable fail-closed JSON error and never persist their request bodies or tokens.
+When commerce is prepared for activation, store the Google service-account JSON
+outside the repository with mode `0600`, set its absolute path in
+`euthersurfer_google_service_account_file`, restart the service, and confirm that
+the status reports `providerConfigured: true` before enabling sales. An absent,
+unreadable, malformed, non-service-account, or nonstandard OAuth credential
+remains fail-closed. Never commit the JSON credential or paste its private key
+into this TOML file.
 
 Create users with:
 
