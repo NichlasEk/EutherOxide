@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Sakura Sprint – integritetspolicy</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101629; color: #e8f4ff; }
+    body { margin: 0; background: radial-gradient(circle at top, #49345f 0, #18213b 42rem, #101629 100%); }
+    main { box-sizing: border-box; width: min(52rem, 100%); margin: auto; padding: 2rem 1rem 4rem; }
+    header, section { border: 1px solid #38566f; border-radius: 1.25rem; background: #18233be8; padding: 1.15rem 1.25rem; margin: 0 0 1rem; }
+    header { border-color: #62d3d8; box-shadow: 0 0 2rem #62d3d822; }
+    h1 { margin: 0 0 .4rem; font-size: clamp(1.8rem, 6vw, 2.7rem); }
+    h2 { color: #79e2e6; margin: 0 0 .55rem; font-size: 1.08rem; text-transform: uppercase; letter-spacing: .04em; }
+    p { line-height: 1.6; margin: .35rem 0; }
+    .summary { color: #fff1bd; font-weight: 650; }
+    .date { color: #b8c9dc; }
+    a { color: #ffd25a; }
+    footer { color: #b8c9dc; padding: .8rem .3rem; line-height: 1.55; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>🌸 Sakura Sprint</h1>
+    <p class="summary">Integritetspolicy – barnvänlig sammanfattning: spelet fungerar utan konto, reklam eller spårning. En vuxen bestämmer om ett smeknamn och spelresultat får publiceras globalt.</p>
+    <p class="date">Senast uppdaterad 18 augusti 2026 · Policyversion 2026-08-18</p>
+  </header>
+
+  <section><h2>Vem ansvarar?</h2><p>Sakura Sprint utvecklas av Nichlas under projektnamnet Sakura Sprint. Frågor kan ställas av en vuxen via <a href="https://github.com/NichlasEk/EutherSurfer/issues" rel="noopener noreferrer">projektets kontaktlänk</a>. Skriv inte barns namn, smeknamn eller andra privata uppgifter i ett offentligt ärende.</p></section>
+
+  <section><h2>Spel på enheten</h2><p>Spelet kan spelas utan konto. Inställningar, progression, lokala rekord och köpstatus sparas lokalt på enheten. Den frivilliga lokala användningsmätningen är av som standard, räknar endast öppningar i vuxenzonen och skickas aldrig över nätverket. Den raderas när valet stängs av.</p></section>
+
+  <section><h2>Globala resultat</h2><p>Globala listor kan läsas utan att ett smeknamn skickas. Publicering är av som standard och kräver ett aktivt val i vuxenzonen. Då skickas offentligt smeknamn (högst 14 tecken), poäng, insamlad sushi, run-tid, slumpat run-ID, daily- och veckouppdrag, bossresultat och achievement-ID:n till Sakura Sprint-servern. Kontaktliknande namn blockeras. Ingen exakt ålder, e-postadress eller plats efterfrågas.</p></section>
+
+  <section><h2>Raderingsnyckel</h2><p>När en vuxen tillåter publicering skapar appen en slumpad raderingsnyckel för just den installationen. Den bygger inte på konto, annons-ID eller enhets-ID. Nyckeln skickas med publiceringar över HTTPS; servern sparar bara en domänseparerad SHA-256-hash. Den används inte för annonsering eller spårning.</p></section>
+
+  <section><h2>Teknisk nätverksmetadata</h2><p>Serverns reverse proxy för en gemensam säkerhets- och fellogg. Den innehåller normalt tidpunkt, IP-adress och proxied IP-rubriker, metod, URL-sökväg och eventuell frågesträng, User-Agent, Cloudflare-landkod, svarskod, svarsstorlek och svarstid. JSON-kroppar med spelresultat eller raderingsnycklar skrivs inte till denna logg. Loggen roteras vid 100 MiB och högst tio arkiv eller 90 dagar behålls, beroende på vilken gräns som nås först.</p></section>
+
+  <section><h2>Lagringstid och radering</h2><p>Huvudtopplistan behåller endast topp 30. Daily-resultat rensas efter 31 dagar, veckobossresultat efter 12 veckor och globala achievements efter 366 dagar. En vuxen kan i vuxenzonen radera alla serverposter som hör till den aktuella installationens nyckel. Äldre poster från versioner utan raderingsnyckel kan inte säkert knytas till en installation och kräver kontakt med utvecklaren eller faller ur retentionen. Avinstallation raderar lokala data men även raderingsnyckeln, så global data bör raderas i vuxenzonen före avinstallation.</p></section>
+
+  <section><h2>Delning, reklam och köp</h2><p>Sakura Sprint har inga annonser och använder ingen extern analys- eller reklam-SDK. Spelets publiceringsdata behandlas på den egenstyrda Sakura Sprint/EutherOxide-servern; nätleverantörer och Cloudflare transporterar trafiken. Framtida köp är tekniskt förberedda men avstängda. Inga köpdata samlas in av Sakura Sprint i nuvarande release. Policyn och butikens Data safety-svar ska uppdateras innan riktiga köp aktiveras.</p></section>
+
+  <section><h2>Säkerhet och barns val</h2><p>Appen förbjuder okrypterad HTTP och använder HTTPS för serveranrop. Publicering kräver ett vuxenval och köpytor ligger bakom vuxenkontroll. Vi använder inte Advertising ID, telefon-ID, SIM-ID, Wi-Fi-namn, kamera, mikrofon, kontakter eller exakt plats. Inga pay-to-win-fördelar eller manipulerande köpuppmaningar ska byggas in.</p></section>
+
+  <section><h2>Ändringar och kontakt</h2><p>Vid en väsentlig förändring visas ett nytt versionsdatum här och i appen. En vuxen kan använda kontaktlänken för integritetsfrågor eller begäran om hjälp med äldre data.</p></section>
+
+  <footer>Den här sidan är offentlig och kräver inget konto. Policyn kan också läsas offline i Sakura Sprints inställningar.</footer>
+</main>
+</body>
+</html>

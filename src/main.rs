@@ -2306,6 +2306,11 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         };
         return send_host_static(stream, static_path);
     }
+    if matches!(request.method.as_str(), "GET" | "HEAD")
+        && matches!(path, "/sakura-sprint/privacy" | "/sakura-sprint/privacy/")
+    {
+        return send_euthersurfer_privacy_policy(stream, request.method == "HEAD");
+    }
     let app_token_request =
         host_app_token_path(path) && authenticated_app_user(state, &request)?.is_some();
     let eutherpal_public_request = is_eutherpal_proxy_path(path)
@@ -3983,6 +3988,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             result
         }
     }
+}
+
+fn send_euthersurfer_privacy_policy(stream: &mut TcpStream, head_only: bool) -> io::Result<()> {
+    const POLICY: &str = include_str!("../webview/sakura-sprint-privacy.html");
+    send_response_with_headers(
+        stream,
+        200,
+        "text/html; charset=utf-8",
+        if head_only { &[] } else { POLICY.as_bytes() },
+        &[("Cache-Control", "public, max-age=300")],
+    )
 }
 
 fn host_login(stream: &mut TcpStream, state: &HostState, request: &HttpRequest) -> io::Result<()> {
@@ -25033,6 +25049,34 @@ fn write_ppm(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn euthersurfer_privacy_policy_is_public_static_and_complete() {
+        let policy = include_str!("../webview/sakura-sprint-privacy.html");
+        for required in [
+            "Sakura Sprint – integritetspolicy",
+            "Policyversion 2026-08-18",
+            "utan konto",
+            "Publicering är av som standard",
+            "IP-adress",
+            "100 MiB",
+            "90 dagar",
+            "topp 30",
+            "31 dagar",
+            "12 veckor",
+            "366 dagar",
+            "Framtida köp är tekniskt förberedda men avstängda",
+            "github.com/NichlasEk/EutherSurfer/issues",
+        ] {
+            assert!(
+                policy.contains(required),
+                "privacy policy missing {required}"
+            );
+        }
+        assert!(!policy.contains("<script"));
+        assert!(!policy.contains("contenteditable"));
+        assert!(!policy.contains("<form"));
+    }
 
     #[test]
     fn raw_attachment_request_preserves_declared_content_length() {
