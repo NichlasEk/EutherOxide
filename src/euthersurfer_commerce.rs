@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const CATALOG_VERSION: u32 = 1;
-pub const PACKAGE_NAME: &str = "se.euther.euthersurfer";
+pub const PACKAGE_NAME: &str = "se.euther.sakurasprint";
 const PROVIDER: &str = "google_play";
 const MAX_BODY_BYTES: usize = 32 * 1024;
 const MAX_TOKEN_BYTES: usize = 4 * 1024;
