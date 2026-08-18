@@ -25060,6 +25060,7 @@ mod tests {
             "grova händelser i vuxenzonens butiksflöde",
             "väntande, avbrutet",
             "inte produkt, pris",
+            "separat dölja köpt kosmetik",
             "Publicering är av som standard",
             "IP-adress",
             "100 MiB",
