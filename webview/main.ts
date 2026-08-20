@@ -311,6 +311,11 @@ type HostUserList = {
   users: HostUserSummary[];
 };
 
+type EutherVoxOAuthStatus = {
+  configured: boolean;
+  authorized: boolean;
+};
+
 type EutherIdEnrollment = {
   protocol: string;
   origin: string;
@@ -1579,6 +1584,7 @@ let eutherAlertRendererStartToken = 0;
 let hostUsername: string | null = null;
 let hostIsAdmin = false;
 let hostCsrfToken: string | null = null;
+let eutherVoxOAuthStatus: EutherVoxOAuthStatus | null = null;
 let userPreferencesLoadedFor: string | null = null;
 let userPreferencesLoadingFor: string | null = null;
 let applyingUserPreferences = false;
@@ -2905,6 +2911,7 @@ const serverMapLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("
 const eutherGateLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-euthergate-link]"));
 const eutherGateWakeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-euthergate-wake]"));
 const eutherStudioLinks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-eutherstudio-link]"));
+const eutherVoxGoogleConnect = document.querySelector<HTMLButtonElement>("#euthervox-google-connect")!;
 const workspaceWindowLayer = document.querySelector<HTMLDivElement>("#workspace-window-layer")!;
 const workspaceWindowTitle = document.querySelector<HTMLElement>("#workspace-window-title")!;
 const workspaceWindowEyebrow = document.querySelector<HTMLElement>("#workspace-window-eyebrow")!;
@@ -4192,6 +4199,13 @@ eutherAlertLobby.addEventListener("click", () => {
 
 adminOpen.addEventListener("click", async () => {
   await openAdminModal();
+});
+
+eutherVoxGoogleConnect.addEventListener("click", () => {
+  if (!hostIsAdmin) {
+    return;
+  }
+  window.location.href = "/euthervox/oauth/start";
 });
 
 cameraAdminLinks.forEach((button) => {
@@ -5769,6 +5783,7 @@ function playHomeMarkup(): string {
         <button data-reaction-home-action="video-chat" type="button">Video Chat</button>
         <button data-reaction-home-action="eutherium" type="button">Eutherium</button>
         <button data-reaction-home-action="chat-focus" type="button">Reaction Chat</button>
+        <button id="euthervox-google-connect" type="button" hidden>Koppla Google</button>
       </div>
     </section>
   `;
@@ -7116,6 +7131,11 @@ async function refreshAuthStatus(): Promise<void> {
     void leaveVideoChat(false);
   }
   renderAdminAccess();
+  if (hostIsAdmin) {
+    void refreshEutherVoxOAuthStatus();
+  } else {
+    eutherVoxOAuthStatus = null;
+  }
   if (previousUser !== hostUsername) {
     shoppingListLoaded = false;
     eutheriumLoaded = false;
@@ -16473,6 +16493,8 @@ function canHostManageLibrary(): boolean {
 
 function renderAdminAccess(): void {
   adminOpen.hidden = !hostIsAdmin;
+  eutherVoxGoogleConnect.hidden = !hostIsAdmin;
+  renderEutherVoxOAuthStatus();
   cameraAdminLinks.forEach((button) => {
     button.hidden = !hostPermissions.canCameraAdmin;
   });
@@ -16493,6 +16515,48 @@ function renderAdminAccess(): void {
     adminModal.classList.remove("is-open");
     adminModal.setAttribute("aria-hidden", "true");
   }
+}
+
+function renderEutherVoxOAuthStatus(): void {
+  if (!hostIsAdmin) {
+    eutherVoxGoogleConnect.textContent = "Koppla Google";
+    eutherVoxGoogleConnect.title = "Admin only";
+    return;
+  }
+  if (!eutherVoxOAuthStatus) {
+    eutherVoxGoogleConnect.textContent = "Google · kontrollerar…";
+    eutherVoxGoogleConnect.title = "Kontrollerar EutherVox Google-koppling";
+    return;
+  }
+  if (!eutherVoxOAuthStatus.configured) {
+    eutherVoxGoogleConnect.textContent = "Google · ej konfigurerat";
+    eutherVoxGoogleConnect.title = "EutherVox saknar OAuth-konfiguration på servern";
+    return;
+  }
+  eutherVoxGoogleConnect.textContent = eutherVoxOAuthStatus.authorized
+    ? "Google · kopplat"
+    : "Koppla Google";
+  eutherVoxGoogleConnect.title = eutherVoxOAuthStatus.authorized
+    ? `YouTube är kopplat för ${hostUsername ?? "denna admin"}. Klicka för att koppla om.`
+    : "Koppla denna admins Google/YouTube-konto till EutherVox";
+}
+
+async function refreshEutherVoxOAuthStatus(): Promise<void> {
+  if (!hostIsAdmin || isTauri) {
+    return;
+  }
+  eutherVoxOAuthStatus = null;
+  renderEutherVoxOAuthStatus();
+  try {
+    eutherVoxOAuthStatus = await bridgeJson<EutherVoxOAuthStatus>(
+      "/euthervox/oauth/status",
+      {},
+      3000,
+    );
+  } catch {
+    eutherVoxOAuthStatus = { configured: false, authorized: false };
+  }
+  renderEutherVoxOAuthStatus();
 }
 
 function renderHostUsers(): void {
