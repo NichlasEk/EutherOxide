@@ -113,7 +113,8 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
-const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.1.0.apk";
+const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.1.1.apk";
+const LEGACY_EUTHERSURFER_1_1_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.1.0.apk";
 const LEGACY_EUTHERSURFER_1_0_6_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.6.apk";
 const LEGACY_EUTHERSURFER_1_0_5_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.5.apk";
 const LEGACY_EUTHERSURFER_1_0_4_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.0.4.apk";
@@ -11715,7 +11716,10 @@ fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         "/downloads/EutherSurfer-1.0.6.apk" => {
             (LEGACY_EUTHERSURFER_1_0_6_APK_PATH, "EutherSurfer-1.0.6.apk")
         }
-        _ => (DEFAULT_EUTHERSURFER_APK_PATH, "EutherSurfer-1.1.0.apk"),
+        "/downloads/EutherSurfer-1.1.0.apk" => {
+            (LEGACY_EUTHERSURFER_1_1_0_APK_PATH, "EutherSurfer-1.1.0.apk")
+        }
+        _ => (DEFAULT_EUTHERSURFER_APK_PATH, "EutherSurfer-1.1.1.apk"),
     };
     send_android_apk(
         stream,
@@ -11752,6 +11756,7 @@ fn is_euthersurfer_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherSurfer-1.0.5.apk"
             | "/downloads/EutherSurfer-1.0.6.apk"
             | "/downloads/EutherSurfer-1.1.0.apk"
+            | "/downloads/EutherSurfer-1.1.1.apk"
     )
 }
 
