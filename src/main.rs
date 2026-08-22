@@ -88,9 +88,10 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.3.0-debug.apk";
+const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.4.0-debug.apk";
 const LEGACY_BONGOLOGG_0_1_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
 const LEGACY_BONGOLOGG_0_2_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.2.0-debug.apk";
+const LEGACY_BONGOLOGG_0_3_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.3.0-debug.apk";
 const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.17.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_15_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.15.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_1_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.1.0-debug.apk";
@@ -269,6 +270,7 @@ static EUTHERSURFER_SCORE_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_ACHIEVEMENT_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_DAILY_SCORE_LOCK: Mutex<()> = Mutex::new(());
 static EUTHERSURFER_WEEKLY_BOSS_LOCK: Mutex<()> = Mutex::new(());
+static BONGOLOGG_STAM_LOCK: Mutex<()> = Mutex::new(());
 const EUTHERSURFER_SCORE_LIMIT: usize = 30;
 const EUTHERSURFER_ACHIEVEMENT_RETENTION_MS: u64 = 366 * 24 * 60 * 60 * 1_000;
 const EUTHERSURFER_MAX_SCORE: u64 = 100_000_000;
@@ -1528,6 +1530,26 @@ struct HostBongologgLoginCompleteRequest {
     device_name: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostBongologgDocumentMeta {
+    name: String,
+    revision: u64,
+    sha256: String,
+    size: usize,
+    updated_unix_ms: u64,
+    updated_by: String,
+    #[serde(default)]
+    shared_with: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostBongologgShareRequest {
+    name: String,
+    users: Vec<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum HostAccountEmailTokenPurpose {
@@ -2406,6 +2428,71 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
         };
         return match save_bongologg_stam_file(&user, &request) {
+            Ok(result) => send_json(stream, &result),
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                send_error(stream, 400, &err.to_string())
+            }
+            Err(err) => send_error(stream, 500, &err.to_string()),
+        };
+    }
+    if request.method == "GET" && path == "/api/bongologg/stam/users" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        return send_json(stream, &bongologg_stam_share_users(state, &user)?);
+    }
+    if request.method == "GET" && path == "/api/bongologg/stam/documents" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        return send_json(stream, &bongologg_stam_documents(state, &user)?);
+    }
+    if request.method == "GET" && path == "/api/bongologg/stam/document" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        return match send_bongologg_stam_document(stream, &user, &request) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                send_error(stream, 403, &err.to_string())
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                send_error(stream, 404, &err.to_string())
+            }
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                send_error(stream, 400, &err.to_string())
+            }
+            Err(err) => send_error(stream, 500, &err.to_string()),
+        };
+    }
+    if request.method == "POST" && path == "/api/bongologg/stam/document" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        return match save_bongologg_stam_document(state, &user, &request) {
+            Ok(Ok(result)) => send_json(stream, &result),
+            Ok(Err(conflict)) => send_json_status(stream, 409, &conflict),
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                send_error(stream, 403, &err.to_string())
+            }
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                send_error(stream, 400, &err.to_string())
+            }
+            Err(err) => send_error(stream, 500, &err.to_string()),
+        };
+    }
+    if request.method == "POST" && path == "/api/bongologg/stam/share" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        let input: HostBongologgShareRequest = serde_json::from_slice(&request.body)
+            .map_err(|_| invalid_request("invalid Bongologg share request"))?;
+        return match share_bongologg_stam_document(state, &user, &input) {
             Ok(result) => send_json(stream, &result),
             Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
                 send_error(stream, 400, &err.to_string())
@@ -11496,13 +11583,18 @@ fn send_bongologg_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             PathBuf::from(LEGACY_BONGOLOGG_0_2_0_APK_PATH),
             "BongoLogg-0.2.0-debug.apk",
         )
+    } else if path == "/downloads/BongoLogg-0.3.0-debug.apk" {
+        (
+            PathBuf::from(LEGACY_BONGOLOGG_0_3_0_APK_PATH),
+            "BongoLogg-0.3.0-debug.apk",
+        )
     } else {
         (
             env::var("BONGOLOGG_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH)),
-            if path == "/downloads/BongoLogg-0.3.0-debug.apk" {
-                "BongoLogg-0.3.0-debug.apk"
+            if path == "/downloads/BongoLogg-0.4.0-debug.apk" {
+                "BongoLogg-0.4.0-debug.apk"
             } else {
                 "BongoLogg-debug.apk"
             },
@@ -11525,6 +11617,7 @@ fn is_bongologg_apk_download_path(path: &str) -> bool {
             | "/downloads/BongoLogg-0.1.0-debug.apk"
             | "/downloads/BongoLogg-0.2.0-debug.apk"
             | "/downloads/BongoLogg-0.3.0-debug.apk"
+            | "/downloads/BongoLogg-0.4.0-debug.apk"
             | "/downloads/bongologg-debug.apk"
     )
 }
@@ -22460,6 +22553,374 @@ fn bongologg_stam_dir(user: &str) -> PathBuf {
     host_user_data_dir(user).join("stam")
 }
 
+fn bongologg_stam_metadata_path(user: &str) -> PathBuf {
+    bongologg_stam_dir(user).join(".documents.json")
+}
+
+fn load_bongologg_document_metas(user: &str) -> io::Result<Vec<HostBongologgDocumentMeta>> {
+    match fs::read(bongologg_stam_metadata_path(user)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|err| io::Error::other(format!("invalid Bongologg document metadata: {err}"))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_bongologg_document_metas(
+    user: &str,
+    documents: &[HostBongologgDocumentMeta],
+) -> io::Result<()> {
+    let dir = bongologg_stam_dir(user);
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = bongologg_stam_metadata_path(user);
+    let temporary = dir.join(".documents.json.tmp");
+    fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(documents).map_err(|err| io::Error::other(err.to_string()))?,
+    )?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)
+}
+
+fn reconcile_bongologg_documents(user: &str) -> io::Result<Vec<HostBongologgDocumentMeta>> {
+    let dir = bongologg_stam_dir(user);
+    let mut documents = load_bongologg_document_metas(user)?;
+    let mut changed = false;
+    if dir.is_dir() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if validate_bongologg_stam_name(&name).is_err() {
+                continue;
+            }
+            let bytes = fs::read(entry.path())?;
+            let hash = sha256_hex(&bytes);
+            let modified_unix_ms = entry
+                .metadata()?
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                .map(|value| value.as_millis() as u64)
+                .unwrap_or_default();
+            if let Some(document) = documents.iter_mut().find(|value| value.name == name) {
+                if document.sha256 != hash || document.size != bytes.len() {
+                    document.revision = document.revision.saturating_add(1).max(1);
+                    document.sha256 = hash;
+                    document.size = bytes.len();
+                    document.updated_unix_ms = modified_unix_ms;
+                    document.updated_by = user.to_string();
+                    changed = true;
+                }
+            } else {
+                documents.push(HostBongologgDocumentMeta {
+                    name,
+                    revision: 1,
+                    sha256: hash,
+                    size: bytes.len(),
+                    updated_unix_ms: modified_unix_ms,
+                    updated_by: user.to_string(),
+                    shared_with: Vec::new(),
+                });
+                changed = true;
+            }
+        }
+    }
+    let before = documents.len();
+    documents.retain(|document| dir.join(&document.name).is_file());
+    changed |= documents.len() != before;
+    documents.sort_by(|left, right| left.name.cmp(&right.name));
+    if changed {
+        save_bongologg_document_metas(user, &documents)?;
+    }
+    Ok(documents)
+}
+
+fn bongologg_document_json(
+    owner: &str,
+    document: &HostBongologgDocumentMeta,
+    current_user: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "owner": owner,
+        "name": document.name,
+        "revision": document.revision,
+        "sha256": document.sha256,
+        "size": document.size,
+        "updatedUnixMs": document.updated_unix_ms,
+        "updatedBy": document.updated_by,
+        "sharedWith": document.shared_with,
+        "owned": owner == current_user,
+    })
+}
+
+fn bongologg_stam_share_users(
+    state: &HostState,
+    current_user: &str,
+) -> io::Result<serde_json::Value> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut names = users
+        .iter()
+        .filter(|user| !user.banned && user.name != current_user)
+        .map(|user| user.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(serde_json::json!({"users": names}))
+}
+
+fn bongologg_stam_documents(
+    state: &HostState,
+    current_user: &str,
+) -> io::Result<serde_json::Value> {
+    let owners = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .iter()
+        .filter(|user| !user.banned)
+        .map(|user| user.name.clone())
+        .collect::<Vec<_>>();
+    let _guard = BONGOLOGG_STAM_LOCK
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut values = Vec::new();
+    for owner in owners {
+        for document in reconcile_bongologg_documents(&owner)? {
+            if owner == current_user || document.shared_with.iter().any(|user| user == current_user)
+            {
+                values.push(bongologg_document_json(&owner, &document, current_user));
+            }
+        }
+    }
+    values.sort_by(|left, right| {
+        right
+            .get("updatedUnixMs")
+            .and_then(serde_json::Value::as_u64)
+            .cmp(
+                &left
+                    .get("updatedUnixMs")
+                    .and_then(serde_json::Value::as_u64),
+            )
+    });
+    Ok(serde_json::json!({"user": current_user, "documents": values}))
+}
+
+fn requested_bongologg_document(
+    request: &HttpRequest,
+    current_user: &str,
+) -> io::Result<(String, String)> {
+    let owner = query_string_value(&request.path, "owner")?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| current_user.to_string());
+    let name = validate_bongologg_stam_name(
+        &query_string_value(&request.path, "name")?.unwrap_or_default(),
+    )?;
+    Ok((owner, name))
+}
+
+fn send_bongologg_stam_document(
+    stream: &mut TcpStream,
+    current_user: &str,
+    request: &HttpRequest,
+) -> io::Result<()> {
+    let (owner, name) = requested_bongologg_document(request, current_user)?;
+    let _guard = BONGOLOGG_STAM_LOCK
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let documents = reconcile_bongologg_documents(&owner)?;
+    let document = documents
+        .iter()
+        .find(|value| value.name == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Stam document not found"))?;
+    if owner != current_user && !document.shared_with.iter().any(|user| user == current_user) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Stam document is not shared with this user",
+        ));
+    }
+    let bytes = fs::read(bongologg_stam_dir(&owner).join(&name))?;
+    let revision = document.revision.to_string();
+    let updated = document.updated_unix_ms.to_string();
+    let content_type = if name.ends_with(".jox") {
+        "application/x-jox"
+    } else {
+        "text/markdown; charset=utf-8"
+    };
+    send_response_with_headers(
+        stream,
+        200,
+        content_type,
+        &bytes,
+        &[
+            ("X-Stam-Owner", &owner),
+            ("X-Stam-Name", &name),
+            ("X-Stam-Revision", &revision),
+            ("X-Stam-Sha256", &document.sha256),
+            ("X-Stam-Updated-Unix-Ms", &updated),
+            ("Cache-Control", "no-store"),
+        ],
+    )
+}
+
+fn save_bongologg_stam_document(
+    _state: &HostState,
+    current_user: &str,
+    request: &HttpRequest,
+) -> io::Result<Result<serde_json::Value, serde_json::Value>> {
+    let owner = header_value(request, "x-stam-owner")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(current_user)
+        .to_string();
+    let name =
+        validate_bongologg_stam_name(header_value(request, "x-stam-name").unwrap_or_default())?;
+    let base_revision = header_value(request, "x-stam-base-revision")
+        .unwrap_or_default()
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| invalid_request("invalid Stam base revision"))?;
+    let limit = if name.ends_with(".jox") {
+        HOST_JOX_MAX_BYTES
+    } else {
+        1024 * 1024
+    };
+    if request.body.is_empty() || request.body.len() > limit {
+        return Err(invalid_request("Stam file is empty or too large"));
+    }
+    let actual_hash = sha256_hex(&request.body);
+    let expected_hash = header_value(request, "x-stam-sha256")
+        .map(str::trim)
+        .unwrap_or_default();
+    if expected_hash.len() != 64 || !actual_hash.eq_ignore_ascii_case(expected_hash) {
+        return Err(invalid_request("Stam SHA-256 mismatch"));
+    }
+    let _guard = BONGOLOGG_STAM_LOCK
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut documents = reconcile_bongologg_documents(&owner)?;
+    let existing = documents.iter().position(|value| value.name == name);
+    if existing.is_none() && owner != current_user {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "only the owner can create a Stam document",
+        ));
+    }
+    if let Some(index) = existing {
+        let document = &documents[index];
+        if owner != current_user && !document.shared_with.iter().any(|user| user == current_user) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Stam document is not shared with this user",
+            ));
+        }
+        if bongologg_next_revision(base_revision, document.revision).is_none() {
+            return Ok(Err(serde_json::json!({
+                "error": "revision_conflict",
+                "document": bongologg_document_json(&owner, document, current_user),
+            })));
+        }
+    } else if base_revision != 0 {
+        return Ok(Err(serde_json::json!({
+            "error": "revision_conflict",
+            "document": serde_json::Value::Null,
+        })));
+    }
+    let dir = bongologg_stam_dir(&owner);
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let temporary = dir.join(format!(".{name}.v2.tmp"));
+    fs::write(&temporary, &request.body)?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, dir.join(&name))?;
+    let revision = if let Some(index) = existing {
+        let document = &mut documents[index];
+        document.revision = bongologg_next_revision(base_revision, document.revision)
+            .expect("base revision was checked while holding the Stam lock");
+        document.sha256 = actual_hash.clone();
+        document.size = request.body.len();
+        document.updated_unix_ms = unix_ms_now();
+        document.updated_by = current_user.to_string();
+        document.revision
+    } else {
+        documents.push(HostBongologgDocumentMeta {
+            name: name.clone(),
+            revision: 1,
+            sha256: actual_hash.clone(),
+            size: request.body.len(),
+            updated_unix_ms: unix_ms_now(),
+            updated_by: current_user.to_string(),
+            shared_with: Vec::new(),
+        });
+        1
+    };
+    documents.sort_by(|left, right| left.name.cmp(&right.name));
+    save_bongologg_document_metas(&owner, &documents)?;
+    let document = documents.iter().find(|value| value.name == name).unwrap();
+    Ok(Ok(serde_json::json!({
+        "ok": true,
+        "document": bongologg_document_json(&owner, document, current_user),
+        "revision": revision,
+    })))
+}
+
+fn bongologg_next_revision(base_revision: u64, current_revision: u64) -> Option<u64> {
+    (base_revision == current_revision).then(|| current_revision.saturating_add(1))
+}
+
+fn share_bongologg_stam_document(
+    state: &HostState,
+    owner: &str,
+    input: &HostBongologgShareRequest,
+) -> io::Result<serde_json::Value> {
+    let name = validate_bongologg_stam_name(&input.name)?;
+    let active_users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .iter()
+        .filter(|user| !user.banned && user.name != owner)
+        .map(|user| user.name.clone())
+        .collect::<HashSet<_>>();
+    let mut recipients = input
+        .users
+        .iter()
+        .map(|user| user.trim().to_string())
+        .filter(|user| !user.is_empty())
+        .collect::<Vec<_>>();
+    recipients.sort();
+    recipients.dedup();
+    if recipients.len() > 64 || recipients.iter().any(|user| !active_users.contains(user)) {
+        return Err(invalid_request(
+            "share list contains an unknown or unavailable user",
+        ));
+    }
+    let _guard = BONGOLOGG_STAM_LOCK
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut documents = reconcile_bongologg_documents(owner)?;
+    let document = documents
+        .iter_mut()
+        .find(|value| value.name == name)
+        .ok_or_else(|| invalid_request("Stam document not found"))?;
+    document.shared_with = recipients;
+    save_bongologg_document_metas(owner, &documents)?;
+    let document = documents.iter().find(|value| value.name == name).unwrap();
+    Ok(serde_json::json!({
+        "ok": true,
+        "document": bongologg_document_json(owner, document, owner),
+    }))
+}
+
 fn validate_bongologg_stam_name(name: &str) -> io::Result<String> {
     let trimmed = name.trim();
     if trimmed.is_empty()
@@ -22533,6 +22994,9 @@ fn save_bongologg_stam_file(user: &str, request: &HttpRequest) -> io::Result<ser
     if expected_hash.len() != 64 || !actual_hash.eq_ignore_ascii_case(expected_hash) {
         return Err(invalid_request("Stam SHA-256 mismatch"));
     }
+    let _guard = BONGOLOGG_STAM_LOCK
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
     let dir = bongologg_stam_dir(user);
     fs::create_dir_all(&dir)?;
     #[cfg(unix)]
@@ -22543,6 +23007,7 @@ fn save_bongologg_stam_file(user: &str, request: &HttpRequest) -> io::Result<ser
     #[cfg(unix)]
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
     fs::rename(temporary, path)?;
+    reconcile_bongologg_documents(user)?;
     Ok(serde_json::json!({
         "ok": true,
         "name": name,
@@ -25944,8 +26409,14 @@ mod tests {
         assert!(is_android_apk_download_path(
             "/downloads/BongoLogg-0.3.0-debug.apk"
         ));
-        assert!(!is_bongologg_apk_download_path(
+        assert!(is_bongologg_apk_download_path(
             "/downloads/BongoLogg-0.4.0-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/BongoLogg-0.4.0-debug.apk"
+        ));
+        assert!(!is_bongologg_apk_download_path(
+            "/downloads/BongoLogg-0.5.0-debug.apk"
         ));
     }
 
@@ -25969,6 +26440,32 @@ mod tests {
         ] {
             assert!(validate_bongologg_stam_name(unsafe_name).is_err());
         }
+    }
+
+    #[test]
+    fn bongologg_revision_compare_and_swap_allows_only_one_racing_writer() {
+        let revision = Arc::new(Mutex::new(7_u64));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let writers = (0..24)
+            .map(|_| {
+                let revision = Arc::clone(&revision);
+                let accepted = Arc::clone(&accepted);
+                thread::spawn(move || {
+                    let mut current = revision.lock().unwrap();
+                    if let Some(next) = bongologg_next_revision(7, *current) {
+                        *current = next;
+                        accepted.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        writers
+            .into_iter()
+            .for_each(|writer| writer.join().unwrap());
+
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(*revision.lock().unwrap(), 8);
+        assert_eq!(bongologg_next_revision(7, 8), None);
     }
 
     #[test]
