@@ -8749,10 +8749,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "BongoLogg",
-    detail: "Local-first Markdown and JOX sharing with EutherID users, revision-safe live sync, dictation and photos",
+    detail: "Local-first event archive with editable logs, Markdown and JOX sharing, EutherID sync and zoomable photo galleries",
     platform: "Android phone · Field notes",
-    href: "/downloads/BongoLogg-0.4.0-debug.apk",
-    status: "Prototype APK · v0.4.0 · Shared documents · Race-safe revisions · Live sync",
+    href: "/downloads/BongoLogg-0.5.0-debug.apk",
+    status: "Prototype APK · v0.5.0 · Interactive archive · Shared documents · Live sync",
   },
   {
     title: "EutherMajn",
