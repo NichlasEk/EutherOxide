@@ -88,7 +88,8 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
+const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.2.0-debug.apk";
+const LEGACY_BONGOLOGG_0_1_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
 const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.17.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_15_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.15.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_1_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.1.0-debug.apk";
@@ -1467,6 +1468,15 @@ struct HostEutherIdLoginAttempt {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct HostBongologgToken {
+    token_hash: String,
+    actor: String,
+    device_name: String,
+    created_unix_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HostEutherIdActionRequest {
     challenge_id: String,
     actor: String,
@@ -1506,6 +1516,15 @@ struct HostEutherIdServiceRestartRequest {
 struct HostEutherIdLoginContinueRequest {
     challenge_id: String,
     browser_secret: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostBongologgLoginCompleteRequest {
+    challenge_id: String,
+    browser_secret: String,
+    #[serde(default)]
+    device_name: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -2316,6 +2335,8 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
     }
     let app_token_request =
         host_app_token_path(path) && authenticated_app_user(state, &request)?.is_some();
+    let bongologg_token_request = path.starts_with("/api/bongologg/stam/")
+        && authenticated_bongologg_user(state, &request)?.is_some();
     let eutherpal_public_request = is_eutherpal_proxy_path(path)
         && eutherpal_public_route_requires_login(state, &request, path);
     if eutherpal_public_request && authenticated_user(state, &request)?.is_none() {
@@ -2333,6 +2354,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherid/login/start"
         && path != "/api/eutherid/login/status"
         && path != "/api/eutherid/login/complete"
+        && path != "/api/bongologg/auth/complete"
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
         && path != "/api/euthersurfer/scores"
@@ -2350,9 +2372,45 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && !eutherid_public_request_path(&request.method, path)
         && !is_eutherid_request_action_path(&request.method, path)
         && !app_token_request
+        && !bongologg_token_request
         && !valid_csrf_token(state, &request)?
     {
         return send_error(stream, 403, "csrf token required");
+    }
+    if request.method == "POST" && path == "/api/bongologg/auth/complete" {
+        let input: HostBongologgLoginCompleteRequest = serde_json::from_slice(&request.body)
+            .map_err(|_| invalid_request("invalid Bongologg EutherID completion request"))?;
+        let remote_addr = host_remote_addr(stream, &request);
+        return match complete_bongologg_eutherid_login(state, &input, &remote_addr) {
+            Ok(result) => send_json(stream, &result),
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                send_error(stream, 403, &err.to_string())
+            }
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                send_error(stream, 400, &err.to_string())
+            }
+            Err(err) => send_error(stream, 502, &err.to_string()),
+        };
+    }
+    if request.method == "GET" && path == "/api/bongologg/stam/manifest" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        return send_json(stream, &bongologg_stam_manifest(&user)?);
+    }
+    if request.method == "POST" && path == "/api/bongologg/stam/file" {
+        let user = match require_bongologg_user(state, &request) {
+            Ok(user) => user,
+            Err(_) => return send_error(stream, 401, "Bongologg Stam login required"),
+        };
+        return match save_bongologg_stam_file(&user, &request) {
+            Ok(result) => send_json(stream, &result),
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                send_error(stream, 400, &err.to_string())
+            }
+            Err(err) => send_error(stream, 500, &err.to_string()),
+        };
     }
     if request.method == "GET"
         && (path.starts_with("/euthercivet-game/assets/")
@@ -4435,6 +4493,47 @@ fn authenticated_app_user(state: &HostState, request: &HttpRequest) -> io::Resul
                     .is_some_and(|known| known.as_bytes() == token.as_bytes())
         })
         .map(|user| user.name.clone()))
+}
+
+fn bongologg_token(request: &HttpRequest) -> Option<&str> {
+    header_value(request, "x-bongologg-token")
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+fn authenticated_bongologg_user(
+    state: &HostState,
+    request: &HttpRequest,
+) -> io::Result<Option<String>> {
+    let Some(token) = bongologg_token(request) else {
+        return Ok(None);
+    };
+    let token_hash = sha256_hex(token.as_bytes());
+    let tokens = load_host_bongologg_tokens()?;
+    let Some(actor) = tokens
+        .iter()
+        .find(|known| known.token_hash.as_bytes() == token_hash.as_bytes())
+        .map(|known| known.actor.clone())
+    else {
+        return Ok(None);
+    };
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(users
+        .iter()
+        .any(|user| user.name == actor && !user.banned)
+        .then_some(actor))
+}
+
+fn require_bongologg_user(state: &HostState, request: &HttpRequest) -> io::Result<String> {
+    authenticated_bongologg_user(state, request)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Bongologg Stam login required",
+        )
+    })
 }
 
 fn host_app_lan_server_url(state: &HostState, username: &str) -> io::Result<String> {
@@ -11386,13 +11485,22 @@ fn is_eutherboard_apk_download_path(path: &str) -> bool {
 }
 
 fn send_bongologg_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
-    let apk_path = env::var("BONGOLOGG_APK_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH));
-    let download_filename = if path == "/downloads/BongoLogg-0.1.0-debug.apk" {
-        "BongoLogg-0.1.0-debug.apk"
+    let (apk_path, download_filename) = if path == "/downloads/BongoLogg-0.1.0-debug.apk" {
+        (
+            PathBuf::from(LEGACY_BONGOLOGG_0_1_0_APK_PATH),
+            "BongoLogg-0.1.0-debug.apk",
+        )
     } else {
-        "BongoLogg-debug.apk"
+        (
+            env::var("BONGOLOGG_APK_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH)),
+            if path == "/downloads/BongoLogg-0.2.0-debug.apk" {
+                "BongoLogg-0.2.0-debug.apk"
+            } else {
+                "BongoLogg-debug.apk"
+            },
+        )
     };
     send_android_apk(
         stream,
@@ -11409,6 +11517,7 @@ fn is_bongologg_apk_download_path(path: &str) -> bool {
             | "/downloads/BongoLogg.apk"
             | "/downloads/BongoLogg-debug.apk"
             | "/downloads/BongoLogg-0.1.0-debug.apk"
+            | "/downloads/BongoLogg-0.2.0-debug.apk"
             | "/downloads/bongologg-debug.apk"
     )
 }
@@ -13743,6 +13852,93 @@ fn complete_host_eutherid_login(
         }),
         cookie,
     ))
+}
+
+fn complete_bongologg_eutherid_login(
+    state: &HostState,
+    input: &HostBongologgLoginCompleteRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let login = HostEutherIdLoginContinueRequest {
+        challenge_id: input.challenge_id.clone(),
+        browser_secret: input.browser_secret.clone(),
+    };
+    let attempt = validate_eutherid_login_continue(state, &login, remote_addr)?;
+    let expected = eutherid_login_binding(&attempt);
+    let consumed = consume_eutherid_action_proof(&attempt.challenge_id, &expected)?;
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if !users
+            .iter()
+            .any(|user| user.name == attempt.actor && !user.banned)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "login rejected",
+            ));
+        }
+    }
+    let now = unix_ms_now();
+    {
+        let mut attempts = state
+            .eutherid_login_attempts
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let stored = attempts
+            .iter_mut()
+            .find(|stored| {
+                stored.challenge_id == attempt.challenge_id
+                    && stored.browser_secret_hash == attempt.browser_secret_hash
+                    && stored.completed_unix_ms.is_none()
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "EutherID login already used",
+                )
+            })?;
+        stored.completed_unix_ms = Some(now);
+    }
+    let token = random_token()?;
+    let device_name = input
+        .device_name
+        .trim()
+        .chars()
+        .take(80)
+        .collect::<String>();
+    let mut tokens = load_host_bongologg_tokens()?;
+    tokens.push(HostBongologgToken {
+        token_hash: sha256_hex(token.as_bytes()),
+        actor: attempt.actor.clone(),
+        device_name: if device_name.is_empty() {
+            "Bongologg Android".to_string()
+        } else {
+            device_name
+        },
+        created_unix_ms: now,
+    });
+    save_host_bongologg_tokens(&tokens)?;
+    clear_login_failures(state, remote_addr, &attempt.actor)?;
+    audit_host_event(
+        state,
+        "bongologg_stam_activated",
+        Some(&attempt.actor),
+        remote_addr,
+        true,
+        consumed
+            .get("device_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("eutherid_verified"),
+    )?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "user": attempt.actor,
+        "stamToken": token,
+        "deviceId": consumed.get("device_id").and_then(serde_json::Value::as_str),
+    }))
 }
 
 fn eutherid_action_binding(
@@ -19824,7 +20020,7 @@ fn send_response_with_headers(
         "HTTP/1.1 {status} {reason}\r\n\
         Access-Control-Allow-Origin: {cors_origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization, Range\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, X-Bongologg-Token, X-Stam-Name, X-Stam-Sha256, Authorization, Range\r\n\
          Access-Control-Allow-Credentials: true\r\n\
          Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges\r\n",
     )?;
@@ -22226,6 +22422,126 @@ fn host_config_path() -> PathBuf {
 
 fn host_users_path() -> PathBuf {
     host_dir().join("users.toml")
+}
+
+fn host_bongologg_tokens_path() -> PathBuf {
+    host_dir().join("bongologg-tokens.json")
+}
+
+fn load_host_bongologg_tokens() -> io::Result<Vec<HostBongologgToken>> {
+    match fs::read(host_bongologg_tokens_path()) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|err| io::Error::other(format!("invalid Bongologg token state: {err}"))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_host_bongologg_tokens(tokens: &[HostBongologgToken]) -> io::Result<()> {
+    ensure_host_dir()?;
+    let path = host_bongologg_tokens_path();
+    let temporary = path.with_extension("json.tmp");
+    let bytes =
+        serde_json::to_vec_pretty(tokens).map_err(|err| io::Error::other(err.to_string()))?;
+    fs::write(&temporary, bytes)?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)
+}
+
+fn bongologg_stam_dir(user: &str) -> PathBuf {
+    host_user_data_dir(user).join("stam")
+}
+
+fn validate_bongologg_stam_name(name: &str) -> io::Result<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 160
+        || !(trimmed.ends_with(".jox") || trimmed.ends_with(".md"))
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        || trimmed.starts_with('.')
+        || trimmed.contains("..")
+    {
+        return Err(invalid_request(
+            "invalid Stam filename; only safe .jox and .md names are accepted",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn bongologg_stam_manifest(user: &str) -> io::Result<serde_json::Value> {
+    let dir = bongologg_stam_dir(user);
+    let mut files = Vec::new();
+    if dir.is_dir() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if validate_bongologg_stam_name(&name).is_err() {
+                continue;
+            }
+            let bytes = fs::read(entry.path())?;
+            let metadata = entry.metadata()?;
+            let modified_unix_ms = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or_default();
+            files.push(serde_json::json!({
+                "name": name,
+                "sha256": sha256_hex(&bytes),
+                "size": bytes.len(),
+                "modifiedUnixMs": modified_unix_ms,
+            }));
+        }
+    }
+    files.sort_by(|left, right| {
+        left.get("name")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("name").and_then(serde_json::Value::as_str))
+    });
+    Ok(serde_json::json!({"user": user, "files": files}))
+}
+
+fn save_bongologg_stam_file(user: &str, request: &HttpRequest) -> io::Result<serde_json::Value> {
+    let name =
+        validate_bongologg_stam_name(header_value(request, "x-stam-name").unwrap_or_default())?;
+    let limit = if name.ends_with(".jox") {
+        HOST_JOX_MAX_BYTES
+    } else {
+        1024 * 1024
+    };
+    if request.body.is_empty() || request.body.len() > limit {
+        return Err(invalid_request("Stam file is empty or too large"));
+    }
+    let actual_hash = sha256_hex(&request.body);
+    let expected_hash = header_value(request, "x-stam-sha256")
+        .map(str::trim)
+        .unwrap_or_default();
+    if expected_hash.len() != 64 || !actual_hash.eq_ignore_ascii_case(expected_hash) {
+        return Err(invalid_request("Stam SHA-256 mismatch"));
+    }
+    let dir = bongologg_stam_dir(user);
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = dir.join(&name);
+    let temporary = dir.join(format!(".{name}.tmp"));
+    fs::write(&temporary, &request.body)?;
+    #[cfg(unix)]
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "name": name,
+        "sha256": actual_hash,
+        "size": request.body.len(),
+    }))
 }
 
 fn host_eutherid_recovery_path() -> PathBuf {
@@ -25609,9 +25925,37 @@ mod tests {
         assert!(is_android_apk_download_path(
             "/downloads/BongoLogg-0.1.0-debug.apk"
         ));
-        assert!(!is_bongologg_apk_download_path(
+        assert!(is_bongologg_apk_download_path(
             "/downloads/BongoLogg-0.2.0-debug.apk"
         ));
+        assert!(is_android_apk_download_path(
+            "/downloads/BongoLogg-0.2.0-debug.apk"
+        ));
+        assert!(!is_bongologg_apk_download_path(
+            "/downloads/BongoLogg-0.3.0-debug.apk"
+        ));
+    }
+
+    #[test]
+    fn bongologg_stam_accepts_only_flat_jox_and_markdown_names() {
+        assert_eq!(
+            validate_bongologg_stam_name("bongo-123-abcd.md").unwrap(),
+            "bongo-123-abcd.md"
+        );
+        assert_eq!(
+            validate_bongologg_stam_name("jox-123-faltjox.jox").unwrap(),
+            "jox-123-faltjox.jox"
+        );
+        for unsafe_name in [
+            "../stulen.md",
+            ".hemlig.md",
+            "under/mapp.md",
+            "anteckning.txt",
+            "bongo..md",
+            "östlig.md",
+        ] {
+            assert!(validate_bongologg_stam_name(unsafe_name).is_err());
+        }
     }
 
     #[test]

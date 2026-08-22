@@ -8749,10 +8749,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "BongoLogg",
-    detail: "Local-first observation log with photos, resonance and portable .jox export",
+    detail: "Local-first observation log with photos, portable .jox and EutherID-gated Stam sync",
     platform: "Android phone · Field notes",
-    href: "/downloads/BongoLogg-0.1.0-debug.apk",
-    status: "Prototype APK · v0.1.0 · Offline-first · JOX export",
+    href: "/downloads/BongoLogg-0.2.0-debug.apk",
+    status: "Prototype APK · v0.2.0 · Local-first · Stam sync · Eastern bongo skin",
   },
   {
     title: "EutherMajn",
