@@ -88,6 +88,7 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
+const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
 const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.17.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_15_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.15.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_1_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.1.0-debug.apk";
@@ -2604,6 +2605,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherboard_apk_download_path(path) => {
             send_eutherboard_apk(stream, path)
         }
+        ("GET", path) if is_bongologg_apk_download_path(path) => send_bongologg_apk(stream, path),
         ("GET", path) if is_euthermajn_apk_download_path(path) => send_euthermajn_apk(stream, path),
         ("GET", path) if is_busmancer_apk_download_path(path) => send_busmancer_apk(stream, path),
         ("GET", path) if is_euthervox_apk_download_path(path) => {
@@ -11383,6 +11385,34 @@ fn is_eutherboard_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_bongologg_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let apk_path = env::var("BONGOLOGG_APK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH));
+    let download_filename = if path == "/downloads/BongoLogg-0.1.0-debug.apk" {
+        "BongoLogg-0.1.0-debug.apk"
+    } else {
+        "BongoLogg-debug.apk"
+    };
+    send_android_apk(
+        stream,
+        &apk_path,
+        download_filename,
+        "BongoLogg APK is not available",
+    )
+}
+
+fn is_bongologg_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/bongologg.apk"
+            | "/downloads/BongoLogg.apk"
+            | "/downloads/BongoLogg-debug.apk"
+            | "/downloads/BongoLogg-0.1.0-debug.apk"
+            | "/downloads/bongologg-debug.apk"
+    )
+}
+
 fn send_euthermajn_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let (apk_path, download_filename) = match path {
         "/downloads/EutherMajn-0.1.0-debug.apk" => (
@@ -13162,6 +13192,7 @@ fn is_android_apk_download_path(path: &str) -> bool {
         || is_eutherbooks_player_apk_download_path(path)
         || is_eutherid_apk_download_path(path)
         || is_eutherboard_apk_download_path(path)
+        || is_bongologg_apk_download_path(path)
         || is_euthermajn_apk_download_path(path)
         || is_busmancer_apk_download_path(path)
         || is_euthervox_apk_download_path(path)
@@ -25564,6 +25595,22 @@ mod tests {
         ));
         assert!(is_eutherboard_apk_download_path(
             "/downloads/EutherBoard-0.2.4-debug.apk"
+        ));
+    }
+
+    #[test]
+    fn bongologg_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_bongologg_apk_download_path(
+            "/downloads/BongoLogg-0.1.0-debug.apk"
+        ));
+        assert!(is_bongologg_apk_download_path(
+            "/downloads/BongoLogg-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/BongoLogg-0.1.0-debug.apk"
+        ));
+        assert!(!is_bongologg_apk_download_path(
+            "/downloads/BongoLogg-0.2.0-debug.apk"
         ));
     }
 

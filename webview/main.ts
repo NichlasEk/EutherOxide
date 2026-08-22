@@ -8748,6 +8748,13 @@ const appDownloads: AppDownload[] = [
     status: "Test APK · No network permission",
   },
   {
+    title: "BongoLogg",
+    detail: "Local-first observation log with photos, resonance and portable .jox export",
+    platform: "Android phone · Field notes",
+    href: "/downloads/BongoLogg-0.1.0-debug.apk",
+    status: "Prototype APK · v0.1.0 · Offline-first · JOX export",
+  },
+  {
     title: "EutherMajn",
     detail: "Rust voxel sandbox with flowing water, swimming, persistent worlds, material processing and creative pyrotechnics",
     platform: "Android phone · Game prototype",
