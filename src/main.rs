@@ -95,7 +95,8 @@ const LEGACY_BONGOLOGG_0_3_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.3.0-deb
 const LEGACY_BONGOLOGG_0_4_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.4.0-debug.apk";
 const LEGACY_BONGOLOGG_0_5_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.5.0-debug.apk";
 const LEGACY_BONGOLOGG_0_5_1_APK_PATH: &str = "/home/nichlas/BongoLogg-0.5.1-debug.apk";
-const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.17.0-debug.apk";
+const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.18.0-debug.apk";
+const LEGACY_EUTHERMAJN_0_17_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.17.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_15_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.15.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_1_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.1.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_2_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.2.0-debug.apk";
@@ -11714,10 +11715,14 @@ fn send_euthermajn_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             "EutherMajn-0.15.0-debug.apk",
         ),
         "/downloads/EutherMajn-0.17.0-debug.apk" => (
+            PathBuf::from(LEGACY_EUTHERMAJN_0_17_0_APK_PATH),
+            "EutherMajn-0.17.0-debug.apk",
+        ),
+        "/downloads/EutherMajn-0.18.0-debug.apk" => (
             env::var("EUTHERMAJN_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERMAJN_APK_PATH)),
-            "EutherMajn-0.17.0-debug.apk",
+            "EutherMajn-0.18.0-debug.apk",
         ),
         _ => (
             env::var("EUTHERMAJN_APK_PATH")
@@ -11758,6 +11763,7 @@ fn is_euthermajn_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherMajn-0.14.0-debug.apk"
             | "/downloads/EutherMajn-0.15.0-debug.apk"
             | "/downloads/EutherMajn-0.17.0-debug.apk"
+            | "/downloads/EutherMajn-0.18.0-debug.apk"
             | "/downloads/euthermajn-debug.apk"
     )
 }
@@ -26516,7 +26522,7 @@ mod tests {
             "/downloads/EutherMajn-debug.apk"
         ));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherMajn-0.17.0-debug.apk"
+            "/downloads/EutherMajn-0.18.0-debug.apk"
         ));
         assert!(is_euthermajn_apk_download_path(
             "/downloads/EutherMajn-0.2.0-debug.apk"
@@ -26568,6 +26574,9 @@ mod tests {
         ));
         assert!(is_euthermajn_apk_download_path(
             "/downloads/EutherMajn-0.17.0-debug.apk"
+        ));
+        assert!(is_euthermajn_apk_download_path(
+            "/downloads/EutherMajn-0.18.0-debug.apk"
         ));
         assert!(!is_euthermajn_apk_download_path(
             "/downloads/EutherMajn-0.16.0-debug.apk"
