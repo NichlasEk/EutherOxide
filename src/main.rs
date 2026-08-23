@@ -88,12 +88,13 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.5.1-debug.apk";
+const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.6.0-debug.apk";
 const LEGACY_BONGOLOGG_0_1_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
 const LEGACY_BONGOLOGG_0_2_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.2.0-debug.apk";
 const LEGACY_BONGOLOGG_0_3_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.3.0-debug.apk";
 const LEGACY_BONGOLOGG_0_4_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.4.0-debug.apk";
 const LEGACY_BONGOLOGG_0_5_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.5.0-debug.apk";
+const LEGACY_BONGOLOGG_0_5_1_APK_PATH: &str = "/home/nichlas/BongoLogg-0.5.1-debug.apk";
 const DEFAULT_EUTHERMAJN_APK_PATH: &str = "/home/nichlas/EutherMajn-0.17.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_15_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.15.0-debug.apk";
 const LEGACY_EUTHERMAJN_0_1_0_APK_PATH: &str = "/home/nichlas/EutherMajn-0.1.0-debug.apk";
@@ -11600,13 +11601,18 @@ fn send_bongologg_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             PathBuf::from(LEGACY_BONGOLOGG_0_5_0_APK_PATH),
             "BongoLogg-0.5.0-debug.apk",
         )
+    } else if path == "/downloads/BongoLogg-0.5.1-debug.apk" {
+        (
+            PathBuf::from(LEGACY_BONGOLOGG_0_5_1_APK_PATH),
+            "BongoLogg-0.5.1-debug.apk",
+        )
     } else {
         (
             env::var("BONGOLOGG_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH)),
-            if path == "/downloads/BongoLogg-0.5.1-debug.apk" {
-                "BongoLogg-0.5.1-debug.apk"
+            if path == "/downloads/BongoLogg-0.6.0-debug.apk" {
+                "BongoLogg-0.6.0-debug.apk"
             } else {
                 "BongoLogg-debug.apk"
             },
@@ -11632,6 +11638,7 @@ fn is_bongologg_apk_download_path(path: &str) -> bool {
             | "/downloads/BongoLogg-0.4.0-debug.apk"
             | "/downloads/BongoLogg-0.5.0-debug.apk"
             | "/downloads/BongoLogg-0.5.1-debug.apk"
+            | "/downloads/BongoLogg-0.6.0-debug.apk"
             | "/downloads/bongologg-debug.apk"
     )
 }
@@ -26441,8 +26448,14 @@ mod tests {
         assert!(is_android_apk_download_path(
             "/downloads/BongoLogg-0.5.1-debug.apk"
         ));
-        assert!(!is_bongologg_apk_download_path(
+        assert!(is_bongologg_apk_download_path(
             "/downloads/BongoLogg-0.6.0-debug.apk"
+        ));
+        assert!(is_android_apk_download_path(
+            "/downloads/BongoLogg-0.6.0-debug.apk"
+        ));
+        assert!(!is_bongologg_apk_download_path(
+            "/downloads/BongoLogg-0.7.0-debug.apk"
         ));
     }
 
