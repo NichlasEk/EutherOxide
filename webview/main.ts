@@ -8784,10 +8784,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Voice conversations plus spoken heat-pump, washer and robot-vacuum reports with local maintenance warnings",
+    detail: "Voice conversations plus spoken heat-pump, washer and locally controlled robot-vacuum reports",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.19.0-beta11-debug.apk",
-    status: "Beta APK · v0.19.0-beta.11 · Robotstatus och dubbelbekräftad snabbkarta · WSS",
+    href: "/downloads/EutherVox-0.19.0-beta12-debug.apk",
+    status: "Beta APK · v0.19.0-beta.12 · Start, paus, stopp, laddare och extrakarta · WSS",
   },
   {
     title: "EutherPing",
