@@ -8784,10 +8784,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Voice conversations, local device controls and a washer dashboard with live status, statistics and four state-aware controls",
+    detail: "Voice conversations, spoken heat-pump and washer reports, plus a restart-safe musical washer-complete alert",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.18.0-beta8-debug.apk",
-    status: "Beta APK · v0.18.0-beta.8 · Start/Paus/Fortsätt/Stopp · Smart Control-spärr · WSS",
+    href: "/downloads/EutherVox-0.19.0-beta9-debug.apk",
+    status: "Beta APK · v0.19.0-beta.9 · Svensk STT/TTS · ACE-Step-jingel · WSS",
   },
   {
     title: "EutherPing",
