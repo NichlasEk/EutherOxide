@@ -8784,10 +8784,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherVox",
-    detail: "Voice conversations with selectable Qwen models, Nest playback and named room-aware Magic Home lighting with exact color control",
+    detail: "Voice conversations, local device controls and a read-only washer dashboard with live status and seven-day statistics",
     platform: "Android phone · Authenticated beta",
-    href: "/downloads/EutherVox-0.18.0-beta6-debug.apk",
-    status: "Beta APK · v0.18.0-beta.6 · verifierad värmepumpsstatus och styrknappar · WSS",
+    href: "/downloads/EutherVox-0.18.0-beta7-debug.apk",
+    status: "Beta APK · v0.18.0-beta.7 · Tvätt-flik · verifierad lokal status · WSS",
   },
   {
     title: "EutherPing",
