@@ -145,8 +145,6 @@ const LEGACY_EUTHERSURFER_0_3_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3
 const LEGACY_EUTHERSURFER_0_3_1_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3.1-debug.apk";
 const LEGACY_EUTHERSURFER_0_3_2_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3.2-debug.apk";
 const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.19.0-beta16-debug.apk";
-const LEGACY_EUTHERVOX_0_19_0_BETA15_APK_PATH: &str =
-    "/home/nichlas/EutherVox-0.19.0-beta15-debug.apk";
 const LEGACY_EUTHERVOX_0_19_0_BETA14_APK_PATH: &str =
     "/home/nichlas/EutherVox-0.19.0-beta14-debug.apk";
 const LEGACY_EUTHERVOX_0_19_0_BETA13_APK_PATH: &str =
@@ -13298,8 +13296,8 @@ fn send_euthervox_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             "EutherVox-0.19.0-beta16-debug.apk",
         ),
         "/downloads/EutherVox-0.19.0-beta15-debug.apk" => (
-            LEGACY_EUTHERVOX_0_19_0_BETA15_APK_PATH,
-            "EutherVox-0.19.0-beta15-debug.apk",
+            DEFAULT_EUTHERVOX_APK_PATH,
+            "EutherVox-0.19.0-beta16-debug.apk",
         ),
         "/downloads/EutherVox-0.19.0-beta14-debug.apk" => (
             LEGACY_EUTHERVOX_0_19_0_BETA14_APK_PATH,
