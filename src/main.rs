@@ -144,7 +144,9 @@ const LEGACY_EUTHERSURFER_0_1_4_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.1
 const LEGACY_EUTHERSURFER_0_3_0_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3.0-debug.apk";
 const LEGACY_EUTHERSURFER_0_3_1_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3.1-debug.apk";
 const LEGACY_EUTHERSURFER_0_3_2_APK_PATH: &str = "/home/nichlas/EutherSurfer-0.3.2-debug.apk";
-const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.19.0-beta15-debug.apk";
+const DEFAULT_EUTHERVOX_APK_PATH: &str = "/home/nichlas/EutherVox-0.19.0-beta16-debug.apk";
+const LEGACY_EUTHERVOX_0_19_0_BETA15_APK_PATH: &str =
+    "/home/nichlas/EutherVox-0.19.0-beta15-debug.apk";
 const LEGACY_EUTHERVOX_0_19_0_BETA14_APK_PATH: &str =
     "/home/nichlas/EutherVox-0.19.0-beta14-debug.apk";
 const LEGACY_EUTHERVOX_0_19_0_BETA13_APK_PATH: &str =
@@ -13291,8 +13293,12 @@ fn is_eutherpal_tv_apk_download_path(path: &str) -> bool {
 
 fn send_euthervox_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let (apk_path, download_filename) = match path {
-        "/downloads/EutherVox-0.19.0-beta15-debug.apk" => (
+        "/downloads/EutherVox-0.19.0-beta16-debug.apk" => (
             DEFAULT_EUTHERVOX_APK_PATH,
+            "EutherVox-0.19.0-beta16-debug.apk",
+        ),
+        "/downloads/EutherVox-0.19.0-beta15-debug.apk" => (
+            LEGACY_EUTHERVOX_0_19_0_BETA15_APK_PATH,
             "EutherVox-0.19.0-beta15-debug.apk",
         ),
         "/downloads/EutherVox-0.19.0-beta14-debug.apk" => (
@@ -13458,6 +13464,7 @@ fn is_euthervox_apk_download_path(path: &str) -> bool {
         path,
         "/downloads/EutherVox.apk"
             | "/downloads/EutherVox-debug.apk"
+            | "/downloads/EutherVox-0.19.0-beta16-debug.apk"
             | "/downloads/EutherVox-0.19.0-beta15-debug.apk"
             | "/downloads/EutherVox-0.19.0-beta14-debug.apk"
             | "/downloads/EutherVox-0.19.0-beta13-debug.apk"
