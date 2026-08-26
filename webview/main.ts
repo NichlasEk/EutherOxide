@@ -8787,7 +8787,7 @@ const appDownloads: AppDownload[] = [
     detail: "Voice conversations plus spoken heat-pump, washer and locally controlled robot-vacuum reports",
     platform: "Android phone · Authenticated beta",
     href: "/downloads/EutherVox.apk",
-    status: "Beta APK · v0.19.0-beta.16 · Cirkulär apparatkarusell och unika herobilder · schema · bakgrundsnod · WSS",
+    status: "Beta APK · v0.19.0-beta.17 · Stabil återgång till Röst · cirkulär apparatkarusell · schema · bakgrundsnod · WSS",
   },
   {
     title: "EutherPing",
