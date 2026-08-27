@@ -12180,6 +12180,20 @@ fn rank_euthersurfer_scores(scores: &mut Vec<EutherSurferScoreEntry>) {
             .then_with(|| left.created_unix_ms.cmp(&right.created_unix_ms))
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
+    let mut seen_publishers = std::collections::HashSet::new();
+    let mut seen_legacy_names = std::collections::HashSet::new();
+    let mut seen_display_names = std::collections::HashSet::new();
+    scores.retain(|entry| {
+        let display_name = entry.name.trim().to_lowercase();
+        let identity_is_new = match entry.publisher_hash.as_deref() {
+            Some(publisher_hash) => seen_publishers.insert(publisher_hash.to_owned()),
+            None => seen_legacy_names.insert(display_name.clone()),
+        };
+        if !identity_is_new {
+            return false;
+        }
+        seen_display_names.insert(display_name)
+    });
     scores.truncate(EUTHERSURFER_SCORE_LIMIT);
 }
 
@@ -26993,6 +27007,71 @@ mod tests {
         assert_eq!(payload["scores"][0]["rank"], 1);
         assert_eq!(payload["scores"][0]["score"], 34);
         assert!(payload["scores"][0].get("publisherHash").is_none());
+    }
+
+    #[test]
+    fn euthersurfer_leaderboard_keeps_one_best_run_per_player_before_limiting() {
+        let mut scores = (0..30)
+            .map(|index| EutherSurferScoreEntry {
+                name: "Sivert".to_string(),
+                score: 300_000 - index,
+                sushi: index,
+                created_unix_ms: index,
+                run_id: None,
+                publisher_hash: None,
+            })
+            .chain(std::iter::once(EutherSurferScoreEntry {
+                name: "Nichlas".to_string(),
+                score: 100_000,
+                sushi: 100,
+                created_unix_ms: 31,
+                run_id: None,
+                publisher_hash: None,
+            }))
+            .collect::<Vec<_>>();
+
+        rank_euthersurfer_scores(&mut scores);
+
+        assert_eq!(scores.len(), 2);
+        assert_eq!(scores[0].name, "Sivert");
+        assert_eq!(scores[0].score, 300_000);
+        assert_eq!(scores[1].name, "Nichlas");
+    }
+
+    #[test]
+    fn euthersurfer_leaderboard_collapses_renamed_publisher_and_duplicate_display_name() {
+        let mut scores = vec![
+            EutherSurferScoreEntry {
+                name: "Momo".to_string(),
+                score: 300,
+                sushi: 3,
+                created_unix_ms: 1,
+                run_id: None,
+                publisher_hash: Some("publisher-a".to_string()),
+            },
+            EutherSurferScoreEntry {
+                name: "Nichlas".to_string(),
+                score: 200,
+                sushi: 2,
+                created_unix_ms: 2,
+                run_id: None,
+                publisher_hash: Some("publisher-a".to_string()),
+            },
+            EutherSurferScoreEntry {
+                name: "momo".to_string(),
+                score: 100,
+                sushi: 1,
+                created_unix_ms: 3,
+                run_id: None,
+                publisher_hash: Some("publisher-b".to_string()),
+            },
+        ];
+
+        rank_euthersurfer_scores(&mut scores);
+
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].name, "Momo");
+        assert_eq!(scores[0].score, 300);
     }
 
     #[test]
