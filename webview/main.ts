@@ -8770,10 +8770,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherTime",
-    detail: "Cyberpunk clock with smooth alarm editing, calendar-dated alarms, multi-stage wake sets and actionable lock-screen controls",
+    detail: "Cyberpunk clock with quick time editing, calendar-dated alarms, multi-stage wake sets and actionable lock-screen controls",
     platform: "Android phone · Test",
-    href: "/downloads/EutherTime-0.5.0-beta1-debug.apk",
-    status: "Beta APK · v0.5.0-beta1 · Specific dates + weekly schedules · No network permission",
+    href: "/downloads/EutherTime-0.5.0-beta2-debug.apk",
+    status: "Beta APK · v0.5.0-beta2 · Tap clock times to reschedule · No network permission",
   },
   {
     title: "Sakura Sprint",

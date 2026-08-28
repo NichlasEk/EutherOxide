@@ -121,7 +121,7 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha2-debug.apk";
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
-const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
+const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta2-debug.apk";
 const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.1.1.apk";
 const PREVIEW_EUTHERSURFER_1_1_4_APK_PATH: &str =
     "/home/nichlas/EutherSurfer-1.1.4-preview-debug.apk";
@@ -276,6 +276,8 @@ const LEGACY_EUTHERTIME_0_4_0_BETA3_APK_PATH: &str =
     "/home/nichlas/EutherTime-0.4.0-beta3-debug.apk";
 const LEGACY_EUTHERTIME_0_4_0_BETA4_APK_PATH: &str =
     "/home/nichlas/EutherTime-0.4.0-beta4-debug.apk";
+const LEGACY_EUTHERTIME_0_5_0_BETA1_APK_PATH: &str =
+    "/home/nichlas/EutherTime-0.5.0-beta1-debug.apk";
 const DEFAULT_EUTHERWIRE_APK_PATH: &str = "/home/nichlas/EutherWire-0.1.0-debug.apk";
 const DEFAULT_EUTHERPAL_MOBILE_APK_PATH: &str =
     "/home/nichlas/EutherPal/android-mobile/dist/eutherpal-mobile.apk";
@@ -11900,12 +11902,17 @@ fn send_euthertime_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             PathBuf::from(LEGACY_EUTHERTIME_0_4_0_BETA4_APK_PATH),
             "EutherTime-0.4.0-beta4-debug.apk",
         )
+    } else if path == "/downloads/EutherTime-0.5.0-beta1-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERTIME_0_5_0_BETA1_APK_PATH),
+            "EutherTime-0.5.0-beta1-debug.apk",
+        )
     } else {
         let apk_path = env::var("EUTHERTIME_APK_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERTIME_APK_PATH));
-        let download_filename = if path == "/downloads/EutherTime-0.5.0-beta1-debug.apk" {
-            "EutherTime-0.5.0-beta1-debug.apk"
+        let download_filename = if path == "/downloads/EutherTime-0.5.0-beta2-debug.apk" {
+            "EutherTime-0.5.0-beta2-debug.apk"
         } else {
             "EutherTime-debug.apk"
         };
@@ -11937,6 +11944,7 @@ fn is_euthertime_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherTime-0.4.0-beta3-debug.apk"
             | "/downloads/EutherTime-0.4.0-beta4-debug.apk"
             | "/downloads/EutherTime-0.5.0-beta1-debug.apk"
+            | "/downloads/EutherTime-0.5.0-beta2-debug.apk"
             | "/downloads/euthertime-debug.apk"
     )
 }
@@ -26849,6 +26857,9 @@ mod tests {
 
     #[test]
     fn euthertime_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_euthertime_apk_download_path(
+            "/downloads/EutherTime-0.5.0-beta2-debug.apk"
+        ));
         assert!(is_euthertime_apk_download_path(
             "/downloads/EutherTime-0.5.0-beta1-debug.apk"
         ));
