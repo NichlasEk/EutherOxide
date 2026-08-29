@@ -560,6 +560,61 @@ button {
   color: var(--danger);
 }
 
+.settings-danger-zone {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-danger-zone > strong {
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.wide-button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.wide-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.confirm-dialog {
+  width: min(calc(100% - 32px), 420px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  padding: 0;
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog form {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.confirm-dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 @media (max-width: 390px) {
   .add-bar {
     grid-template-columns: minmax(0, 1fr) 52px;

@@ -8807,7 +8807,7 @@ const appDownloads: AppDownload[] = [
     title: "EutherList",
     detail: "Shopping list wrapper for the shared household list",
     platform: "Android phone",
-    href: "/downloads/EutherList-release-signed.apk",
+    href: "/downloads/EutherList-release-signed.apk?v=0.1.3",
     status: "Signed APK",
   },
   {
@@ -14799,7 +14799,7 @@ async function handleUserMenuAction(action: string): Promise<void> {
       openWorkspaceWindow("apps");
       return;
     case "get-list-app":
-      window.location.href = "/downloads/EutherList-release-signed.apk";
+      window.location.href = "/downloads/EutherList-release-signed.apk?v=0.1.3";
       return;
     case "get-sync-app":
       window.location.href = "/downloads/EutherSync-release-signed.apk";
