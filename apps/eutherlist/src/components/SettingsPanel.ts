@@ -2,7 +2,12 @@ import { AppSettings, ThemeName } from "../types";
 import { themes } from "../theme/ThemeProvider";
 import { escapeHtml } from "./ItemRow";
 
-export function settingsPanelMarkup(settings: AppSettings, open: boolean): string {
+export function settingsPanelMarkup(
+  settings: AppSettings,
+  open: boolean,
+  activeListTitle: string,
+  canEdit: boolean,
+): string {
   return `
     <aside class="settings-panel ${open ? "is-open" : ""}" id="settings-panel" aria-hidden="${open ? "false" : "true"}">
       <div class="settings-sheet">
@@ -37,8 +42,22 @@ export function settingsPanelMarkup(settings: AppSettings, open: boolean): strin
         </div>
         <button id="settings-save" class="wide-button" type="button">Save settings</button>
         <button id="settings-logout" class="wide-button subtle" type="button">Log out on this phone</button>
+        <div class="settings-danger-zone">
+          <strong>Lista</strong>
+          <button id="settings-delete-list" class="wide-button danger" type="button" ${canEdit ? "" : "disabled"}>Ta bort lista</button>
+        </div>
       </div>
     </aside>
+    <dialog class="confirm-dialog" id="delete-list-dialog" aria-labelledby="delete-list-dialog-title">
+      <form method="dialog">
+        <strong id="delete-list-dialog-title">Är du säker?</strong>
+        <p>Listan “${escapeHtml(activeListTitle)}” och allt innehåll i den tas bort.</p>
+        <div class="confirm-dialog-actions">
+          <button class="wide-button subtle" value="cancel" type="submit">Nej</button>
+          <button id="delete-list-confirm" class="wide-button danger" value="confirm" type="button">Ja</button>
+        </div>
+      </form>
+    </dialog>
   `;
 }
 

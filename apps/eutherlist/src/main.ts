@@ -225,7 +225,7 @@ function appMarkup(): string {
         ${shoppingListMarkup({ ...documentState, items: activeList.items }, activeCategory)}
       </section>
 
-      ${settingsPanelMarkup(settings, settingsOpen)}
+      ${settingsPanelMarkup(settings, settingsOpen, activeList.title, documentState.canEdit)}
     </main>
 `;
 }
@@ -338,6 +338,14 @@ function bindCommonActions(): void {
     syncState = "login";
     settingsOpen = false;
     render();
+  });
+  const deleteListDialog = document.querySelector<HTMLDialogElement>("#delete-list-dialog");
+  document.querySelector<HTMLButtonElement>("#settings-delete-list")?.addEventListener("click", () => {
+    deleteListDialog?.showModal();
+  });
+  document.querySelector<HTMLButtonElement>("#delete-list-confirm")?.addEventListener("click", () => {
+    deleteListDialog?.close("confirm");
+    deleteActiveList();
   });
 }
 
@@ -682,6 +690,22 @@ function addList(): void {
   };
   activeListIndex = documentState.lists.length - 1;
   activeCategory = "Alla";
+  commitLocalChange();
+}
+
+function deleteActiveList(): void {
+  if (!documentState.canEdit) {
+    return;
+  }
+  const remainingLists = documentState.lists.filter((_, index) => index !== activeListIndex);
+  documentState = {
+    ...documentState,
+    lists: remainingLists.length > 0 ? remainingLists : [makeShoppingList("Hemmet")],
+  };
+  activeListIndex = Math.min(activeListIndex, documentState.lists.length - 1);
+  activeCategory = "Alla";
+  searchQuery = "";
+  settingsOpen = false;
   commitLocalChange();
 }
 
