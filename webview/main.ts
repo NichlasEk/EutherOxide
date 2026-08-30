@@ -8779,8 +8779,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherBeam",
     detail: "Local TV remote with automatic LAN discovery and encrypted PIN pairing for Samsung H-series",
     platform: "Android phone · LAN remote",
-    href: "/downloads/EutherBeam-0.1.0-alpha1-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha.1 · Live-tested with Samsung H-series · No cloud",
+    href: "/downloads/EutherBeam-0.1.0-alpha2-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.2 · Verified DUID session · No cloud",
   },
   {
     title: "Sakura Sprint",
