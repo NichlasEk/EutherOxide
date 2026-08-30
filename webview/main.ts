@@ -8777,10 +8777,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherBeam",
-    detail: "One local room remote for Samsung and NEC displays, Android TV players and Samsung standby wake",
+    detail: "Local Samsung, NEC and Android TV control with automatic Samsung rediscovery and standby wake",
     platform: "Android phone · Samsung + NEC + Android TV",
-    href: "/downloads/EutherBeam-0.1.0-alpha7-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha.7 · Wake-on-LAN · Saved standby TV · No ADB or cloud",
+    href: "/downloads/EutherBeam-0.1.0-alpha8-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.8 · Automatic MAC detection · Direct IP fallback · No cloud",
   },
   {
     title: "Sakura Sprint",
