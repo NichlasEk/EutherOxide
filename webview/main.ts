@@ -8777,10 +8777,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherBeam",
-    detail: "Local TV remote with automatic LAN discovery and encrypted PIN pairing for Samsung H-series",
-    platform: "Android phone · LAN remote",
-    href: "/downloads/EutherBeam-0.1.0-alpha4-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha.4 · Gruvbox D-pad + expanded controls · No cloud",
+    detail: "One local remote for encrypted Samsung H-series TVs and NEC displays using External Control",
+    platform: "Android phone · Samsung + NEC",
+    href: "/downloads/EutherBeam-0.1.0-alpha5-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.5 · Remembered tabs + verified NEC discovery · No cloud",
   },
   {
     title: "Sakura Sprint",
