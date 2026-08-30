@@ -8776,6 +8776,13 @@ const appDownloads: AppDownload[] = [
     status: "Beta APK · v0.5.0-beta2 · Tap clock times to reschedule · No network permission",
   },
   {
+    title: "EutherBeam",
+    detail: "Local TV remote with automatic LAN discovery and encrypted PIN pairing for Samsung H-series",
+    platform: "Android phone · LAN remote",
+    href: "/downloads/EutherBeam-0.1.0-alpha1-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.1 · Live-tested with Samsung H-series · No cloud",
+  },
+  {
     title: "Sakura Sprint",
     detail: "Japanese macaque endless runner with six districts, tactical boss throws, daily challenges, temple cosmetics and global boards",
     platform: "Android phone · Game",
