@@ -123,7 +123,7 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta2-debug.apk";
 const DEFAULT_EUTHERBEAM_APK_PATH: &str =
-    "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha10-debug.apk";
+    "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha11-debug.apk";
 const LEGACY_EUTHERBEAM_0_1_0_ALPHA1_APK_PATH: &str =
     "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha1-debug.apk";
 const LEGACY_EUTHERBEAM_0_1_0_ALPHA2_APK_PATH: &str =
@@ -142,6 +142,8 @@ const LEGACY_EUTHERBEAM_0_1_0_ALPHA8_APK_PATH: &str =
     "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha8-debug.apk";
 const LEGACY_EUTHERBEAM_0_1_0_ALPHA9_APK_PATH: &str =
     "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha9-debug.apk";
+const LEGACY_EUTHERBEAM_0_1_0_ALPHA10_APK_PATH: &str =
+    "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha10-debug.apk";
 const DEFAULT_EUTHERSURFER_APK_PATH: &str = "/home/nichlas/EutherSurfer-1.1.1.apk";
 const PREVIEW_EUTHERSURFER_1_1_4_APK_PATH: &str =
     "/home/nichlas/EutherSurfer-1.1.4-preview-debug.apk";
@@ -11910,10 +11912,14 @@ fn send_eutherbeam_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             "EutherBeam-0.1.0-alpha9-debug.apk",
         ),
         "/downloads/EutherBeam-0.1.0-alpha10-debug.apk" => (
+            PathBuf::from(LEGACY_EUTHERBEAM_0_1_0_ALPHA10_APK_PATH),
+            "EutherBeam-0.1.0-alpha10-debug.apk",
+        ),
+        "/downloads/EutherBeam-0.1.0-alpha11-debug.apk" => (
             env::var("EUTHERBEAM_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERBEAM_APK_PATH)),
-            "EutherBeam-0.1.0-alpha10-debug.apk",
+            "EutherBeam-0.1.0-alpha11-debug.apk",
         ),
         _ => (
             env::var("EUTHERBEAM_APK_PATH")
@@ -11946,6 +11952,7 @@ fn is_eutherbeam_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherBeam-0.1.0-alpha8-debug.apk"
             | "/downloads/EutherBeam-0.1.0-alpha9-debug.apk"
             | "/downloads/EutherBeam-0.1.0-alpha10-debug.apk"
+            | "/downloads/EutherBeam-0.1.0-alpha11-debug.apk"
             | "/downloads/eutherbeam-debug.apk"
     )
 }
@@ -27025,7 +27032,7 @@ mod tests {
     #[test]
     fn eutherbeam_apk_uses_versioned_and_compatibility_download_paths() {
         assert!(is_eutherbeam_apk_download_path(
-            "/downloads/EutherBeam-0.1.0-alpha10-debug.apk"
+            "/downloads/EutherBeam-0.1.0-alpha11-debug.apk"
         ));
         assert!(is_eutherbeam_apk_download_path(
             "/downloads/EutherBeam-0.1.0-alpha8-debug.apk"
@@ -27056,10 +27063,10 @@ mod tests {
         ));
         assert!(is_eutherbeam_apk_download_path("/downloads/eutherbeam.apk"));
         assert!(is_android_apk_download_path(
-            "/downloads/EutherBeam-0.1.0-alpha10-debug.apk"
+            "/downloads/EutherBeam-0.1.0-alpha11-debug.apk"
         ));
         assert!(!is_eutherbeam_apk_download_path(
-            "/downloads/EutherBeam-0.1.0-alpha11-debug.apk"
+            "/downloads/EutherBeam-0.1.0-alpha12-debug.apk"
         ));
     }
 

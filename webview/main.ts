@@ -8777,10 +8777,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherBeam",
-    detail: "Local Samsung, NEC and Android TV control with persistent player rooms and Cast-to-CEC Samsung wake",
+    detail: "Local Samsung, NEC and Android TV control with persistent rooms and deep-standby Cast wake for players",
     platform: "Android phone · Samsung + NEC + Android TV",
-    href: "/downloads/EutherBeam-0.1.0-alpha10-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha.10 · Persistent puck pairing · Cast + HDMI-CEC wake · No cloud",
+    href: "/downloads/EutherBeam-0.1.0-alpha11-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.11 · NEC + puck room start · Fast Cast standby wake · No cloud",
   },
   {
     title: "Sakura Sprint",
