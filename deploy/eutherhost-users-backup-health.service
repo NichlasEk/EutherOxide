@@ -1,10 +1,10 @@
 [Unit]
-Description=Validate encrypted EutherHost user backups
-After=eutherhost-users-backup.service
+Description=Validate all encrypted EutherHost backups
+After=eutherhost-users-backup.service eutherhost-state-backup.service eutherhost-media-backup.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/nichlas/EutherOxide/scripts/eutherhost-backup-status.py --directory /srv/backups/eutheroxide --timer eutherhost-users-backup.timer --max-age-hours 36 --label server
+ExecStart=/home/nichlas/EutherOxide/scripts/eutherhost-backup-status.py --directory /srv/backups/eutheroxide --timer eutherhost-users-backup.timer --state-timer eutherhost-state-backup.timer --media-timer eutherhost-media-backup.timer --max-age-hours 36 --label server
 User=nichlas
 Group=eutherbackup
 UMask=0077

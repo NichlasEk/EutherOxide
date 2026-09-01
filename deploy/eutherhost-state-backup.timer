@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted EutherHost critical-state backup
+
+[Timer]
+OnCalendar=*-*-* 04:05:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=eutherhost-state-backup.service
+
+[Install]
+WantedBy=timers.target

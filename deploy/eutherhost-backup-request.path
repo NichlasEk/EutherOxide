@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for authenticated EutherHost backup requests
+
+[Path]
+PathExists=/home/nichlas/EutherOxide/.euther-host/backup-requests/trigger
+Unit=eutherhost-backup-request.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,35 @@
+[Unit]
+Description=Export encrypted content-addressed EutherHost user media
+After=local-fs.target
+ConditionPathExists=/home/nichlas/EutherOxide/.euther-host
+ConditionPathExists=/srv/eutherstudio
+ConditionPathExists=/etc/eutheroxide-backup/recipients
+
+[Service]
+Type=oneshot
+ExecStart=/home/nichlas/EutherOxide/scripts/eutherhost-media-export.sh
+User=root
+Group=eutherbackup
+UMask=0027
+Nice=12
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadOnlyPaths=/home/nichlas/EutherOxide/.euther-host /srv/eutherstudio /etc/eutheroxide-backup/recipients
+ReadWritePaths=/srv/backups/eutheroxide
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
