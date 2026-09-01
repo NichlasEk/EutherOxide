@@ -1,0 +1,26 @@
+[Unit]
+Description=Run a queued EutherHost users backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start eutherhost-users-backup.service
+ExecStart=/usr/bin/systemctl start eutherhost-state-backup.service
+ExecStart=/usr/bin/systemctl start eutherhost-media-backup.service
+ExecStopPost=/usr/bin/rm -f /home/nichlas/EutherOxide/.euther-host/backup-requests/trigger
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/home/nichlas/EutherOxide/.euther-host/backup-requests
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true

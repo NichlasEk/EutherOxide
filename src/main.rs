@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
@@ -314,6 +314,13 @@ const DEFAULT_EUTHERPAL_TV_APK_PATH: &str =
 const EUTHERDUKE_BROWSER_LOG_PATH: &str = ".euther-host/eutherduke-browser.log";
 const EUTHERBOOKS_PLAYER_LOG_PATH: &str = ".euther-host/eutherbooks-player.log";
 const CAMERA_ADMIN_PATH: &str = "/camera-admin";
+const BACKUP_ADMIN_PATH: &str = "/backup-admin";
+const EUTHERHOST_BACKUP_DIR: &str = "/srv/backups/eutheroxide";
+const EUTHERHOST_BACKUP_TIMER: &str = "eutherhost-users-backup.timer";
+const EUTHERHOST_STATE_BACKUP_TIMER: &str = "eutherhost-state-backup.timer";
+const EUTHERHOST_MEDIA_BACKUP_TIMER: &str = "eutherhost-media-backup.timer";
+const EUTHERHOST_BACKUP_HEALTH_TIMER: &str = "eutherhost-users-backup-health.timer";
+const EUTHERHOST_BACKUP_REQUEST_PATH: &str = ".euther-host/backup-requests/trigger";
 const SECONDSIGHT_PATH: &str = "/secondsight";
 const EUTHERBIRD_PATH: &str = "/eutherbird";
 const SERVER_MAP_PATH: &str = "/server-map";
@@ -1669,6 +1676,49 @@ struct HostAuditEvent<'a> {
     ok: bool,
     detail: &'a str,
     created_unix_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostBackupSnapshot {
+    name: String,
+    size_bytes: u64,
+    created_unix_ms: u64,
+    checksum: String,
+    checksum_ok: bool,
+    age_header_ok: bool,
+    healthy: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostBackupDataset {
+    id: &'static str,
+    label: &'static str,
+    ok: bool,
+    backup_count: usize,
+    total_backup_bytes: u64,
+    latest_created_unix_ms: Option<u64>,
+    retention: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostBackupStatus {
+    ok: bool,
+    pending: bool,
+    timer_enabled: bool,
+    timer_active: bool,
+    health_timer_active: bool,
+    next_run: Option<String>,
+    backup_count: usize,
+    total_backup_bytes: u64,
+    latest_created_unix_ms: Option<u64>,
+    retention_days: u16,
+    recovery_key_location: &'static str,
+    datasets: Vec<HostBackupDataset>,
+    snapshots: Vec<HostBackupSnapshot>,
+    errors: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -3700,6 +3750,100 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|err| invalid_request(err.to_string()))?;
             post_host_video_chat_signal(state, &instance_id, &client_id, &user, signal)?;
             send_json(stream, &serde_json::json!({ "ok": true }))
+        }
+        ("GET", BACKUP_ADMIN_PATH) => {
+            let Some(_) = authenticated_user(state, &request)? else {
+                return send_login_page(stream, None);
+            };
+            if let Err(err) = require_host_admin(state, &request) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_backup_admin_page(stream)
+        }
+        ("GET", "/api/admin/backups") => {
+            if let Err(err) = require_host_admin(state, &request) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &host_backup_status()?)
+        }
+        ("POST", "/api/admin/backups/verify") => {
+            let admin = match require_host_admin(state, &request) {
+                Ok(admin) => admin,
+                Err(err) => return send_error(stream, 403, &err.to_string()),
+            };
+            let status = host_backup_status()?;
+            audit_host_event(
+                state,
+                "backup_verify",
+                Some(&admin),
+                &host_remote_addr(stream, &request),
+                status.ok,
+                if status.ok {
+                    "ok"
+                } else {
+                    "verification failed"
+                },
+            )?;
+            send_json(stream, &status)
+        }
+        ("POST", "/api/admin/backups/create") => {
+            let admin = match require_host_admin(state, &request) {
+                Ok(admin) => admin,
+                Err(err) => return send_error(stream, 403, &err.to_string()),
+            };
+            let remote_addr = host_remote_addr(stream, &request);
+            match request_host_backup(&admin) {
+                Ok(result) => {
+                    audit_host_event(
+                        state,
+                        "backup_create_requested",
+                        Some(&admin),
+                        &remote_addr,
+                        true,
+                        "queued",
+                    )?;
+                    send_json_status(stream, 202, &result)
+                }
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    send_error(stream, 409, "a backup request is already pending")
+                }
+                Err(err) => {
+                    audit_host_event(
+                        state,
+                        "backup_create_requested",
+                        Some(&admin),
+                        &remote_addr,
+                        false,
+                        &err.to_string(),
+                    )?;
+                    send_error(stream, 500, &err.to_string())
+                }
+            }
+        }
+        ("GET", "/api/admin/backups/download") => {
+            let admin = match require_host_admin(state, &request) {
+                Ok(admin) => admin,
+                Err(err) => return send_error(stream, 403, &err.to_string()),
+            };
+            let name = query_string_value(&request.path, "name")?
+                .ok_or_else(|| invalid_request("backup name is required"))?;
+            match send_host_backup_download(stream, &name) {
+                Ok(()) => audit_host_event(
+                    state,
+                    "backup_download",
+                    Some(&admin),
+                    &host_remote_addr(stream, &request),
+                    true,
+                    &name,
+                ),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    send_error(stream, 404, "backup not found")
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => Err(err),
+            }
         }
         ("GET", "/api/admin/users") => {
             if let Err(err) = require_host_admin(state, &request) {
@@ -16659,6 +16803,322 @@ fn normalize_camera_refresh_ms(refresh_ms: u16) -> u16 {
     }
 }
 
+fn valid_host_backup_name(name: &str) -> bool {
+    let Some(timestamp) = name
+        .strip_prefix("eutherhost-users-")
+        .and_then(|value| value.strip_suffix(".toml.age"))
+    else {
+        return false;
+    };
+    timestamp.len() == 16
+        && timestamp.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        && timestamp.as_bytes()[8] == b'T'
+        && timestamp.as_bytes()[9..15].iter().all(u8::is_ascii_digit)
+        && timestamp.as_bytes()[15] == b'Z'
+}
+
+fn valid_backup_timestamp(timestamp: &str) -> bool {
+    timestamp.len() == 16
+        && timestamp.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        && timestamp.as_bytes()[8] == b'T'
+        && timestamp.as_bytes()[9..15].iter().all(u8::is_ascii_digit)
+        && timestamp.as_bytes()[15] == b'Z'
+}
+
+fn valid_host_state_backup_name(name: &str) -> bool {
+    name.strip_prefix("eutherhost-state-")
+        .and_then(|value| value.strip_suffix(".tar.gz.age"))
+        .is_some_and(valid_backup_timestamp)
+}
+
+fn valid_host_media_manifest_name(name: &str) -> bool {
+    name.strip_prefix("eutherhost-media-")
+        .and_then(|value| value.strip_suffix(".json.age"))
+        .is_some_and(valid_backup_timestamp)
+}
+
+fn valid_host_media_object_name(name: &str) -> bool {
+    name.strip_suffix(".age").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn expected_host_backup_checksum(path: &Path) -> io::Result<String> {
+    let contents = fs::read_to_string(path)?;
+    contents
+        .split_whitespace()
+        .next()
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| invalid_request("invalid backup checksum file"))
+}
+
+fn systemd_unit_state(unit: &str, action: &str) -> bool {
+    Command::new("/usr/bin/systemctl")
+        .args([action, "--quiet", unit])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn systemd_timer_next_run(unit: &str) -> Option<String> {
+    let output = Command::new("/usr/bin/systemctl")
+        .args(["show", unit, "--property=NextElapseUSecRealtime", "--value"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty() && value != "n/a").then_some(value)
+}
+
+fn collect_host_backup_snapshots(
+    directory: &Path,
+    valid_name: fn(&str) -> bool,
+    label: &str,
+    errors: &mut Vec<String>,
+) -> io::Result<Vec<HostBackupSnapshot>> {
+    let mut snapshots = Vec::new();
+    if !directory.is_dir() {
+        errors.push(format!(
+            "{label}: backup directory missing: {}",
+            directory.display()
+        ));
+    } else {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !valid_name(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = entry.metadata()?;
+            let created_unix_ms = metadata
+                .modified()?
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let checksum_path = path.with_file_name(format!("{name}.sha256"));
+            let actual_checksum = sha256_file(&path)?;
+            let expected_checksum =
+                expected_host_backup_checksum(&checksum_path).unwrap_or_else(|err| {
+                    errors.push(format!("{label}/{name}: {err}"));
+                    String::new()
+                });
+            let checksum_ok = !expected_checksum.is_empty() && actual_checksum == expected_checksum;
+            let mut first_line = String::new();
+            let age_header_ok = BufReader::new(File::open(&path)?)
+                .read_line(&mut first_line)
+                .is_ok()
+                && first_line.trim_end() == "age-encryption.org/v1";
+            if !checksum_ok {
+                errors.push(format!("checksum mismatch: {label}/{name}"));
+            }
+            if !age_header_ok {
+                errors.push(format!("invalid age header: {label}/{name}"));
+            }
+            snapshots.push(HostBackupSnapshot {
+                name,
+                size_bytes: metadata.len(),
+                created_unix_ms,
+                checksum: expected_checksum,
+                checksum_ok,
+                age_header_ok,
+                healthy: checksum_ok && age_header_ok,
+            });
+        }
+    }
+    snapshots.sort_by(|left, right| right.name.cmp(&left.name));
+    Ok(snapshots)
+}
+
+fn host_backup_dataset(
+    id: &'static str,
+    label: &'static str,
+    retention: &'static str,
+    snapshots: &[HostBackupSnapshot],
+) -> HostBackupDataset {
+    HostBackupDataset {
+        id,
+        label,
+        ok: !snapshots.is_empty() && snapshots.iter().all(|snapshot| snapshot.healthy),
+        backup_count: snapshots.len(),
+        total_backup_bytes: snapshots.iter().map(|snapshot| snapshot.size_bytes).sum(),
+        latest_created_unix_ms: snapshots.first().map(|snapshot| snapshot.created_unix_ms),
+        retention,
+    }
+}
+
+fn host_backup_status() -> io::Result<HostBackupStatus> {
+    let backup_dir = Path::new(EUTHERHOST_BACKUP_DIR);
+    let mut errors = Vec::new();
+    let snapshots =
+        collect_host_backup_snapshots(backup_dir, valid_host_backup_name, "accounts", &mut errors)?;
+    let state_snapshots = collect_host_backup_snapshots(
+        &backup_dir.join("state"),
+        valid_host_state_backup_name,
+        "state",
+        &mut errors,
+    )?;
+    let mut media_snapshots = collect_host_backup_snapshots(
+        &backup_dir.join("media/objects"),
+        valid_host_media_object_name,
+        "media/objects",
+        &mut errors,
+    )?;
+    let media_manifests = collect_host_backup_snapshots(
+        &backup_dir.join("media/manifests"),
+        valid_host_media_manifest_name,
+        "media/manifests",
+        &mut errors,
+    )?;
+    media_snapshots.extend(media_manifests);
+    media_snapshots.sort_by(|left, right| right.created_unix_ms.cmp(&left.created_unix_ms));
+
+    let timers = [
+        EUTHERHOST_BACKUP_TIMER,
+        EUTHERHOST_STATE_BACKUP_TIMER,
+        EUTHERHOST_MEDIA_BACKUP_TIMER,
+    ];
+    let timer_enabled = timers
+        .iter()
+        .all(|timer| systemd_unit_state(timer, "is-enabled"));
+    let timer_active = timers
+        .iter()
+        .all(|timer| systemd_unit_state(timer, "is-active"));
+    for timer in timers {
+        if !systemd_unit_state(timer, "is-enabled") {
+            errors.push(format!("timer not enabled: {timer}"));
+        }
+        if !systemd_unit_state(timer, "is-active") {
+            errors.push(format!("timer not active: {timer}"));
+        }
+    }
+    let health_timer_active = systemd_unit_state(EUTHERHOST_BACKUP_HEALTH_TIMER, "is-active");
+    if !health_timer_active {
+        errors.push(format!(
+            "health timer not active: {EUTHERHOST_BACKUP_HEALTH_TIMER}"
+        ));
+    }
+    for (label, entries) in [
+        ("accounts", snapshots.as_slice()),
+        ("state", state_snapshots.as_slice()),
+        ("media", media_snapshots.as_slice()),
+    ] {
+        if entries.is_empty() {
+            errors.push(format!("no encrypted {label} backups found"));
+        }
+        if entries.first().is_some_and(|snapshot| {
+            unix_ms_now().saturating_sub(snapshot.created_unix_ms) > 36 * 60 * 60 * 1_000
+        }) {
+            errors.push(format!(
+                "latest encrypted {label} backup is older than 36 hours"
+            ));
+        }
+    }
+    let latest_created_unix_ms = snapshots
+        .iter()
+        .chain(&state_snapshots)
+        .chain(&media_snapshots)
+        .map(|snapshot| snapshot.created_unix_ms)
+        .max();
+    let total_backup_bytes = snapshots
+        .iter()
+        .chain(&state_snapshots)
+        .chain(&media_snapshots)
+        .map(|snapshot| snapshot.size_bytes)
+        .sum();
+    let backup_count = snapshots.len() + state_snapshots.len() + media_snapshots.len();
+    let datasets = vec![
+        host_backup_dataset("accounts", "Konton", "30 dagar på server", &snapshots),
+        host_backup_dataset(
+            "state",
+            "Kritiskt state",
+            "30 dagar på server",
+            &state_snapshots,
+        ),
+        host_backup_dataset("media", "Användarmedia", "Objekt bevaras", &media_snapshots),
+    ];
+    Ok(HostBackupStatus {
+        ok: errors.is_empty(),
+        pending: Path::new(EUTHERHOST_BACKUP_REQUEST_PATH).exists(),
+        timer_enabled,
+        timer_active,
+        health_timer_active,
+        next_run: systemd_timer_next_run(EUTHERHOST_BACKUP_TIMER),
+        backup_count,
+        total_backup_bytes,
+        latest_created_unix_ms,
+        retention_days: 30,
+        recovery_key_location: "off-server",
+        datasets,
+        snapshots,
+        errors,
+    })
+}
+
+fn request_host_backup(admin: &str) -> io::Result<serde_json::Value> {
+    let path = Path::new(EUTHERHOST_BACKUP_REQUEST_PATH);
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid_request("invalid backup request path"))?;
+    fs::create_dir_all(parent)?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    writeln!(file, "requested_by={admin}")?;
+    writeln!(file, "requested_unix_ms={}", unix_ms_now())?;
+    file.sync_all()?;
+    Ok(serde_json::json!({ "ok": true, "queued": true }))
+}
+
+fn send_host_backup_download(stream: &mut TcpStream, name: &str) -> io::Result<()> {
+    if !valid_host_backup_name(name) {
+        return Err(invalid_request("invalid backup name"));
+    }
+    let path = Path::new(EUTHERHOST_BACKUP_DIR).join(name);
+    if !path.is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "backup not found"));
+    }
+    let bytes = fs::read(path)?;
+    let disposition = format!("attachment; filename=\"{name}\"");
+    send_response_with_headers(
+        stream,
+        200,
+        "application/octet-stream",
+        &bytes,
+        &[
+            ("Content-Disposition", disposition.as_str()),
+            ("Cache-Control", "no-store"),
+        ],
+    )
+}
+
+fn send_backup_admin_page(stream: &mut TcpStream) -> io::Result<()> {
+    send_response_with_headers(
+        stream,
+        200,
+        "text/html; charset=utf-8",
+        include_bytes!("../webview/backup-admin.html"),
+        &[("Cache-Control", "no-store")],
+    )
+}
+
 fn send_server_map_page(stream: &mut TcpStream) -> io::Result<()> {
     let body = r###"<!doctype html>
 <html lang="sv">
@@ -20390,6 +20850,7 @@ fn send_response_with_headers(
         .any(|(name, _)| name.eq_ignore_ascii_case("Cache-Control"));
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         206 => "Partial Content",
         303 => "See Other",
         308 => "Permanent Redirect",
@@ -20397,6 +20858,7 @@ fn send_response_with_headers(
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        409 => "Conflict",
         429 => "Too Many Requests",
         _ => "Error",
     };
@@ -20407,7 +20869,7 @@ fn send_response_with_headers(
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, X-Bongologg-Token, X-Stam-Name, X-Stam-Sha256, Authorization, Range\r\n\
          Access-Control-Allow-Credentials: true\r\n\
-         Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges\r\n",
+         Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges, Content-Disposition\r\n",
     )?;
     if !has_cache_control {
         write!(stream, "Cache-Control: no-store\r\n")?;
@@ -26164,6 +26626,22 @@ fn write_ppm(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_download_names_are_strictly_scoped() {
+        assert!(valid_host_backup_name(
+            "eutherhost-users-20260901T015855Z.toml.age"
+        ));
+        for invalid in [
+            "../eutherhost-users-20260901T015855Z.toml.age",
+            "eutherhost-users-20260901T015855Z.toml.age.sha256",
+            "eutherhost-users-20260901-015855Z.toml.age",
+            "eutherhost-users-20260901T01585XZ.toml.age",
+            "users.toml.age",
+        ] {
+            assert!(!valid_host_backup_name(invalid), "accepted {invalid}");
+        }
+    }
 
     #[test]
     fn euthersurfer_privacy_policy_is_public_static_and_complete() {

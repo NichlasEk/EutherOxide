@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily incremental encrypted EutherHost media export
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=eutherhost-media-backup.service
+
+[Install]
+WantedBy=timers.target

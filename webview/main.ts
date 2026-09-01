@@ -2750,6 +2750,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <h2 id="admin-title">Users</h2>
         </div>
         <div class="controls-actions">
+          <button id="admin-backups" class="mini-action" type="button">Backuper</button>
           <button id="admin-refresh" class="mini-action" type="button">Sync</button>
           <button id="admin-close" class="mini-action" type="button">Close</button>
         </div>
@@ -2997,6 +2998,7 @@ const kickP2 = document.querySelector<HTMLButtonElement>("#kick-p2")!;
 const closeInstance = document.querySelector<HTMLButtonElement>("#close-instance")!;
 const adminModal = document.querySelector<HTMLDivElement>("#admin-modal")!;
 const adminClose = document.querySelector<HTMLButtonElement>("#admin-close")!;
+const adminBackups = document.querySelector<HTMLButtonElement>("#admin-backups")!;
 const adminRefresh = document.querySelector<HTMLButtonElement>("#admin-refresh")!;
 const adminUsers = document.querySelector<HTMLDivElement>("#admin-users")!;
 const adminUsername = document.querySelector<HTMLInputElement>("#admin-username")!;
@@ -4229,6 +4231,10 @@ adminClose.addEventListener("click", () => {
   clearEutherIdPanel();
   adminModal.classList.remove("is-open");
   adminModal.setAttribute("aria-hidden", "true");
+});
+
+adminBackups.addEventListener("click", () => {
+  window.location.assign("/backup-admin");
 });
 
 eutherIdEnroll.addEventListener("click", async () => {
