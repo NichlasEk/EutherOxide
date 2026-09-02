@@ -8847,6 +8847,9 @@ const appDownloads: AppDownload[] = [
 ];
 
 function appsWindowMarkup(): string {
+  const visibleApps = appDownloads.filter(
+    (app) => app.title !== "EutherReel" || hostUsername?.toLowerCase() === "nichlas",
+  );
   return `
     <div class="apps-window">
       <section class="apps-window-hero">
@@ -8857,7 +8860,7 @@ function appsWindowMarkup(): string {
         </div>
       </section>
       <section class="apps-download-grid" aria-label="APK downloads">
-        ${appDownloads.map(appDownloadCardMarkup).join("")}
+        ${visibleApps.map(appDownloadCardMarkup).join("")}
       </section>
     </div>
   `;
