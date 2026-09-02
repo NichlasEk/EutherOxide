@@ -32,6 +32,7 @@ use argon2::{
 use euther_oxide::savestate::{ArgonSummary, list_slots_for_emulator};
 use euther_oxide::{Emulator, FrameRun, RomHeader, SystemRegion, TimingMode};
 use gilrs::{Axis, Button, Gilrs};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use lettre::message::{Mailbox, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -67,6 +68,9 @@ const ACCOUNT_EMAIL_RATE_MAX: usize = 3;
 const EUTHERID_LOGIN_TTL_MS: u64 = 2 * 60 * 1000;
 const EUTHERID_LOGIN_RATE_WINDOW_MS: u64 = 10 * 60 * 1000;
 const EUTHERID_LOGIN_RATE_MAX: usize = 5;
+const EUTHERREEL_ASSERTION_PRIVATE_KEY_FILE: &str =
+    "/etc/eutherhost/eutherreel-assertion-private.pem";
+const EUTHERREEL_ASSERTION_TTL_SECONDS: u64 = 2 * 60;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
@@ -122,7 +126,8 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta2-debug.apk";
-const DEFAULT_EUTHERREEL_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.7-debug.apk";
+const DEFAULT_EUTHERREEL_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.8-debug.apk";
+const LEGACY_EUTHERREEL_0_2_7_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.7-debug.apk";
 const LEGACY_EUTHERREEL_0_2_6_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.6-debug.apk";
 const LEGACY_EUTHERREEL_0_2_4_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.4-debug.apk";
 const LEGACY_EUTHERREEL_0_2_3_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.3-debug.apk";
@@ -1299,6 +1304,7 @@ struct HostState {
     login_attempts: Arc<Mutex<Vec<LoginAttempt>>>,
     eutherid_recovery_tokens: Arc<Mutex<Vec<HostEutherIdRecoveryToken>>>,
     eutherid_login_attempts: Arc<Mutex<Vec<HostEutherIdLoginAttempt>>>,
+    eutherreel_unlock_attempts: Arc<Mutex<Vec<HostEutherReelUnlockAttempt>>>,
     eutherid_action_requests: Arc<Mutex<Vec<HostEutherIdActionRequest>>>,
     account_email_tokens: Arc<Mutex<Vec<HostAccountEmailToken>>>,
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
@@ -1547,6 +1553,52 @@ struct HostEutherIdLoginAttempt {
     created_unix_ms: u64,
     expires_unix_ms: u64,
     completed_unix_ms: Option<u64>,
+}
+
+#[derive(Clone)]
+struct HostEutherReelUnlockAttempt {
+    challenge_id: String,
+    actor: String,
+    browser_secret_hash: String,
+    session_hash: String,
+    origin: String,
+    server_id: String,
+    nonce: String,
+    command_id: String,
+    remote_addr: String,
+    expires_unix_ms: u64,
+    completed_unix_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutherReelUnlockStartRequest {
+    username: String,
+    server_id: String,
+    nonce: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEutherReelUnlockContinueRequest {
+    challenge_id: String,
+    browser_secret: String,
+    server_id: String,
+    nonce: String,
+}
+
+#[derive(Serialize)]
+struct HostEutherReelAssertionClaims {
+    iss: String,
+    aud: String,
+    sub: String,
+    action: String,
+    server_id: String,
+    nonce: String,
+    device_id: String,
+    iat: u64,
+    exp: u64,
+    jti: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2386,6 +2438,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         login_attempts: Arc::new(Mutex::new(Vec::new())),
         eutherid_recovery_tokens: Arc::new(Mutex::new(eutherid_recovery_tokens)),
         eutherid_login_attempts: Arc::new(Mutex::new(Vec::new())),
+        eutherreel_unlock_attempts: Arc::new(Mutex::new(Vec::new())),
         eutherid_action_requests: Arc::new(Mutex::new(eutherid_action_requests)),
         account_email_tokens: Arc::new(Mutex::new(account_email_tokens)),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
@@ -2500,6 +2553,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherid/login/start"
         && path != "/api/eutherid/login/status"
         && path != "/api/eutherid/login/complete"
+        && path != "/api/eutherid/eutherreel/start"
+        && path != "/api/eutherid/eutherreel/status"
+        && path != "/api/eutherid/eutherreel/complete"
         && path != "/api/bongologg/auth/complete"
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
@@ -2700,6 +2756,54 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 Ok((result, cookie)) => {
                     send_json_with_headers(stream, &result, &[("Set-Cookie", cookie.as_str())])
                 }
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/eutherid/eutherreel/start") => {
+            let input: HostEutherReelUnlockStartRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherReel unlock request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match start_host_eutherreel_unlock(state, &input, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    send_error(stream, 429, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 401, "unlock rejected")
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/eutherid/eutherreel/status") => {
+            let input: HostEutherReelUnlockContinueRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherReel unlock status request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match host_eutherreel_unlock_status(state, &input, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/eutherid/eutherreel/complete") => {
+            let input: HostEutherReelUnlockContinueRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherReel unlock completion request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match complete_host_eutherreel_unlock(state, &input, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                     send_error(stream, 403, &err.to_string())
                 }
@@ -12282,6 +12386,11 @@ fn send_eutherreel_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             PathBuf::from(LEGACY_EUTHERREEL_0_2_4_APK_PATH),
             "EutherReel-0.2.4-debug.apk",
         )
+    } else if path == "/downloads/EutherReel-0.2.7-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERREEL_0_2_7_APK_PATH),
+            "EutherReel-0.2.7-debug.apk",
+        )
     } else if path == "/downloads/EutherReel-0.2.6-debug.apk" {
         (
             PathBuf::from(LEGACY_EUTHERREEL_0_2_6_APK_PATH),
@@ -12291,8 +12400,8 @@ fn send_eutherreel_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         let apk_path = env::var("EUTHERREEL_APK_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERREEL_APK_PATH));
-        let download_filename = if path == "/downloads/EutherReel-0.2.7-debug.apk" {
-            "EutherReel-0.2.7-debug.apk"
+        let download_filename = if path == "/downloads/EutherReel-0.2.8-debug.apk" {
+            "EutherReel-0.2.8-debug.apk"
         } else {
             "EutherReel-debug.apk"
         };
@@ -12312,6 +12421,7 @@ fn is_eutherreel_apk_download_path(path: &str) -> bool {
         "/downloads/eutherreel.apk"
             | "/downloads/EutherReel.apk"
             | "/downloads/EutherReel-debug.apk"
+            | "/downloads/EutherReel-0.2.8-debug.apk"
             | "/downloads/EutherReel-0.2.7-debug.apk"
             | "/downloads/EutherReel-0.2.6-debug.apk"
             | "/downloads/EutherReel-0.2.4-debug.apk"
@@ -14498,6 +14608,288 @@ fn complete_host_eutherid_login(
         }),
         cookie,
     ))
+}
+
+fn valid_eutherreel_binding_value(value: &str) -> bool {
+    (20..=128).contains(&value.len())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn eutherreel_unlock_binding(attempt: &HostEutherReelUnlockAttempt) -> serde_json::Value {
+    serde_json::json!({
+        "actor": attempt.actor,
+        "session_hash": attempt.session_hash,
+        "origin": attempt.origin,
+        "action": "eutherreel.library.session",
+        "target": attempt.server_id,
+        "command_id": attempt.command_id,
+    })
+}
+
+fn validate_eutherreel_unlock_continue(
+    state: &HostState,
+    input: &HostEutherReelUnlockContinueRequest,
+    remote_addr: &str,
+) -> io::Result<HostEutherReelUnlockAttempt> {
+    if !valid_eutherid_challenge_id(&input.challenge_id)
+        || !valid_eutherid_recovery_code(input.browser_secret.trim())
+        || !valid_eutherreel_binding_value(input.server_id.trim())
+        || !valid_eutherreel_binding_value(input.nonce.trim())
+    {
+        return Err(invalid_request("invalid EutherReel unlock request"));
+    }
+    let now = unix_ms_now();
+    let secret_hash = sha256_hex(input.browser_secret.trim().as_bytes());
+    let attempts = state
+        .eutherreel_unlock_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    attempts
+        .iter()
+        .find(|attempt| {
+            attempt.challenge_id == input.challenge_id
+                && attempt.browser_secret_hash == secret_hash
+                && attempt.server_id == input.server_id.trim()
+                && attempt.nonce == input.nonce.trim()
+                && attempt.remote_addr == remote_addr
+                && attempt.completed_unix_ms.is_none()
+                && attempt.expires_unix_ms > now
+        })
+        .cloned()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "invalid or expired EutherReel unlock",
+            )
+        })
+}
+
+fn start_host_eutherreel_unlock(
+    state: &HostState,
+    input: &HostEutherReelUnlockStartRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let actor = input.username.trim();
+    let server_id = input.server_id.trim();
+    let nonce = input.nonce.trim();
+    validate_host_username(actor)?;
+    if !valid_eutherreel_binding_value(server_id) || !valid_eutherreel_binding_value(nonce) {
+        return Err(invalid_request("invalid EutherReel server binding"));
+    }
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if !users.iter().any(|user| user.name == actor && !user.banned) {
+            audit_host_event(
+                state,
+                "eutherreel_unlock_started",
+                Some(actor),
+                remote_addr,
+                false,
+                "owner_rejected",
+            )?;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unlock rejected",
+            ));
+        }
+    }
+    let now = unix_ms_now();
+    {
+        let mut attempts = state
+            .eutherreel_unlock_attempts
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        attempts.retain(|attempt| {
+            attempt
+                .expires_unix_ms
+                .saturating_add(EUTHERID_LOGIN_RATE_WINDOW_MS)
+                > now
+        });
+        let recent = attempts
+            .iter()
+            .filter(|attempt| {
+                (attempt.actor == actor || attempt.remote_addr == remote_addr)
+                    && attempt
+                        .expires_unix_ms
+                        .saturating_add(EUTHERID_LOGIN_RATE_WINDOW_MS)
+                        > now
+            })
+            .count();
+        if recent >= EUTHERID_LOGIN_RATE_MAX {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "too many EutherReel unlock requests; try again later",
+            ));
+        }
+    }
+    let browser_secret = random_token()?;
+    let session_hash = sha256_hex(browser_secret.as_bytes());
+    let command_id = format!("reel-{}", &nonce[..nonce.len().min(32)]);
+    let origin = eutherid_public_origin()?;
+    let challenge_request = serde_json::json!({
+        "actor": actor,
+        "session_hash": session_hash,
+        "origin": origin,
+        "action": "eutherreel.library.session",
+        "target": server_id,
+        "command_id": command_id,
+        "ttl_seconds": EUTHERREEL_ASSERTION_TTL_SECONDS,
+    });
+    let response =
+        eutherid_internal_json_request("POST", "/v1/challenges", Some(&challenge_request))?;
+    let challenge = eutherid_json_response(response, &[201])?;
+    let challenge_id = challenge
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| valid_eutherid_challenge_id(id))
+        .ok_or_else(|| io::Error::other("EutherID returned an invalid challenge id"))?
+        .to_string();
+    let expires_unix_ms = now.saturating_add(EUTHERREEL_ASSERTION_TTL_SECONDS * 1000);
+    state
+        .eutherreel_unlock_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .push(HostEutherReelUnlockAttempt {
+            challenge_id: challenge_id.clone(),
+            actor: actor.to_string(),
+            browser_secret_hash: sha256_hex(browser_secret.as_bytes()),
+            session_hash,
+            origin,
+            server_id: server_id.to_string(),
+            nonce: nonce.to_string(),
+            command_id,
+            remote_addr: remote_addr.to_string(),
+            expires_unix_ms,
+            completed_unix_ms: None,
+        });
+    audit_host_event(
+        state,
+        "eutherreel_unlock_started",
+        Some(actor),
+        remote_addr,
+        true,
+        "challenge_created",
+    )?;
+    Ok(serde_json::json!({
+        "challenge": challenge,
+        "challengeId": challenge_id,
+        "browserSecret": browser_secret,
+        "serverId": server_id,
+        "nonce": nonce,
+        "expiresAt": expires_unix_ms,
+    }))
+}
+
+fn host_eutherreel_unlock_status(
+    state: &HostState,
+    input: &HostEutherReelUnlockContinueRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let attempt = validate_eutherreel_unlock_continue(state, input, remote_addr)?;
+    let path = format!("/v1/challenges/{}", attempt.challenge_id);
+    let response = eutherid_internal_json_request("GET", &path, None)?;
+    let challenge = eutherid_json_response(response, &[200])?;
+    Ok(serde_json::json!({
+        "challengeId": attempt.challenge_id,
+        "status": challenge.get("status").and_then(serde_json::Value::as_str),
+        "expiresAt": attempt.expires_unix_ms,
+    }))
+}
+
+fn complete_host_eutherreel_unlock(
+    state: &HostState,
+    input: &HostEutherReelUnlockContinueRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let attempt = validate_eutherreel_unlock_continue(state, input, remote_addr)?;
+    let expected = eutherreel_unlock_binding(&attempt);
+    let consumed = consume_eutherid_action_proof(&attempt.challenge_id, &expected)?;
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if !users
+            .iter()
+            .any(|user| user.name == attempt.actor && !user.banned)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unlock rejected",
+            ));
+        }
+    }
+    let device_id = consumed
+        .get("device_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::other("EutherID proof omitted device identity"))?
+        .to_string();
+    let now = unix_ms_now();
+    {
+        let mut attempts = state
+            .eutherreel_unlock_attempts
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let stored = attempts
+            .iter_mut()
+            .find(|stored| {
+                stored.challenge_id == attempt.challenge_id
+                    && stored.browser_secret_hash == attempt.browser_secret_hash
+                    && stored.completed_unix_ms.is_none()
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "EutherReel unlock already used",
+                )
+            })?;
+        stored.completed_unix_ms = Some(now);
+    }
+    let key_path = env::var("EUTHERREEL_ASSERTION_PRIVATE_KEY_FILE")
+        .unwrap_or_else(|_| EUTHERREEL_ASSERTION_PRIVATE_KEY_FILE.to_string());
+    let private_key = fs::read(&key_path)
+        .map_err(|err| io::Error::other(format!("failed to read assertion signing key: {err}")))?;
+    let encoding_key = EncodingKey::from_ed_pem(&private_key)
+        .map_err(|err| io::Error::other(format!("invalid assertion signing key: {err}")))?;
+    let issued_at = now / 1000;
+    let expires_at = issued_at.saturating_add(EUTHERREEL_ASSERTION_TTL_SECONDS);
+    let claims = HostEutherReelAssertionClaims {
+        iss: attempt.origin.clone(),
+        aud: "eutherreel".to_string(),
+        sub: attempt.actor.clone(),
+        action: "eutherreel.library.session".to_string(),
+        server_id: attempt.server_id.clone(),
+        nonce: attempt.nonce.clone(),
+        device_id: device_id.clone(),
+        iat: issued_at,
+        exp: expires_at,
+        jti: random_token()?,
+    };
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.kid = Some("eutherreel-v1".to_string());
+    let assertion = encode(&header, &claims, &encoding_key)
+        .map_err(|err| io::Error::other(format!("failed to sign assertion: {err}")))?;
+    audit_host_event(
+        state,
+        "eutherreel_unlock_completed",
+        Some(&attempt.actor),
+        remote_addr,
+        true,
+        "device_bound_assertion_issued",
+    )?;
+    Ok(serde_json::json!({
+        "assertion": assertion,
+        "expiresAt": expires_at * 1000,
+        "user": attempt.actor,
+        "deviceId": device_id,
+        "serverId": attempt.server_id,
+    }))
 }
 
 fn complete_bongologg_eutherid_login(
@@ -27637,6 +28029,9 @@ mod tests {
         assert!(is_eutherreel_owner("Nichlas"));
         assert!(!is_eutherreel_owner("guest"));
         assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-0.2.8-debug.apk"
+        ));
+        assert!(is_eutherreel_apk_download_path(
             "/downloads/EutherReel-0.2.7-debug.apk"
         ));
         assert!(is_eutherreel_apk_download_path(
@@ -27673,6 +28068,20 @@ mod tests {
             "/downloads/EutherReel-debug.apk"
         ));
         assert!(is_android_apk_download_path("/downloads/eutherreel.apk"));
+    }
+
+    #[test]
+    fn eutherreel_assertion_bindings_reject_paths_and_short_values() {
+        assert!(valid_eutherreel_binding_value(
+            "f5b143c46293f28b1430a93ecfe11638"
+        ));
+        assert!(valid_eutherreel_binding_value(
+            "j3Q1s5bM30_O4ZScC8-HMJ7XXUYGHrCYhuumzFZ4TQw"
+        ));
+        assert!(!valid_eutherreel_binding_value("short"));
+        assert!(!valid_eutherreel_binding_value(
+            "../../etc/eutherhost/private-key"
+        ));
     }
 
     #[test]
