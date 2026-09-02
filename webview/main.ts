@@ -8782,6 +8782,13 @@ const appDownloads: AppDownload[] = [
     status: "Beta APK · v0.5.0-beta2 · Tap clock times to reschedule · No network permission",
   },
   {
+    title: "EutherReel",
+    detail: "Your media, your network, your machine — discover and direct-play a local archive with no cloud account",
+    platform: "Android phone · Local media",
+    href: "/downloads/EutherReel-0.2.0-debug.apk",
+    status: "Foundation APK · v0.2.0 · Secure owner pairing · Add TOML sources · Direct play",
+  },
+  {
     title: "EutherBeam",
     detail: "Local Samsung, NEC and Android TV control with direct linked-player wake and non-blocking Samsung reconnect",
     platform: "Android phone · Samsung + NEC + Android TV",
@@ -8840,6 +8847,9 @@ const appDownloads: AppDownload[] = [
 ];
 
 function appsWindowMarkup(): string {
+  const visibleApps = appDownloads.filter(
+    (app) => app.title !== "EutherReel" || hostUsername?.toLowerCase() === "nichlas",
+  );
   return `
     <div class="apps-window">
       <section class="apps-window-hero">
@@ -8850,7 +8860,7 @@ function appsWindowMarkup(): string {
         </div>
       </section>
       <section class="apps-download-grid" aria-label="APK downloads">
-        ${appDownloads.map(appDownloadCardMarkup).join("")}
+        ${visibleApps.map(appDownloadCardMarkup).join("")}
       </section>
     </div>
   `;

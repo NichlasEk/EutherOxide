@@ -122,6 +122,11 @@ const LEGACY_BUSMANCER_0_1_0_ALPHA2_APK_PATH: &str =
 const LEGACY_BUSMANCER_0_1_0_ALPHA3_APK_PATH: &str =
     "/home/nichlas/BusMancer-0.1.0-alpha3-debug.apk";
 const DEFAULT_EUTHERTIME_APK_PATH: &str = "/home/nichlas/EutherTime-0.5.0-beta2-debug.apk";
+const DEFAULT_EUTHERREEL_APK_PATH: &str = "/home/nichlas/EutherReel-0.2.0-debug.apk";
+const LEGACY_EUTHERREEL_0_1_0_APK_PATH: &str = "/home/nichlas/EutherReel-0.1.0-debug.apk";
+const LEGACY_EUTHERREEL_0_1_1_APK_PATH: &str = "/home/nichlas/EutherReel-0.1.1-debug.apk";
+const LEGACY_EUTHERREEL_0_1_3_APK_PATH: &str = "/home/nichlas/EutherReel-0.1.3-debug.apk";
+const LEGACY_EUTHERREEL_0_1_4_APK_PATH: &str = "/home/nichlas/EutherReel-0.1.4-debug.apk";
 const DEFAULT_EUTHERBEAM_APK_PATH: &str =
     "/srv/eutheroxide-downloads/EutherBeam-0.1.0-alpha12-debug.apk";
 const LEGACY_EUTHERBEAM_0_1_0_ALPHA1_APK_PATH: &str =
@@ -2873,6 +2878,16 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_euthervox_apk(stream, path)
         }
         ("GET", path) if is_euthertime_apk_download_path(path) => send_euthertime_apk(stream, path),
+        ("GET", path) if is_eutherreel_apk_download_path(path) => {
+            let user = match require_host_user_or_app(state, &request) {
+                Ok(user) => user,
+                Err(_) => return send_error(stream, 401, "login required"),
+            };
+            if !is_eutherreel_owner(&user) {
+                return send_error(stream, 403, "EutherReel is restricted to its owner");
+            }
+            send_eutherreel_apk(stream, path)
+        }
         ("GET", path) if is_eutherbeam_apk_download_path(path) => send_eutherbeam_apk(stream, path),
         ("GET", path) if is_euthersurfer_apk_download_path(path) => {
             send_euthersurfer_apk(stream, path)
@@ -4768,6 +4783,10 @@ fn require_host_user_or_app(state: &HostState, request: &HttpRequest) -> io::Res
         return Ok(user);
     }
     authenticated_app_user(state, request)?.ok_or_else(|| invalid_request("login required"))
+}
+
+fn is_eutherreel_owner(user: &str) -> bool {
+    user.eq_ignore_ascii_case("nichlas")
 }
 
 fn authenticated_app_user(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
@@ -12211,6 +12230,61 @@ fn is_euthertime_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn send_eutherreel_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    let (apk_path, download_filename) = if path == "/downloads/EutherReel-0.1.0-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERREEL_0_1_0_APK_PATH),
+            "EutherReel-0.1.0-debug.apk",
+        )
+    } else if path == "/downloads/EutherReel-0.1.1-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERREEL_0_1_1_APK_PATH),
+            "EutherReel-0.1.1-debug.apk",
+        )
+    } else if path == "/downloads/EutherReel-0.1.3-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERREEL_0_1_3_APK_PATH),
+            "EutherReel-0.1.3-debug.apk",
+        )
+    } else if path == "/downloads/EutherReel-0.1.4-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERREEL_0_1_4_APK_PATH),
+            "EutherReel-0.1.4-debug.apk",
+        )
+    } else {
+        let apk_path = env::var("EUTHERREEL_APK_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERREEL_APK_PATH));
+        let download_filename = if path == "/downloads/EutherReel-0.2.0-debug.apk" {
+            "EutherReel-0.2.0-debug.apk"
+        } else {
+            "EutherReel-debug.apk"
+        };
+        (apk_path, download_filename)
+    };
+    send_android_apk(
+        stream,
+        &apk_path,
+        download_filename,
+        "EutherReel APK is not available",
+    )
+}
+
+fn is_eutherreel_apk_download_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/downloads/eutherreel.apk"
+            | "/downloads/EutherReel.apk"
+            | "/downloads/EutherReel-debug.apk"
+            | "/downloads/EutherReel-0.2.0-debug.apk"
+            | "/downloads/EutherReel-0.1.4-debug.apk"
+            | "/downloads/EutherReel-0.1.3-debug.apk"
+            | "/downloads/EutherReel-0.1.1-debug.apk"
+            | "/downloads/EutherReel-0.1.0-debug.apk"
+            | "/downloads/eutherreel-debug.apk"
+    )
+}
+
 fn send_euthersurfer_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let (apk_path, download_filename) = match path {
         "/downloads/EutherSurfer-0.1.0-debug.apk" => (
@@ -13834,6 +13908,7 @@ fn is_android_apk_download_path(path: &str) -> bool {
         || is_busmancer_apk_download_path(path)
         || is_euthervox_apk_download_path(path)
         || is_euthertime_apk_download_path(path)
+        || is_eutherreel_apk_download_path(path)
         || is_eutherbeam_apk_download_path(path)
         || is_euthersurfer_apk_download_path(path)
         || is_eutherping_apk_download_path(path)
@@ -27512,6 +27587,32 @@ mod tests {
         assert!(!is_euthertime_apk_download_path(
             "/downloads/EutherTime-0.4.0-debug.apk"
         ));
+    }
+
+    #[test]
+    fn eutherreel_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_eutherreel_owner("nichlas"));
+        assert!(is_eutherreel_owner("Nichlas"));
+        assert!(!is_eutherreel_owner("guest"));
+        assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-0.2.0-debug.apk"
+        ));
+        assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-0.1.4-debug.apk"
+        ));
+        assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-0.1.3-debug.apk"
+        ));
+        assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-0.1.1-debug.apk"
+        ));
+        assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-0.1.0-debug.apk"
+        ));
+        assert!(is_eutherreel_apk_download_path(
+            "/downloads/EutherReel-debug.apk"
+        ));
+        assert!(is_android_apk_download_path("/downloads/eutherreel.apk"));
     }
 
     #[test]
