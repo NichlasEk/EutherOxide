@@ -2876,7 +2876,16 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_euthervox_apk(stream, path)
         }
         ("GET", path) if is_euthertime_apk_download_path(path) => send_euthertime_apk(stream, path),
-        ("GET", path) if is_eutherreel_apk_download_path(path) => send_eutherreel_apk(stream, path),
+        ("GET", path) if is_eutherreel_apk_download_path(path) => {
+            let user = match require_host_user_or_app(state, &request) {
+                Ok(user) => user,
+                Err(_) => return send_error(stream, 401, "login required"),
+            };
+            if !is_eutherreel_owner(&user) {
+                return send_error(stream, 403, "EutherReel is restricted to its owner");
+            }
+            send_eutherreel_apk(stream, path)
+        }
         ("GET", path) if is_eutherbeam_apk_download_path(path) => send_eutherbeam_apk(stream, path),
         ("GET", path) if is_euthersurfer_apk_download_path(path) => {
             send_euthersurfer_apk(stream, path)
@@ -4772,6 +4781,10 @@ fn require_host_user_or_app(state: &HostState, request: &HttpRequest) -> io::Res
         return Ok(user);
     }
     authenticated_app_user(state, request)?.ok_or_else(|| invalid_request("login required"))
+}
+
+fn is_eutherreel_owner(user: &str) -> bool {
+    user.eq_ignore_ascii_case("nichlas")
 }
 
 fn authenticated_app_user(state: &HostState, request: &HttpRequest) -> io::Result<Option<String>> {
@@ -27564,6 +27577,9 @@ mod tests {
 
     #[test]
     fn eutherreel_apk_uses_versioned_and_compatibility_download_paths() {
+        assert!(is_eutherreel_owner("nichlas"));
+        assert!(is_eutherreel_owner("Nichlas"));
+        assert!(!is_eutherreel_owner("guest"));
         assert!(is_eutherreel_apk_download_path(
             "/downloads/EutherReel-0.1.3-debug.apk"
         ));
