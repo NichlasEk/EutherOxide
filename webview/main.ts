@@ -8785,8 +8785,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherReel",
     detail: "Your media, your network, your machine — discover and direct-play a local archive with no cloud account",
     platform: "Android phone · Local media",
-    href: "/downloads/EutherReel-0.2.8-debug.apk",
-    status: "Foundation APK · v0.2.8 · Short-lived EutherID media sessions · Auto-hiding fullscreen controls · Cast",
+    href: "/downloads/EutherReel-0.2.9-debug.apk",
+    status: "Foundation APK · v0.2.9 · Screen stays awake during playback · Short-lived EutherID sessions · Cast",
   },
   {
     title: "EutherBeam",
