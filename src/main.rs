@@ -3269,13 +3269,13 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             }
         }
         ("POST", "/api/user/eutherbooks/voice-sample") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             let upload: HostEutherBooksVoiceSampleUpload = serde_json::from_slice(&request.body)
                 .map_err(|err| invalid_request(err.to_string()))?;
             send_json(stream, &save_host_eutherbooks_voice_sample(&user, upload)?)
         }
         ("GET", "/api/user/eutherbooks/voice-sample.wav") => {
-            let user = require_host_user(state, &request)?;
+            let user = require_host_user_or_app(state, &request)?;
             send_host_eutherbooks_voice_sample_wav(stream, &user, &request.path)
         }
         ("GET", "/api/lobby") => {
@@ -5028,6 +5028,8 @@ fn host_app_token_path(path: &str) -> bool {
             | "/api/interaction/shopping-list/unshare"
             | "/api/interaction/shopping-list/role"
             | "/api/user/preferences"
+            | "/api/user/eutherbooks/voice-sample"
+            | "/api/user/eutherbooks/voice-sample.wav"
     )
 }
 
@@ -28968,5 +28970,12 @@ mod tests {
         assert!(!valid_eutherid_challenge_id("short"));
         assert!(!valid_eutherid_challenge_id("A2345678901234567890/login"));
         assert!(!valid_eutherid_challenge_id("A2345678901234567890?login"));
+    }
+
+    #[test]
+    fn eutherbooks_voice_samples_accept_authenticated_app_tokens() {
+        assert!(host_app_token_path("/api/user/eutherbooks/voice-sample"));
+        assert!(host_app_token_path("/api/user/eutherbooks/voice-sample.wav"));
+        assert!(!host_app_token_path("/api/user/eutherbooks/voices"));
     }
 }
