@@ -8734,10 +8734,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "EutherBooks Player",
-    detail: "Native audiobook playback with background audio",
+    detail: "Native Kotlin audiobook playback with background audio",
     platform: "Android phone",
-    href: "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk",
-    status: "Signed APK",
+    href: "/downloads/EutherBooksPlayer-release-signed.apk",
+    status: "Kotlin 0.2.0 alpha · Signed APK",
   },
   {
     title: "EutherID",
