@@ -71,6 +71,7 @@ const CAMERA_ADMIN_PATH: &str = "/camera-admin";
 const SECONDSIGHT_PATH: &str = "/secondsight";
 const EUTHERBIRD_PATH: &str = "/eutherbird";
 const SERVER_MAP_PATH: &str = "/server-map";
+const EUTHERSTUDIO_PATH: &str = "/studio";
 const CAMERA_FRIGATE_PROXY_PREFIX: &str = "/api/camera/frigate";
 const CAMERA_AI_PROXY_PREFIX: &str = "/api/camera/ai";
 const EUTHERNET_ADMIN_PROXY_PREFIX: &str = "/api/admin/euthernet";
@@ -966,6 +967,7 @@ struct HostUser {
     can_award_eutherium: bool,
     can_camera_admin: bool,
     can_server_map: bool,
+    can_generate_music: bool,
     camera_rotation_degrees: u16,
     camera_refresh_ms: u16,
     euthersync_media_backup: Option<bool>,
@@ -982,6 +984,7 @@ struct HostPermissions {
     can_award_eutherium: bool,
     can_camera_admin: bool,
     can_server_map: bool,
+    can_generate_music: bool,
     can_euthersync_media_backup: bool,
     can_euthersync_feed_post: bool,
 }
@@ -1425,6 +1428,84 @@ struct HostUserPreferences {
     eutherbooks_own_voice_en_path: String,
     eutherbooks_own_voice_en_prompt: String,
     eutherbooks_own_voice_en_locked: bool,
+    eutherstudio_default_model: String,
+    eutherstudio_default_duration_seconds: f64,
+    eutherstudio_default_format: String,
+    eutherstudio_last_prompt: String,
+    eutherstudio_negative_prompt: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EutherStudioSettingsRequest {
+    default_model: String,
+    default_duration_seconds: f64,
+    default_format: String,
+    last_prompt: String,
+    negative_prompt: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EutherStudioJobRequest {
+    prompt: String,
+    lyrics: Option<String>,
+    instrumental: Option<bool>,
+    negative_prompt: Option<String>,
+    model: Option<String>,
+    duration_seconds: Option<f64>,
+    format: Option<String>,
+    pause_gpu_services: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EutherStudioLyricsRequest {
+    prompt: String,
+    lyrics: Option<String>,
+    instrumental: Option<bool>,
+    duration_seconds: Option<f64>,
+    vocal_language: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EutherStudioShareRequest {
+    users: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EutherStudioJobSummary {
+    job_id: String,
+    user: String,
+    owner: String,
+    shared_with: Vec<String>,
+    status: String,
+    created_unix_ms: u64,
+    model: String,
+    prompt: String,
+    lyrics: String,
+    negative_prompt: String,
+    duration_seconds: u32,
+    format: String,
+    metadata_path: String,
+    output_path: String,
+    audio_url: Option<String>,
+    worker_mode: String,
+    phase: String,
+    status_text: String,
+}
+
+struct EutherStudioWorkerConfig {
+    host: String,
+    port: u16,
+    token: Option<String>,
+}
+
+struct EutherStudioWorkerHttpResponse {
+    status: u16,
+    body: Vec<u8>,
 }
 
 impl Default for HostUserPreferences {
@@ -1460,6 +1541,11 @@ impl Default for HostUserPreferences {
             eutherbooks_own_voice_en_path: String::new(),
             eutherbooks_own_voice_en_prompt: eutherbooks_own_voice_prompt("en").to_string(),
             eutherbooks_own_voice_en_locked: false,
+            eutherstudio_default_model: "ace-step-1.5".to_string(),
+            eutherstudio_default_duration_seconds: 120.0,
+            eutherstudio_default_format: "wav".to_string(),
+            eutherstudio_last_prompt: String::new(),
+            eutherstudio_negative_prompt: "distorted vocals, clipping, harsh noise".to_string(),
         }
     }
 }
@@ -1683,6 +1769,121 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         ("GET", path) if is_eutherpal_tv_apk_download_path(path) => send_eutherpal_tv_apk(stream),
         ("GET", path) | ("POST", path) if is_eutherpal_proxy_path(path) => {
             proxy_eutherpal_request(stream, &request)
+        }
+        ("GET", EUTHERSTUDIO_PATH) => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_eutherstudio_page(stream, &user)
+        }
+        ("GET", "/api/studio/settings") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &read_eutherstudio_settings(&user)?)
+        }
+        ("POST", "/api/studio/settings") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let settings: EutherStudioSettingsRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &save_eutherstudio_settings(&user, settings)?)
+        }
+        ("GET", "/api/studio/jobs") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(
+                stream,
+                &serde_json::json!({ "jobs": list_eutherstudio_jobs(&user)? }),
+            )
+        }
+        ("GET", "/api/studio/shared-jobs") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(
+                stream,
+                &serde_json::json!({ "jobs": list_eutherstudio_shared_jobs(&user)? }),
+            )
+        }
+        ("GET", "/api/studio/share-users") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &eutherstudio_share_users(state, &user)?)
+        }
+        ("GET", "/api/studio/gpu") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_json(stream, &eutherstudio_worker_gpu_status()?)
+        }
+        ("POST", "/api/studio/lyrics/create") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let lyric_request: EutherStudioLyricsRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &eutherstudio_worker_create_lyrics(lyric_request)?)
+        }
+        ("POST", "/api/studio/lyrics/format") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let lyric_request: EutherStudioLyricsRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            send_json(stream, &eutherstudio_worker_format_lyrics(lyric_request)?)
+        }
+        ("GET", path) if is_eutherstudio_audio_path(path) => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            send_eutherstudio_audio(stream, &request, &user, path)
+        }
+        ("POST", path) if is_eutherstudio_share_path(path) => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let share: EutherStudioShareRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            let job_id = eutherstudio_job_id_from_action_path(path, "share")?;
+            send_json(
+                stream,
+                &share_eutherstudio_job(state, &user, &job_id, share)?,
+            )
+        }
+        ("POST", path) if is_eutherstudio_delete_path(path) => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let job_id = eutherstudio_job_id_from_action_path(path, "delete")?;
+            send_json(stream, &delete_eutherstudio_job(&user, &job_id)?)
+        }
+        ("POST", "/api/studio/jobs") => {
+            let user = require_host_user(state, &request)?;
+            if let Err(err) = require_host_permission(state, &user, HostPermission::GenerateMusic) {
+                return send_error(stream, 403, &err.to_string());
+            }
+            let mut job: EutherStudioJobRequest = serde_json::from_slice(&request.body)
+                .map_err(|err| invalid_request(err.to_string()))?;
+            if !is_host_admin(state, &user)? {
+                job.pause_gpu_services = Some(false);
+            }
+            send_json(stream, &create_eutherstudio_job(&user, job)?)
         }
         ("GET", "/api/auth/status") => {
             if let Some(user) = authenticated_user(state, &request)? {
@@ -2414,6 +2615,7 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 can_award_eutherium: form_bool(&form, "can_award_eutherium"),
                 can_camera_admin: form_bool(&form, "can_camera_admin"),
                 can_server_map: form_bool(&form, "can_server_map"),
+                can_generate_music: form_bool(&form, "can_generate_music"),
                 can_euthersync_media_backup: form_bool(&form, "can_euthersync_media_backup"),
                 can_euthersync_feed_post: form_bool(&form, "can_euthersync_feed_post"),
             };
@@ -3129,6 +3331,7 @@ enum HostPermission {
     ManageLibrary,
     CameraAdmin,
     ServerMap,
+    GenerateMusic,
 }
 
 fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermissions> {
@@ -3148,6 +3351,7 @@ fn host_permissions(state: &HostState, username: &str) -> io::Result<HostPermiss
             can_award_eutherium: false,
             can_camera_admin: false,
             can_server_map: false,
+            can_generate_music: false,
             can_euthersync_media_backup: false,
             can_euthersync_feed_post: false,
         });
@@ -3177,6 +3381,7 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
             can_award_eutherium: true,
             can_camera_admin: true,
             can_server_map: true,
+            can_generate_music: true,
             can_euthersync_media_backup: true,
             can_euthersync_feed_post: true,
         };
@@ -3189,6 +3394,7 @@ fn host_permissions_for_user(user: &HostUser) -> HostPermissions {
         can_award_eutherium: user.can_award_eutherium,
         can_camera_admin: user.can_camera_admin,
         can_server_map: user.can_server_map,
+        can_generate_music: user.can_generate_music,
         can_euthersync_media_backup: host_user_euthersync_media_backup(user),
         can_euthersync_feed_post: host_user_euthersync_feed_post(user),
     }
@@ -3207,6 +3413,7 @@ fn require_host_permission(
         HostPermission::ManageLibrary => permissions.can_manage_library,
         HostPermission::CameraAdmin => permissions.can_camera_admin,
         HostPermission::ServerMap => permissions.can_server_map,
+        HostPermission::GenerateMusic => permissions.can_generate_music,
     };
     if allowed {
         Ok(())
@@ -9292,6 +9499,7 @@ fn create_host_user(state: &HostState, username: &str, password: &str) -> io::Re
         can_award_eutherium: false,
         can_camera_admin: false,
         can_server_map: false,
+        can_generate_music: false,
         camera_rotation_degrees: 0,
         camera_refresh_ms: 500,
         euthersync_media_backup: Some(false),
@@ -9372,6 +9580,7 @@ fn set_host_user_permissions(
     user.can_award_eutherium = permissions.can_award_eutherium;
     user.can_camera_admin = permissions.can_camera_admin;
     user.can_server_map = permissions.can_server_map;
+    user.can_generate_music = permissions.can_generate_music;
     user.euthersync_media_backup = Some(permissions.can_euthersync_media_backup);
     user.euthersync_feed_post = Some(permissions.can_euthersync_feed_post);
     save_host_users(&users)
@@ -10650,6 +10859,8 @@ fn send_server_map_page(stream: &mut TcpStream) -> io::Result<()> {
     const reportEl = document.querySelector("#report");
     const substatusEl = document.querySelector("#substatus");
     let csrfToken = "";
+    let isAdmin = false;
+    let latestJobs = [];
     let currentMap = null;
 
     async function jsonFetch(path, options = {}) {
@@ -11868,6 +12079,381 @@ fn resolve_host_static_path(path: &str) -> io::Result<PathBuf> {
 
 fn send_login_page(stream: &mut TcpStream, error: Option<&str>) -> io::Result<()> {
     let body = login_page_html(error);
+    send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
+}
+
+fn send_eutherstudio_page(stream: &mut TcpStream, user: &str) -> io::Result<()> {
+    let safe_user = html_escape(user);
+    let body = format!(
+        r#"<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EutherStudio</title>
+  <style>
+    :root {{ color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #0b0d10; color: #eef3f8; }}
+    body {{ margin: 0; min-height: 100vh; background: #0b0d10; }}
+    main {{ width: min(1040px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 48px; }}
+    header {{ display: flex; justify-content: space-between; gap: 16px; align-items: center; border-bottom: 1px solid #26313d; padding-bottom: 18px; }}
+    h1 {{ margin: 0; font-size: clamp(2rem, 8vw, 4.8rem); line-height: .9; }}
+    p {{ color: #a8b3bf; }}
+    a, button {{ color: inherit; }}
+    a {{ text-decoration: none; color: #8bd3ff; }}
+    section {{ margin-top: 20px; border: 1px solid #26313d; border-radius: 8px; background: #12161c; padding: 16px; }}
+    label {{ display: grid; gap: 6px; color: #c8d2dd; font-size: .9rem; }}
+    textarea, input, select {{ width: 100%; box-sizing: border-box; border: 1px solid #344252; border-radius: 6px; background: #0b0f14; color: #f5f8fb; padding: 10px; font: inherit; }}
+    textarea {{ min-height: 130px; resize: vertical; }}
+    .grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }}
+    .actions {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }}
+    .lyrics-tools {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }}
+    .lyrics-tools label {{ display: inline-flex; width: auto; grid-auto-flow: column; align-items: center; gap: 8px; }}
+    .lyrics-tools input[type="checkbox"] {{ width: auto; }}
+    button {{ border: 1px solid #3b4b5e; border-radius: 6px; background: #1d6fa5; padding: 10px 14px; font-weight: 700; cursor: pointer; }}
+    button.secondary {{ background: #18212b; }}
+    button:disabled {{ opacity: .55; cursor: wait; }}
+    .status {{ min-height: 1.4em; color: #9fd28f; }}
+    .live {{ display: none; margin-top: 14px; border: 1px solid #31506a; border-radius: 6px; background: #0d1720; padding: 12px; }}
+    .live.active {{ display: block; }}
+    .live strong {{ display: block; }}
+    .live span {{ color: #a8b3bf; }}
+    .jobs {{ display: grid; gap: 10px; }}
+    .job {{ border: 1px solid #26313d; border-radius: 6px; padding: 12px; background: #0f1318; }}
+    .job.running {{ border-color: #2d91d0; box-shadow: inset 3px 0 0 #2d91d0; }}
+    .job strong {{ display: block; }}
+    .job small {{ color: #8d9aa7; word-break: break-word; }}
+    .job audio {{ width: 100%; margin-top: 10px; }}
+    .job .download {{ display: inline-flex; margin-top: 10px; font-weight: 700; }}
+    .job-actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }}
+    .job-actions button {{ padding: 8px 10px; background: #18212b; }}
+    .job-actions button.danger {{ border-color: #7c3d45; background: #351820; color: #ffd8dd; }}
+    .badge {{ display: inline-flex; align-items: center; min-height: 24px; border: 1px solid #3b4b5e; border-radius: 999px; padding: 0 9px; margin-top: 10px; margin-right: 8px; color: #c8d2dd; font-size: .85rem; }}
+    .progress {{ margin-top: 10px; height: 8px; border-radius: 999px; background: #18222d; overflow: hidden; }}
+    .progress span {{ display: block; height: 100%; background: #2d91d0; }}
+    .job.running .progress span {{ background: linear-gradient(90deg, #2d91d0, #85d6ff, #2d91d0); background-size: 220% 100%; animation: sweep 1.4s linear infinite; }}
+    .pulse {{ display: inline-block; width: .7em; height: .7em; border-radius: 50%; background: #9fd28f; margin-right: 8px; animation: pulse 1s ease-in-out infinite; vertical-align: middle; }}
+    @keyframes sweep {{ from {{ background-position: 0 0; }} to {{ background-position: 220% 0; }} }}
+    @keyframes pulse {{ 0%, 100% {{ opacity: .35; transform: scale(.8); }} 50% {{ opacity: 1; transform: scale(1); }} }}
+    @media (max-width: 720px) {{ header {{ display: block; }} .grid {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p>EutherOxide / privat musikstudio</p>
+        <h1>EutherStudio</h1>
+      </div>
+      <nav><a href="/">Tillbaka</a></nav>
+    </header>
+    <section>
+      <p>Inloggad som <strong>{safe_user}</strong>. Jobb sparas per användare på servern och skickas till RTX-workern när den är tillgänglig.</p>
+      <form id="job-form">
+        <label>Prompt
+          <textarea id="prompt" maxlength="1000" placeholder="warm instrumental synthwave, nostalgic, melodic"></textarea>
+        </label>
+        <label>Negative prompt
+          <input id="negative" maxlength="1000" />
+        </label>
+        <label>Lyrics
+          <textarea id="lyrics" maxlength="5000" placeholder="[Verse 1]
+Funny text here
+
+[Chorus]
+Simple hook here"></textarea>
+        </label>
+        <div class="lyrics-tools">
+          <button class="secondary" id="write-lyrics" type="button">Write lyrics</button>
+          <button class="secondary" id="polish-lyrics" type="button">Polish lyrics</button>
+          <label><input id="instrumental" type="checkbox" /> Instrumental</label>
+        </div>
+        <div class="grid">
+          <label>Model
+            <select id="model"><option value="ace-step-1.5">ACE-Step 1.5</option></select>
+          </label>
+          <label>Duration
+            <input id="duration" type="number" min="15" max="180" step="15" value="120" />
+          </label>
+          <label>Format
+            <select id="format"><option value="wav">WAV</option><option value="mp3">MP3</option></select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="generate" type="submit">Generate</button>
+          <button class="secondary" id="refresh" type="button">Refresh jobs</button>
+          <span class="status" id="status"></span>
+        </div>
+        <div class="live" id="live"></div>
+      </form>
+    </section>
+    <section>
+      <h2>Jobs</h2>
+      <div class="jobs" id="jobs"></div>
+    </section>
+    <section>
+      <h2>Shared with me</h2>
+      <div class="jobs" id="shared-jobs"></div>
+    </section>
+  </main>
+  <script>
+    let csrfToken = "";
+    let isAdmin = false;
+    let latestJobs = [];
+    let latestSharedJobs = [];
+    let shareUsers = [];
+    const status = document.getElementById("status");
+    const jobs = document.getElementById("jobs");
+    const sharedJobs = document.getElementById("shared-jobs");
+    const live = document.getElementById("live");
+    const promptInput = document.getElementById("prompt");
+    const lyricsInput = document.getElementById("lyrics");
+    const instrumentalInput = document.getElementById("instrumental");
+    const negativeInput = document.getElementById("negative");
+    const modelInput = document.getElementById("model");
+    const durationInput = document.getElementById("duration");
+    const formatInput = document.getElementById("format");
+    async function api(path, options = {{}}) {{
+      const headers = {{ ...(options.headers || {{}}) }};
+      if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      if ((options.method || "GET") !== "GET" && csrfToken) headers["X-CSRF-Token"] = csrfToken;
+      const response = await fetch(path, {{ ...options, headers }});
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    }}
+    function setStatus(text) {{ status.textContent = text; }}
+    async function loadSettings() {{
+      const auth = await api("/api/auth/status");
+      csrfToken = auth.csrfToken || "";
+      isAdmin = Boolean(auth.isAdmin);
+      const settings = await api("/api/studio/settings");
+      promptInput.value = settings.lastPrompt || "";
+      negativeInput.value = settings.negativePrompt || "";
+      modelInput.value = settings.defaultModel || "ace-step-1.5";
+      durationInput.value = String(settings.defaultDurationSeconds || 120);
+      formatInput.value = settings.defaultFormat || "wav";
+      try {{
+        const users = await api("/api/studio/share-users");
+        shareUsers = users.users || [];
+      }} catch (err) {{
+        shareUsers = [];
+      }}
+    }}
+    function escapeHtml(value) {{
+      return String(value || "").replace(/[&<>"']/g, (ch) => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }}[ch]));
+    }}
+    function renderJobCard(job, owned) {{
+      const running = job.status === "running" || job.status === "queued";
+      const sharedWith = (job.sharedWith || []).length ? `Delad med: ${{escapeHtml((job.sharedWith || []).join(", "))}}` : "Inte delad";
+      return `
+        <article class="job ${{running ? "running" : ""}}">
+          <strong>${{running ? `<span class="pulse"></span>` : ""}}${{escapeHtml(job.jobId)}} · ${{escapeHtml(job.status)}}</strong>
+          <span>${{escapeHtml(job.model)}} · ${{job.durationSeconds}}s · ${{escapeHtml(job.format)}} · ${{escapeHtml(job.workerMode)}}${{owned ? "" : ` · from ${{escapeHtml(job.owner)}}`}}</span>
+          <div class="progress"><span style="width: ${{progressPercent(job)}}%"></span></div>
+          <small>${{escapeHtml(progressLabel(job))}}</small>
+          <p>${{escapeHtml(job.prompt)}}</p>
+          ${{job.lyrics ? `<details><summary>Lyrics</summary><pre>${{escapeHtml(job.lyrics)}}</pre></details>` : ""}}
+          ${{job.audioUrl ? `<div><span class="badge">${{job.status === "done" ? "Final WAV" : "Preview WAV"}}</span><span class="badge">${{job.status === "done" ? "Hela jobbet klart" : "Finalen jobbar vidare"}}</span></div><audio controls preload="metadata" src="${{job.audioUrl}}"></audio><a class="download" href="${{job.audioUrl}}" download>Download audio</a>` : ""}}
+          ${{owned ? `<div class="job-actions"><button type="button" data-share-job="${{escapeHtml(job.jobId)}}">Share</button><button class="danger" type="button" data-delete-job="${{escapeHtml(job.jobId)}}">Delete</button><span class="badge">${{sharedWith}}</span></div>` : ""}}
+          <small>${{escapeHtml(job.metadataPath)}}</small>
+        </article>
+      `;
+    }}
+    function renderJobs(items) {{
+      latestJobs = items || [];
+      const active = items.find((job) => job.status === "queued" || job.status === "running");
+      renderLive(active);
+      jobs.innerHTML = items.length ? items.map((job) => renderJobCard(job, true)).join("") : "<p>No jobs yet.</p>";
+    }}
+    function renderSharedJobs(items) {{
+      latestSharedJobs = items || [];
+      sharedJobs.innerHTML = items.length ? items.map((job) => renderJobCard(job, false)).join("") : "<p>No shared songs yet.</p>";
+    }}
+    setInterval(() => {{
+      const active = latestJobs.find((job) => job.status === "queued" || job.status === "running");
+      renderLive(active);
+    }}, 1000);
+    function renderLive(job) {{
+      if (!job) {{
+        live.className = "live";
+        live.innerHTML = "";
+        return;
+      }}
+      live.className = "live active";
+      live.innerHTML = `
+        <strong><span class="pulse"></span>${{job.status === "queued" ? "Vantar på RTX-worker" : "Genererar musik"}}</strong>
+        <span>${{job.jobId}} · ${{elapsedLabel(job)}} · ${{progressLabel(job)}}</span>
+        <div class="progress"><span style="width: ${{progressPercent(job)}}%"></span></div>
+      `;
+    }}
+    function elapsedLabel(job) {{
+      const started = Number(job.createdUnixMs || 0);
+      if (!started) return "nyss";
+      const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const minutes = Math.floor(seconds / 60);
+      const rest = String(seconds % 60).padStart(2, "0");
+      return `${{minutes}}:${{rest}}`;
+    }}
+    function progressPercent(job) {{
+      if (job.status === "done") return 100;
+      if (job.status === "failed") return 100;
+      if (job.phase === "ace-step") return 55;
+      if (job.phase === "pausing-gpu-services") return 20;
+      if (job.workerMode === "submitted") return 12;
+      return 6;
+    }}
+    function progressLabel(job) {{
+      if (job.status === "done") return "Klar";
+      if (job.status === "failed") return job.statusText || "Misslyckades";
+      if (job.statusText) return job.statusText;
+      if (job.phase === "ace-step") return "ACE-Step genererar och dekodar ljud...";
+      if (job.phase === "pausing-gpu-services") return "Pausar Comfy/Dots for fri GPU...";
+      if (job.workerMode === "submitted") return "Skickat till RTX-workern...";
+      return job.phase || job.status || "Vantar...";
+    }}
+    async function loadJobs() {{
+      const result = await api("/api/studio/jobs");
+      renderJobs(result.jobs || []);
+      const shared = await api("/api/studio/shared-jobs");
+      renderSharedJobs(shared.jobs || []);
+      return result.jobs || [];
+    }}
+    async function shareJob(jobId) {{
+      const current = latestJobs.find((job) => job.jobId === jobId);
+      const suggestion = (current?.sharedWith || []).join(",") || shareUsers.join(",");
+      const value = window.prompt(`Dela med Music-användare: ${{shareUsers.join(", ") || "inga tillgängliga"}}`, suggestion);
+      if (value === null) return;
+      const users = value.split(",").map((item) => item.trim()).filter(Boolean);
+      await api(`/api/studio/jobs/${{encodeURIComponent(jobId)}}/share`, {{
+        method: "POST",
+        body: JSON.stringify({{ users }}),
+      }});
+      setStatus(users.length ? `Shared with ${{users.join(", ")}}.` : "Sharing cleared.");
+      await loadJobs();
+    }}
+    async function deleteJob(jobId) {{
+      const current = latestJobs.find((job) => job.jobId === jobId);
+      if (!window.confirm(`Ta bort ${{jobId}} från servern? Ljudfil, prompt och metadata raderas.`)) return;
+      if (current && (current.status === "queued" || current.status === "running")) {{
+        setStatus("Cannot delete a queued or running job.");
+        return;
+      }}
+      await api(`/api/studio/jobs/${{encodeURIComponent(jobId)}}/delete`, {{ method: "POST", body: "{{}}" }});
+      setStatus("Deleted.");
+      await loadJobs();
+    }}
+    async function generateLyrics() {{
+      const button = document.getElementById("write-lyrics");
+      button.disabled = true;
+      setStatus("ACE-Step skriver text...");
+      try {{
+        const result = await api("/api/studio/lyrics/create", {{
+          method: "POST",
+          body: JSON.stringify({{
+            prompt: promptInput.value,
+            instrumental: instrumentalInput.checked,
+            durationSeconds: Number(durationInput.value),
+            vocalLanguage: "english",
+          }}),
+        }});
+        const data = result.data || {{}};
+        if (data.caption) promptInput.value = data.caption;
+        if (data.lyrics) lyricsInput.value = data.lyrics;
+        if (data.duration) durationInput.value = String(Math.max(15, Math.min(180, Number(data.duration) || Number(durationInput.value))));
+        setStatus("Lyrics ready.");
+      }} catch (err) {{
+        setStatus(err instanceof Error ? err.message : String(err));
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
+    async function polishLyrics() {{
+      const button = document.getElementById("polish-lyrics");
+      button.disabled = true;
+      setStatus("ACE-Step putsar prompt och text...");
+      try {{
+        const result = await api("/api/studio/lyrics/format", {{
+          method: "POST",
+          body: JSON.stringify({{
+            prompt: promptInput.value,
+            lyrics: lyricsInput.value,
+            durationSeconds: Number(durationInput.value),
+          }}),
+        }});
+        const data = result.data || {{}};
+        if (data.caption) promptInput.value = data.caption;
+        if (data.lyrics) lyricsInput.value = data.lyrics;
+        setStatus("Lyrics polished.");
+      }} catch (err) {{
+        setStatus(err instanceof Error ? err.message : String(err));
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
+    async function pollJobsUntilSettled() {{
+      for (let index = 0; index < 480; index++) {{
+        const items = await loadJobs();
+        if (!items.some((job) => job.status === "queued" || job.status === "running")) return;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }}
+    }}
+    document.getElementById("refresh").addEventListener("click", () => loadJobs().catch((err) => setStatus(err.message)));
+    jobs.addEventListener("click", (event) => {{
+      const shareButton = event.target.closest("[data-share-job]");
+      const deleteButton = event.target.closest("[data-delete-job]");
+      if (shareButton) shareJob(shareButton.dataset.shareJob).catch((err) => setStatus(err.message));
+      if (deleteButton) deleteJob(deleteButton.dataset.deleteJob).catch((err) => setStatus(err.message));
+    }});
+    document.getElementById("write-lyrics").addEventListener("click", () => generateLyrics());
+    document.getElementById("polish-lyrics").addEventListener("click", () => polishLyrics());
+    instrumentalInput.addEventListener("change", () => {{
+      lyricsInput.disabled = instrumentalInput.checked;
+      if (instrumentalInput.checked && !lyricsInput.value.trim()) lyricsInput.value = "[Instrumental]";
+    }});
+    document.getElementById("job-form").addEventListener("submit", async (event) => {{
+      event.preventDefault();
+      const button = document.getElementById("generate");
+      button.disabled = true;
+      setStatus("Creating job...");
+      try {{
+        let pauseGpuServices = false;
+        if (isAdmin) {{
+          try {{
+            const gpu = await api("/api/studio/gpu");
+            const blockers = gpu.blockers || [];
+            if (blockers.length) {{
+              const names = blockers.map((item) => item.label || item.id || "GPU service").join(", ");
+              pauseGpuServices = window.confirm(`GPU:n används av: ${{names}}. Är du ensam på servern och vill pausa dem under musikgenereringen?`);
+            }}
+          }} catch (gpuErr) {{
+            console.warn("GPU status failed", gpuErr);
+          }}
+        }}
+        const created = await api("/api/studio/jobs", {{
+          method: "POST",
+          body: JSON.stringify({{
+            prompt: promptInput.value,
+            lyrics: lyricsInput.value,
+            instrumental: instrumentalInput.checked,
+            negativePrompt: negativeInput.value,
+            model: modelInput.value,
+            durationSeconds: Number(durationInput.value),
+            format: formatInput.value,
+            pauseGpuServices,
+          }}),
+        }});
+        setStatus(`Job ${{created.status}}.`);
+        await pollJobsUntilSettled();
+      }} catch (err) {{
+        setStatus(err instanceof Error ? err.message : String(err));
+      }} finally {{
+        button.disabled = false;
+      }}
+    }});
+    loadSettings().then(loadJobs).catch((err) => setStatus(err.message));
+  </script>
+</body>
+</html>"#
+    );
     send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes())
 }
 
@@ -13152,9 +13738,9 @@ fn send_response_with_headers(
         "HTTP/1.1 {status} {reason}\r\n\
         Access-Control-Allow-Origin: {cors_origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization, Range\r\n\
          Access-Control-Allow-Credentials: true\r\n\
-         Access-Control-Expose-Headers: Content-Type\r\n\
+         Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges\r\n\
          Cache-Control: no-store\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
@@ -14988,6 +15574,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
     let mut can_award_eutherium = false;
     let mut can_camera_admin = false;
     let mut can_server_map = false;
+    let mut can_generate_music = false;
     let mut camera_rotation_degrees = 0;
     let mut camera_refresh_ms = 500;
     let mut euthersync_media_backup = None;
@@ -15014,6 +15601,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
                     can_award_eutherium,
                     can_camera_admin,
                     can_server_map,
+                    can_generate_music,
                     camera_rotation_degrees,
                     camera_refresh_ms,
                     euthersync_media_backup,
@@ -15031,6 +15619,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_award_eutherium = false;
             can_camera_admin = false;
             can_server_map = false;
+            can_generate_music = false;
             camera_rotation_degrees = 0;
             camera_refresh_ms = 500;
             euthersync_media_backup = None;
@@ -15066,6 +15655,8 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_camera_admin = value;
         } else if let Some(value) = parse_toml_bool_assignment(line, "can_server_map") {
             can_server_map = value;
+        } else if let Some(value) = parse_toml_bool_assignment(line, "can_generate_music") {
+            can_generate_music = value;
         } else if let Some(value) = parse_toml_u16_assignment(line, "camera_rotation_degrees") {
             camera_rotation_degrees = normalize_camera_rotation(value as i32);
         } else if let Some(value) = parse_toml_u16_assignment(line, "camera_refresh_ms") {
@@ -15092,6 +15683,7 @@ fn load_host_users() -> io::Result<Vec<HostUser>> {
             can_award_eutherium,
             can_camera_admin,
             can_server_map,
+            can_generate_music,
             camera_rotation_degrees,
             camera_refresh_ms,
             euthersync_media_backup,
@@ -15146,6 +15738,10 @@ fn save_host_users(users: &[HostUser]) -> io::Result<()> {
         ));
         contents.push_str(&format!("can_camera_admin = {}\n", user.can_camera_admin));
         contents.push_str(&format!("can_server_map = {}\n", user.can_server_map));
+        contents.push_str(&format!(
+            "can_generate_music = {}\n",
+            user.can_generate_music
+        ));
         contents.push_str(&format!(
             "camera_rotation_degrees = {}\n",
             user.camera_rotation_degrees
@@ -15561,6 +16157,61 @@ fn host_user_settings_path(user: &str) -> PathBuf {
     host_user_data_dir(user).join("settings.toml")
 }
 
+fn eutherstudio_dir() -> PathBuf {
+    PathBuf::from("/srv/eutherstudio")
+}
+
+fn eutherstudio_config_dir() -> PathBuf {
+    eutherstudio_dir().join("config")
+}
+
+fn eutherstudio_worker_token_path() -> PathBuf {
+    eutherstudio_config_dir().join("worker_token")
+}
+
+fn eutherstudio_workers_config_path() -> PathBuf {
+    eutherstudio_config_dir().join("gpu_workers.toml")
+}
+
+fn eutherstudio_jobs_dir() -> PathBuf {
+    eutherstudio_dir().join("jobs")
+}
+
+fn eutherstudio_job_state_dir(state: &str) -> PathBuf {
+    eutherstudio_jobs_dir().join(state)
+}
+
+fn eutherstudio_users_dir() -> PathBuf {
+    eutherstudio_dir().join("users")
+}
+
+fn eutherstudio_user_dir(user: &str) -> PathBuf {
+    eutherstudio_users_dir().join(host_user_storage_name(user))
+}
+
+fn eutherstudio_user_output_dir(user: &str) -> PathBuf {
+    eutherstudio_user_dir(user).join("output")
+}
+
+fn eutherstudio_user_metadata_dir(user: &str) -> PathBuf {
+    eutherstudio_user_dir(user).join("metadata")
+}
+
+fn eutherstudio_user_prompts_dir(user: &str) -> PathBuf {
+    eutherstudio_user_dir(user).join("prompts")
+}
+
+fn ensure_eutherstudio_user_dirs(user: &str) -> io::Result<()> {
+    fs::create_dir_all(eutherstudio_config_dir())?;
+    fs::create_dir_all(eutherstudio_user_output_dir(user))?;
+    fs::create_dir_all(eutherstudio_user_metadata_dir(user))?;
+    fs::create_dir_all(eutherstudio_user_prompts_dir(user))?;
+    for state in ["queued", "running", "done", "failed"] {
+        fs::create_dir_all(eutherstudio_job_state_dir(state))?;
+    }
+    Ok(())
+}
+
 fn ensure_host_user_data_dir(user: &str) -> io::Result<PathBuf> {
     let dir = host_user_data_dir(user);
     fs::create_dir_all(&dir)?;
@@ -15743,7 +16394,12 @@ fn parse_toml_assignment(line: &str, key: &str) -> Option<String> {
         return None;
     }
     let value = value.trim().trim_matches('"');
-    Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
+    Some(
+        value
+            .replace("\\n", "\n")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\"),
+    )
 }
 
 fn parse_toml_bool_assignment(line: &str, key: &str) -> Option<bool> {
@@ -15781,7 +16437,11 @@ fn parse_toml_f64(contents: &str, key: &str) -> Option<f64> {
 }
 
 fn toml_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "")
+        .replace('"', "\\\"")
 }
 
 fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
@@ -15906,7 +16566,1124 @@ fn read_host_user_preferences(user: &str) -> io::Result<HostUserPreferences> {
     if let Some(value) = parse_toml_bool(&contents, "eutherbooks_own_voice_en_locked") {
         preferences.eutherbooks_own_voice_en_locked = value;
     }
+    if let Some(value) = parse_toml_string(&contents, "eutherstudio_default_model") {
+        preferences.eutherstudio_default_model = clean_eutherstudio_model(&value);
+    }
+    if let Some(value) = parse_toml_f64(&contents, "eutherstudio_default_duration_seconds") {
+        preferences.eutherstudio_default_duration_seconds = clamp_f64(
+            value.round(),
+            15.0,
+            180.0,
+            preferences.eutherstudio_default_duration_seconds,
+        );
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherstudio_default_format") {
+        preferences.eutherstudio_default_format = clean_eutherstudio_format(&value);
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherstudio_last_prompt") {
+        preferences.eutherstudio_last_prompt =
+            clean_eutherstudio_prompt(&value, &preferences.eutherstudio_last_prompt);
+    }
+    if let Some(value) = parse_toml_string(&contents, "eutherstudio_negative_prompt") {
+        preferences.eutherstudio_negative_prompt =
+            clean_eutherstudio_prompt(&value, &preferences.eutherstudio_negative_prompt);
+    }
     Ok(preferences)
+}
+
+fn eutherstudio_settings_json(preferences: &HostUserPreferences) -> serde_json::Value {
+    serde_json::json!({
+        "defaultModel": preferences.eutherstudio_default_model,
+        "defaultDurationSeconds": preferences.eutherstudio_default_duration_seconds as u32,
+        "defaultFormat": preferences.eutherstudio_default_format,
+        "lastPrompt": preferences.eutherstudio_last_prompt,
+        "negativePrompt": preferences.eutherstudio_negative_prompt,
+    })
+}
+
+fn read_eutherstudio_settings(user: &str) -> io::Result<serde_json::Value> {
+    let preferences = read_host_user_preferences(user)?;
+    Ok(eutherstudio_settings_json(&preferences))
+}
+
+fn is_eutherstudio_audio_path(path: &str) -> bool {
+    path.starts_with("/api/studio/jobs/") && path.ends_with("/audio")
+}
+
+fn is_eutherstudio_share_path(path: &str) -> bool {
+    path.starts_with("/api/studio/jobs/") && path.ends_with("/share")
+}
+
+fn is_eutherstudio_delete_path(path: &str) -> bool {
+    path.starts_with("/api/studio/jobs/") && path.ends_with("/delete")
+}
+
+fn eutherstudio_job_id_from_action_path(path: &str, action: &str) -> io::Result<String> {
+    let suffix = format!("/{action}");
+    let raw = path
+        .strip_prefix("/api/studio/jobs/")
+        .and_then(|value| value.strip_suffix(&suffix))
+        .ok_or_else(|| invalid_request("invalid studio job path"))?;
+    let job_id = percent_decode(raw)?;
+    if !is_safe_eutherstudio_job_id(&job_id) {
+        return Err(invalid_request("invalid job id"));
+    }
+    Ok(job_id)
+}
+
+fn eutherstudio_job_audio_url(job_id: &str) -> String {
+    format!("/api/studio/jobs/{}/audio", percent_encode_path(job_id))
+}
+
+fn eutherstudio_job_audio_url_for_path(job_id: &str, output_path: &Path) -> String {
+    let base = eutherstudio_job_audio_url(job_id);
+    let version = fs::metadata(output_path)
+        .ok()
+        .and_then(|metadata| {
+            let len = metadata.len();
+            let modified = metadata
+                .modified()
+                .ok()?
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            Some(format!("{modified}-{len}"))
+        })
+        .unwrap_or_else(|| unix_ms_now().to_string());
+    format!("{base}?v={version}")
+}
+
+fn is_safe_eutherstudio_job_id(job_id: &str) -> bool {
+    !job_id.is_empty()
+        && job_id.len() <= 120
+        && job_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn parse_eutherstudio_shared_with(contents: &str) -> Vec<String> {
+    parse_toml_string(contents, "shared_with")
+        .unwrap_or_default()
+        .split(',')
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn eutherstudio_metadata_user(contents: &str) -> String {
+    parse_toml_string(contents, "user").unwrap_or_default()
+}
+
+fn eutherstudio_job_summary_from_metadata(
+    viewer: &str,
+    metadata_path: &Path,
+    contents: &str,
+) -> EutherStudioJobSummary {
+    let job_id = parse_toml_string(contents, "job_id").unwrap_or_default();
+    let owner = eutherstudio_metadata_user(contents);
+    let output_path = parse_toml_string(contents, "output_path").unwrap_or_default();
+    let output_path_ref = Path::new(&output_path);
+    let audio_url = (!job_id.is_empty() && output_path_ref.is_file())
+        .then(|| eutherstudio_job_audio_url_for_path(&job_id, output_path_ref));
+    let worker_mode = parse_toml_string(contents, "mode").unwrap_or_else(|| "unknown".to_string());
+    let phase = parse_toml_string(contents, "phase").unwrap_or_else(|| {
+        parse_toml_string(contents, "status").unwrap_or_else(|| "unknown".to_string())
+    });
+    let status_text = parse_toml_string(contents, "status_text")
+        .or_else(|| parse_toml_string(contents, "error"))
+        .unwrap_or_default();
+    EutherStudioJobSummary {
+        job_id,
+        user: viewer.to_string(),
+        owner,
+        shared_with: parse_eutherstudio_shared_with(contents),
+        status: parse_toml_string(contents, "status").unwrap_or_else(|| "unknown".to_string()),
+        created_unix_ms: parse_toml_u64(contents, "created_unix_ms").unwrap_or(0),
+        model: parse_toml_string(contents, "model").unwrap_or_else(|| "ace-step-1.5".to_string()),
+        prompt: parse_toml_string(contents, "prompt").unwrap_or_default(),
+        lyrics: parse_toml_string(contents, "lyrics").unwrap_or_default(),
+        negative_prompt: parse_toml_string(contents, "negative_prompt").unwrap_or_default(),
+        duration_seconds: parse_toml_u64(contents, "duration_seconds")
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        format: parse_toml_string(contents, "format").unwrap_or_else(|| "wav".to_string()),
+        metadata_path: metadata_path.display().to_string(),
+        output_path,
+        audio_url,
+        worker_mode,
+        phase,
+        status_text,
+    }
+}
+
+fn find_eutherstudio_accessible_metadata(
+    viewer: &str,
+    job_id: &str,
+) -> io::Result<Option<(String, PathBuf)>> {
+    let own_path = eutherstudio_user_metadata_dir(viewer).join(format!("{job_id}.toml"));
+    if own_path.is_file() {
+        return Ok(Some((viewer.to_string(), own_path)));
+    }
+    let users_dir = eutherstudio_users_dir();
+    if !users_dir.is_dir() {
+        return Ok(None);
+    }
+    for user_entry in fs::read_dir(users_dir)? {
+        let user_entry = user_entry?;
+        if !user_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let owner = user_entry.file_name().to_string_lossy().to_string();
+        if owner == host_user_storage_name(viewer) {
+            continue;
+        }
+        let path = user_entry
+            .path()
+            .join("metadata")
+            .join(format!("{job_id}.toml"));
+        if !path.is_file() {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)?;
+        if parse_eutherstudio_shared_with(&contents)
+            .iter()
+            .any(|recipient| recipient == viewer)
+        {
+            return Ok(Some((eutherstudio_metadata_user(&contents), path)));
+        }
+    }
+    Ok(None)
+}
+
+fn send_eutherstudio_audio(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    user: &str,
+    path: &str,
+) -> io::Result<()> {
+    let trimmed = path.split('?').next().unwrap_or(path);
+    let Some(job_id) = trimmed
+        .strip_prefix("/api/studio/jobs/")
+        .and_then(|value| value.strip_suffix("/audio"))
+    else {
+        return send_error(stream, 404, "audio not found");
+    };
+    let job_id = percent_decode(job_id)?;
+    if !is_safe_eutherstudio_job_id(&job_id) {
+        return send_error(stream, 404, "audio not found");
+    }
+    let Some((owner, metadata_path)) = find_eutherstudio_accessible_metadata(user, &job_id)? else {
+        return send_error(stream, 404, "audio not found");
+    };
+    let metadata = fs::read_to_string(metadata_path)?;
+    let output_path = parse_toml_string(&metadata, "output_path")
+        .ok_or_else(|| invalid_request("job output missing"))?;
+    let output_path = PathBuf::from(output_path);
+    let output_root = eutherstudio_user_output_dir(&owner).canonicalize()?;
+    let output_path = output_path.canonicalize()?;
+    if !output_path.starts_with(output_root) || !output_path.is_file() {
+        return send_error(stream, 404, "audio not ready");
+    }
+    let content_type = match output_path.extension().and_then(|value| value.to_str()) {
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("flac") => "audio/flac",
+        Some("ogg") | Some("opus") => "audio/ogg",
+        _ => "application/octet-stream",
+    };
+    send_audio_file_response(
+        stream,
+        content_type,
+        &output_path,
+        header_value(request, "Range"),
+    )
+}
+
+fn send_audio_file_response(
+    stream: &mut TcpStream,
+    content_type: &str,
+    path: &Path,
+    range_header: Option<&str>,
+) -> io::Result<()> {
+    let body = fs::read(path)?;
+    let total = body.len();
+    if total == 0 {
+        return send_response_with_headers(
+            stream,
+            200,
+            content_type,
+            &body,
+            &[("Accept-Ranges", "bytes")],
+        );
+    }
+    if let Some(range) = range_header.and_then(|value| value.strip_prefix("bytes=")) {
+        let (start_raw, end_raw) = range.split_once('-').unwrap_or((range, ""));
+        let start = start_raw
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(0)
+            .min(total - 1);
+        let end = if end_raw.trim().is_empty() {
+            total - 1
+        } else {
+            end_raw
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(total - 1)
+                .min(total - 1)
+        };
+        if start <= end {
+            let chunk = &body[start..=end];
+            let cors_origin = response_cors_origin();
+            write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\n\
+                 Access-Control-Allow-Origin: {cors_origin}\r\n\
+                 Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+                 Access-Control-Allow-Headers: Content-Type, X-Rom-Name, X-CSRF-Token, X-Euther-App-Token, Authorization, Range\r\n\
+                 Access-Control-Allow-Credentials: true\r\n\
+                 Access-Control-Expose-Headers: Content-Type, Content-Range, Accept-Ranges\r\n\
+                 Accept-Ranges: bytes\r\n\
+                 Cache-Control: no-store\r\n\
+                 Content-Type: {content_type}\r\n\
+                 Content-Range: bytes {start}-{end}/{total}\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
+                chunk.len()
+            )?;
+            return stream.write_all(chunk);
+        }
+    }
+    send_response_with_headers(
+        stream,
+        200,
+        content_type,
+        &body,
+        &[("Accept-Ranges", "bytes")],
+    )
+}
+
+fn save_eutherstudio_settings(
+    user: &str,
+    settings: EutherStudioSettingsRequest,
+) -> io::Result<serde_json::Value> {
+    let mut preferences = read_host_user_preferences(user)?;
+    preferences.eutherstudio_default_model = clean_eutherstudio_model(&settings.default_model);
+    preferences.eutherstudio_default_duration_seconds = clamp_f64(
+        settings.default_duration_seconds.round(),
+        15.0,
+        180.0,
+        120.0,
+    );
+    preferences.eutherstudio_default_format = clean_eutherstudio_format(&settings.default_format);
+    preferences.eutherstudio_last_prompt = clean_eutherstudio_prompt(&settings.last_prompt, "");
+    preferences.eutherstudio_negative_prompt = clean_eutherstudio_prompt(
+        &settings.negative_prompt,
+        "distorted vocals, clipping, harsh noise",
+    );
+    save_host_user_preferences(user, preferences)?;
+    read_eutherstudio_settings(user)
+}
+
+fn create_eutherstudio_job(
+    user: &str,
+    request: EutherStudioJobRequest,
+) -> io::Result<EutherStudioJobSummary> {
+    ensure_eutherstudio_user_dirs(user)?;
+    let mut preferences = read_host_user_preferences(user)?;
+    let prompt = clean_eutherstudio_prompt(&request.prompt, "");
+    if prompt.is_empty() {
+        return Err(invalid_request("prompt is required"));
+    }
+    let instrumental = request.instrumental.unwrap_or(false);
+    let lyrics = if instrumental {
+        "[Instrumental]".to_string()
+    } else {
+        request
+            .lyrics
+            .as_deref()
+            .map(clean_eutherstudio_lyrics)
+            .unwrap_or_default()
+    };
+    let negative_prompt = request
+        .negative_prompt
+        .as_deref()
+        .map(|value| clean_eutherstudio_prompt(value, ""))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| preferences.eutherstudio_negative_prompt.clone());
+    let model = request
+        .model
+        .as_deref()
+        .map(clean_eutherstudio_model)
+        .unwrap_or_else(|| preferences.eutherstudio_default_model.clone());
+    let format = request
+        .format
+        .as_deref()
+        .map(clean_eutherstudio_format)
+        .unwrap_or_else(|| preferences.eutherstudio_default_format.clone());
+    let duration_seconds = clamp_f64(
+        request
+            .duration_seconds
+            .unwrap_or(preferences.eutherstudio_default_duration_seconds)
+            .round(),
+        15.0,
+        180.0,
+        120.0,
+    ) as u32;
+    preferences.eutherstudio_last_prompt = prompt.clone();
+    preferences.eutherstudio_negative_prompt = negative_prompt.clone();
+    preferences.eutherstudio_default_model = model.clone();
+    preferences.eutherstudio_default_format = format.clone();
+    preferences.eutherstudio_default_duration_seconds = duration_seconds as f64;
+    save_host_user_preferences(user, preferences)?;
+
+    let created_unix_ms = unix_ms_now();
+    let job_id = format!("{}-{}", host_user_storage_name(user), created_unix_ms);
+    let output_path = eutherstudio_user_output_dir(user).join(format!("{job_id}.{format}"));
+    let metadata_path = eutherstudio_user_metadata_dir(user).join(format!("{job_id}.toml"));
+    let queued_path = eutherstudio_job_state_dir("queued").join(format!("{job_id}.toml"));
+    let done_path = eutherstudio_job_state_dir("done").join(format!("{job_id}.toml"));
+    let failed_path = eutherstudio_job_state_dir("failed").join(format!("{job_id}.toml"));
+    let prompt_path = eutherstudio_user_prompts_dir(user).join(format!("{job_id}.txt"));
+    fs::write(&prompt_path, &prompt)?;
+
+    let mut status = "queued".to_string();
+    let mut worker_mode = "not-submitted".to_string();
+    let mut worker_error = String::new();
+    let mut worker_host = "192.168.32.88".to_string();
+    let mut worker_port = 8795u16;
+    let mut finished_unix_ms = 0u64;
+    let mut metadata = format!(
+        "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
+        toml_escape(&job_id),
+        toml_escape(user),
+        toml_escape(&status),
+        "queued",
+        created_unix_ms,
+        finished_unix_ms,
+        toml_escape(&metadata_path.display().to_string()),
+        toml_escape(&output_path.display().to_string()),
+        toml_escape(&model),
+        toml_escape(&prompt),
+        toml_escape(&lyrics),
+        instrumental,
+        toml_escape(&negative_prompt),
+        duration_seconds,
+        toml_escape(&format),
+        toml_escape(&worker_host),
+        worker_port,
+        toml_escape(&worker_mode),
+        toml_escape(&worker_error),
+    );
+    fs::write(&metadata_path, &metadata)?;
+    fs::write(&queued_path, &metadata)?;
+    match submit_eutherstudio_worker_job(
+        &job_id,
+        user,
+        &model,
+        &prompt,
+        &lyrics,
+        instrumental,
+        &negative_prompt,
+        duration_seconds,
+        &format,
+        &output_path,
+        request.pause_gpu_services.unwrap_or(false),
+    ) {
+        Ok(result) => {
+            status = parse_toml_string(&result, "status").unwrap_or_else(|| "done".to_string());
+            worker_mode =
+                parse_toml_string(&result, "mode").unwrap_or_else(|| "worker".to_string());
+            worker_host = parse_toml_string(&result, "host").unwrap_or(worker_host);
+            worker_port = parse_toml_u64(&result, "port")
+                .map(|value| value.min(u16::MAX as u64) as u16)
+                .unwrap_or(worker_port);
+            finished_unix_ms = unix_ms_now();
+            metadata = format!(
+                "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"\"\n",
+                toml_escape(&job_id),
+                toml_escape(user),
+                toml_escape(&status),
+                toml_escape(&status),
+                created_unix_ms,
+                finished_unix_ms,
+                toml_escape(&metadata_path.display().to_string()),
+                toml_escape(&output_path.display().to_string()),
+                toml_escape(&model),
+                toml_escape(&prompt),
+                toml_escape(&lyrics),
+                instrumental,
+                toml_escape(&negative_prompt),
+                duration_seconds,
+                toml_escape(&format),
+                toml_escape(&worker_host),
+                worker_port,
+                toml_escape(&worker_mode),
+            );
+            fs::write(&metadata_path, &metadata)?;
+            let _ = fs::remove_file(&queued_path);
+            if status == "done" {
+                fs::write(&done_path, &metadata)?;
+            } else if status == "failed" {
+                fs::write(&failed_path, &metadata)?;
+            } else {
+                fs::write(&queued_path, &metadata)?;
+            }
+        }
+        Err(err) => {
+            status = "queued".to_string();
+            worker_mode = "submit-failed".to_string();
+            worker_error = err.to_string();
+            metadata = format!(
+                "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"\"\nstatus = \"{}\"\nphase = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
+                toml_escape(&job_id),
+                toml_escape(user),
+                toml_escape(&status),
+                "submit-failed",
+                created_unix_ms,
+                finished_unix_ms,
+                toml_escape(&metadata_path.display().to_string()),
+                toml_escape(&output_path.display().to_string()),
+                toml_escape(&model),
+                toml_escape(&prompt),
+                toml_escape(&lyrics),
+                instrumental,
+                toml_escape(&negative_prompt),
+                duration_seconds,
+                toml_escape(&format),
+                toml_escape(&worker_host),
+                worker_port,
+                toml_escape(&worker_mode),
+                toml_escape(&worker_error),
+            );
+            fs::write(&metadata_path, &metadata)?;
+            fs::write(&queued_path, &metadata)?;
+        }
+    }
+    Ok(EutherStudioJobSummary {
+        job_id,
+        user: user.to_string(),
+        owner: user.to_string(),
+        shared_with: Vec::new(),
+        status,
+        created_unix_ms,
+        model,
+        prompt,
+        lyrics,
+        negative_prompt,
+        duration_seconds,
+        format,
+        metadata_path: metadata_path.display().to_string(),
+        output_path: output_path.display().to_string(),
+        audio_url: output_path.is_file().then(|| {
+            eutherstudio_job_audio_url_for_path(
+                &parse_toml_string(&metadata, "job_id").unwrap_or_default(),
+                &output_path,
+            )
+        }),
+        worker_mode,
+        phase: "submitted".to_string(),
+        status_text: String::new(),
+    })
+}
+
+fn list_eutherstudio_jobs(user: &str) -> io::Result<Vec<EutherStudioJobSummary>> {
+    ensure_eutherstudio_user_dirs(user)?;
+    let mut jobs = Vec::new();
+    let metadata_dir = eutherstudio_user_metadata_dir(user);
+    for entry in fs::read_dir(metadata_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)?;
+        let contents = refresh_eutherstudio_job_from_worker(user, &path, &contents)?;
+        jobs.push(eutherstudio_job_summary_from_metadata(
+            user, &path, &contents,
+        ));
+    }
+    jobs.sort_by(|a, b| b.created_unix_ms.cmp(&a.created_unix_ms));
+    Ok(jobs)
+}
+
+fn list_eutherstudio_shared_jobs(user: &str) -> io::Result<Vec<EutherStudioJobSummary>> {
+    ensure_eutherstudio_user_dirs(user)?;
+    let mut jobs = Vec::new();
+    let users_dir = eutherstudio_users_dir();
+    if !users_dir.is_dir() {
+        return Ok(jobs);
+    }
+    for user_entry in fs::read_dir(users_dir)? {
+        let user_entry = user_entry?;
+        if !user_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let metadata_dir = user_entry.path().join("metadata");
+        if !metadata_dir.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(metadata_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            let contents = fs::read_to_string(&path)?;
+            let owner = eutherstudio_metadata_user(&contents);
+            if owner == user {
+                continue;
+            }
+            if parse_eutherstudio_shared_with(&contents)
+                .iter()
+                .any(|recipient| recipient == user)
+            {
+                jobs.push(eutherstudio_job_summary_from_metadata(
+                    user, &path, &contents,
+                ));
+            }
+        }
+    }
+    jobs.sort_by(|a, b| b.created_unix_ms.cmp(&a.created_unix_ms));
+    Ok(jobs)
+}
+
+fn eutherstudio_share_users(
+    state: &HostState,
+    current_user: &str,
+) -> io::Result<serde_json::Value> {
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let users = users
+        .iter()
+        .filter(|user| user.name != current_user && !user.banned)
+        .filter(|user| host_permissions_for_user(user).can_generate_music)
+        .map(|user| user.name.clone())
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({ "users": users }))
+}
+
+fn set_toml_string_line(contents: &str, key: &str, value: &str) -> String {
+    let assignment = format!("{key} = \"{}\"", toml_escape(value));
+    let mut found = false;
+    let mut lines = Vec::new();
+    for line in contents.lines() {
+        if line
+            .split_once('=')
+            .is_some_and(|(name, _)| name.trim() == key)
+        {
+            lines.push(assignment.clone());
+            found = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !found {
+        let insert_at = lines
+            .iter()
+            .position(|line| {
+                line.split_once('=')
+                    .is_some_and(|(name, _)| name.trim() == "user")
+            })
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        lines.insert(insert_at, assignment);
+    }
+    let mut output = lines.join("\n");
+    output.push('\n');
+    output
+}
+
+fn sync_eutherstudio_state_metadata(job_id: &str, contents: &str) -> io::Result<()> {
+    for state in ["queued", "running", "done", "failed"] {
+        let _ = fs::remove_file(eutherstudio_job_state_dir(state).join(format!("{job_id}.toml")));
+    }
+    let status = parse_toml_string(contents, "status").unwrap_or_else(|| "queued".to_string());
+    let target = match status.as_str() {
+        "done" => "done",
+        "failed" => "failed",
+        "running" => "running",
+        _ => "queued",
+    };
+    fs::write(
+        eutherstudio_job_state_dir(target).join(format!("{job_id}.toml")),
+        contents,
+    )
+}
+
+fn share_eutherstudio_job(
+    state: &HostState,
+    owner: &str,
+    job_id: &str,
+    request: EutherStudioShareRequest,
+) -> io::Result<serde_json::Value> {
+    ensure_eutherstudio_user_dirs(owner)?;
+    let metadata_path = eutherstudio_user_metadata_dir(owner).join(format!("{job_id}.toml"));
+    let contents = fs::read_to_string(&metadata_path)?;
+    if eutherstudio_metadata_user(&contents) != owner {
+        return Err(invalid_request("only the owner can share this job"));
+    }
+    let mut recipients = Vec::new();
+    let users = state
+        .users
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    for raw in request.users {
+        let candidate = raw.trim();
+        if candidate.is_empty() || candidate == owner {
+            continue;
+        }
+        validate_host_username(candidate)?;
+        let Some(user) = users
+            .iter()
+            .find(|user| user.name == candidate && !user.banned)
+        else {
+            return Err(invalid_request(format!("unknown active user: {candidate}")));
+        };
+        if !host_permissions_for_user(user).can_generate_music {
+            return Err(invalid_request(format!(
+                "user lacks music permission: {candidate}"
+            )));
+        }
+        if !recipients.iter().any(|item| item == candidate) {
+            recipients.push(candidate.to_string());
+        }
+    }
+    drop(users);
+    recipients.sort();
+    let updated = set_toml_string_line(&contents, "shared_with", &recipients.join(","));
+    fs::write(&metadata_path, &updated)?;
+    sync_eutherstudio_state_metadata(job_id, &updated)?;
+    Ok(serde_json::json!({ "ok": true, "sharedWith": recipients }))
+}
+
+fn delete_eutherstudio_job(owner: &str, job_id: &str) -> io::Result<serde_json::Value> {
+    ensure_eutherstudio_user_dirs(owner)?;
+    let metadata_path = eutherstudio_user_metadata_dir(owner).join(format!("{job_id}.toml"));
+    let contents = fs::read_to_string(&metadata_path)?;
+    if eutherstudio_metadata_user(&contents) != owner {
+        return Err(invalid_request("only the owner can delete this job"));
+    }
+    let status = parse_toml_string(&contents, "status").unwrap_or_default();
+    if matches!(status.as_str(), "queued" | "running") {
+        return Err(invalid_request("cannot delete a queued or running job"));
+    }
+    if let Some(output_path) = parse_toml_string(&contents, "output_path") {
+        let output_path = PathBuf::from(output_path);
+        if output_path.is_file() {
+            let output_root = eutherstudio_user_output_dir(owner).canonicalize()?;
+            let canonical = output_path.canonicalize()?;
+            if canonical.starts_with(output_root) {
+                fs::remove_file(canonical)?;
+            }
+        }
+    }
+    let prompt_path = eutherstudio_user_prompts_dir(owner).join(format!("{job_id}.txt"));
+    let _ = fs::remove_file(prompt_path);
+    let _ = fs::remove_file(&metadata_path);
+    for state in ["queued", "running", "done", "failed"] {
+        let _ = fs::remove_file(eutherstudio_job_state_dir(state).join(format!("{job_id}.toml")));
+    }
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+fn refresh_eutherstudio_job_from_worker(
+    _user: &str,
+    metadata_path: &Path,
+    contents: &str,
+) -> io::Result<String> {
+    let current_status =
+        parse_toml_string(contents, "status").unwrap_or_else(|| "unknown".to_string());
+    if current_status != "queued" && current_status != "running" {
+        return Ok(contents.to_string());
+    }
+    let job_id = parse_toml_string(contents, "job_id").unwrap_or_default();
+    if job_id.is_empty() {
+        return Ok(contents.to_string());
+    }
+    let config = read_eutherstudio_worker_config();
+    let Some(token) = config.token.as_deref() else {
+        return Ok(contents.to_string());
+    };
+    if parse_toml_string(contents, "mode").as_deref() == Some("submit-failed") {
+        let failed = eutherstudio_metadata_from_existing(
+            contents,
+            "failed",
+            unix_ms_now(),
+            &config.host,
+            config.port,
+            "submit-failed",
+            "submit-failed",
+            &parse_toml_string(contents, "error")
+                .unwrap_or_else(|| "worker submit failed".to_string()),
+            &parse_toml_string(contents, "error")
+                .unwrap_or_else(|| "worker submit failed".to_string()),
+        );
+        fs::write(metadata_path, &failed)?;
+        if let Some(job_id) = parse_toml_string(contents, "job_id") {
+            let queued_path = eutherstudio_job_state_dir("queued").join(format!("{job_id}.toml"));
+            let failed_path = eutherstudio_job_state_dir("failed").join(format!("{job_id}.toml"));
+            let _ = fs::remove_file(queued_path);
+            fs::write(failed_path, &failed)?;
+        }
+        return Ok(failed);
+    }
+    let response = match eutherstudio_worker_json_request(
+        &config,
+        token,
+        "GET",
+        &format!("/jobs/{}", percent_encode_path(&job_id)),
+        None,
+        Duration::from_secs(5),
+    ) {
+        Ok(response) => response,
+        Err(_) => return Ok(contents.to_string()),
+    };
+    if response.status != 200 {
+        return Ok(contents.to_string());
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&response.body).unwrap_or_else(|_| serde_json::json!({}));
+    let worker_status = value
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&current_status);
+    let worker_mode = value
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("ace-step");
+    let worker_error = value
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let worker_phase = value
+        .get("phase")
+        .and_then(|value| value.as_str())
+        .unwrap_or(worker_status);
+    let worker_preview_ready = value
+        .get("preview_ready")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let worker_status_text = value
+        .get("status_text")
+        .and_then(|value| value.as_str())
+        .unwrap_or(worker_error);
+    let mut final_status = worker_status.to_string();
+    let mut finished_unix_ms = parse_toml_u64(contents, "finished_unix_ms").unwrap_or(0);
+    let output_path = parse_toml_string(contents, "output_path").unwrap_or_default();
+    if (worker_status == "done" || worker_preview_ready) && !output_path.is_empty() {
+        let result = eutherstudio_worker_json_request(
+            &config,
+            token,
+            "GET",
+            &format!("/jobs/{}/result", percent_encode_path(&job_id)),
+            None,
+            Duration::from_secs(120),
+        )?;
+        if result.status == 200 {
+            fs::write(&output_path, &result.body)?;
+            if worker_status == "done" {
+                final_status = "done".to_string();
+                finished_unix_ms = unix_ms_now();
+            }
+        }
+    } else if worker_status == "failed" {
+        final_status = "failed".to_string();
+        finished_unix_ms = unix_ms_now();
+    }
+    let updated = eutherstudio_metadata_from_existing(
+        contents,
+        &final_status,
+        finished_unix_ms,
+        &config.host,
+        config.port,
+        worker_mode,
+        worker_phase,
+        worker_error,
+        worker_status_text,
+    );
+    fs::write(metadata_path, &updated)?;
+    let queued_path = eutherstudio_job_state_dir("queued").join(format!("{job_id}.toml"));
+    let done_path = eutherstudio_job_state_dir("done").join(format!("{job_id}.toml"));
+    let failed_path = eutherstudio_job_state_dir("failed").join(format!("{job_id}.toml"));
+    if final_status == "done" {
+        let _ = fs::remove_file(&queued_path);
+        fs::write(done_path, &updated)?;
+    } else if final_status == "failed" {
+        let _ = fs::remove_file(&queued_path);
+        fs::write(failed_path, &updated)?;
+    } else {
+        fs::write(queued_path, &updated)?;
+    }
+    Ok(updated)
+}
+
+fn eutherstudio_metadata_from_existing(
+    contents: &str,
+    status: &str,
+    finished_unix_ms: u64,
+    worker_host: &str,
+    worker_port: u16,
+    worker_mode: &str,
+    worker_phase: &str,
+    worker_error: &str,
+    worker_status_text: &str,
+) -> String {
+    format!(
+        "job_id = \"{}\"\nuser = \"{}\"\nshared_with = \"{}\"\nstatus = \"{}\"\nphase = \"{}\"\nstatus_text = \"{}\"\ncreated_unix_ms = {}\nfinished_unix_ms = {}\nmetadata_path = \"{}\"\noutput_path = \"{}\"\n\n[request]\nmodel = \"{}\"\nprompt = \"{}\"\nlyrics = \"{}\"\ninstrumental = {}\nnegative_prompt = \"{}\"\nduration_seconds = {}\nformat = \"{}\"\n\n[worker]\npreferred = \"rtx4090-main\"\nhost = \"{}\"\nport = {}\nmode = \"{}\"\nerror = \"{}\"\n",
+        toml_escape(&parse_toml_string(contents, "job_id").unwrap_or_default()),
+        toml_escape(&parse_toml_string(contents, "user").unwrap_or_default()),
+        toml_escape(&parse_toml_string(contents, "shared_with").unwrap_or_default()),
+        toml_escape(status),
+        toml_escape(worker_phase),
+        toml_escape(worker_status_text),
+        parse_toml_u64(contents, "created_unix_ms").unwrap_or(0),
+        finished_unix_ms,
+        toml_escape(&parse_toml_string(contents, "metadata_path").unwrap_or_default()),
+        toml_escape(&parse_toml_string(contents, "output_path").unwrap_or_default()),
+        toml_escape(
+            &parse_toml_string(contents, "model").unwrap_or_else(|| "ace-step-1.5".to_string())
+        ),
+        toml_escape(&parse_toml_string(contents, "prompt").unwrap_or_default()),
+        toml_escape(&parse_toml_string(contents, "lyrics").unwrap_or_default()),
+        parse_toml_bool(contents, "instrumental").unwrap_or(false),
+        toml_escape(&parse_toml_string(contents, "negative_prompt").unwrap_or_default()),
+        parse_toml_u64(contents, "duration_seconds").unwrap_or(0),
+        toml_escape(&parse_toml_string(contents, "format").unwrap_or_else(|| "wav".to_string())),
+        toml_escape(worker_host),
+        worker_port,
+        toml_escape(worker_mode),
+        toml_escape(worker_error),
+    )
+}
+
+fn read_eutherstudio_worker_config() -> EutherStudioWorkerConfig {
+    let mut host = "192.168.32.88".to_string();
+    let mut port = 8795u16;
+    if let Ok(contents) = fs::read_to_string(eutherstudio_workers_config_path()) {
+        if let Some(value) = parse_toml_string(&contents, "host") {
+            host = value;
+        }
+        if let Some(value) = parse_toml_u64(&contents, "port") {
+            port = value.min(u16::MAX as u64) as u16;
+        }
+    }
+    let token = fs::read_to_string(eutherstudio_worker_token_path())
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    EutherStudioWorkerConfig { host, port, token }
+}
+
+fn eutherstudio_worker_gpu_status() -> io::Result<serde_json::Value> {
+    let config = read_eutherstudio_worker_config();
+    let Some(token) = config.token.as_deref() else {
+        return Ok(serde_json::json!({
+            "availableForJobs": false,
+            "blockers": [],
+            "error": "missing worker token"
+        }));
+    };
+    let response = eutherstudio_worker_json_request(
+        &config,
+        token,
+        "GET",
+        "/gpu/blockers",
+        None,
+        Duration::from_secs(10),
+    )?;
+    if response.status != 200 {
+        return Ok(serde_json::json!({
+            "availableForJobs": false,
+            "blockers": [],
+            "error": format!("worker returned HTTP {}", response.status)
+        }));
+    }
+    serde_json::from_slice(&response.body).map_err(|err| invalid_request(err.to_string()))
+}
+
+fn eutherstudio_worker_create_lyrics(
+    request: EutherStudioLyricsRequest,
+) -> io::Result<serde_json::Value> {
+    let prompt = clean_eutherstudio_prompt(&request.prompt, "");
+    if prompt.is_empty() {
+        return Err(invalid_request("prompt is required"));
+    }
+    let body = serde_json::json!({
+        "query": prompt,
+        "instrumental": request.instrumental.unwrap_or(false),
+        "duration_seconds": request.duration_seconds.unwrap_or(120.0),
+        "vocal_language": request.vocal_language.unwrap_or_else(|| "english".to_string()),
+    });
+    eutherstudio_worker_json_api("POST", "/lyrics/create", &body, Duration::from_secs(240))
+}
+
+fn eutherstudio_worker_format_lyrics(
+    request: EutherStudioLyricsRequest,
+) -> io::Result<serde_json::Value> {
+    let prompt = clean_eutherstudio_prompt(&request.prompt, "");
+    let lyrics = request
+        .lyrics
+        .as_deref()
+        .map(clean_eutherstudio_lyrics)
+        .unwrap_or_default();
+    if prompt.is_empty() && lyrics.is_empty() {
+        return Err(invalid_request("prompt or lyrics is required"));
+    }
+    let duration = request.duration_seconds.unwrap_or(120.0);
+    let body = serde_json::json!({
+        "prompt": prompt,
+        "lyrics": lyrics,
+        "param_obj": {
+            "duration": duration,
+            "language": request.vocal_language.unwrap_or_else(|| "english".to_string()),
+        },
+    });
+    eutherstudio_worker_json_api("POST", "/lyrics/format", &body, Duration::from_secs(240))
+}
+
+fn eutherstudio_worker_json_api(
+    method: &str,
+    path: &str,
+    body: &serde_json::Value,
+    timeout: Duration,
+) -> io::Result<serde_json::Value> {
+    let config = read_eutherstudio_worker_config();
+    let token = config
+        .token
+        .as_deref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing worker token"))?;
+    let response = eutherstudio_worker_json_request(
+        &config,
+        token,
+        method,
+        path,
+        Some(&body.to_string()),
+        timeout,
+    )?;
+    if response.status != 200 {
+        return Err(io::Error::other(format!(
+            "worker returned HTTP {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        )));
+    }
+    serde_json::from_slice(&response.body).map_err(|err| invalid_request(err.to_string()))
+}
+
+fn submit_eutherstudio_worker_job(
+    job_id: &str,
+    user: &str,
+    model: &str,
+    prompt: &str,
+    lyrics: &str,
+    instrumental: bool,
+    negative_prompt: &str,
+    duration_seconds: u32,
+    format: &str,
+    _output_path: &Path,
+    pause_gpu_services: bool,
+) -> io::Result<String> {
+    let config = read_eutherstudio_worker_config();
+    let token = config
+        .token
+        .as_deref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing worker token"))?;
+    let body = serde_json::json!({
+        "job_id": job_id,
+        "user": user,
+        "model": model,
+        "prompt": prompt,
+        "lyrics": lyrics,
+        "instrumental": instrumental,
+        "negative_prompt": negative_prompt,
+        "duration_seconds": duration_seconds,
+        "format": format,
+        "pause_gpu_services": pause_gpu_services,
+    });
+    let response = eutherstudio_worker_json_request(
+        &config,
+        token,
+        "POST",
+        "/jobs",
+        Some(&body.to_string()),
+        Duration::from_secs(15),
+    )?;
+    if response.status != 200 {
+        return Err(io::Error::other(format!(
+            "worker rejected job with HTTP {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        )));
+    }
+
+    Ok(format!(
+        "status = \"running\"\nhost = \"{}\"\nport = {}\nmode = \"submitted\"\n",
+        toml_escape(&config.host),
+        config.port,
+    ))
+}
+
+fn eutherstudio_worker_json_request(
+    config: &EutherStudioWorkerConfig,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    timeout: Duration,
+) -> io::Result<EutherStudioWorkerHttpResponse> {
+    let mut stream = TcpStream::connect((config.host.as_str(), config.port))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let body = body.unwrap_or("");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\n\
+         Host: {}:{}\r\n\
+         Authorization: Bearer {}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n{}",
+        config.host,
+        config.port,
+        token,
+        body.as_bytes().len(),
+        body
+    )?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw)?;
+    parse_eutherstudio_worker_response(&raw)
+}
+
+fn parse_eutherstudio_worker_response(raw: &[u8]) -> io::Result<EutherStudioWorkerHttpResponse> {
+    let header_end = find_subslice(raw, b"\r\n\r\n")
+        .ok_or_else(|| invalid_request("worker response missing headers"))?;
+    let header = String::from_utf8_lossy(&raw[..header_end]);
+    let status = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(500);
+    Ok(EutherStudioWorkerHttpResponse {
+        status,
+        body: raw[header_end + 4..].to_vec(),
+    })
+}
+
+fn percent_encode_path(value: &str) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            output.push(byte as char);
+        } else {
+            output.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    output
 }
 
 fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> io::Result<()> {
@@ -15982,11 +17759,31 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             500,
         ),
         eutherbooks_own_voice_en_locked: preferences.eutherbooks_own_voice_en_locked,
+        eutherstudio_default_model: clean_eutherstudio_model(
+            &preferences.eutherstudio_default_model,
+        ),
+        eutherstudio_default_duration_seconds: clamp_f64(
+            preferences.eutherstudio_default_duration_seconds.round(),
+            15.0,
+            180.0,
+            120.0,
+        ),
+        eutherstudio_default_format: clean_eutherstudio_format(
+            &preferences.eutherstudio_default_format,
+        ),
+        eutherstudio_last_prompt: clean_eutherstudio_prompt(
+            &preferences.eutherstudio_last_prompt,
+            "",
+        ),
+        eutherstudio_negative_prompt: clean_eutherstudio_prompt(
+            &preferences.eutherstudio_negative_prompt,
+            "distorted vocals, clipping, harsh noise",
+        ),
     };
     fs::write(
         dir.join("settings.toml"),
         format!(
-            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_player_server_url = \"{}\"\neutherbooks_player_username = \"{}\"\neutherbooks_player_model_backend = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\n",
+            "audio_volume = {:.3}\nmic_volume = {:.3}\ndoom_mouse_sensitivity = {:.3}\neutherlist_font_scale = {:.3}\ntheme = \"{}\"\nskin = \"{}\"\neutherbooks_voice = \"{}\"\neutherbooks_player_server_url = \"{}\"\neutherbooks_player_username = \"{}\"\neutherbooks_player_model_backend = \"{}\"\neutherbooks_custom_voice = \"{}\"\neutherbooks_length_scale = {:.3}\neutherbooks_noise_scale = {:.3}\neutherbooks_noise_w = {:.3}\neutherbooks_sentence_silence = {:.3}\neutherbooks_cfg_value = {:.3}\neutherbooks_inference_timesteps = {:.0}\neutherbooks_max_chunk_chars = {:.0}\neutherbooks_seed = {:.0}\neutherbooks_last_book_id = \"{}\"\neutherbooks_last_chapter_index = {:.0}\neutherbooks_auto_generate_next = {}\neutherbooks_own_voice_sv_path = \"{}\"\neutherbooks_own_voice_sv_prompt = \"{}\"\neutherbooks_own_voice_sv_locked = {}\neutherbooks_own_voice_en_path = \"{}\"\neutherbooks_own_voice_en_prompt = \"{}\"\neutherbooks_own_voice_en_locked = {}\neutherstudio_default_model = \"{}\"\neutherstudio_default_duration_seconds = {:.0}\neutherstudio_default_format = \"{}\"\neutherstudio_last_prompt = \"{}\"\neutherstudio_negative_prompt = \"{}\"\n",
             preferences.audio_volume,
             preferences.mic_volume,
             preferences.doom_mouse_sensitivity,
@@ -16014,7 +17811,12 @@ fn save_host_user_preferences(user: &str, preferences: HostUserPreferences) -> i
             preferences.eutherbooks_own_voice_sv_locked,
             toml_escape(&preferences.eutherbooks_own_voice_en_path),
             toml_escape(&preferences.eutherbooks_own_voice_en_prompt),
-            preferences.eutherbooks_own_voice_en_locked
+            preferences.eutherbooks_own_voice_en_locked,
+            toml_escape(&preferences.eutherstudio_default_model),
+            preferences.eutherstudio_default_duration_seconds,
+            toml_escape(&preferences.eutherstudio_default_format),
+            toml_escape(&preferences.eutherstudio_last_prompt),
+            toml_escape(&preferences.eutherstudio_negative_prompt),
         ),
     )
 }
@@ -16328,6 +18130,28 @@ fn clean_eutherbooks_text(value: &str, fallback: &str, max_len: usize) -> String
     }
 }
 
+fn clean_eutherstudio_model(value: &str) -> String {
+    match value.trim() {
+        "ace-step-1.5" => "ace-step-1.5".to_string(),
+        _ => "ace-step-1.5".to_string(),
+    }
+}
+
+fn clean_eutherstudio_format(value: &str) -> String {
+    match value.trim() {
+        "wav" | "mp3" => value.trim().to_string(),
+        _ => "wav".to_string(),
+    }
+}
+
+fn clean_eutherstudio_prompt(value: &str, fallback: &str) -> String {
+    clean_eutherbooks_text(value, fallback, 1000)
+}
+
+fn clean_eutherstudio_lyrics(value: &str) -> String {
+    clean_eutherbooks_text(value, "", 5000)
+}
+
 fn clean_host_user_theme(value: &str) -> String {
     match value {
         "light" | "dark" | "royal-apothic" => value.to_string(),
@@ -16491,7 +18315,12 @@ fn parse_toml_string(contents: &str, key: &str) -> Option<String> {
             return None;
         }
         let value = value.trim().trim_matches('"');
-        Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
+        Some(
+            value
+                .replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\"),
+        )
     })
 }
 
