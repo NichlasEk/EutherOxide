@@ -19679,11 +19679,11 @@ fn login_page_html(error: Option<&str>) -> String {
       <div id="eutherid-login-delivery" hidden>
         <div class="eutherid-login-actions">
           <button id="eutherid-login-local" type="button">EutherID på denna enhet</button>
-          <button id="eutherid-login-other" type="button">EutherID på annan enhet</button>
+          <button id="eutherid-login-other" type="button">Mobilt EutherID</button>
         </div>
         <div id="eutherid-login-qr" class="eutherid-login-qr" hidden></div>
       </div>
-      <p id="eutherid-login-status" class="reset-status">Fingeravtryck eller enhetskod krävs i appen.</p>
+      <p id="eutherid-login-status" class="reset-status">Granska inloggningen och godkänn med fingeravtryck i EutherID-appen.</p>
     </div>
     <details>
       <summary>Glömt lösenordet?</summary>
@@ -19794,7 +19794,7 @@ fn login_page_html(error: Option<&str>) -> String {
     document.getElementById("eutherid-login-other").addEventListener("click", () => {{
       if (!eutherIdLogin) return;
       eutherIdQr.hidden = false;
-      eutherIdStatus.textContent = "Skanna QR-koden med EutherID på den andra enheten.";
+      eutherIdStatus.textContent = "Öppna Mobilt EutherID på telefonen och skanna QR-koden.";
     }});
     document.getElementById("reset-request").addEventListener("click", async () => {{
       const account = document.getElementById("reset-account").value.trim();
