@@ -45,6 +45,7 @@ const HOST_JOX_PAYLOAD_SCHEMA_VERSION: u64 = 1;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
+const HOST_BUSY_WARN_ACTIVE_REQUESTS: usize = 96;
 const HOST_CODEX_USER: &str = "codex";
 const HOST_CODEX_DISPLAY_NAME: &str = "Codex Developer";
 const EUTHERDOGS_SERVER_PUBLISH_HZ: f64 = 60.0;
@@ -1569,6 +1570,17 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         match stream {
             Ok(mut stream) => {
                 let Some(guard) = try_acquire_host_request(&state.active_requests) else {
+                    if let Ok(peer) = stream.peer_addr() {
+                        eprintln!(
+                            "host request limit reached: active_requests={} peer={peer}",
+                            HOST_MAX_ACTIVE_REQUESTS
+                        );
+                    } else {
+                        eprintln!(
+                            "host request limit reached: active_requests={}",
+                            HOST_MAX_ACTIVE_REQUESTS
+                        );
+                    }
                     let _ = send_error(&mut stream, 503, "server busy");
                     continue;
                 };
@@ -1606,6 +1618,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let request = read_http_request(stream)?;
+    let active_requests = state.active_requests.load(Ordering::Relaxed);
+    if active_requests >= HOST_BUSY_WARN_ACTIVE_REQUESTS {
+        let peer = stream
+            .peer_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        eprintln!(
+            "host high active requests: active_requests={active_requests} peer={peer} method={} path={}",
+            request.method, request.path
+        );
+    }
     set_response_cors_origin(cors_origin_for_request(state, &request));
     if request.method == "OPTIONS" {
         return send_empty(stream, 204);
@@ -10048,13 +10071,18 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
     }
     let upstream_base =
         env::var("EUTHERSIGHT_FRIGATE_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:15000".to_string());
+    let upstream_path = camera_frigate_upstream_path(&request.path);
     let mut upstream = match TcpStream::connect(&upstream_base) {
         Ok(upstream) => upstream,
         Err(_) => return send_error(stream, 502, "EutherSight camera upstream unavailable"),
     };
-    upstream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    let read_timeout = if is_camera_frigate_latest_snapshot_path(&upstream_path) {
+        Duration::from_secs(4)
+    } else {
+        Duration::from_secs(60)
+    };
+    upstream.set_read_timeout(Some(read_timeout))?;
     upstream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let upstream_path = camera_frigate_upstream_path(&request.path);
     write!(
         upstream,
         "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
@@ -10080,7 +10108,12 @@ fn proxy_camera_frigate_request(stream: &mut TcpStream, request: &HttpRequest) -
         upstream.write_all(&request.body)?;
     }
     let mut response = Vec::new();
-    upstream.read_to_end(&mut response)?;
+    if let Err(err) = upstream.read_to_end(&mut response) {
+        if err.kind() == io::ErrorKind::TimedOut || err.kind() == io::ErrorKind::WouldBlock {
+            return send_error(stream, 504, "EutherSight camera upstream timed out");
+        }
+        return Err(err);
+    }
     send_camera_frigate_response(stream, &upstream_path, &response)?;
     Ok(())
 }
@@ -10112,6 +10145,10 @@ fn send_camera_frigate_response(
     }
     write!(stream, "Content-Length: {}\r\n\r\n", rewritten.len())?;
     stream.write_all(rewritten.as_bytes())
+}
+
+fn is_camera_frigate_latest_snapshot_path(path: &str) -> bool {
+    path.split('?').next() == Some("/api/yard/latest.jpg")
 }
 
 fn camera_frigate_should_rewrite_response(
@@ -11006,6 +11043,7 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     let liveBytes = 0;
     let eventsTimer = 0;
     let eventsInFlight = false;
+    let snapshotInFlight = false;
     let eventPageIndex = 0;
     let eventPageCursors = [""];
     let eventHasNext = false;
@@ -11093,6 +11131,8 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     }
 
     function refreshSnapshot() {
+      if (snapshotInFlight || !live.complete) return;
+      snapshotInFlight = true;
       live.src = `/api/camera/frigate/api/yard/latest.jpg?ts=${Date.now()}`;
     }
 
@@ -11742,7 +11782,13 @@ fn send_camera_admin_page(stream: &mut TcpStream) -> io::Result<()> {
     liveVolume.addEventListener("input", () => {
       video.volume = Number(liveVolume.value) / 100;
     });
-    live.addEventListener("load", layoutCameraMedia);
+    live.addEventListener("load", () => {
+      snapshotInFlight = false;
+      layoutCameraMedia();
+    });
+    live.addEventListener("error", () => {
+      snapshotInFlight = false;
+    });
     video.addEventListener("loadedmetadata", () => {
       layoutCameraMedia();
       updateLiveStatus("Video metadata");
