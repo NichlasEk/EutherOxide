@@ -13955,6 +13955,13 @@ type SocialChatScrollState = {
   stickToBottom: boolean;
 };
 
+type SocialChatDraftState = {
+  text: string;
+  selectionStart: number;
+  selectionEnd: number;
+  focused: boolean;
+};
+
 function captureSocialChatScrollState(): SocialChatScrollState | null {
   if (activeWorkspaceWindow !== "interaction") {
     return null;
@@ -14005,12 +14012,47 @@ function restoreSocialChatScrollState(state: SocialChatScrollState | null): void
   });
 }
 
+function captureSocialChatDraftState(): SocialChatDraftState | null {
+  if (activeWorkspaceWindow !== "interaction") {
+    return null;
+  }
+  const textarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+  if (!textarea) {
+    return null;
+  }
+  return {
+    text: textarea.value,
+    selectionStart: textarea.selectionStart ?? textarea.value.length,
+    selectionEnd: textarea.selectionEnd ?? textarea.value.length,
+    focused: document.activeElement === textarea,
+  };
+}
+
+function restoreSocialChatDraftState(state: SocialChatDraftState | null): void {
+  if (!state || activeWorkspaceWindow !== "interaction") {
+    return;
+  }
+  const textarea = workspaceWindowDynamic.querySelector<HTMLTextAreaElement>('[data-social-chat-form] textarea[name="text"]');
+  if (!textarea) {
+    return;
+  }
+  textarea.value = state.text;
+  const selectionStart = Math.min(state.selectionStart, textarea.value.length);
+  const selectionEnd = Math.min(state.selectionEnd, textarea.value.length);
+  if (state.focused) {
+    textarea.focus({ preventScroll: true });
+  }
+  textarea.setSelectionRange(selectionStart, selectionEnd);
+}
+
 function renderActiveSocialChatWindow(): void {
   if (activeWorkspaceWindow === "interaction") {
     const scrollState = captureSocialChatScrollState();
+    const draftState = captureSocialChatDraftState();
     const restoreSearchFocus = document.activeElement instanceof HTMLElement
       && document.activeElement.matches("[data-social-user-search]");
     renderWorkspaceWindow();
+    restoreSocialChatDraftState(draftState);
     restoreSocialChatScrollState(scrollState);
     if (restoreSearchFocus) {
       const search = workspaceWindowDynamic.querySelector<HTMLInputElement>("[data-social-user-search]");
