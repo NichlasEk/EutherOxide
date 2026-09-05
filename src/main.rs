@@ -11810,42 +11810,75 @@ fn is_euthersync_apk_download_path(path: &str) -> bool {
     )
 }
 
+fn eutherbooks_player_versioned_filename(path: &str) -> Option<&'static str> {
+    match path {
+        "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk" => Some("EutherBooksPlayer-0.1.77-release-signed.apk"),
+        "/downloads/EutherBooksPlayer-0.2.0-alpha.1-release-signed.apk" => Some("EutherBooksPlayer-0.2.0-alpha.1-release-signed.apk"),
+        "/downloads/EutherBooksPlayer-0.2.0-alpha.2-release-signed.apk" => Some("EutherBooksPlayer-0.2.0-alpha.2-release-signed.apk"),
+        "/downloads/EutherBooksPlayer-0.2.0-alpha.3-release-signed.apk" => Some("EutherBooksPlayer-0.2.0-alpha.3-release-signed.apk"),
+        _ => None,
+    }
+}
+
 fn send_eutherbooks_player_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
-    let apk_path = env::var("EUTHERBOOKS_PLAYER_APK_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home_apk = PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH);
-            if home_apk.is_file() {
-                home_apk
-            } else {
-                PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH)
-            }
-        });
-    let download_filename = if path == "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk" {
-        "EutherBooksPlayer-0.1.77-release-signed.apk"
+    let versioned = eutherbooks_player_versioned_filename(path);
+    let apk_path = if let Some(filename) = versioned {
+        PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH)
+            .with_file_name(filename)
     } else {
-        "EutherBooksPlayer-release-signed.apk"
+        env::var("EUTHERBOOKS_PLAYER_APK_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home_apk = PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH);
+                if home_apk.is_file() {
+                    home_apk
+                } else {
+                    PathBuf::from(DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH)
+                }
+            })
     };
     send_android_apk(
         stream,
         &apk_path,
-        download_filename,
+        versioned.unwrap_or("EutherBooksPlayer-release-signed.apk"),
         "EutherBooks Player APK is not available",
     )
 }
 
 fn is_eutherbooks_player_apk_download_path(path: &str) -> bool {
-    matches!(
+    eutherbooks_player_versioned_filename(path).is_some() || matches!(
         path,
         "/downloads/eutherbooksplayer.apk"
             | "/downloads/eutherbooks-player.apk"
             | "/downloads/EutherBooksPlayer.apk"
             | "/downloads/EutherBooksPlayer-release.apk"
             | "/downloads/EutherBooksPlayer-release-signed.apk"
-            | "/downloads/EutherBooksPlayer-0.1.77-release-signed.apk"
             | "/downloads/eutherbooks-player-release-signed.apk"
             | "/downloads/eutherbooksplayer-release-signed.apk"
     )
+}
+
+#[cfg(test)]
+mod eutherbooks_download_tests {
+    use super::*;
+
+    #[test]
+    fn versioned_links_select_their_own_artifacts() {
+        for version in ["0.1.77", "0.2.0-alpha.1", "0.2.0-alpha.2", "0.2.0-alpha.3"] {
+            let filename = format!("EutherBooksPlayer-{version}-release-signed.apk");
+            let path = format!("/downloads/{filename}");
+            assert_eq!(eutherbooks_player_versioned_filename(&path), Some(filename.as_str()));
+            assert!(is_eutherbooks_player_apk_download_path(&path));
+        }
+    }
+
+    #[test]
+    fn stable_aliases_remain_and_unknown_paths_are_rejected() {
+        assert!(is_eutherbooks_player_apk_download_path("/downloads/EutherBooksPlayer-release-signed.apk"));
+        assert_eq!(eutherbooks_player_versioned_filename("/downloads/EutherBooksPlayer-release-signed.apk"), None);
+        assert!(!is_eutherbooks_player_apk_download_path("/downloads/../../secret.apk"));
+        assert!(!is_eutherbooks_player_apk_download_path("/downloads/EutherBooksPlayer-unknown-release-signed.apk"));
+    }
 }
 
 fn send_eutherid_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
