@@ -71,6 +71,7 @@ const EUTHERID_LOGIN_RATE_MAX: usize = 5;
 const EUTHERREEL_ASSERTION_PRIVATE_KEY_FILE: &str =
     "/etc/eutherhost/eutherreel-assertion-private.pem";
 const EUTHERREEL_ASSERTION_TTL_SECONDS: u64 = 2 * 60;
+const EUTHERVAULT_ASSERTION_TTL_SECONDS: u64 = 2 * 60;
 const HOST_SOCIAL_FILE_ATTACHMENT_MAX_BYTES: usize = 3 * 1024 * 1024 * 1024;
 const HOST_EUTHERBOOKS_VOICE_SAMPLE_MAX_BYTES: usize = 24 * 1024 * 1024;
 const HOST_MAX_ACTIVE_REQUESTS: usize = 128;
@@ -1312,6 +1313,7 @@ struct HostState {
     eutherid_recovery_tokens: Arc<Mutex<Vec<HostEutherIdRecoveryToken>>>,
     eutherid_login_attempts: Arc<Mutex<Vec<HostEutherIdLoginAttempt>>>,
     eutherreel_unlock_attempts: Arc<Mutex<Vec<HostEutherReelUnlockAttempt>>>,
+    euthervault_login_attempts: Arc<Mutex<Vec<HostEutherVaultLoginAttempt>>>,
     eutherid_action_requests: Arc<Mutex<Vec<HostEutherIdActionRequest>>>,
     account_email_tokens: Arc<Mutex<Vec<HostAccountEmailToken>>>,
     chat_messages: Arc<Mutex<Vec<HostChatMessage>>>,
@@ -1577,6 +1579,21 @@ struct HostEutherReelUnlockAttempt {
     completed_unix_ms: Option<u64>,
 }
 
+#[derive(Clone)]
+struct HostEutherVaultLoginAttempt {
+    challenge_id: String,
+    actor: String,
+    browser_secret_hash: String,
+    session_hash: String,
+    origin: String,
+    server_id: String,
+    nonce: String,
+    command_id: String,
+    remote_addr: String,
+    expires_unix_ms: u64,
+    completed_unix_ms: Option<u64>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HostEutherReelUnlockStartRequest {
@@ -1607,6 +1624,8 @@ struct HostEutherReelAssertionClaims {
     exp: u64,
     jti: String,
 }
+
+type HostEutherVaultAssertionClaims = HostEutherReelAssertionClaims;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2446,6 +2465,7 @@ fn serve_host_server(emulator: Emulator) -> io::Result<()> {
         eutherid_recovery_tokens: Arc::new(Mutex::new(eutherid_recovery_tokens)),
         eutherid_login_attempts: Arc::new(Mutex::new(Vec::new())),
         eutherreel_unlock_attempts: Arc::new(Mutex::new(Vec::new())),
+        euthervault_login_attempts: Arc::new(Mutex::new(Vec::new())),
         eutherid_action_requests: Arc::new(Mutex::new(eutherid_action_requests)),
         account_email_tokens: Arc::new(Mutex::new(account_email_tokens)),
         chat_messages: Arc::new(Mutex::new(chat_messages)),
@@ -2563,6 +2583,9 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && path != "/api/eutherid/eutherreel/start"
         && path != "/api/eutherid/eutherreel/status"
         && path != "/api/eutherid/eutherreel/complete"
+        && path != "/api/eutherid/euthervault/start"
+        && path != "/api/eutherid/euthervault/status"
+        && path != "/api/eutherid/euthervault/complete"
         && path != "/api/bongologg/auth/complete"
         && path != "/api/eutherduke/log"
         && path != "/api/eutherbooks-player/log"
@@ -2810,6 +2833,54 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 .map_err(|_| invalid_request("invalid EutherReel unlock completion request"))?;
             let remote_addr = host_remote_addr(stream, &request);
             match complete_host_eutherreel_unlock(state, &input, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/eutherid/euthervault/start") => {
+            let input: HostEutherReelUnlockStartRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherVault login request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match start_host_euthervault_login(state, &input, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    send_error(stream, 429, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 401, "login rejected")
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/eutherid/euthervault/status") => {
+            let input: HostEutherReelUnlockContinueRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherVault login status request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match host_euthervault_login_status(state, &input, &remote_addr) {
+                Ok(result) => send_json(stream, &result),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    send_error(stream, 403, &err.to_string())
+                }
+                Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                    send_error(stream, 400, &err.to_string())
+                }
+                Err(err) => send_error(stream, 502, &err.to_string()),
+            }
+        }
+        ("POST", "/api/eutherid/euthervault/complete") => {
+            let input: HostEutherReelUnlockContinueRequest = serde_json::from_slice(&request.body)
+                .map_err(|_| invalid_request("invalid EutherVault login completion request"))?;
+            let remote_addr = host_remote_addr(stream, &request);
+            match complete_host_euthervault_login(state, &input, &remote_addr) {
                 Ok(result) => send_json(stream, &result),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                     send_error(stream, 403, &err.to_string())
@@ -14956,6 +15027,292 @@ fn complete_host_eutherreel_unlock(
     audit_host_event(
         state,
         "eutherreel_unlock_completed",
+        Some(&attempt.actor),
+        remote_addr,
+        true,
+        "device_bound_assertion_issued",
+    )?;
+    Ok(serde_json::json!({
+        "assertion": assertion,
+        "expiresAt": expires_at * 1000,
+        "user": attempt.actor,
+        "deviceId": device_id,
+        "serverId": attempt.server_id,
+    }))
+}
+
+fn euthervault_login_binding(attempt: &HostEutherVaultLoginAttempt) -> serde_json::Value {
+    serde_json::json!({
+        "actor": attempt.actor,
+        "session_hash": attempt.session_hash,
+        "origin": attempt.origin,
+        "action": "euthervault.backup.session",
+        "target": attempt.server_id,
+        "command_id": attempt.command_id,
+    })
+}
+
+fn validate_euthervault_login_continue(
+    state: &HostState,
+    input: &HostEutherReelUnlockContinueRequest,
+    remote_addr: &str,
+) -> io::Result<HostEutherVaultLoginAttempt> {
+    if !valid_eutherid_challenge_id(&input.challenge_id)
+        || !valid_eutherid_recovery_code(input.browser_secret.trim())
+        || !valid_eutherreel_binding_value(input.server_id.trim())
+        || !valid_eutherreel_binding_value(input.nonce.trim())
+    {
+        return Err(invalid_request("invalid EutherVault login request"));
+    }
+    let now = unix_ms_now();
+    let secret_hash = sha256_hex(input.browser_secret.trim().as_bytes());
+    let attempts = state
+        .euthervault_login_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    attempts
+        .iter()
+        .find(|attempt| {
+            attempt.challenge_id == input.challenge_id
+                && attempt.browser_secret_hash == secret_hash
+                && attempt.server_id == input.server_id.trim()
+                && attempt.nonce == input.nonce.trim()
+                && attempt.remote_addr == remote_addr
+                && attempt.completed_unix_ms.is_none()
+                && attempt.expires_unix_ms > now
+        })
+        .cloned()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "invalid or expired EutherVault login",
+            )
+        })
+}
+
+fn start_host_euthervault_login(
+    state: &HostState,
+    input: &HostEutherReelUnlockStartRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let actor = input.username.trim();
+    let server_id = input.server_id.trim();
+    let nonce = input.nonce.trim();
+    validate_host_username(actor)?;
+    if !valid_eutherreel_binding_value(server_id) || !valid_eutherreel_binding_value(nonce) {
+        return Err(invalid_request("invalid EutherVault server binding"));
+    }
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if !users
+            .iter()
+            .any(|user| user.name == actor && !user.banned && user.admin)
+        {
+            audit_host_event(
+                state,
+                "euthervault_login_started",
+                Some(actor),
+                remote_addr,
+                false,
+                "owner_rejected",
+            )?;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "login rejected",
+            ));
+        }
+    }
+    let now = unix_ms_now();
+    {
+        let mut attempts = state
+            .euthervault_login_attempts
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        attempts.retain(|attempt| {
+            attempt
+                .expires_unix_ms
+                .saturating_add(EUTHERID_LOGIN_RATE_WINDOW_MS)
+                > now
+        });
+        let recent = attempts
+            .iter()
+            .filter(|attempt| {
+                (attempt.actor == actor || attempt.remote_addr == remote_addr)
+                    && attempt
+                        .expires_unix_ms
+                        .saturating_add(EUTHERID_LOGIN_RATE_WINDOW_MS)
+                        > now
+            })
+            .count();
+        if recent >= EUTHERID_LOGIN_RATE_MAX {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "too many EutherVault login requests; try again later",
+            ));
+        }
+    }
+    let browser_secret = random_token()?;
+    let session_hash = sha256_hex(browser_secret.as_bytes());
+    let command_id = format!("vault-{}", &nonce[..nonce.len().min(32)]);
+    let origin = eutherid_public_origin()?;
+    let challenge_request = serde_json::json!({
+        "actor": actor,
+        "session_hash": session_hash,
+        "origin": origin,
+        "action": "euthervault.backup.session",
+        "target": server_id,
+        "command_id": command_id,
+        "ttl_seconds": EUTHERVAULT_ASSERTION_TTL_SECONDS,
+    });
+    let response =
+        eutherid_internal_json_request("POST", "/v1/challenges", Some(&challenge_request))?;
+    let challenge = eutherid_json_response(response, &[201])?;
+    let challenge_id = challenge
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| valid_eutherid_challenge_id(id))
+        .ok_or_else(|| io::Error::other("EutherID returned an invalid challenge id"))?
+        .to_string();
+    let payload =
+        serde_json::to_string(&challenge).map_err(|err| io::Error::other(err.to_string()))?;
+    let qr_svg = QrCode::new(payload.as_bytes())
+        .map_err(|err| io::Error::other(format!("failed to encode EutherVault QR: {err}")))?
+        .render::<svg::Color>()
+        .min_dimensions(280, 280)
+        .build();
+    let expires_unix_ms = now.saturating_add(EUTHERVAULT_ASSERTION_TTL_SECONDS * 1000);
+    state
+        .euthervault_login_attempts
+        .lock()
+        .map_err(|err| io::Error::other(err.to_string()))?
+        .push(HostEutherVaultLoginAttempt {
+            challenge_id: challenge_id.clone(),
+            actor: actor.to_string(),
+            browser_secret_hash: sha256_hex(browser_secret.as_bytes()),
+            session_hash,
+            origin,
+            server_id: server_id.to_string(),
+            nonce: nonce.to_string(),
+            command_id,
+            remote_addr: remote_addr.to_string(),
+            expires_unix_ms,
+            completed_unix_ms: None,
+        });
+    audit_host_event(
+        state,
+        "euthervault_login_started",
+        Some(actor),
+        remote_addr,
+        true,
+        "challenge_created",
+    )?;
+    Ok(serde_json::json!({
+        "challenge": challenge,
+        "challengeId": challenge_id,
+        "browserSecret": browser_secret,
+        "serverId": server_id,
+        "nonce": nonce,
+        "qrSvg": qr_svg,
+        "expiresAt": expires_unix_ms,
+    }))
+}
+
+fn host_euthervault_login_status(
+    state: &HostState,
+    input: &HostEutherReelUnlockContinueRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let attempt = validate_euthervault_login_continue(state, input, remote_addr)?;
+    let path = format!("/v1/challenges/{}", attempt.challenge_id);
+    let response = eutherid_internal_json_request("GET", &path, None)?;
+    let challenge = eutherid_json_response(response, &[200])?;
+    Ok(serde_json::json!({
+        "challengeId": attempt.challenge_id,
+        "status": challenge.get("status").and_then(serde_json::Value::as_str),
+        "expiresAt": attempt.expires_unix_ms,
+    }))
+}
+
+fn complete_host_euthervault_login(
+    state: &HostState,
+    input: &HostEutherReelUnlockContinueRequest,
+    remote_addr: &str,
+) -> io::Result<serde_json::Value> {
+    let attempt = validate_euthervault_login_continue(state, input, remote_addr)?;
+    let expected = euthervault_login_binding(&attempt);
+    let consumed = consume_eutherid_action_proof(&attempt.challenge_id, &expected)?;
+    {
+        let users = state
+            .users
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if !users
+            .iter()
+            .any(|user| user.name == attempt.actor && !user.banned && user.admin)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "login rejected",
+            ));
+        }
+    }
+    let device_id = consumed
+        .get("device_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::other("EutherID proof omitted device identity"))?
+        .to_string();
+    let now = unix_ms_now();
+    {
+        let mut attempts = state
+            .euthervault_login_attempts
+            .lock()
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let stored = attempts
+            .iter_mut()
+            .find(|stored| {
+                stored.challenge_id == attempt.challenge_id
+                    && stored.browser_secret_hash == attempt.browser_secret_hash
+                    && stored.completed_unix_ms.is_none()
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "EutherVault login already used",
+                )
+            })?;
+        stored.completed_unix_ms = Some(now);
+    }
+    let key_path = env::var("EUTHERREEL_ASSERTION_PRIVATE_KEY_FILE")
+        .unwrap_or_else(|_| EUTHERREEL_ASSERTION_PRIVATE_KEY_FILE.to_string());
+    let private_key = fs::read(&key_path)
+        .map_err(|err| io::Error::other(format!("failed to read assertion signing key: {err}")))?;
+    let encoding_key = EncodingKey::from_ed_pem(&private_key)
+        .map_err(|err| io::Error::other(format!("invalid assertion signing key: {err}")))?;
+    let issued_at = now / 1000;
+    let expires_at = issued_at.saturating_add(EUTHERVAULT_ASSERTION_TTL_SECONDS);
+    let claims = HostEutherVaultAssertionClaims {
+        iss: attempt.origin.clone(),
+        aud: "euthervault".to_string(),
+        sub: attempt.actor.clone(),
+        action: "euthervault.backup.session".to_string(),
+        server_id: attempt.server_id.clone(),
+        nonce: attempt.nonce.clone(),
+        device_id: device_id.clone(),
+        iat: issued_at,
+        exp: expires_at,
+        jti: random_token()?,
+    };
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.kid = Some("euthervault-v1".to_string());
+    let assertion = encode(&header, &claims, &encoding_key)
+        .map_err(|err| io::Error::other(format!("failed to sign assertion: {err}")))?;
+    audit_host_event(
+        state,
+        "euthervault_login_completed",
         Some(&attempt.actor),
         remote_addr,
         true,
@@ -28163,6 +28520,34 @@ mod tests {
         assert!(!valid_eutherreel_binding_value(
             "../../etc/eutherhost/private-key"
         ));
+    }
+
+    #[test]
+    fn euthervault_assertion_has_a_dedicated_action_and_target() {
+        let attempt = HostEutherVaultLoginAttempt {
+            challenge_id: "challenge-01234567890123456789".to_string(),
+            actor: "nichlas".to_string(),
+            browser_secret_hash: "a".repeat(64),
+            session_hash: "b".repeat(64),
+            origin: "https://apothictech.se".to_string(),
+            server_id: "eutherbackup-192-168-32-149".to_string(),
+            nonce: "c".repeat(64),
+            command_id: "vault-cccccccccccccccccccccccccccccccc".to_string(),
+            remote_addr: "192.168.32.149".to_string(),
+            expires_unix_ms: 1,
+            completed_unix_ms: None,
+        };
+        assert_eq!(
+            euthervault_login_binding(&attempt),
+            serde_json::json!({
+                "actor": "nichlas",
+                "session_hash": "b".repeat(64),
+                "origin": "https://apothictech.se",
+                "action": "euthervault.backup.session",
+                "target": "eutherbackup-192-168-32-149",
+                "command_id": "vault-cccccccccccccccccccccccccccccccc",
+            })
+        );
     }
 
     #[test]

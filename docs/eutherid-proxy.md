@@ -33,6 +33,19 @@ The Host login page also exposes three purpose-built public endpoints that are h
 
 They create a two-minute `eutherhost.login` challenge, poll it using a browser-only secret, and consume the resulting action proof once before setting a Host session cookie. The browser secret is never included in the app payload or QR code, password login remains available, and a Host restart invalidates all pending EutherID logins.
 
+EutherVault uses an equally narrow three-endpoint exchange:
+
+- `POST /api/eutherid/euthervault/start`
+- `POST /api/eutherid/euthervault/status`
+- `POST /api/eutherid/euthervault/complete`
+
+The backup server supplies a validated server id and fresh nonce. After EutherID
+approval, EutherHost consumes the proof once and returns a two-minute Ed25519 JWT
+with audience `euthervault`, action `euthervault.backup.session`, and the exact
+server id and nonce. It does not create or return an EutherHost session. The
+backup server has only the public verification key and creates its own local
+cookie after checking every binding and rejecting replayed JWT ids.
+
 No public route can create a challenge, issue an action proof, consume an action proof, list devices, or revoke devices. Request bodies are capped at 32 KiB, upstream redirects are not involved, and the mobile client independently requires a clean HTTPS origin.
 
 The two `shadow-tests` routes are the safe physical-authentication smoke test used by the admin panel. EutherHost derives the actor, current session hash, HTTPS origin, action `eutherid.test`, target `shadow`, and command id `shadow-test`; none of those bindings can be supplied by the browser. Completion issues and consumes the action proof internally, deliberately attempts one replay, and succeeds only when EutherID rejects that replay. The response always reports `commandRun: false`; this test has no command execution path and does not enable EutherNet writes.
