@@ -3053,6 +3053,22 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
             send_eutherbooks_player_apk(stream, path)
         }
         ("GET", path) if is_eutherid_apk_download_path(path) => send_eutherid_apk(stream, path),
+        ("GET", "/downloads/EutherShould-0.1.0-release-signed.apk") => {
+            send_android_apk(
+                stream,
+                Path::new("/home/nichlas/EutherShould/dist/EutherShould-0.1.0-release-signed.apk"),
+                "EutherShould-0.1.0-release-signed.apk",
+                "EutherShould APK is not available",
+            )
+        }
+        ("GET", "/downloads/EutherShould-0.2.0-release-signed.apk" | "/downloads/euthershould.apk") => {
+            send_android_apk(
+                stream,
+                Path::new("/home/nichlas/EutherShould/dist/EutherShould-0.2.0-release-signed.apk"),
+                "EutherShould-0.2.0-release-signed.apk",
+                "EutherShould APK is not available",
+            )
+        }
         ("GET", path) if is_eutherboard_apk_download_path(path) => {
             send_eutherboard_apk(stream, path)
         }

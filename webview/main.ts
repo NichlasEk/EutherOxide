@@ -8726,6 +8726,13 @@ type AppDownload = {
 
 const appDownloads: AppDownload[] = [
   {
+    title: "EutherShould",
+    detail: "Kungligt blågula väderråd: vad du bör göra och när. Dagens råd, frostnotiser och veckoplanering för din hemort – oberoende av mejlutskick.",
+    platform: "Android · Två hemskärmswidgetar",
+    href: "/downloads/EutherShould-0.2.0-release-signed.apk",
+    status: "0.2.0 · Signerad APK · System Regis",
+  },
+  {
     title: "EutherSync",
     detail: "Family feed, camera upload and sync app",
     platform: "Android phone",
