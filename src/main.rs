@@ -94,7 +94,8 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.7.0-debug.apk";
+const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.7.1-debug.apk";
+const LEGACY_BONGOLOGG_0_7_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.7.0-debug.apk";
 const LEGACY_BONGOLOGG_0_6_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.6.0-debug.apk";
 const LEGACY_BONGOLOGG_0_1_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
 const LEGACY_BONGOLOGG_0_2_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.2.0-debug.apk";
@@ -12092,13 +12093,15 @@ fn send_bongologg_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         )
     } else if path == "/downloads/BongoLogg-0.6.0-debug.apk" {
         (PathBuf::from(LEGACY_BONGOLOGG_0_6_0_APK_PATH), "BongoLogg-0.6.0-debug.apk")
+    } else if path == "/downloads/BongoLogg-0.7.0-debug.apk" {
+        (PathBuf::from(LEGACY_BONGOLOGG_0_7_0_APK_PATH), "BongoLogg-0.7.0-debug.apk")
     } else {
         (
             env::var("BONGOLOGG_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH)),
-            if path == "/downloads/BongoLogg-0.7.0-debug.apk" {
-                "BongoLogg-0.7.0-debug.apk"
+            if path == "/downloads/BongoLogg-0.7.1-debug.apk" {
+                "BongoLogg-0.7.1-debug.apk"
             } else {
                 "BongoLogg-debug.apk"
             },
@@ -12126,6 +12129,7 @@ fn is_bongologg_apk_download_path(path: &str) -> bool {
             | "/downloads/BongoLogg-0.5.1-debug.apk"
             | "/downloads/BongoLogg-0.6.0-debug.apk"
             | "/downloads/BongoLogg-0.7.0-debug.apk"
+            | "/downloads/BongoLogg-0.7.1-debug.apk"
             | "/downloads/bongologg-debug.apk"
     )
 }
