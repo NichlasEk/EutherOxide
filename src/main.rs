@@ -1,3 +1,4 @@
+mod bongologg_vault;
 mod euthersurfer_commerce;
 
 use std::cell::RefCell;
@@ -93,7 +94,8 @@ const DEFAULT_EUTHERBOOKS_PLAYER_APK_PATH: &str =
 const DEFAULT_EUTHERBOOKS_PLAYER_REPO_APK_PATH: &str = "/home/nichlas/EutherOxide/apps/eutherbooks-player/releases/EutherBooksPlayer-release-signed.apk";
 const DEFAULT_EUTHERID_APK_PATH: &str = "/home/nichlas/EutherID-0.6.1-release-signed.apk";
 const DEFAULT_EUTHERBOARD_APK_PATH: &str = "/home/nichlas/EutherBoard-0.2.6-debug.apk";
-const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.6.0-debug.apk";
+const DEFAULT_BONGOLOGG_APK_PATH: &str = "/home/nichlas/BongoLogg-0.7.0-debug.apk";
+const LEGACY_BONGOLOGG_0_6_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.6.0-debug.apk";
 const LEGACY_BONGOLOGG_0_1_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.1.0-debug.apk";
 const LEGACY_BONGOLOGG_0_2_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.2.0-debug.apk";
 const LEGACY_BONGOLOGG_0_3_0_APK_PATH: &str = "/home/nichlas/BongoLogg-0.3.0-debug.apk";
@@ -2617,6 +2619,17 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
         && !valid_csrf_token(state, &request)?
     {
         return send_error(stream, 403, "csrf token required");
+    }
+    if path.starts_with("/api/bongologg/stam/vault/") {
+        return bongologg_vault::handle(stream, state, &request);
+    }
+    if request.method == "POST" && matches!(path,
+        "/api/bongologg/stam/file" | "/api/bongologg/stam/document" | "/api/bongologg/stam/share") {
+        if let Ok(user) = require_bongologg_user(state, &request) {
+            if bongologg_vault::active(&user) {
+                return send_error(stream, 409, "Private vault enabled; update Bongologg. Plaintext writes are disabled.");
+            }
+        }
     }
     if request.method == "POST" && path == "/api/bongologg/auth/complete" {
         let input: HostBongologgLoginCompleteRequest = serde_json::from_slice(&request.body)
@@ -12077,13 +12090,15 @@ fn send_bongologg_apk(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             PathBuf::from(LEGACY_BONGOLOGG_0_5_1_APK_PATH),
             "BongoLogg-0.5.1-debug.apk",
         )
+    } else if path == "/downloads/BongoLogg-0.6.0-debug.apk" {
+        (PathBuf::from(LEGACY_BONGOLOGG_0_6_0_APK_PATH), "BongoLogg-0.6.0-debug.apk")
     } else {
         (
             env::var("BONGOLOGG_APK_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_BONGOLOGG_APK_PATH)),
-            if path == "/downloads/BongoLogg-0.6.0-debug.apk" {
-                "BongoLogg-0.6.0-debug.apk"
+            if path == "/downloads/BongoLogg-0.7.0-debug.apk" {
+                "BongoLogg-0.7.0-debug.apk"
             } else {
                 "BongoLogg-debug.apk"
             },
@@ -12110,6 +12125,7 @@ fn is_bongologg_apk_download_path(path: &str) -> bool {
             | "/downloads/BongoLogg-0.5.0-debug.apk"
             | "/downloads/BongoLogg-0.5.1-debug.apk"
             | "/downloads/BongoLogg-0.6.0-debug.apk"
+            | "/downloads/BongoLogg-0.7.0-debug.apk"
             | "/downloads/bongologg-debug.apk"
     )
 }
@@ -21684,6 +21700,9 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
         }
     }
 
+    if path.starts_with("/api/bongologg/stam/vault/") && content_length > 17 * 1024 * 1024 {
+        return Err(invalid_request("vault request body too large"));
+    }
     let raw_social_attachment_upload =
         method == "POST" && path.split('?').next() == Some("/api/social/attachments/raw");
     let body = if chunked_body && !raw_social_attachment_upload {
@@ -24539,6 +24558,7 @@ fn save_bongologg_stam_document(
     let _guard = BONGOLOGG_STAM_LOCK
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
+    if bongologg_vault::active(&owner) { return Err(invalid_request("Private vault enabled; plaintext writes disabled")); }
     let mut documents = reconcile_bongologg_documents(&owner)?;
     let existing = documents.iter().position(|value| value.name == name);
     if existing.is_none() && owner != current_user {
@@ -24731,6 +24751,7 @@ fn save_bongologg_stam_file(user: &str, request: &HttpRequest) -> io::Result<ser
     let _guard = BONGOLOGG_STAM_LOCK
         .lock()
         .map_err(|err| io::Error::other(err.to_string()))?;
+    if bongologg_vault::active(user) { return Err(invalid_request("Private vault enabled; plaintext writes disabled")); }
     let dir = bongologg_stam_dir(user);
     fs::create_dir_all(&dir)?;
     #[cfg(unix)]
@@ -28184,7 +28205,7 @@ mod tests {
             "/downloads/BongoLogg-0.6.0-debug.apk"
         ));
         assert!(!is_bongologg_apk_download_path(
-            "/downloads/BongoLogg-0.7.0-debug.apk"
+            "/downloads/BongoLogg-0.8.0-debug.apk"
         ));
     }
 

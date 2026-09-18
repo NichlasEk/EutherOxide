@@ -8762,10 +8762,10 @@ const appDownloads: AppDownload[] = [
   },
   {
     title: "BongoLogg",
-    detail: "Local-first event archive with playable bongos, tactile feedback, editable logs, EutherID sync and eastern bongo calls",
-    platform: "Android phone · Field notes",
-    href: "/downloads/BongoLogg-0.6.0-debug.apk",
-    status: "Prototype APK · v0.6.0 · Playable bongos · Local AI soundscape · Live sync",
+    detail: "Private encrypted vault for Markdown, photos and voice memos, with EutherID sync, recovery key and portable export",
+    platform: "Android phone · Private notes",
+    href: "/downloads/BongoLogg-0.7.0-debug.apk",
+    status: "Test APK · v0.7.0 · End-to-end encrypted vault · Android 9+",
   },
   {
     title: "EutherMajn",
