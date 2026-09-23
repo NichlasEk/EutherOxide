@@ -276,7 +276,8 @@ const LEGACY_EUTHERVOX_0_5_0_APK_PATH: &str = "/home/nichlas/EutherVox-0.5.0-bet
 const LEGACY_EUTHERVOX_0_4_0_APK_PATH: &str = "/home/nichlas/EutherVox-0.4.0-beta1-debug.apk";
 const LEGACY_EUTHERVOX_0_3_0_APK_PATH: &str = "/home/nichlas/EutherVox-0.3.0-beta1-debug.apk";
 const LEGACY_EUTHERVOX_0_2_0_APK_PATH: &str = "/home/nichlas/EutherVox-0.2.0-beta1-debug.apk";
-const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.25-debug.apk";
+const DEFAULT_EUTHERPING_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.26-debug.apk";
+const LEGACY_EUTHERPING_0_8_25_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.25-debug.apk";
 const LEGACY_EUTHERPING_0_8_24_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.24-debug.apk";
 const LEGACY_EUTHERPING_0_8_23_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.23-debug.apk";
 const LEGACY_EUTHERPING_0_8_22_APK_PATH: &str = "/home/nichlas/EutherPing-0.8.22-debug.apk";
@@ -13829,12 +13830,17 @@ fn send_eutherping_apk(
             PathBuf::from(LEGACY_EUTHERPING_0_8_24_APK_PATH),
             "EutherPing-0.8.24-debug.apk",
         )
+    } else if path == "/downloads/EutherPing-0.8.25-debug.apk" {
+        (
+            PathBuf::from(LEGACY_EUTHERPING_0_8_25_APK_PATH),
+            "EutherPing-0.8.25-debug.apk",
+        )
     } else {
         let apk_path = env::var("EUTHERPING_APK_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_EUTHERPING_APK_PATH));
-        let download_filename = if path == "/downloads/EutherPing-0.8.25-debug.apk" {
-            "EutherPing-0.8.25-debug.apk"
+        let download_filename = if path == "/downloads/EutherPing-0.8.26-debug.apk" {
+            "EutherPing-0.8.26-debug.apk"
         } else {
             "EutherPing-debug.apk"
         };
@@ -13905,6 +13911,7 @@ fn is_eutherping_apk_download_path(path: &str) -> bool {
             | "/downloads/EutherPing-0.8.23-debug.apk"
             | "/downloads/EutherPing-0.8.24-debug.apk"
             | "/downloads/EutherPing-0.8.25-debug.apk"
+            | "/downloads/EutherPing-0.8.26-debug.apk"
             | "/downloads/eutherping-debug.apk"
     )
 }
