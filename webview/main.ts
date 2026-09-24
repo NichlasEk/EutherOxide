@@ -8717,6 +8717,7 @@ function workspaceWindowContentMarkup(windowName: WorkspaceWindow): string {
 }
 
 type AppDownload = {
+  sourceHref?: string;
   title: string;
   detail: string;
   platform: string;
@@ -8725,6 +8726,14 @@ type AppDownload = {
 };
 
 const appDownloads: AppDownload[] = [
+  {
+    title: "SOTC Preview",
+    detail: "Shadow of the Comet med vår experimentella ScummVM-motor. Pekstyrning, snabb­sparning och export av sparningar. Kräver egna CD-spelfiler; välj spelmappen via Add Game.",
+    platform: "Android 8+ · ARM64 och x86_64",
+    href: "/downloads/SOTC-Preview-0.1.0.apk",
+    sourceHref: "/downloads/SOTC-Preview-0.1.0-source.tar.xz",
+    status: "0.1.0 · Testversion · Spelfiler ingår inte",
+  },
   {
     title: "EutherShould",
     detail: "Kungligt blågula väderråd: vad du bör göra och när. Dagens råd, frostnotiser och veckoplanering för din hemort – oberoende av mejlutskick.",
@@ -8893,6 +8902,7 @@ function appDownloadCardMarkup(app: AppDownload): string {
         </div>
       </dl>
       <a class="app-download-link" href="${escapeHtml(downloadHref)}">Ladda ner APK</a>
+      ${app.sourceHref ? `<a class="app-download-link" href="${escapeHtml(app.sourceHref)}">Källkod (GPL)</a>` : ""}
     </article>
   `;
 }
