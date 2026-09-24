@@ -8728,11 +8728,11 @@ type AppDownload = {
 const appDownloads: AppDownload[] = [
   {
     title: "SOTC Preview",
-    detail: "Shadow of the Comet med vår experimentella ScummVM-motor. Pekstyrning, snabb­sparning och export av sparningar. Kräver egna CD-spelfiler; välj spelmappen via Add Game.",
+    detail: "Shadow of the Comet med vår experimentella ScummVM-motor. Pekstyrning, import/export av sparningar och originalets dialogrutor även i introt. Kräver egna CD-spelfiler; välj spelmappen via Add Game.",
     platform: "Android 8+ · ARM64 och x86_64",
-    href: "/downloads/SOTC-Preview-0.1.0.apk",
-    sourceHref: "/downloads/SOTC-Preview-0.1.0-source.tar.xz",
-    status: "0.1.0 · Testversion · Spelfiler ingår inte",
+    href: "/downloads/SOTC-Preview-0.1.1.apk",
+    sourceHref: "/downloads/SOTC-Preview-0.1.1-source.tar.xz",
+    status: "0.1.1 · Testversion · Import av PS4-sparning",
   },
   {
     title: "EutherShould",

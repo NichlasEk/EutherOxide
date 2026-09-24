@@ -3094,6 +3094,18 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 "EutherShould APK is not available",
             )
         }
+        ("GET", "/downloads/SOTC-Preview-0.1.1.apk") => {
+            send_android_apk(stream, Path::new("/home/nichlas/SOTC-Preview-0.1.1.apk"),
+                "SOTC-Preview-0.1.1.apk", "SOTC Preview APK is not available")
+        }
+        ("GET", "/downloads/SOTC-Preview-0.1.1-source.tar.xz") => {
+            stream.set_write_timeout(Some(Duration::from_secs(120)))?;
+            match fs::read("/home/nichlas/SOTC-Preview-0.1.1-source.tar.xz") {
+                Ok(bytes) => send_response_with_headers(stream, 200, "application/x-xz", &bytes,
+                    &[("Content-Disposition", "attachment; filename=\"SOTC-Preview-0.1.1-source.tar.xz\"")]),
+                Err(_) => send_error(stream, 404, "SOTC Preview source is not available"),
+            }
+        }
         ("GET", "/downloads/SOTC-Preview-0.1.0.apk") => {
             send_android_apk(stream, Path::new("/home/nichlas/SOTC-Preview-0.1.0.apk"),
                 "SOTC-Preview-0.1.0.apk", "SOTC Preview APK is not available")
@@ -14289,6 +14301,7 @@ fn is_euthervox_apk_download_path(path: &str) -> bool {
 
 fn is_android_apk_download_path(path: &str) -> bool {
     path == "/downloads/SOTC-Preview-0.1.0.apk"
+        || path == "/downloads/SOTC-Preview-0.1.1.apk"
         || is_eutherlist_apk_download_path(path)
         || is_euthersync_apk_download_path(path)
         || is_eutherbooks_player_apk_download_path(path)
