@@ -8727,6 +8727,13 @@ type AppDownload = {
 
 const appDownloads: AppDownload[] = [
   {
+    title: "Checkapa",
+    detail: "Proceduriellt godkänd av apa: absurda apotekskontroller, byråkratiska svar, lokala rapporter och en tramsometer.",
+    platform: "Android · Satirisk checklisteapp",
+    href: "/downloads/Checkapa-1.0-release-signed.apk",
+    status: "1.0 · Signerad APK · Lokal kvalitetskontroll med glimten i ögat",
+  },
+  {
     title: "SOTC Preview",
     detail: "Shadow of the Comet med vår experimentella ScummVM-motor. Pekstyrning, import/export av sparningar och originalets dialogrutor även i introt. Kräver egna CD-spelfiler; välj spelmappen via Add Game.",
     platform: "Android 8+ · ARM64 och x86_64",
