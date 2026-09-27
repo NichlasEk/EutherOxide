@@ -8734,6 +8734,13 @@ const appDownloads: AppDownload[] = [
     status: "1.0 · Signerad APK · Lokal kvalitetskontroll med glimten i ögat",
   },
   {
+    title: "EutherDrive",
+    detail: "Spela dina egna retrospel i EutherDrive på Android.",
+    platform: "Android · Emulator",
+    href: "/downloads/EutherDrive-1.0.0-release-signed.apk",
+    status: "1.0.0 · Signerad APK",
+  },
+  {
     title: "SOTC Preview",
     detail: "Shadow of the Comet med vår experimentella ScummVM-motor. Pekstyrning, import/export av sparningar och originalets dialogrutor även i introt. Kräver egna CD-spelfiler; välj spelmappen via Add Game.",
     platform: "Android 8+ · ARM64 och x86_64",

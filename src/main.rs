@@ -3094,6 +3094,14 @@ fn handle_host_request(stream: &mut TcpStream, state: &HostState) -> io::Result<
                 "EutherShould APK is not available",
             )
         }
+        ("GET", "/downloads/EutherDrive-1.0.0-release-signed.apk") => {
+            send_android_apk(
+                stream,
+                Path::new("/home/nichlas/EutherDrive-1.0.0-release-signed.apk"),
+                "EutherDrive-1.0.0-release-signed.apk",
+                "EutherDrive APK is not available",
+            )
+        }
         ("GET", "/downloads/Checkapa-1.0-release-signed.apk") => {
             send_android_apk(
                 stream,
@@ -14311,6 +14319,7 @@ fn is_android_apk_download_path(path: &str) -> bool {
     path == "/downloads/SOTC-Preview-0.1.0.apk"
         || path == "/downloads/SOTC-Preview-0.1.1.apk"
         || path == "/downloads/Checkapa-1.0-release-signed.apk"
+        || path == "/downloads/EutherDrive-1.0.0-release-signed.apk"
         || is_eutherlist_apk_download_path(path)
         || is_euthersync_apk_download_path(path)
         || is_eutherbooks_player_apk_download_path(path)
