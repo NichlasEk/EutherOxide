@@ -17276,7 +17276,7 @@ fn euthernet_request_requires_host_admin(method: &str, path: &str) -> bool {
         .unwrap_or_default();
     matches!(
         relative.split('?').next().unwrap_or(relative),
-        "/run" | "/preflight"
+        "/run" | "/preflight" | "/scryer/control"
     )
 }
 
@@ -17492,6 +17492,8 @@ fn euthernet_admin_upstream_path(path: &str) -> io::Result<String> {
         "/commands",
         "/run",
         "/ask",
+        "/scryer",
+        "/scryer/control",
     ];
     let endpoint = relative.split('?').next().unwrap_or(relative);
     if !allowed.contains(&endpoint) {
@@ -27902,6 +27904,11 @@ mod tests {
 
     #[test]
     fn euthernet_run_requires_host_admin_but_read_routes_do_not() {
+        assert!(euthernet_request_requires_host_admin("POST", "/api/admin/euthernet/scryer/control"));
+        assert!(euthernet_request_requires_host_admin("POST", "/api/admin/euthernet/scryer/control?source=map"));
+        assert!(!euthernet_request_requires_host_admin("GET", "/api/admin/euthernet/scryer"));
+        assert!(!euthernet_request_requires_eutherid("POST", "/api/admin/euthernet/scryer/control"));
+        assert_eq!(euthernet_admin_upstream_path("/api/admin/euthernet/scryer").unwrap(), "/api/euthernet/scryer");
         assert!(euthernet_request_requires_host_admin(
             "POST",
             "/api/admin/euthernet/run"

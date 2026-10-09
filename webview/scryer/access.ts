@@ -59,6 +59,19 @@ export class ObservationAccess {
       }),
     });
   }
+  shared() {
+    return this.request("/api/admin/euthernet/scryer");
+  }
+  control(
+    command: "pause" | "resume" | "disable" | "enable" | "dismiss",
+    ghost_id?: string,
+  ) {
+    if (this.auth.isAdmin !== true) throw Error("Owner permission required");
+    return this.request("/api/admin/euthernet/scryer/control", {
+      method: "POST",
+      body: JSON.stringify({ command, ghost_id }),
+    });
+  }
   cancel() {
     this.controller.abort();
   }

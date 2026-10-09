@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { Scryer, project, type Point } from "./core.ts";
+import { Scryer, project, type Point, type Phase } from "./core.ts";
 export const SCRYER_ID = "scryer:inhabitant";
 const palette = {
   wandering: 0x72e9dd,
@@ -11,6 +11,8 @@ const palette = {
 };
 export class Inhabitant {
   engine = new Scryer();
+  shared = false;
+  conversing = false;
   root = new THREE.Group();
   body = new THREE.Group();
   ghosts = new THREE.Group();
@@ -75,6 +77,11 @@ export class Inhabitant {
     tail.rotation.z = Math.PI;
     this.body.add(tail);
     this.root.add(this.body, this.ghosts);
+    this.body.position.set(
+      this.engine.state.position.x,
+      3.5,
+      this.engine.state.position.z,
+    );
   }
   ingest(raw: unknown, positions: Map<string, Point>) {
     this.engine.ingest(project(raw, positions), Date.now());
@@ -84,16 +91,33 @@ export class Inhabitant {
   update(dt: number, now: number, active: boolean, reduced: boolean) {
     this.root.visible = active && !this.engine.state.disabled;
     if (!active || this.engine.state.disabled) return;
-    const previous = { ...this.engine.state.position };
-    this.engine.tick(dt, now);
+    const previous = { x: this.body.position.x, z: this.body.position.z };
+    if (!this.shared) this.engine.tick(dt, now);
     const s = this.engine.state;
+    let rendered = { ...s.position };
+    if (
+      this.shared &&
+      Math.hypot(s.position.x - previous.x, s.position.z - previous.z) < 20
+    ) {
+      const blend = Math.min(1, dt * 7);
+      const candidate = {
+        x: previous.x + (s.position.x - previous.x) * blend,
+        z: previous.z + (s.position.z - previous.z) * blend,
+      };
+      if (
+        this.engine.world.obstacles.every(
+          (o) => Math.hypot(candidate.x - o.x, candidate.z - o.z) >= 4.5,
+        )
+      )
+        rendered = candidate;
+    }
     this.body.position.set(
-      s.position.x,
+      rendered.x,
       3.5 + (reduced || s.paused ? 0 : Math.sin(now / 1900) * 0.09),
-      s.position.z,
+      rendered.z,
     );
-    const dx = s.position.x - previous.x,
-      dz = s.position.z - previous.z;
+    const dx = rendered.x - previous.x,
+      dz = rendered.z - previous.z;
     if (Math.hypot(dx, dz) > 0.001) {
       const desired = Math.atan2(dx, dz),
         diff = Math.atan2(
@@ -103,14 +127,57 @@ export class Inhabitant {
       this.body.rotation.y += diff * Math.min(dt * 4, 1);
     }
     (this.core.material as THREE.MeshStandardMaterial).emissive.setHex(
-      palette[s.phase],
+      palette[this.conversing ? "conversing" : s.phase],
     );
     if (!reduced && !s.paused) {
       this.core.rotation.y += dt * 0.25;
       this.rings.forEach((r, i) => (r.rotation.z += dt * (i ? -0.12 : 0.18)));
     }
     this.syncGhosts();
-    if (now - this.lastSave > 5000) this.save(now);
+    if (!this.shared && now - this.lastSave > 5000) this.save(now);
+  }
+  applyShared(value: any) {
+    if (
+      value?.scope !== "shared" ||
+      !value.world ||
+      !Array.isArray(value.world.nodes) ||
+      value.world.nodes.length > 2000 ||
+      !Array.isArray(value.world.obstacles) ||
+      value.world.obstacles.length > 2000
+    )
+      throw Error("Invalid shared world");
+    const positions = new Map<string, Point>(
+      value.world.nodes.map((n: any) => [n.id, { x: n.x, z: n.z }]),
+    );
+    const world = value.world.stamp
+      ? project(
+          {
+            collected_at: value.world.stamp,
+            nodes: value.world.nodes,
+            edges: value.world.edges,
+          },
+          positions,
+        )
+      : this.engine.world;
+    world.obstacles = value.world.obstacles
+      .filter(
+        (p: any) =>
+          p &&
+          Number.isFinite(p.x) &&
+          Number.isFinite(p.z) &&
+          Math.abs(p.x) <= 160 &&
+          Math.abs(p.z) <= 160,
+      )
+      .map((p: Point) => ({ x: p.x, z: p.z }));
+    if (!this.engine.restore(JSON.stringify(value.state), Date.now()))
+      throw Error("Invalid shared state");
+    const phase = value.state.phase as Phase;
+    if (!Object.hasOwn(palette, phase)) throw Error("Invalid shared phase");
+    if (this.engine.world.stamp !== world.stamp) this.ghostSignature = "";
+    this.engine.world = world;
+    this.engine.state.phase = phase;
+    this.shared = true;
+    this.syncGhosts();
   }
   syncGhosts() {
     const signature = JSON.stringify(

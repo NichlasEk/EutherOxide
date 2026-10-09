@@ -9,27 +9,36 @@ type SceneNode = {
   object: THREE.Object3D;
   position: THREE.Vector3;
 };
+type Options = { shared?: boolean; onMap?: (map: any) => void };
 export function mountScryer(
   auth: Authorization,
   root: THREE.Group,
   nodes: Map<string, SceneNode>,
+  options: Options = {},
 ) {
   if (!mayObserve(auth)) throw Error("Server Map permission required");
+  const shared = options.shared !== false;
   let storage: Storage | undefined;
-  try {
-    storage = window.localStorage;
-  } catch {
-    /* memory-only supported */
-  }
+  if (!shared)
+    try {
+      storage = window.localStorage;
+    } catch {}
   const inhabitant = new Inhabitant(auth.user!, storage),
     access = new ObservationAccess(auth);
+  inhabitant.shared = shared;
   let positions = new Map<string, THREE.Vector3>(),
     closed = false,
     busy = false,
-    lastPoll = 0,
+    asking = false,
+    controlling = false,
+    ready = !shared;
+  let lastPoll = 0,
     lastAuth = 0,
+    lastShared = 0,
     generation = 0,
-    boundSignature = "";
+    boundSignature = "",
+    error = "",
+    modelAt = 0;
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
   const control = document.createElement("div");
   control.style.cssText =
@@ -44,28 +53,32 @@ export function mountScryer(
     control.append(b);
     return b;
   };
-  const pause = button("Pause", () => {
-    inhabitant.pause();
-    generation++;
-    updateButtons();
-  });
-  const disable = button("Disable", () => {
-    inhabitant.disable();
-    generation++;
-    updateButtons();
-  });
+  const pause = button(
+    "Pause",
+    () =>
+      void controlState(inhabitant.engine.state.paused ? "resume" : "pause"),
+  );
+  const disable = button(
+    "Disable",
+    () =>
+      void controlState(
+        inhabitant.engine.state.disabled ? "enable" : "disable",
+      ),
+  );
   function updateButtons() {
     pause.textContent = inhabitant.engine.state.paused ? "Resume" : "Pause";
     disable.textContent = inhabitant.engine.state.disabled
       ? "Enable"
       : "Disable";
+    pause.disabled = disable.disabled =
+      closed || controlling || (shared && (!ready || auth.isAdmin !== true));
   }
   updateButtons();
   document.body.append(control);
   function bindNodes() {
     for (const id of nodes.keys())
       if (id.startsWith("scryer:")) nodes.delete(id);
-    if (inhabitant.engine.state.disabled) return;
+    if (!ready || inhabitant.engine.state.disabled) return;
     nodes.set(SCRYER_ID, {
       id: SCRYER_ID,
       label: "EutherScryer",
@@ -88,21 +101,67 @@ export function mountScryer(
     generation++;
     access.cancel();
     inhabitant.revoke();
+    inhabitant.root.removeFromParent();
+    for (const id of nodes.keys())
+      if (id.startsWith("scryer:")) nodes.delete(id);
     for (const selector of ["#ev-custodian-answer", "#ev-detail"]) {
       const el = document.querySelector(selector);
       if (el) el.textContent = "Observation authorization unavailable.";
     }
-    for (const id of nodes.keys())
-      if (id.startsWith("scryer:")) nodes.delete(id);
     label.textContent = "Scryer: access unavailable";
-    pause.disabled = true;
-    disable.disabled = true;
+    updateButtons();
   }
+  function apply(value: any) {
+    const wasStopped = inhabitant.engine.state.paused || inhabitant.engine.state.disabled;
+    inhabitant.applyShared(value);
+    if (!wasStopped && (inhabitant.engine.state.paused || inhabitant.engine.state.disabled)) generation++;
+    ready = true;
+    error = value.diagnostics?.error ? "observer needs attention" : "";
+    updateButtons();
+  }
+  async function controlState(
+    command: "pause" | "resume" | "disable" | "enable" | "dismiss",
+    ghost_id?: string,
+  ) {
+    if (closed || controlling) return;
+    generation++;
+    controlling = true;
+    updateButtons();
+    try {
+      if (shared) apply(await access.control(command, ghost_id));
+      else if (command === "pause" || command === "resume") inhabitant.pause();
+      else if (command === "disable" || command === "enable")
+        inhabitant.disable();
+      else {
+        const g = inhabitant.engine.state.ghosts.find((g) => g.id === ghost_id);
+        if (g) g.status = "dismissed";
+        inhabitant.syncGhosts();
+        inhabitant.save();
+      }
+      bindNodes();
+    } catch {
+      error = "control not confirmed";
+      if (access.controller.signal.aborted) revoke();
+      throw Error("Scryer control could not be confirmed");
+    } finally {
+      controlling = false;
+      updateButtons();
+    }
+  }
+  // Button errors are displayed without unhandled promise rejections.
+  pause.onclick = () =>
+    void controlState(
+      inhabitant.engine.state.paused ? "resume" : "pause",
+    ).catch(() => {});
+  disable.onclick = () =>
+    void controlState(
+      inhabitant.engine.state.disabled ? "enable" : "disable",
+    ).catch(() => {});
   async function poll(now: number) {
     if (busy || closed || document.hidden) return;
     busy = true;
     try {
-      if (now - lastAuth >= 30_000) {
+      if (now - lastAuth >= 30000) {
         lastAuth = now;
         const current = await access.authorization();
         if (!mayObserve(current) || current.user !== auth.user) {
@@ -111,26 +170,37 @@ export function mountScryer(
         }
       }
       if (
-        !inhabitant.engine.state.disabled &&
-        !inhabitant.engine.state.paused &&
-        now - lastPoll >= 60_000
+        now - lastPoll >= 60000 &&
+        (shared ||
+          (!inhabitant.engine.state.disabled &&
+            !inhabitant.engine.state.paused))
       ) {
         lastPoll = now;
         const map = await access.map();
-        if (!closed) {
+        if (closed) return;
+        options.onMap?.(map);
+        if (!shared) {
           inhabitant.ingest(map, positions);
           bindNodes();
         }
       }
+      if (shared && now - lastShared >= 1000) {
+        lastShared = now;
+        const value = await access.shared();
+        if (!closed) {
+          apply(value);
+        }
+      }
+      if (!shared) error = "";
     } catch {
+      error = "observation unavailable";
       if (access.controller.signal.aborted) revoke();
-      else label.textContent = "Scryer: observation unavailable";
     } finally {
       busy = false;
     }
   }
   window.addEventListener("pagehide", () => {
-    inhabitant.save();
+    if (!shared) inhabitant.save();
     access.cancel();
   });
   return {
@@ -138,26 +208,31 @@ export function mountScryer(
     attach(map: unknown, nextPositions: Map<string, THREE.Vector3>) {
       positions = nextPositions;
       if (closed) return;
-      inhabitant.ingest(map, positions);
-      root.add(inhabitant.root);
+      if (!shared || !ready) inhabitant.ingest(map, positions);
+      if (ready) root.add(inhabitant.root);
       bindNodes();
     },
     update(dt: number, active: boolean) {
       if (closed) return;
       const now = Date.now();
-      inhabitant.update(dt, now, active && !document.hidden, reduced.matches);
-      if (active && !inhabitant.engine.state.disabled) {
+      inhabitant.update(
+        dt,
+        now,
+        active && ready && !document.hidden,
+        reduced.matches,
+      );
+      if (active && ready && !inhabitant.engine.state.disabled) {
         if (inhabitant.root.parent !== root) root.add(inhabitant.root);
       } else inhabitant.root.removeFromParent();
       if (active) {
         void poll(now);
         const signature =
-          inhabitant.ghostSignature + inhabitant.engine.state.disabled;
+          inhabitant.ghostSignature + inhabitant.engine.state.disabled + ready;
         if (signature !== boundSignature) {
           bindNodes();
           boundSignature = signature;
         }
-        label.textContent = `Scryer · ${inhabitant.engine.state.disabled ? "disabled" : inhabitant.engine.state.paused ? "paused" : inhabitant.engine.state.phase}${inhabitant.storageError ? " · unsaved" : ""}`;
+        label.textContent = `Scryer · ${error || (!ready ? "connecting" : inhabitant.engine.state.disabled ? "disabled" : inhabitant.engine.state.paused ? "paused" : inhabitant.engine.state.phase)}${inhabitant.storageError ? " · unsaved" : ""}`;
       }
     },
     owns(id: string) {
@@ -184,26 +259,22 @@ export function mountScryer(
     },
     converse(open: boolean) {
       if (closed) return;
-      inhabitant.engine.state.phase = open
-        ? "conversing"
-        : inhabitant.engine.path.length
-          ? "wandering"
-          : "contemplating";
+      inhabitant.conversing = open;
+      if (!shared)
+        inhabitant.engine.state.phase = open
+          ? "conversing"
+          : inhabitant.engine.path.length
+            ? "wandering"
+            : "contemplating";
       if (!open) generation++;
     },
-    dismiss(id: string) {
-      const g = inhabitant.engine.state.ghosts.find(
-        (g) => `scryer:ghost:${g.id}` === id,
-      );
-      if (g) {
-        g.status = "dismissed";
-        inhabitant.syncGhosts();
-        inhabitant.save();
-        bindNodes();
-      }
+    canControl() {
+      return !shared || auth.isAdmin === true;
+    },
+    async dismiss(id: string) {
+      await controlState("dismiss", id.replace(/^scryer:ghost:/, ""));
     },
     async ask(question: string) {
-      const s = inhabitant.engine.state;
       if (closed) return "Observation access unavailable.";
       try {
         const current = await access.authorization();
@@ -215,19 +286,23 @@ export function mountScryer(
         revoke();
         return "Observation access unavailable.";
       }
-      const local = inhabitant.engine.discuss(question);
+      const s = inhabitant.engine.state,
+        local = inhabitant.engine.discuss(question);
       if (
         /restart|deploy|execute|sudo|delete|starta om/i.test(question) ||
         s.paused ||
         s.disabled ||
-        busy ||
-        Date.now() - s.lastModelAt < 60_000
+        asking ||
+        Date.now() - Math.max(modelAt, s.lastModelAt) < 60000
       )
         return local;
-      s.lastModelAt = Date.now();
-      inhabitant.save();
+      modelAt = Date.now();
+      if (!shared) {
+        s.lastModelAt = modelAt;
+        inhabitant.save();
+      }
       const token = ++generation;
-      busy = true;
+      asking = true;
       try {
         const answer = await access.ask(
           question,
@@ -242,7 +317,7 @@ export function mountScryer(
           ? "Observation access unavailable."
           : `${local}\n\nThe model is unavailable.`;
       } finally {
-        busy = false;
+        asking = false;
       }
     },
   };

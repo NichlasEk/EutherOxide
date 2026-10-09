@@ -275,7 +275,12 @@ async function bootstrap(): Promise<void> {
   installShell();
   await loadAuth();
   initScene();
-  scryer = mountScryer(scryerAuth, cityRoot, sceneNodes);
+  scryer = mountScryer(scryerAuth, cityRoot, sceneNodes, { onMap: (map) => {
+    if (roomMode === "city" && serverMap?.collected_at !== map.collected_at) {
+      serverMap = map as ServerMap;
+      buildCity(serverMap);
+    }
+  } });
   bindInput();
   await loadMap(false);
   animate();
@@ -1633,7 +1638,11 @@ function showNode(node: SceneNode): void {
     document.querySelector("#ev-target")!.textContent = node.label;
     if (node.type === "scryer-ghost") {
       const dismiss = document.createElement("button"); dismiss.textContent = "Dismiss hypothesis";
-      dismiss.onclick = () => { scryer?.dismiss(node.id); detailPanel.textContent = "Hypothesis dismissed; no infrastructure changed."; };
+      dismiss.disabled = !scryer.canControl();
+      dismiss.onclick = async () => {
+        try { await scryer?.dismiss(node.id); detailPanel.textContent = "Hypothesis dismissed; no infrastructure changed."; }
+        catch { detailPanel.textContent = "Dismissal could not be confirmed."; }
+      };
       detailPanel.append(dismiss);
     }
     return;
