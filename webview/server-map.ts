@@ -1,3 +1,4 @@
+import { nodeIsAlerting } from "./server-map-status.ts";
 import * as THREE from "three";
 import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
 
@@ -1824,25 +1825,7 @@ function restartCommandForService(service: ServiceReport): string | null {
   return eutherNetCommands.some((item) => item.name === command && item.enabled) ? command : null;
 }
 
-function nodeIsAlerting(node: Pick<MapNode, "status" | "detail">): boolean {
-  const status = `${node.status || ""} ${node.detail || ""}`.toLowerCase();
-  if (!status.trim()) return false;
-  return [
-    "failed",
-    "failure",
-    "stopped",
-    "inactive",
-    "dead",
-    "down",
-    "offline",
-    "error",
-    "unreachable",
-    "timeout",
-    "refused",
-    "missing",
-    "degraded",
-  ].some((word) => status.includes(word));
-}
+
 
 function showRoomNode(node: SceneNode): void {
   updateControlsGuide(node);
