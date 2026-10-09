@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
 
+import { mountScryer } from "./scryer/integration.ts";
+let scryer: ReturnType<typeof mountScryer> | null = null;
+let scryerAuth: any;
+let scryerDialog = false;
+
 type MapNode = {
   id: string;
   label: string;
@@ -270,6 +275,7 @@ async function bootstrap(): Promise<void> {
   installShell();
   await loadAuth();
   initScene();
+  scryer = mountScryer(scryerAuth, cityRoot, sceneNodes);
   bindInput();
   await loadMap(false);
   animate();
@@ -443,6 +449,7 @@ function installShell(): void {
 
 async function loadAuth(): Promise<void> {
   const auth = await jsonFetch<AuthStatus>("/api/auth/status");
+  scryerAuth = auth;
   csrfToken = auth.csrfToken || "";
   if (!auth.authenticated || (!auth.isAdmin && !auth.permissions?.canServerMap)) {
     throw new Error("Server Map permission required.");
@@ -919,6 +926,7 @@ function buildCity(map: ServerMap): void {
     if (!from || !to) continue;
     beamRoot.add(createBeam(from.position, to.position, edge, nodeIsAlerting(from) || nodeIsAlerting(to)));
   }
+  scryer?.attach(map, positions);
   showOverview(map);
 }
 
@@ -964,6 +972,15 @@ function addDistrictPads(nodes: MapNode[], positions: Map<string, THREE.Vector3>
 
 async function enterFocusedNode(): Promise<void> {
   const target = focusedNode || selectedNode;
+  if (target && scryer?.owns(target.id)) {
+    scryerDialog = true; scryer.converse(true); setCustodianVisible(true);
+    if (controls.isLocked) controls.unlock();
+    custodianTitle.textContent = "EutherScryer · What if…";
+    custodianContext.textContent = "Read-only observer · hypotheses are not infrastructure";
+    custodianAnswer.textContent = scryer.describe(target.id);
+    custodianQuestion.focus({ preventScroll: true });
+    return;
+  }
   if (target && roomMode !== "city") {
     if (isRoomReturnNode(target)) leaveRoom();
     if (isCustodianNode(target)) focusCustodian();
@@ -1376,6 +1393,7 @@ function createBeam(from: THREE.Vector3, to: THREE.Vector3, edge: MapEdge, alert
 function animate(): void {
   requestAnimationFrame(animate);
   const delta = Math.min(clock.getDelta(), 0.05);
+  scryer?.update(delta, roomMode === "city");
   updateMovement(delta);
   updateFocus();
   updateLabelBillboards();
@@ -1493,6 +1511,13 @@ function inspectFocusedNode(): void {
 }
 
 function updateEnterButton(node: SceneNode | null): void {
+  if (node && scryer?.owns(node.id)) {
+    enterNodeButton.disabled = false;
+    enterNodeButton.textContent = node.type === "scryer-ghost" ? "Discuss Hypothesis" : "Talk to Scryer";
+    const top = document.querySelector<HTMLButtonElement>("#ev-enter");
+    if (top && viewMode === "map" && isTouchMapDevice()) top.textContent = "Talk";
+    return;
+  }
   const action = mobileNodeAction(node);
   const canUse = Boolean(action);
   enterNodeButton.disabled = !canUse;
@@ -1602,6 +1627,18 @@ function showEutherBooksOverview(
 }
 
 function showNode(node: SceneNode): void {
+  if (scryer?.owns(node.id)) {
+    detailPanel.textContent = scryer.describe(node.id);
+    detailPanel.style.whiteSpace = "pre-line";
+    document.querySelector("#ev-target")!.textContent = node.label;
+    if (node.type === "scryer-ghost") {
+      const dismiss = document.createElement("button"); dismiss.textContent = "Dismiss hypothesis";
+      dismiss.onclick = () => { scryer?.dismiss(node.id); detailPanel.textContent = "Hypothesis dismissed; no infrastructure changed."; };
+      detailPanel.append(dismiss);
+    }
+    return;
+  }
+  detailPanel.style.whiteSpace = "";
   updateControlsGuide(node);
   document.querySelector("#ev-target")!.textContent = node.label || node.id;
   if (roomMode === "eutherbooks") {
@@ -1741,6 +1778,7 @@ function setNodeOperationStatus(node: SceneNode, status: string, detail: string,
 }
 
 function restartCommandForNode(node: SceneNode): string | null {
+  if (scryer?.owns(node.id)) return null;
   const serviceNode = roomMode === "city" ? node : currentRoomNode;
   if (!serviceNode) return null;
   const service = serviceForNode(serviceNode);
@@ -1896,6 +1934,7 @@ function updateControlsGuide(node: SceneNode | null): void {
 }
 
 function cityObjectiveFor(node: SceneNode): string {
+  if (scryer?.owns(node.id)) return "A wandering observer. Press E for observations or F to discuss what might be. Ghost Nodes are hypotheses.";
   if (isEutherGateNode(node)) {
     return "EutherGate is the admin-only remote forge. Press F or click Enter Node to open the live terminal and Wayland desktop.";
   }
@@ -1968,6 +2007,7 @@ function isEutherGateNode(node: SceneNode): boolean {
 }
 
 function nodeCanEnter(node: SceneNode): boolean {
+  if (scryer?.owns(node.id)) return true;
   if (roomMode !== "city") return false;
   if (isEutherBooksNode(node)) return true;
   return ["service", "proxy", "host", "ai", "storage"].includes(node.type);
@@ -2010,6 +2050,8 @@ function setCustodianVisible(visible: boolean): void {
 }
 
 function closeCustodianDialog(): void {
+  if (scryerDialog) scryer?.converse(false);
+  scryerDialog = false;
   setCustodianVisible(false);
   renderer.domElement.focus();
   hintLine.textContent = "Custodian link closed. Click Enter for mouse look.";
@@ -2036,6 +2078,13 @@ function roomCustodianContext(node: SceneNode): string {
 }
 
 async function askCustodian(): Promise<void> {
+  if (scryerDialog && scryer) {
+    const question = custodianQuestion.value.trim() || "What are you looking at?";
+    custodianAnswer.textContent = "Considering the available observations…";
+    const answer = await scryer.ask(question);
+    if (scryerDialog && answer) custodianAnswer.textContent = answer;
+    return;
+  }
   const node = currentRoomNode;
   if (!node) return;
   const question = custodianQuestion.value.trim() || "Sammanfatta status och risker för den här noden.";
