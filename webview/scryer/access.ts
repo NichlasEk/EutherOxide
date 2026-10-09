@@ -63,13 +63,14 @@ export class ObservationAccess {
     return this.request("/api/admin/euthernet/scryer");
   }
   control(
-    command: "pause" | "resume" | "disable" | "enable" | "dismiss",
+    command: "pause" | "resume" | "disable" | "enable" | "dismiss" | "save" | "review",
     ghost_id?: string,
+    data?: { outcome: string; note: string },
   ) {
     if (this.auth.isAdmin !== true) throw Error("Owner permission required");
     return this.request("/api/admin/euthernet/scryer/control", {
       method: "POST",
-      body: JSON.stringify({ command, ghost_id }),
+      body: JSON.stringify({ command, ghost_id, data }),
     });
   }
   cancel() {

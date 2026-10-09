@@ -272,12 +272,42 @@ bootstrap().catch((error) => {
   document.body.innerHTML = `<main class="eutherverse-fail"><h1>EutherVerse kunde inte starta</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
 });
 
+function focusScryerEvidence(id: string): void {
+  if (roomMode !== "city") leaveRoom();
+  const node = sceneNodes.get(id);
+  if (!node) return;
+  controls.unlock();
+  viewMode = "walk";
+  navigationEnabled = false;
+  keys.clear();
+  velocity.set(0, 0, 0);
+  modeButton.textContent = "Map";
+  crosshair.style.display = "";
+  pointer.set(0, 0);
+  const target = node.position.clone();
+  target.y = id.startsWith("scryer:") ? 3.5 : 2;
+  // An explicit user camera move; no continuous tracking or decorative motion.
+  // Choose an unobstructed offset around the target, never inside its body.
+  for (let step = 0; step < 16; step++) {
+    const angle = step * Math.PI / 8;
+    const candidate = target.clone().add(new THREE.Vector3(Math.sin(angle) * 9, 4, Math.cos(angle) * 9));
+    if ([...sceneNodes.values()].some(n => n.id !== id && Math.hypot(n.position.x - candidate.x, n.position.z - candidate.z) < 4.5)) continue;
+    camera.position.copy(candidate);
+    camera.lookAt(target);
+    showNode(node);
+    return;
+  }
+  camera.position.copy(target.clone().add(new THREE.Vector3(0, 12, 9)));
+  camera.lookAt(target);
+  showNode(node);
+}
+
 async function bootstrap(): Promise<void> {
   installShell();
   await loadAuth();
   initScene();
-  scryer = mountScryer(scryerAuth, cityRoot, sceneNodes, { onMap: (map) => {
-    if (roomMode === "city" && serverMap?.collected_at !== map.collected_at) {
+  scryer = mountScryer(scryerAuth, cityRoot, sceneNodes, { onFocus: focusScryerEvidence, onMap: (map) => {
+    if (roomMode === "city" && (serverMap?.collected_at !== map.collected_at || JSON.stringify(serverMap?.nodes) !== JSON.stringify(map.nodes))) {
       serverMap = map as ServerMap;
       buildCity(serverMap);
     }
@@ -1645,6 +1675,9 @@ function showNode(node: SceneNode): void {
         catch { detailPanel.textContent = "Dismissal could not be confirmed."; }
       };
       detailPanel.append(dismiss);
+      const idea = document.createElement("button"); idea.textContent = "Evidence & investigation";
+      idea.onclick = () => scryer?.openIdea(node.id);
+      detailPanel.append(idea);
     }
     return;
   }

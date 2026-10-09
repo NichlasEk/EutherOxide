@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { ideaDialog } from "./ideas.ts";
 import { Inhabitant, SCRYER_ID } from "./inhabitant.ts";
 import { ObservationAccess, mayObserve, type Authorization } from "./access.ts";
 type SceneNode = {
@@ -9,7 +10,7 @@ type SceneNode = {
   object: THREE.Object3D;
   position: THREE.Vector3;
 };
-type Options = { shared?: boolean; onMap?: (map: any) => void };
+type Options = { shared?: boolean; onMap?: (map: any) => void; onFocus?: (id: string) => void };
 export function mountScryer(
   auth: Authorization,
   root: THREE.Group,
@@ -42,7 +43,7 @@ export function mountScryer(
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
   const control = document.createElement("div");
   control.style.cssText =
-    "position:fixed;bottom:48px;left:18px;z-index:20;display:flex;gap:8px;align-items:center;background:#101a25;padding:9px;border:1px solid #71879b;border-radius:10px;color:#eefaff;font:13px system-ui";
+    "position:fixed;bottom:48px;left:18px;z-index:20;display:flex;flex-wrap:wrap;max-width:calc(100vw - 54px);gap:8px;align-items:center;background:#101a25;padding:9px;border:1px solid #71879b;border-radius:10px;color:#eefaff;font:13px system-ui";
   const label = document.createElement("span");
   label.textContent = "Scryer";
   control.append(label);
@@ -65,7 +66,21 @@ export function mountScryer(
         inhabitant.engine.state.disabled ? "enable" : "disable",
       ),
   );
+  const find = button("Find Scryer", () => options.onFocus?.(SCRYER_ID));
+  find.hidden = !options.onFocus;
+  const ideas = ideaDialog({
+    ghosts: () => inhabitant.engine.state.ghosts,
+    describe,
+    focus: id => options.onFocus?.(id),
+    canControl: () => !closed && (!shared || auth.isAdmin === true),
+    control: controlState,
+  });
+  const ideaButton = button("Ideas", () => ideas.open());
   function updateButtons() {
+    find.disabled = closed || !ready || inhabitant.engine.state.disabled;
+    ideaButton.disabled = closed || !ready;
+    const unreviewed = inhabitant.engine.state.ghosts.filter(g => g.status === "active" && (!g.review || g.review.outcome === "untested")).length;
+    ideaButton.textContent = `Ideas · ${unreviewed} unreviewed`;
     pause.textContent = inhabitant.engine.state.paused ? "Resume" : "Pause";
     disable.textContent = inhabitant.engine.state.disabled
       ? "Enable"
@@ -100,6 +115,7 @@ export function mountScryer(
     closed = true;
     generation++;
     access.cancel();
+    ideas.remove();
     inhabitant.revoke();
     inhabitant.root.removeFromParent();
     for (const id of nodes.keys())
@@ -116,25 +132,36 @@ export function mountScryer(
     inhabitant.applyShared(value);
     if (!wasStopped && (inhabitant.engine.state.paused || inhabitant.engine.state.disabled)) generation++;
     ready = true;
-    error = value.diagnostics?.error ? "observer needs attention" : "";
+    error = value.diagnostics?.error ? "observer needs attention" : Date.now() - Date.parse(inhabitant.engine.world.stamp) > 86400000 ? "inventory older than 24h · exploration suspended" : "";
     updateButtons();
   }
   async function controlState(
-    command: "pause" | "resume" | "disable" | "enable" | "dismiss",
+    command: "pause" | "resume" | "disable" | "enable" | "dismiss" | "save" | "review",
     ghost_id?: string,
+    data?: { outcome: string; note: string },
   ) {
     if (closed || controlling) return;
     generation++;
     controlling = true;
     updateButtons();
     try {
-      if (shared) apply(await access.control(command, ghost_id));
+      if (shared) apply(await access.control(command, ghost_id, data));
       else if (command === "pause" || command === "resume") inhabitant.pause();
       else if (command === "disable" || command === "enable")
         inhabitant.disable();
       else {
         const g = inhabitant.engine.state.ghosts.find((g) => g.id === ghost_id);
-        if (g) g.status = "dismissed";
+        if (g) {
+          if (command === "dismiss") g.status = "dismissed";
+          else {
+            const r = g.review || {saved: false, outcome: "untested" as const, note: "", at: 0};
+            if (command === "save") r.saved = !r.saved;
+            else if (data && ["untested", "supported", "not-supported", "inconclusive"].includes(data.outcome)) {
+              r.outcome = data.outcome as typeof r.outcome; r.note = data.note.slice(0, 600);
+            }
+            r.at = Date.now(); g.review = r;
+          }
+        }
         inhabitant.syncGhosts();
         inhabitant.save();
       }
@@ -199,6 +226,26 @@ export function mountScryer(
       busy = false;
     }
   }
+  function describe(id: string) {
+      if (closed) return "Observation access unavailable.";
+      const g = inhabitant.engine.state.ghosts.find(
+        (g) => `scryer:ghost:${g.id}` === id,
+      );
+      return g
+        ? [
+            `HYPOTHESIS · ${g.status}`,
+            g.description,
+            `Verified inventory observation (${g.support.stamp}): ${g.support.node} reported ${g.support.status}; ${g.pattern === "shared-dependency" ? "dependency edges from " + (g.support.dependents || []).join(", ") : "hosts edges to " + g.support.hosted.join(", ")}.`,
+            ...(g.history || []).map(o => `Verified inventory history: ${o.stamp} · ${o.node} · ${o.status}`),
+            `Linked inventory nodes: ${g.links.join(", ")}`,
+            `Assumptions: ${g.assumptions}`,
+            g.uncertainty,
+            `Benefit: ${g.benefit}`,
+            `Risks: ${g.risks}`,
+            `Suggested test: ${g.test}`,
+          ].join("\n\n")
+        : inhabitant.engine.discuss("What are you looking at?");
+    }
   window.addEventListener("pagehide", () => {
     if (!shared) inhabitant.save();
     access.cancel();
@@ -225,6 +272,7 @@ export function mountScryer(
         if (inhabitant.root.parent !== root) root.add(inhabitant.root);
       } else inhabitant.root.removeFromParent();
       if (active) {
+        updateButtons();
         void poll(now);
         const signature =
           inhabitant.ghostSignature + inhabitant.engine.state.disabled + ready;
@@ -238,25 +286,8 @@ export function mountScryer(
     owns(id: string) {
       return id.startsWith("scryer:");
     },
-    describe(id: string) {
-      if (closed) return "Observation access unavailable.";
-      const g = inhabitant.engine.state.ghosts.find(
-        (g) => `scryer:ghost:${g.id}` === id,
-      );
-      return g
-        ? [
-            `HYPOTHESIS · ${g.status}`,
-            g.description,
-            `Verified inventory observation (${g.support.stamp}): ${g.support.node} reported ${g.support.status}; hosts edges to ${g.support.hosted.join(", ")}.`,
-            `Linked inventory nodes: ${g.links.join(", ")}`,
-            `Assumptions: ${g.assumptions}`,
-            g.uncertainty,
-            `Benefit: ${g.benefit}`,
-            `Risks: ${g.risks}`,
-            `Suggested test: ${g.test}`,
-          ].join("\n\n")
-        : inhabitant.engine.discuss("What are you looking at?");
-    },
+    describe,
+    openIdea(id: string) { ideas.open(id); },
     converse(open: boolean) {
       if (closed) return;
       inhabitant.conversing = open;

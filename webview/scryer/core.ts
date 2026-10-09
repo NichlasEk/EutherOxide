@@ -24,10 +24,14 @@ export type Observation = {
   source: "EutherNet inventory";
   outcome: "inspected" | "nothing interesting";
   hosted: string[];
+  dependents?: string[];
 };
 export type Ghost = {
   id: string;
   kind: "hypothesis";
+  pattern?: "shared-host" | "shared-dependency" | "status-changes";
+  history?: Observation[];
+  review?: { saved: boolean; outcome: "untested" | "supported" | "not-supported" | "inconclusive"; note: string; at: number };
   support: Observation;
   node: string;
   links: string[];
@@ -445,6 +449,7 @@ export class Scryer {
         Array.isArray(o.hosted) &&
         o.hosted.length <= 12 &&
         o.hosted.every(idOK) &&
+        (o.dependents === undefined || (Array.isArray(o.dependents) && o.dependents.length <= 12 && o.dependents.every(idOK))) &&
         o.kind === "verified fact" &&
         o.source === "EutherNet inventory" &&
         statuses.has(o.status) &&
@@ -460,6 +465,7 @@ export class Scryer {
         kind: o.kind,
         source: o.source,
         hosted: [...o.hosted],
+        ...(o.dependents ? {dependents: [...o.dependents]} : {}),
         outcome:
           o.outcome === "inspected" ? "inspected" : "nothing interesting",
       });
@@ -468,6 +474,9 @@ export class Scryer {
         s.ghosts.some(
           (g) =>
             g.kind !== "hypothesis" ||
+            (g.pattern !== undefined && !["shared-host", "shared-dependency", "status-changes"].includes(g.pattern)) ||
+            (g.history !== undefined && (!Array.isArray(g.history) || g.history.length > 4 || !g.history.every(validObservation))) ||
+            (g.review !== undefined && (!g.review || typeof g.review.note !== "string" || g.review.note.length > 600 || !Number.isFinite(g.review.at) || !["untested", "supported", "not-supported", "inconclusive"].includes(g.review.outcome))) ||
             !validObservation(g.support) ||
             g.support.node !== g.node ||
             !idOK(g.node) ||
@@ -526,12 +535,16 @@ export class Scryer {
           kind: o.kind,
           source: o.source,
           hosted: [...o.hosted],
+        ...(o.dependents ? {dependents: [...o.dependents]} : {}),
           outcome:
             o.outcome === "inspected" ? "inspected" : "nothing interesting",
         })),
         ghosts: s.ghosts.map((g) => ({
           id: g.id,
           kind: g.kind,
+          ...(g.pattern ? {pattern: g.pattern} : {}),
+          ...(g.history ? {history: g.history.map(copyObservation)} : {}),
+          ...(g.review ? {review: {saved: g.review.saved === true, outcome: g.review.outcome, note: g.review.note, at: g.review.at}} : {}),
           support: copyObservation(g.support),
           node: g.node,
           links: g.links,
