@@ -8837,7 +8837,7 @@ const appDownloads: AppDownload[] = [
     detail: "Voice conversations plus spoken heat-pump, washer and locally controlled robot-vacuum reports",
     platform: "Android phone · Authenticated beta",
     href: "/downloads/EutherVox.apk",
-    status: "Beta APK · v0.19.0-beta.37 · KittenTTS 2 som experimentell röst · Scryer-rapporter",
+    status: "Beta APK · v0.19.0-beta.38 · OmniVoice: Siaren djup och klar · Scryer-rapporter",
   },
   {
     title: "EutherPing",
