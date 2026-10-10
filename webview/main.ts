@@ -8822,8 +8822,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherBeam",
     detail: "Local Samsung, NEC and Android TV control with direct linked-player wake and non-blocking Samsung reconnect",
     platform: "Android phone · Samsung + NEC + Android TV",
-    href: "/downloads/EutherBeam-0.1.0-alpha12-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha.12 · Direct Samsung Cast wake · Background reconnect · No cloud",
+    href: "/downloads/EutherBeam-0.1.0-alpha13-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.13 · Tydliga Logitech IR-volymknappar via EutherVox",
   },
   {
     title: "Sakura Sprint",
@@ -8837,7 +8837,7 @@ const appDownloads: AppDownload[] = [
     detail: "Voice conversations plus spoken heat-pump, washer and locally controlled robot-vacuum reports",
     platform: "Android phone · Authenticated beta",
     href: "/downloads/EutherVox.apk",
-    status: "Beta APK · v0.20.0-beta.1 · TV apparater · EutherBeam · Lär in IR-knappar och egna röstfraser",
+    status: "Beta APK · v0.20.0-beta.2 · Logitech volymknappar direkt på TV-kortet · EutherBeam IR-brygga",
   },
   {
     title: "EutherPing",
