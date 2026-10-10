@@ -8837,7 +8837,7 @@ const appDownloads: AppDownload[] = [
     detail: "Voice conversations plus spoken heat-pump, washer and locally controlled robot-vacuum reports",
     platform: "Android phone · Authenticated beta",
     href: "/downloads/EutherVox.apk",
-    status: "Beta APK · v0.19.0-beta.40 · Skärmen hålls vaken under uppläsning · Jämnare nyhetsrapport",
+    status: "Beta APK · v0.20.0-beta.1 · TV apparater · EutherBeam · Lär in IR-knappar och egna röstfraser",
   },
   {
     title: "EutherPing",
