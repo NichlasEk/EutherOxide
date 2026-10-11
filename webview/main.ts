@@ -8822,8 +8822,8 @@ const appDownloads: AppDownload[] = [
     title: "EutherBeam",
     detail: "Local Samsung, NEC and Android TV control with direct linked-player wake and non-blocking Samsung reconnect",
     platform: "Android phone · Samsung + NEC + Android TV",
-    href: "/downloads/EutherBeam-0.1.0-alpha16-debug.apk",
-    status: "Alpha APK · v0.1.0-alpha.16 · TV-kort Uppe/Nere · Kopplad Android-puck · Volym −/+",
+    href: "/downloads/EutherBeam-0.1.0-alpha17-debug.apk",
+    status: "Alpha APK · v0.1.0-alpha.17 · Delad TV-fjärr med Vox · Väck puck · Uppe/Nere",
   },
   {
     title: "Sakura Sprint",
@@ -8837,7 +8837,7 @@ const appDownloads: AppDownload[] = [
     detail: "Voice conversations plus spoken heat-pump, washer and locally controlled robot-vacuum reports",
     platform: "Android phone · Authenticated beta",
     href: "/downloads/EutherVox.apk",
-    status: "Beta APK · v0.20.0-beta.6 · TV-rum Uppe/Nere · Filmsökning · Vad visas?",
+    status: "Beta APK · v0.20.0-beta.7 · Använder Beams parningar · TV på/av · Tydliga kommandosvar",
   },
   {
     title: "EutherPing",
